@@ -16,12 +16,47 @@ import {
 	shouldEnsureInteractiveDaemonForStartup,
 	shouldOpenAgentsViewForDaemonInteractive,
 	shouldRejectNonInteractiveAttach,
+	shouldUseDaemonClient,
 	shouldUseDaemonInteractive,
 	shouldUseEphemeralSessionManagerForDaemonInteractive,
 } from "../src/main.js";
 import type { SessionSummary } from "../src/modes/index.js";
 
 describe("interactive startup routing", () => {
+	test.each(["interactive", "print", "json", "rpc"] as const)(
+		"uses the daemon runtime for the %s client",
+		(appMode) => {
+			expect(
+				shouldUseDaemonClient({
+					appMode,
+					startupBenchmark: false,
+				}),
+			).toBe(true);
+		},
+	);
+
+	test("uses a client-owned daemon session for --no-session", () => {
+		expect(
+			shouldUseDaemonClient({
+				appMode: "interactive",
+				startupBenchmark: false,
+				noSession: true,
+			}),
+		).toBe(true);
+	});
+
+	test.each([
+		["daemon process", { appMode: "daemon", startupBenchmark: false }],
+		["startup benchmark", { appMode: "interactive", startupBenchmark: true }],
+		["help", { appMode: "interactive", startupBenchmark: false, help: true }],
+		["model listing", { appMode: "interactive", startupBenchmark: false, listModels: true }],
+	] satisfies Array<[string, InteractiveDaemonStartupDecision]>)(
+		"keeps %s out of daemon client routing",
+		(_label, decision) => {
+			expect(shouldUseDaemonClient(decision)).toBe(false);
+		},
+	);
+
 	test("uses daemon-backed interactive mode for normal interactive startup", () => {
 		expect(
 			shouldUseDaemonInteractive({

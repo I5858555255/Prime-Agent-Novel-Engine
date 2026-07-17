@@ -1,5 +1,5 @@
 import { enableCompileCache } from "node:module";
-import { maybeStartInteractiveDaemonEarly } from "./cli/daemon-launch.js";
+import { maybeStartDaemonEarly } from "./cli/daemon-launch.js";
 import {
 	closeOwnedSessionWorkerOwnerWatch,
 	installOwnedSessionWorkerOwnerWatch,
@@ -19,7 +19,7 @@ export async function runCli(): Promise<void> {
 	process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 	// Boot a cold daemon concurrently with this process's heavy imports.
-	maybeStartInteractiveDaemonEarly(process.argv.slice(2));
+	maybeStartDaemonEarly(process.argv.slice(2));
 
 	installOwnedSessionWorkerOwnerWatch();
 

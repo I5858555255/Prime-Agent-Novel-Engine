@@ -27,7 +27,7 @@ import {
 	ORPHAN_PROCESS_JOURNAL_ENV,
 	readActiveOrphanProcesses,
 } from "../../core/orphan-process-journal.js";
-import { canonicalSessionPath, getProcessStartId } from "../../core/session-lease.js";
+import { canonicalSessionPath, getProcessStartId, SessionAlreadyActiveError } from "../../core/session-lease.js";
 import type { SessionInfo } from "../../core/session-manager.js";
 import { signalProcessGroupOrProcess } from "../../utils/child-process.js";
 import type { AgentConnectionHeartbeat } from "../agent-connection/types.js";
@@ -99,6 +99,7 @@ const WORKER_CONNECT_TIMEOUT_MS = 30_000;
 const WORKER_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const WORKER_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
 const DEFERRED_RECOVERY_RECHECK_MS = 5000;
+const OWNED_WORKER_DISCONNECT_GRACE_MS = 30_000;
 const SUPERVISOR_CONFIG_FILE_NAME = "supervisor-config";
 const WORKER_STARTUP_GATE_FD = 3;
 
@@ -110,9 +111,12 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"attach",
 	"reattach",
 	"detach",
+	"complete_owned_session",
+	"promote_owned_session",
 	"kill",
 	"rename",
 	"prompt",
+	"prompt_and_wait",
 	"steer",
 	"follow_up",
 	"restore_next_turn",
@@ -127,9 +131,12 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"start_side_question",
 	"abort_side_question",
 	"execute_bash",
+	"execute_bash_and_wait",
 	"abort_bash",
 	"cancel_rlm_child",
 	"wait_for_idle",
+	"wait_for_headless_completion",
+	"get_session_header",
 	"get_state",
 	"get_connection_state",
 	"get_messages",
@@ -159,6 +166,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"set_steering_mode",
 	"set_follow_up_mode",
 	"set_auto_compaction",
+	"set_auto_retry",
 	"compact",
 	"refine",
 	"abort_compaction",
@@ -204,6 +212,8 @@ interface ResidentWorker {
 	deferredRecovery?: Promise<void>;
 	intentionalStop: boolean;
 	stopRevision: number;
+	launchEnv?: Record<string, string>;
+	ownerCleanupTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface SnapshotDuplicateValidation {
@@ -309,6 +319,11 @@ function withoutCommandId(command: DaemonCommand): DaemonCommandBody {
 	return body as DaemonCommandBody;
 }
 
+function withoutSupervisorCreateFields(command: DaemonCreateCommand): DaemonCreateCommand {
+	const { launchEnv: _launchEnv, lifecycle: _lifecycle, ...workerCommand } = command;
+	return workerCommand;
+}
+
 function responseWithId(response: DaemonResponse, id: string | undefined): DaemonResponse {
 	return { ...response, id };
 }
@@ -335,6 +350,7 @@ function isDaemonWorkerDescriptor(value: unknown, socketPath: string): value is 
 		Number.isInteger(descriptor.pid) &&
 		(descriptor.pid ?? 0) > 0 &&
 		(descriptor.processStartId === undefined || typeof descriptor.processStartId === "string") &&
+		(descriptor.ownerClientId === undefined || typeof descriptor.ownerClientId === "string") &&
 		typeof descriptor.socketPath === "string" &&
 		typeof descriptor.authenticationToken === "string" &&
 		typeof descriptor.rootActiveSessionId === "string" &&
@@ -516,6 +532,7 @@ export class DaemonSupervisor {
 	private cleanupPromise?: Promise<void>;
 	private shuttingDown = false;
 	private readonly clients = new Set<DaemonSocketClient>();
+	private readonly protocolClientIds = new WeakMap<DaemonSocketClient, string>();
 	private readonly workers = new Map<string, ResidentWorker>();
 	private readonly openingWorkers = new Map<string, Promise<ResidentWorker>>();
 	private readonly signalCleanupHandlers: Array<() => void> = [];
@@ -617,6 +634,9 @@ export class DaemonSupervisor {
 				throw adoptionFailure;
 			}
 			await this.syncAgentPeers().catch((error) => this.log(`Could not synchronize agent peers: ${String(error)}`));
+			for (const worker of this.workers.values()) {
+				this.scheduleOwnedWorkerCleanup(worker);
+			}
 			await this.ownership.updatePhase("owner");
 			this.log(`Prime Agent daemon supervisor ${this.generation} listening on ${this.socketPath}`);
 			this.markReady();
@@ -808,6 +828,7 @@ export class DaemonSupervisor {
 							"extension_ui",
 							"slim_attach",
 							"chunked_snapshot",
+							"client_owned_sessions",
 						],
 					});
 				}
@@ -828,6 +849,7 @@ export class DaemonSupervisor {
 				client.attachedActiveSessionIds.delete(activeSessionId);
 				void this.syncWorkerExtensionUi(activeSessionId);
 			}
+			this.scheduleOwnedWorkerCleanupForClient(this.protocolClientId(client));
 		};
 		socket.on("close", cleanup);
 		socket.on("error", cleanup);
@@ -839,6 +861,56 @@ export class DaemonSupervisor {
 				);
 			}
 		});
+	}
+
+	private cancelOwnedWorkerCleanup(clientId: string): void {
+		for (const worker of this.workers.values()) {
+			if (worker.descriptor.ownerClientId !== clientId || !worker.ownerCleanupTimer) {
+				continue;
+			}
+			clearTimeout(worker.ownerCleanupTimer);
+			worker.ownerCleanupTimer = undefined;
+		}
+	}
+
+	private protocolClientId(client: DaemonSocketClient): string {
+		return this.protocolClientIds.get(client) ?? client.id;
+	}
+
+	private scheduleOwnedWorkerCleanupForClient(clientId: string): void {
+		if ([...this.clients].some((client) => this.protocolClientId(client) === clientId)) {
+			return;
+		}
+		for (const worker of this.workers.values()) {
+			if (worker.descriptor.ownerClientId === clientId) {
+				this.scheduleOwnedWorkerCleanup(worker);
+			}
+		}
+	}
+
+	private scheduleOwnedWorkerCleanup(worker: ResidentWorker): void {
+		const ownerClientId = worker.descriptor.ownerClientId;
+		if (
+			!ownerClientId ||
+			worker.ownerCleanupTimer ||
+			[...this.clients].some((client) => this.protocolClientId(client) === ownerClientId)
+		) {
+			return;
+		}
+		worker.ownerCleanupTimer = setTimeout(() => {
+			worker.ownerCleanupTimer = undefined;
+			if (
+				worker.descriptor.ownerClientId !== ownerClientId ||
+				[...this.clients].some((client) => this.protocolClientId(client) === ownerClientId) ||
+				this.workers.get(worker.descriptor.workerId) !== worker
+			) {
+				return;
+			}
+			void this.stopWorker(worker, true).catch((error) =>
+				this.log(`Could not clean up client-owned worker ${worker.descriptor.workerId}: ${String(error)}`),
+			);
+		}, OWNED_WORKER_DISCONNECT_GRACE_MS);
+		worker.ownerCleanupTimer.unref();
 	}
 
 	private async handleLine(client: DaemonSocketClient, line: string): Promise<void> {
@@ -856,8 +928,10 @@ export class DaemonSupervisor {
 				: (parsed as { id?: unknown; type?: unknown });
 			if (isDaemonCommandEnvelope(parsed)) {
 				envelopeClientId = parsed.clientId ?? client.id;
+				this.protocolClientIds.set(client, envelopeClientId);
 				client.id = envelopeClientId;
 			}
+			this.cancelOwnedWorkerCleanup(client.id);
 			if (typeof candidate.type !== "string" || !DAEMON_COMMAND_TYPES.has(candidate.type)) {
 				const commandName = typeof candidate.type === "string" ? candidate.type : "unknown";
 				this.write(
@@ -942,7 +1016,7 @@ export class DaemonSupervisor {
 			case "list_saved_sessions":
 				return this.handleSavedSessionList(client, command);
 			case "create": {
-				const worker = await this.createOrReuseWorker(client.id, command);
+				const worker = await this.createOrReuseWorker(this.protocolClientId(client), command);
 				const summary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
 				if (!summary) {
 					throw new Error("Session worker started without a root session");
@@ -1033,6 +1107,33 @@ export class DaemonSupervisor {
 			case "detach":
 				this.detachClient(client, command.activeSessionId);
 				return success(command.id, "detach");
+			case "complete_owned_session": {
+				const match = await this.findWorker(command.activeSessionId);
+				if (match.worker.descriptor.ownerClientId !== this.protocolClientId(client)) {
+					throw new Error("Session is not owned by this client");
+				}
+				if (match.worker.ownerCleanupTimer) {
+					clearTimeout(match.worker.ownerCleanupTimer);
+					match.worker.ownerCleanupTimer = undefined;
+				}
+				await this.stopWorker(match.worker, true);
+				return success(command.id, command.type);
+			}
+			case "promote_owned_session": {
+				const match = await this.findWorker(command.activeSessionId);
+				if (match.worker.descriptor.ownerClientId !== this.protocolClientId(client)) {
+					throw new Error("Session is not owned by this client");
+				}
+				if (match.worker.ownerCleanupTimer) {
+					clearTimeout(match.worker.ownerCleanupTimer);
+					match.worker.ownerCleanupTimer = undefined;
+				}
+				match.worker.descriptor.ownerClientId = undefined;
+				match.worker.launchEnv = undefined;
+				this.persistWorker(match.worker);
+				await this.syncAgentPeers();
+				return success(command.id, command.type, this.publicSummary(match.worker, match.summary));
+			}
 			case "retry_worker": {
 				const direct = [...this.workers.values()].find(
 					(worker) =>
@@ -1062,7 +1163,7 @@ export class DaemonSupervisor {
 				return success(command.id, "prepare_update_restart", manifest);
 			}
 			case "agent_messages_status": {
-				const first = [...this.workers.values()].find((worker) => worker.client);
+				const first = [...this.workers.values()].find((worker) => this.isVisibleWorker(worker) && worker.client);
 				if (!first) {
 					return success(command.id, command.type, { paused: false, limits: {} });
 				}
@@ -1072,7 +1173,7 @@ export class DaemonSupervisor {
 			case "agent_messages_resume": {
 				const responses = await Promise.all(
 					[...this.workers.values()]
-						.filter((worker) => worker.client)
+						.filter((worker) => this.isVisibleWorker(worker) && worker.client)
 						.map((worker) => this.forwardToWorker(worker, command)),
 				);
 				const failed = responses.find((response) => !response.success);
@@ -1086,7 +1187,10 @@ export class DaemonSupervisor {
 				const jobs = new Map<string, AgentCronJob>();
 				const responses = await Promise.all(
 					[...this.workers.values()]
-						.filter((worker) => worker.client && worker.descriptor.lifecycle === "ready")
+						.filter(
+							(worker) =>
+								this.isVisibleWorker(worker) && worker.client && worker.descriptor.lifecycle === "ready",
+						)
 						.map((worker) =>
 							this.forwardToWorker(worker, command, 5000).catch((error: unknown) =>
 								failure(command.id, command.type, error, serializeDaemonError(error)),
@@ -1105,7 +1209,11 @@ export class DaemonSupervisor {
 				return success(command.id, "cron_list", { jobs: sortCronJobs([...jobs.values()]) });
 			}
 			case "heartbeats_list": {
-				const workers = [...this.workers.values()];
+				if (command.activeSessionId) {
+					const match = await this.findWorker(command.activeSessionId);
+					return this.forwardToWorker(match.worker, command);
+				}
+				const workers = [...this.workers.values()].filter((worker) => this.isVisibleWorker(worker));
 				const heartbeats = new Map<string, AgentConnectionHeartbeat>();
 				const snapshots: Array<{ heartbeats?: AgentConnectionHeartbeat[]; response?: DaemonResponse }> =
 					await Promise.all(
@@ -1177,9 +1285,16 @@ export class DaemonSupervisor {
 				return this.forwardToWorker(match.worker, command);
 			}
 			case "cron_cancel": {
+				if (command.activeSessionId) {
+					const match = await this.findWorker(command.activeSessionId);
+					return this.forwardToWorker(match.worker, command);
+				}
 				const listed = await Promise.all(
 					[...this.workers.values()]
-						.filter((worker) => worker.client && worker.descriptor.lifecycle === "ready")
+						.filter(
+							(worker) =>
+								this.isVisibleWorker(worker) && worker.client && worker.descriptor.lifecycle === "ready",
+						)
 						.map(async (worker) => ({
 							worker,
 							response: await this.forwardToWorker(
@@ -1286,9 +1401,9 @@ export class DaemonSupervisor {
 			[...this.workers.values()].map((worker) => this.refreshWorkerSummaries(worker).catch(() => undefined)),
 		);
 		await this.syncAgentPeers().catch((error) => this.log(`Could not synchronize agent peers: ${String(error)}`));
-		const active = [...this.workers.values()].flatMap((worker) =>
-			[...worker.summaries.values()].map((summary) => this.publicSummary(worker, summary)),
-		);
+		const active = [...this.workers.values()]
+			.filter((worker) => command.includeClientOwned || this.isVisibleWorker(worker))
+			.flatMap((worker) => [...worker.summaries.values()].map((summary) => this.publicSummary(worker, summary)));
 		if (!command.all) {
 			return success(command.id, "list", { sessions: active });
 		}
@@ -1340,10 +1455,11 @@ export class DaemonSupervisor {
 
 	private async createOrReuseWorker(clientId: string, command: DaemonCreateCommand): Promise<ResidentWorker> {
 		let createCommand = command;
+		const ownerClientId = command.lifecycle === "client_owned" ? clientId : undefined;
 		if (command.sessionPath) {
 			const activeMatches = this.matchWorkers(command.sessionPath);
 			if (activeMatches.length === 1) {
-				return activeMatches[0]!.worker;
+				return this.reuseWorkerForCreate(activeMatches[0]!.worker, ownerClientId, command.sessionPath);
 			}
 			if (activeMatches.length > 1) {
 				throw new Error(`Ambiguous active session "${command.sessionPath}"`);
@@ -1355,7 +1471,7 @@ export class DaemonSupervisor {
 			createCommand = { ...command, sessionPath };
 			const existing = this.findWorkerBySessionFile(sessionPath);
 			if (existing) {
-				return existing.worker;
+				return this.reuseWorkerForCreate(existing.worker, ownerClientId, sessionPath);
 			}
 		}
 		const key = createCommand.sessionPath
@@ -1365,7 +1481,7 @@ export class DaemonSupervisor {
 		if (pending) {
 			return pending;
 		}
-		const opening = this.launchWorker(createCommand);
+		const opening = this.launchWorker(createCommand, undefined, ownerClientId);
 		this.openingWorkers.set(key, opening);
 		try {
 			return await opening;
@@ -1376,14 +1492,31 @@ export class DaemonSupervisor {
 		}
 	}
 
-	private async launchWorker(command: DaemonCreateCommand, existing?: ResidentWorker): Promise<ResidentWorker> {
+	private reuseWorkerForCreate(
+		worker: ResidentWorker,
+		ownerClientId: string | undefined,
+		sessionPath: string,
+	): ResidentWorker {
+		if (worker.descriptor.ownerClientId === ownerClientId) {
+			return worker;
+		}
+		throw new SessionAlreadyActiveError(sessionPath, worker.descriptor.rootActiveSessionId);
+	}
+
+	private async launchWorker(
+		command: DaemonCreateCommand,
+		existing?: ResidentWorker,
+		ownerClientId?: string,
+	): Promise<ResidentWorker> {
 		await this.assertRecoveryAllowed();
 		if (existing && this.isWorkerRecoveryCancelled(existing)) {
 			throw new Error(`Session worker ${existing.descriptor.workerId} recovery was cancelled`);
 		}
 		const recoveryStopRevision = existing?.stopRevision;
+		const launchEnv =
+			ownerClientId || existing?.descriptor.ownerClientId ? (command.launchEnv ?? existing?.launchEnv) : undefined;
 		const createCommand: DaemonCreateCommand = {
-			...command,
+			...withoutSupervisorCreateFields(command),
 			config: mergeAgentSessionRuntimeConfig(this.defaultSessionConfig, command.config),
 		};
 		const workerId = existing?.descriptor.workerId ?? createActiveSessionId();
@@ -1403,6 +1536,7 @@ export class DaemonSupervisor {
 			detached: true,
 			env: {
 				...process.env,
+				...launchEnv,
 				[DAEMON_WORKER_ROLE_ENV]: "1",
 				[DAEMON_WORKER_TOKEN_ENV]: token,
 				[DAEMON_WORKER_ACTIVE_SESSION_ID_ENV]: rootActiveSessionId,
@@ -1450,6 +1584,7 @@ export class DaemonSupervisor {
 				supervisorSocketPath: this.socketPath,
 				authenticationToken: token,
 				rootActiveSessionId,
+				ownerClientId: existing?.descriptor.ownerClientId ?? ownerClientId,
 				createdAt: existing?.descriptor.createdAt ?? now,
 				updatedAt: now,
 				lifecycle: "starting",
@@ -1466,9 +1601,11 @@ export class DaemonSupervisor {
 				snapshotLoads: new Map(),
 				intentionalStop: false,
 				stopRevision: 0,
+				launchEnv,
 			};
 			await this.assertRecoveryAllowed();
 			worker.descriptor = descriptor;
+			worker.launchEnv = launchEnv;
 			descriptorAssigned = true;
 			this.persistWorker(worker);
 			worker.intentionalStop = false;
@@ -1982,6 +2119,12 @@ export class DaemonSupervisor {
 		if (this.isWorkerRecoveryCancelled(worker)) {
 			return;
 		}
+		if (worker.descriptor.ownerClientId && !worker.launchEnv && !isProcessAlive(worker.descriptor.pid)) {
+			worker.descriptor.lifecycle = "failed";
+			worker.descriptor.lastError = "Waiting for the owning client to reconnect";
+			this.persistWorker(worker);
+			return;
+		}
 		if (worker.recovery) {
 			return worker.recovery;
 		}
@@ -2208,7 +2351,9 @@ export class DaemonSupervisor {
 			.then(async () => {
 				const readyWorkers = [...this.workers.values()].filter(
 					(worker): worker is ResidentWorker & { client: DaemonWorkerClient } =>
-						worker.descriptor.lifecycle === "ready" && worker.client !== undefined,
+						this.isVisibleWorker(worker) &&
+						worker.descriptor.lifecycle === "ready" &&
+						worker.client !== undefined,
 				);
 				await Promise.all(
 					readyWorkers.map(async (worker) => {
@@ -2226,6 +2371,10 @@ export class DaemonSupervisor {
 			});
 		this.agentPeerSyncQueue = sync;
 		return sync;
+	}
+
+	private isVisibleWorker(worker: ResidentWorker): boolean {
+		return worker.descriptor.ownerClientId === undefined;
 	}
 
 	private agentPeerSummary(summary: SessionSummary): AgentSessionMessageAgentSummary {
@@ -2325,6 +2474,30 @@ export class DaemonSupervisor {
 		client: DaemonSocketClient,
 		command: Extract<DaemonCommand, { type: "attach" }>,
 	): Promise<WorkerAttachData> {
+		const ownedWorker = [...this.workers.values()].find(
+			(worker) =>
+				worker.descriptor.ownerClientId !== undefined &&
+				(worker.descriptor.rootActiveSessionId === command.activeSessionId ||
+					worker.descriptor.rootSessionId === command.activeSessionId),
+		);
+		if (ownedWorker) {
+			if (ownedWorker.descriptor.ownerClientId !== this.protocolClientId(client)) {
+				throw new Error(`Unknown active session: ${command.activeSessionId}`);
+			}
+			ownedWorker.launchEnv = command.launchEnv ?? ownedWorker.launchEnv;
+			if (!ownedWorker.client || ownedWorker.descriptor.lifecycle !== "ready") {
+				if (!ownedWorker.launchEnv) {
+					throw new Error("Client-owned session recovery requires the owning client environment");
+				}
+				ownedWorker.intentionalStop = false;
+				ownedWorker.descriptor.stopRequestedAt = undefined;
+				ownedWorker.descriptor.archiveOnStop = undefined;
+				ownedWorker.descriptor.lifecycle = "recovering";
+				ownedWorker.descriptor.consecutiveFailures = 0;
+				this.persistWorker(ownedWorker);
+				await this.recoverWorker(ownedWorker);
+			}
+		}
 		const match = await this.findWorker(command.activeSessionId);
 		const activeSessionId = match.summary.activeSessionId ?? match.summary.id;
 		const duplicateValidation = this.currentSnapshotGeneration(match.worker, activeSessionId)?.validation;
@@ -3402,6 +3575,10 @@ export class DaemonSupervisor {
 		recoveryCleanup = false,
 		directChild?: { child: ChildProcess; closed: Promise<void> },
 	): Promise<void> {
+		if (worker.ownerCleanupTimer) {
+			clearTimeout(worker.ownerCleanupTimer);
+			worker.ownerCleanupTimer = undefined;
+		}
 		if (!recoveryCleanup) {
 			worker.stopRevision++;
 		}
@@ -3624,6 +3801,10 @@ export class DaemonSupervisor {
 		}
 		this.clients.clear();
 		for (const worker of this.workers.values()) {
+			if (worker.ownerCleanupTimer) {
+				clearTimeout(worker.ownerCleanupTimer);
+				worker.ownerCleanupTimer = undefined;
+			}
 			await this.runCleanupStep(`worker client ${worker.descriptor.workerId}`, () => worker.client?.close());
 			worker.client = undefined;
 			const transcripts = new Set(worker.transcriptCaches.values());

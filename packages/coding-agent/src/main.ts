@@ -66,7 +66,7 @@ import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
 import { isDaemonCatalogProcess, runDaemonCatalogProcess } from "./modes/daemon/daemon-catalog-process.js";
-import { collectDaemonClientEnv } from "./modes/daemon/daemon-protocol.js";
+import { collectDaemonClientEnv, collectDaemonLaunchEnv } from "./modes/daemon/daemon-protocol.js";
 import {
 	DAEMON_WORKER_ACTIVE_SESSION_ID_ENV,
 	isDaemonWorkerProcess,
@@ -88,7 +88,9 @@ import {
 	runDaemonMode,
 	runDaemonSupervisorMode,
 	runPrintMode,
+	runPrintModeWithConnection,
 	runRpcMode,
+	runRpcModeWithConnection,
 	type SessionSummary,
 } from "./modes/index.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.js";
@@ -143,7 +145,9 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
-export type AppMode = "interactive" | "print" | "json" | "rpc" | "daemon";
+export type ClientMode = "interactive" | "print" | "json" | "rpc";
+/** Compatibility view of the CLI's internal daemon process entrypoint. */
+export type AppMode = ClientMode | "daemon";
 
 export function shouldRejectNonInteractiveAttach(attachAgent: string | undefined, appMode: AppMode): boolean {
 	return attachAgent !== undefined && appMode !== "interactive";
@@ -177,7 +181,7 @@ export function parseAgentsViewCommand(args: string[]): { explicitAgentsView: bo
 	return { explicitAgentsView: false, args };
 }
 
-export interface InteractiveDaemonStartupDecision {
+export interface DaemonClientStartupDecision {
 	appMode: AppMode;
 	startupBenchmark: boolean;
 	noSession?: boolean;
@@ -185,13 +189,22 @@ export interface InteractiveDaemonStartupDecision {
 	listModels?: string | true;
 }
 
-export function shouldUseDaemonInteractive(options: InteractiveDaemonStartupDecision): boolean {
+export type InteractiveDaemonStartupDecision = DaemonClientStartupDecision;
+
+/** Retained for callers that only classify persistent interactive startup. */
+export function shouldUseDaemonInteractive(options: DaemonClientStartupDecision): boolean {
 	return (
 		options.appMode === "interactive" &&
 		!options.startupBenchmark &&
 		!options.noSession &&
 		!options.help &&
 		options.listModels === undefined
+	);
+}
+
+export function shouldUseDaemonClient(options: DaemonClientStartupDecision): boolean {
+	return (
+		options.appMode !== "daemon" && !options.startupBenchmark && !options.help && options.listModels === undefined
 	);
 }
 
@@ -964,12 +977,15 @@ export function findActiveDaemonSessionSummaryForSessionFile(
 	);
 }
 
-async function createDaemonInteractiveConnection(options: {
+async function createDaemonClientConnection(options: {
 	socketPath: string;
 	config: AgentSessionRuntimeConfig;
 	sessionPath?: string;
 	continueRecent?: boolean;
 	activeSessionId?: string;
+	clientOwned?: boolean;
+	noSession?: boolean;
+	supportsExtensionUi?: boolean;
 }): Promise<{ connection: DaemonAgentConnection; summary: SessionSummary }> {
 	// Caller must have awaited ensureInteractiveDaemonRunning for this socket.
 	const client = new DaemonClient(options.socketPath);
@@ -980,6 +996,8 @@ async function createDaemonInteractiveConnection(options: {
 			const connection = await DaemonAgentConnection.attach(client, getDaemonSummaryActiveSessionId(summary), {
 				closeClientOnDispose: true,
 				sendClientEnv: true,
+				ownedSession: options.clientOwned,
+				supportsExtensionUi: options.supportsExtensionUi,
 				recoverDaemon: () => ensureInteractiveDaemonRunning(options.socketPath),
 			});
 			return { connection, summary };
@@ -990,7 +1008,7 @@ async function createDaemonInteractiveConnection(options: {
 			return await attach(summary);
 		}
 
-		if (options.sessionPath) {
+		if (options.sessionPath && !options.clientOwned) {
 			const activeSummary = findActiveDaemonSessionSummaryForSessionFile(
 				await listActiveDaemonSessionSummaries(client),
 				options.sessionPath,
@@ -1005,7 +1023,10 @@ async function createDaemonInteractiveConnection(options: {
 			config: options.config,
 			sessionPath: options.sessionPath,
 			continueRecent: options.continueRecent,
+			noSession: options.noSession,
 			env: collectDaemonClientEnv(),
+			lifecycle: options.clientOwned ? "client_owned" : "resident",
+			launchEnv: options.clientOwned ? collectDaemonLaunchEnv() : undefined,
 		});
 		if (!response.success) {
 			throw new Error(response.error);
@@ -1140,13 +1161,14 @@ export async function main(args: string[], options?: MainOptions) {
 		console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
 		process.exit(1);
 	}
-	const useDaemonInteractive = shouldUseDaemonInteractive({
+	const useDaemonClient = shouldUseDaemonClient({
 		appMode,
 		startupBenchmark,
 		noSession: parsed.noSession,
 		help: parsed.help,
 		listModels: parsed.listModels,
 	});
+	const useDaemonInteractive = useDaemonClient && appMode === "interactive";
 
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --resume may select a session from another project, so project-local
@@ -1160,7 +1182,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const daemonSocketPath = parsed.daemonSocket ?? defaultDaemonSocketPath();
 	// Kick off daemon spawn/readiness immediately so it overlaps session-manager
 	// and runtime-services preparation; attach only connects to an existing daemon.
-	let daemonReady = shouldEnsureInteractiveDaemonForStartup(useDaemonInteractive, publicCommand.attachAgent)
+	let daemonReady = shouldEnsureInteractiveDaemonForStartup(useDaemonClient, publicCommand.attachAgent)
 		? ensureInteractiveDaemonRunning(daemonSocketPath)
 		: undefined;
 	// Errors are rethrown at the await sites below; this only avoids an unhandled
@@ -1375,7 +1397,7 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 		if (
 			shouldOpenAgentsViewForDaemonInteractive({
-				useDaemonInteractive,
+				useDaemonInteractive: useDaemonInteractive && !parsed.noSession,
 				explicitAgentsView,
 				needsOnboarding: shouldRunOnboarding({
 					settingsManager,
@@ -1400,13 +1422,16 @@ export async function main(args: string[], options?: MainOptions) {
 		// no DeferredAgentConnection is needed to avoid creating it up front.
 		const isFreshDefaultSession =
 			!activeDaemonSessionSummary && !getInteractiveDaemonSessionPath(parsed, sessionManager);
-		const { connection, summary } = await createDaemonInteractiveConnection({
+		const { connection, summary } = await createDaemonClientConnection({
 			socketPath: daemonSocketPath,
 			config: defaultSessionConfig,
 			activeSessionId: activeDaemonSessionSummary
 				? getDaemonSummaryActiveSessionId(activeDaemonSessionSummary)
 				: undefined,
 			sessionPath: getInteractiveDaemonSessionPath(parsed, sessionManager),
+			clientOwned: parsed.noSession,
+			noSession: parsed.noSession,
+			supportsExtensionUi: true,
 		});
 		const agentConnection: AgentConnection = connection;
 		const attachModelFallbackMessage = isFreshDefaultSession
@@ -1430,13 +1455,85 @@ export async function main(args: string[], options?: MainOptions) {
 			// arrow takes them to the agents view like any other session. The agents
 			// view was not rendered here, so we intentionally leave
 			// agentsViewOwnsStartupNotices unset and let the in-session fallback run.
-			returnToAgentsView: true,
+			returnToAgentsView: !parsed.noSession,
 		});
 
 		await preloadCodeHighlighter();
 		printTimings();
 		await interactiveMode.run();
+		if (parsed.noSession) {
+			return;
+		}
 		await launchAgentsView(false);
+		return;
+	}
+	if (useDaemonClient) {
+		const prepared = await prepareRuntimeServices({
+			config: defaultSessionConfig,
+			cwd: sessionManager.getCwd(),
+			agentDir,
+			sessionManager,
+			extensionFactories: options?.extensionFactories,
+		});
+		const { settingsManager } = prepared.services;
+		const startupModel = await resolvePreparedStartupModel({ prepared, sessionManager });
+		let stdinContent: string | undefined;
+		if (appMode !== "rpc") {
+			stdinContent = await readPipedStdin();
+		}
+		time("readPipedStdin");
+		const { initialMessage, initialImages } = await prepareInitialMessage(
+			parsed,
+			settingsManager.getImageAutoResize(),
+			stdinContent,
+		);
+		time("prepareInitialMessage");
+		initTheme(settingsManager.getTheme(), false);
+		time("initTheme");
+		reportDiagnostics(prepared.diagnostics);
+		if (prepared.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+			process.exit(1);
+		}
+		if (!startupModel.model) {
+			console.error(chalk.red(formatNoModelsAvailableMessage()));
+			process.exit(1);
+		}
+
+		daemonReady = (await awaitDaemonReady(daemonReady)).ready;
+		let connection: DaemonAgentConnection;
+		try {
+			({ connection } = await createDaemonClientConnection({
+				socketPath: daemonSocketPath,
+				config: defaultSessionConfig,
+				sessionPath: parsed.noSession ? undefined : sessionManager.getSessionFile(),
+				continueRecent: parsed.continue,
+				clientOwned: true,
+				noSession: parsed.noSession,
+				supportsExtensionUi: appMode === "rpc",
+			}));
+		} catch (error) {
+			if (error instanceof SessionAlreadyActiveError) {
+				console.error(chalk.red(`Error: ${error.message}`));
+				process.exit(1);
+			}
+			throw error;
+		}
+
+		printTimings();
+		if (appMode === "rpc") {
+			await runRpcModeWithConnection(connection);
+		}
+		const exitCode = await runPrintModeWithConnection(connection, {
+			mode: toPrintOutputMode(appMode),
+			messages: parsed.messages,
+			initialMessage,
+			initialImages,
+		});
+		stopThemeWatcher();
+		restoreStdout();
+		if (exitCode !== 0) {
+			process.exitCode = exitCode;
+		}
 		return;
 	}
 

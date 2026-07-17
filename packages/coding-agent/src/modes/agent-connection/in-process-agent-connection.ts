@@ -2,6 +2,8 @@ import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
+import type { AgentAutonomousStatus } from "../../core/autonomous.js";
+import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
 import type {
@@ -12,9 +14,10 @@ import type {
 } from "../../core/cron-jobs.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
-import { SessionManager } from "../../core/session-manager.js";
+import { type SessionHeader, SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
+import { waitForHeadlessCompletion } from "../headless-completion.js";
 import {
 	createAgentConnectionCommands,
 	createAgentConnectionResourceSnapshot,
@@ -103,6 +106,10 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async getMessages(): Promise<AgentMessage[]> {
 		return this.session.messages;
+	}
+
+	async getSessionHeader(): Promise<SessionHeader | undefined> {
+		return this.session.sessionManager.getHeader() ?? undefined;
 	}
 
 	async getCommands(): Promise<AgentConnectionSlashCommand[]> {
@@ -235,7 +242,12 @@ export class InProcessAgentConnection implements AgentConnection {
 		await this.session.prompt(message, {
 			images: options?.images,
 			streamingBehavior: options?.streamingBehavior,
+			source: options?.source,
 		});
+	}
+
+	async promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
+		await this.prompt(message, options);
 	}
 
 	async startSideQuestion(id: string, question: string): Promise<void> {
@@ -281,8 +293,16 @@ export class InProcessAgentConnection implements AgentConnection {
 		await this.session.agent.waitForIdle();
 	}
 
+	async waitForHeadlessCompletion(): Promise<AgentAutonomousStatus> {
+		return waitForHeadlessCompletion(this.session);
+	}
+
 	async executeBash(command: string, options?: AgentConnectionExecuteBashOptions): Promise<void> {
 		await this.session.runUserBash(command, options);
+	}
+
+	async executeBashAndWait(command: string): Promise<BashResult> {
+		return this.session.executeBash(command);
 	}
 
 	async abortBash(): Promise<void> {
@@ -338,6 +358,10 @@ export class InProcessAgentConnection implements AgentConnection {
 
 	async setAutoCompactionEnabled(enabled: boolean): Promise<void> {
 		this.session.setAutoCompactionEnabled(enabled);
+	}
+
+	async setAutoRetryEnabled(enabled: boolean): Promise<void> {
+		this.session.setAutoRetryEnabled(enabled);
 	}
 
 	async compact(customInstructions?: string): Promise<CompactionResult> {

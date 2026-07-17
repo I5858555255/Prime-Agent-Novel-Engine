@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	probeRunningDaemonSessions,
+	shouldStartDaemonEarly,
 	shouldStartInteractiveDaemonEarly,
 	shutdownDaemonAndWait,
 } from "../src/cli/daemon-launch.js";
@@ -189,6 +190,36 @@ describe("shouldStartInteractiveDaemonEarly", () => {
 	it("does not start a service for help or removed command forms", () => {
 		expect(shouldStartInteractiveDaemonEarly(["help"], true, false)).toBe(false);
 		expect(shouldStartInteractiveDaemonEarly(["daemon", "list"], true, false)).toBe(false);
+	});
+
+	it("keeps headless and no-session invocations out of the legacy interactive-only helper", () => {
+		expect(shouldStartInteractiveDaemonEarly(["--print", "hello"], true, false)).toBe(false);
+		expect(shouldStartInteractiveDaemonEarly(["--mode", "json", "hello"], true, false)).toBe(false);
+		expect(shouldStartInteractiveDaemonEarly(["--mode", "rpc"], true, false)).toBe(false);
+		expect(shouldStartInteractiveDaemonEarly(["--no-session"], true, false)).toBe(false);
+	});
+});
+
+describe("shouldStartDaemonEarly", () => {
+	it.each([
+		["interactive", []],
+		["print", ["--print", "hello"]],
+		["json", ["--mode", "json", "hello"]],
+		["rpc", ["--mode", "rpc"]],
+		["no-session", ["--no-session"]],
+	])("starts early for the %s client", (_label, args) => {
+		expect(shouldStartDaemonEarly(args, false)).toBe(true);
+	});
+
+	it.each([
+		["daemon process", ["--mode", "daemon"]],
+		["help", ["--help"]],
+		["version", ["--version"]],
+		["model listing", ["--list-models"]],
+		["management command after global flags", ["--daemon-socket", "/tmp/prime.sock", "status"]],
+		["startup benchmark", []],
+	])("does not start early for %s", (label, args) => {
+		expect(shouldStartDaemonEarly(args, label === "startup benchmark")).toBe(false);
 	});
 });
 

@@ -8,14 +8,11 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.js";
-import {
-	type AgentAutonomousStatus,
-	type AutonomousLimitReason,
-	autonomousLimitReason,
-	buildAutonomousGateFailureContinuation,
-} from "../core/autonomous.js";
+import { type AgentAutonomousStatus, type AutonomousLimitReason, autonomousLimitReason } from "../core/autonomous.js";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.js";
 import { killTrackedDetachedChildren } from "../utils/shell.js";
+import type { AgentConnection } from "./agent-connection/types.js";
+import { latestAutonomousGateAttempt, waitForHeadlessCompletion } from "./headless-completion.js";
 
 /**
  * Options for print mode.
@@ -31,10 +28,6 @@ export interface PrintModeOptions {
 	initialImages?: ImageContent[];
 }
 
-function latestGateAttempt(status: AgentAutonomousStatus): number {
-	return Math.max(status.lastGateFailure?.attempt ?? 0, 0, ...Object.values(status.gateAttempts));
-}
-
 function describeAutonomousLimit(status: AgentAutonomousStatus, reason: AutonomousLimitReason): string {
 	if (reason === "maxContinuations") {
 		return `maxContinuations reached (${status.continuationsUsed}/${status.limits.maxContinuations})`;
@@ -47,85 +40,6 @@ function describeAutonomousLimit(status: AgentAutonomousStatus, reason: Autonomo
 	}
 	const elapsed = status.startedAt === undefined ? 0 : Math.max(0, Date.now() - status.startedAt);
 	return `timeoutMs reached (${elapsed}/${status.limits.timeoutMs})`;
-}
-
-function shouldContinuePrintModeAutonomousGates(status: AgentAutonomousStatus): boolean {
-	return (
-		status.enabled &&
-		status.gates.commands.length > 0 &&
-		!!status.lastGateFailure &&
-		latestGateAttempt(status) <= status.gates.maxRetries &&
-		!autonomousLimitReason(status)
-	);
-}
-
-function printModeAutonomousProgressKey(status: AgentAutonomousStatus): string {
-	return [
-		latestGateAttempt(status),
-		status.continuationsUsed,
-		status.turnsUsed,
-		status.tokensUsed,
-		status.lastGateFailure?.exitText ?? "",
-	].join(":");
-}
-
-async function waitForPrintModeIdleWithAutonomousGates(
-	getSession: () => AgentSessionRuntime["session"],
-): Promise<void> {
-	let lastPromptedProgressKey: string | undefined;
-	let repeatedProgressPrompts = 0;
-	while (true) {
-		const session = getSession();
-		await session.agent.waitForIdle();
-		const status = session.getAutonomousStatus();
-		if (!shouldContinuePrintModeAutonomousGates(status) || !status.lastGateFailure) {
-			return;
-		}
-		const progressKey = printModeAutonomousProgressKey(status);
-		if (progressKey === lastPromptedProgressKey) {
-			repeatedProgressPrompts++;
-		} else {
-			repeatedProgressPrompts = 0;
-			lastPromptedProgressKey = progressKey;
-		}
-		// Print mode is the host loop for autonomous verifier runs. A still-failing
-		// gate is not terminal while the configured autonomous budgets remain. Keep
-		// feeding the failure back even if the observable status key repeats; the
-		// normal autonomous limits above bound retries, turns, tokens, and wall time.
-		// The small yield prevents a tight loop if a test double or broken session
-		// returns immediately without advancing state.
-		if (repeatedProgressPrompts > 0) {
-			await new Promise((resolve) => setTimeout(resolve, Math.min(1000, repeatedProgressPrompts * 50)));
-		}
-		session.recordHostAutonomousContinuation();
-		await session.prompt(
-			buildAutonomousGateFailureContinuation(
-				{ ...status.lastGateFailure, attempt: latestGateAttempt(status) },
-				status.gates.maxRetries,
-			),
-			{
-				streamingBehavior: "followUp",
-				internalPrompt: true,
-				suppressAutonomousContinuation: true,
-			},
-		);
-		// followUp prompts can be accepted/queued before the actual retry turn has
-		// produced a new assistant message. Wait for the session to become idle again
-		// so an earlier assistant error does not get mistaken for this retry result.
-		await session.agent.waitForIdle();
-		await session.refreshAutonomousGates();
-		const lastMessage = session.state.messages[session.state.messages.length - 1];
-		if (lastMessage?.role === "assistant") {
-			const assistantMessage = lastMessage as AssistantMessage;
-			if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
-				const postErrorStatus = session.getAutonomousStatus();
-				if (shouldContinuePrintModeAutonomousGates(postErrorStatus) && postErrorStatus.lastGateFailure) {
-					continue;
-				}
-				return;
-			}
-		}
-	}
 }
 
 /**
@@ -228,7 +142,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			await session.prompt(message);
 		}
 
-		await waitForPrintModeIdleWithAutonomousGates(() => session);
+		await waitForHeadlessCompletion(session);
 
 		if (mode === "text") {
 			const state = session.state;
@@ -256,7 +170,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				? `; autonomous limit reached: ${describeAutonomousLimit(autonomousStatus, autonomousLimit)}`
 				: "";
 			console.error(
-				`Autonomous quality gate still failing after attempt ${latestGateAttempt(autonomousStatus)}/${autonomousStatus.gates.maxRetries}: ${autonomousStatus.lastGateFailure.exitText}${limitText}`,
+				`Autonomous quality gate still failing after attempt ${latestAutonomousGateAttempt(autonomousStatus)}/${autonomousStatus.gates.maxRetries}: ${autonomousStatus.lastGateFailure.exitText}${limitText}`,
 			);
 			exitCode = 1;
 		} else if (autonomousStatus.enabled && autonomousStatus.gates.commands.length === 0 && autonomousLimit) {
@@ -275,6 +189,105 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			cleanup();
 		}
 		await disposeRuntime();
+		await flushRawStdout();
+	}
+}
+
+export async function runPrintModeWithConnection(
+	connection: AgentConnection,
+	options: PrintModeOptions,
+): Promise<number> {
+	const { mode, messages = [], initialMessage, initialImages } = options;
+	let exitCode = 0;
+	let disposed = false;
+	let unsubscribe: (() => void) | undefined;
+	const signalCleanupHandlers: Array<() => void> = [];
+
+	const disposeConnection = async (): Promise<void> => {
+		if (disposed) return;
+		disposed = true;
+		unsubscribe?.();
+		await connection.dispose();
+	};
+
+	for (const signal of ["SIGTERM", ...(process.platform === "win32" ? [] : ["SIGHUP"])] as NodeJS.Signals[]) {
+		const handler = () => {
+			killTrackedDetachedChildren();
+			void disposeConnection().finally(() => {
+				process.exit(signal === "SIGHUP" ? 129 : 143);
+			});
+		};
+		process.on(signal, handler);
+		signalCleanupHandlers.push(() => process.off(signal, handler));
+	}
+
+	try {
+		if (mode === "json") {
+			const header = await connection.getSessionHeader();
+			if (header) {
+				writeRawStdout(`${JSON.stringify(header)}\n`);
+			}
+		}
+
+		unsubscribe = connection.subscribe((event) => {
+			if (mode === "json" && event.type === "session_event") {
+				writeRawStdout(`${JSON.stringify(event.event)}\n`);
+			}
+			if (event.type === "extension_error") {
+				console.error(`Extension error (${event.extensionPath}): ${event.error}`);
+			}
+		});
+
+		if (initialMessage) {
+			await connection.promptAndWait(initialMessage, { images: initialImages });
+		}
+		for (const message of messages) {
+			await connection.promptAndWait(message);
+		}
+
+		const autonomousStatus = await connection.waitForHeadlessCompletion();
+		if (mode === "text") {
+			const lastMessage = (await connection.getMessages()).at(-1);
+			if (lastMessage?.role === "assistant") {
+				const assistantMessage = lastMessage as AssistantMessage;
+				if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
+					console.error(assistantMessage.errorMessage || `Request ${assistantMessage.stopReason}`);
+					exitCode = 1;
+				} else {
+					for (const content of assistantMessage.content) {
+						if (content.type === "text") {
+							writeRawStdout(`${content.text}\n`);
+						}
+					}
+				}
+			}
+		}
+
+		const autonomousLimit = autonomousLimitReason(autonomousStatus);
+		if (autonomousStatus.enabled && autonomousStatus.gates.commands.length > 0 && autonomousStatus.lastGateFailure) {
+			const limitText = autonomousLimit
+				? `; autonomous limit reached: ${describeAutonomousLimit(autonomousStatus, autonomousLimit)}`
+				: "";
+			console.error(
+				`Autonomous quality gate still failing after attempt ${latestAutonomousGateAttempt(autonomousStatus)}/${autonomousStatus.gates.maxRetries}: ${autonomousStatus.lastGateFailure.exitText}${limitText}`,
+			);
+			exitCode = 1;
+		} else if (autonomousStatus.enabled && autonomousStatus.gates.commands.length === 0 && autonomousLimit) {
+			console.error(
+				`Autonomous run stopped before terminal evidence; ${describeAutonomousLimit(autonomousStatus, autonomousLimit)}`,
+			);
+			exitCode = 1;
+		}
+
+		return exitCode;
+	} catch (error: unknown) {
+		console.error(error instanceof Error ? error.message : String(error));
+		return 1;
+	} finally {
+		for (const cleanup of signalCleanupHandlers) {
+			cleanup();
+		}
+		await disposeConnection();
 		await flushRawStdout();
 	}
 }

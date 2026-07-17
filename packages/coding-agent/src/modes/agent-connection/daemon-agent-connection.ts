@@ -3,6 +3,8 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
 import { getAgentLogPath, getDaemonLogPath } from "../../config.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
+import type { AgentAutonomousStatus } from "../../core/autonomous.js";
+import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { ContextTreeNode } from "../../core/context-tree.js";
 import type {
@@ -14,11 +16,13 @@ import type {
 import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import { SessionAlreadyActiveError } from "../../core/session-lease.js";
+import type { SessionHeader } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { type DaemonClient, getDaemonSocketCloseReason } from "../daemon/daemon-client.js";
 import { deserializeDaemonError } from "../daemon/daemon-errors.js";
 import {
 	collectDaemonClientEnv,
+	collectDaemonLaunchEnv,
 	type DaemonAttachResult,
 	type DaemonCommand,
 	type DaemonEventCursor,
@@ -82,6 +86,7 @@ interface DaemonSnapshotAssembly {
 }
 
 export const DAEMON_REFINE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+const DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 export const DAEMON_RECONNECT_TIMEOUT_MS = 60_000;
 export const DAEMON_SNAPSHOT_TIMEOUT_MS = 30_000;
 const MAX_IGNORED_SNAPSHOT_IDS = 128;
@@ -147,6 +152,10 @@ export interface DaemonAgentConnectionOptions {
 	 * rebinds, so watchers must not send env at all.
 	 */
 	sendClientEnv?: boolean;
+	/** Advertise support for interactive extension dialogs. */
+	supportsExtensionUi?: boolean;
+	/** Dispose the connection by stopping its hidden worker instead of detaching. */
+	ownedSession?: boolean;
 }
 
 /**
@@ -234,13 +243,22 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async attach(): Promise<void> {
+		const supportsExtensionUi = this.options.supportsExtensionUi !== false;
 		const result = await this.requestData<SessionSummary | DaemonAttachResult>({
 			type: "attach",
 			activeSessionId: this.activeSessionId,
-			supportsExtensionUi: true,
+			supportsExtensionUi,
 			clientId: this.clientId,
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
+			capabilities: [
+				"attach_snapshot",
+				"event_sequence",
+				...(supportsExtensionUi ? (["extension_ui"] as const) : []),
+				"slim_attach",
+				"chunked_snapshot",
+				...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
+			],
 			env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
+			launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,
 			resumeCursor:
 				this.lastEventCursor === undefined
 					? undefined
@@ -361,6 +379,14 @@ export class DaemonAgentConnection implements AgentConnection {
 		return data.messages;
 	}
 
+	async getSessionHeader(): Promise<SessionHeader | undefined> {
+		const data = await this.requestData<{ header?: SessionHeader | null }>({
+			type: "get_session_header",
+			activeSessionId: this.activeSessionId,
+		});
+		return data.header ?? undefined;
+	}
+
 	async getCommands(): Promise<AgentConnectionSlashCommand[]> {
 		const data = await this.requestData<{ commands: AgentConnectionSlashCommand[] }>({
 			type: "get_commands",
@@ -464,7 +490,10 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async listHeartbeats(): Promise<AgentConnectionHeartbeat[]> {
-		const data = await this.requestData<{ heartbeats: AgentConnectionHeartbeat[] }>({ type: "heartbeats_list" });
+		const data = await this.requestData<{ heartbeats: AgentConnectionHeartbeat[] }>({
+			type: "heartbeats_list",
+			activeSessionId: this.activeSessionId,
+		});
 		return data.heartbeats;
 	}
 
@@ -493,7 +522,11 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async cancelCronJob(jobId: string): Promise<AgentCronJob> {
-		const data = await this.requestData<{ job: AgentCronJob }>({ type: "cron_cancel", jobId });
+		const data = await this.requestData<{ job: AgentCronJob }>({
+			type: "cron_cancel",
+			activeSessionId: this.activeSessionId,
+			jobId,
+		});
 		return data.job;
 	}
 
@@ -587,7 +620,22 @@ export class DaemonAgentConnection implements AgentConnection {
 			message,
 			images: options?.images,
 			streamingBehavior: options?.streamingBehavior,
+			source: options?.source,
 		});
+	}
+
+	async promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
+		await this.requestData<unknown>(
+			{
+				type: "prompt_and_wait",
+				activeSessionId: this.activeSessionId,
+				message,
+				images: options?.images,
+				streamingBehavior: options?.streamingBehavior,
+				source: options?.source,
+			},
+			DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS,
+		);
 	}
 
 	async startSideQuestion(id: string, question: string): Promise<void> {
@@ -650,6 +698,16 @@ export class DaemonAgentConnection implements AgentConnection {
 		await this.requestOk({ type: "wait_for_idle", activeSessionId: this.activeSessionId });
 	}
 
+	async waitForHeadlessCompletion(): Promise<AgentAutonomousStatus> {
+		return this.requestData<AgentAutonomousStatus>(
+			{
+				type: "wait_for_headless_completion",
+				activeSessionId: this.activeSessionId,
+			},
+			DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS,
+		);
+	}
+
 	async executeBash(command: string, options?: AgentConnectionExecuteBashOptions): Promise<void> {
 		try {
 			await this.requestOk({
@@ -664,6 +722,17 @@ export class DaemonAgentConnection implements AgentConnection {
 			}
 			throw error;
 		}
+	}
+
+	async executeBashAndWait(command: string): Promise<BashResult> {
+		return this.requestData<BashResult>(
+			{
+				type: "execute_bash_and_wait",
+				activeSessionId: this.activeSessionId,
+				command,
+			},
+			DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS,
+		);
 	}
 
 	async abortBash(): Promise<void> {
@@ -735,6 +804,10 @@ export class DaemonAgentConnection implements AgentConnection {
 		await this.requestOk({ type: "set_auto_compaction", activeSessionId: this.activeSessionId, enabled });
 	}
 
+	async setAutoRetryEnabled(enabled: boolean): Promise<void> {
+		await this.requestOk({ type: "set_auto_retry", activeSessionId: this.activeSessionId, enabled });
+	}
+
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		return this.requestData<CompactionResult>({
 			type: "compact",
@@ -804,6 +877,9 @@ export class DaemonAgentConnection implements AgentConnection {
 			if (!(error instanceof SessionAlreadyActiveError) || !error.activeSessionId) {
 				throw error;
 			}
+			if (this.options.ownedSession) {
+				throw error;
+			}
 			if (error.activeSessionId === sourceActiveSessionId) {
 				return { cancelled: false };
 			}
@@ -831,14 +907,23 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.pendingReattachActiveSessionIds.add(targetActiveSessionId);
 		let reattached = false;
 		try {
+			const supportsExtensionUi = this.options.supportsExtensionUi !== false;
 			const result = await this.requestData<DaemonAttachResult>({
 				type: "reattach",
 				activeSessionId: sourceActiveSessionId,
 				targetActiveSessionId,
-				supportsExtensionUi: true,
+				supportsExtensionUi,
 				clientId: this.clientId,
-				capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
+				capabilities: [
+					"attach_snapshot",
+					"event_sequence",
+					...(supportsExtensionUi ? (["extension_ui"] as const) : []),
+					"slim_attach",
+					"chunked_snapshot",
+					...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
+				],
 				env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
+				launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,
 			});
 			reattached = true;
 			this.activeSessionId = result.activeSessionId;
@@ -968,11 +1053,22 @@ export class DaemonAgentConnection implements AgentConnection {
 		await Promise.allSettled([...this.activeSideQuestionIds].map((id) => this.abortSideQuestion(id)));
 		this.unsubscribeDaemonMessages();
 		this.unsubscribeDaemonClose();
-		await this.requestOk({ type: "detach", activeSessionId: this.activeSessionId }).catch(() => undefined);
+		if (this.options.ownedSession) {
+			await this.requestOk({ type: "complete_owned_session", activeSessionId: this.activeSessionId }).catch(
+				() => undefined,
+			);
+		} else {
+			await this.requestOk({ type: "detach", activeSessionId: this.activeSessionId }).catch(() => undefined);
+		}
 		if (this.options.closeClientOnDispose) {
 			this.client.close();
 		}
 		this.rejectSnapshotAssemblies(new Error("Daemon connection disposed during snapshot transfer"));
+	}
+
+	async promoteToResident(): Promise<void> {
+		await this.requestOk({ type: "promote_owned_session", activeSessionId: this.activeSessionId });
+		this.options.ownedSession = false;
 	}
 
 	private async reconnect(cause: Error): Promise<void> {
@@ -1159,6 +1255,15 @@ export class DaemonAgentConnection implements AgentConnection {
 					method: message.method,
 					payload: message.payload,
 				},
+			});
+			return;
+		}
+		if (message.type === "extension_error") {
+			await this.emit({
+				type: "extension_error",
+				extensionPath: message.extensionPath,
+				event: message.event,
+				error: message.error,
 			});
 			return;
 		}

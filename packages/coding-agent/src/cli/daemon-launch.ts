@@ -1,10 +1,8 @@
 /**
- * Interactive-daemon launch/readiness helpers.
+ * Daemon launch/readiness helpers.
  *
- * This module is deliberately light on imports: cli.ts calls
- * maybeStartInteractiveDaemonEarly() BEFORE the heavy main module graph loads,
- * so a cold daemon boots concurrently with this process's own imports instead
- * of serially after them. main.ts reuses the same memoized promise.
+ * This module stays light on imports so clients can start a cold daemon before
+ * the heavy main module graph loads. main.ts reuses the same memoized promise.
  */
 
 import { spawn } from "node:child_process";
@@ -79,12 +77,15 @@ async function probeDaemonVersion(socketPath: string): Promise<DaemonVersionProb
 	}
 }
 
-export async function listActiveDaemonSessionSummaries(client: DaemonClient): Promise<SessionSummary[]> {
+export async function listActiveDaemonSessionSummaries(
+	client: DaemonClient,
+	options: { includeClientOwned?: boolean } = {},
+): Promise<SessionSummary[]> {
 	const hello = await client.waitForHello(2000).catch(() => undefined);
 	const response =
 		hello && hello.protocol.version < DAEMON_PROTOCOL_VERSION
-			? await client.requestLegacy({ type: "list" })
-			: await client.request({ type: "list" });
+			? await client.requestLegacy({ type: "list", includeClientOwned: options.includeClientOwned })
+			: await client.request({ type: "list", includeClientOwned: options.includeClientOwned });
 	if (!response.success) {
 		throw new Error(response.error);
 	}
@@ -239,7 +240,7 @@ export async function probeRunningDaemonSessions(socketPath: string): Promise<Ru
 		return { reachable: false };
 	}
 	try {
-		const summaries = await listActiveDaemonSessionSummaries(client);
+		const summaries = await listActiveDaemonSessionSummaries(client, { includeClientOwned: true });
 		return { reachable: true, activeSessions: summaries.filter((summary) => summary.activeSessionId !== undefined) };
 	} catch {
 		return { reachable: true };
@@ -259,7 +260,7 @@ async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<boolean
 		await client.connect(1000);
 		connected = true;
 		try {
-			const summaries = await listActiveDaemonSessionSummaries(client);
+			const summaries = await listActiveDaemonSessionSummaries(client, { includeClientOwned: true });
 			loadedSessionCount = summaries.length;
 			hasBusySessions = summaries.some(isSessionBusy);
 		} catch {
@@ -350,18 +351,94 @@ export function ensureInteractiveDaemonRunning(socketPath: string, spawnCwd?: st
 	return promise;
 }
 
-const EARLY_LAUNCH_EXCLUDED_FLAGS = new Set([
+const EARLY_LAUNCH_EXCLUDED_FLAGS = new Set(["--help", "-h", "--version", "-v", "--list-models", "--export"]);
+const INTERACTIVE_EARLY_LAUNCH_EXCLUDED_FLAGS = new Set([
+	...EARLY_LAUNCH_EXCLUDED_FLAGS,
 	"--mode",
 	"--print",
 	"-p",
-	"--help",
-	"-h",
-	"--version",
-	"-v",
 	"--no-session",
-	"--list-models",
-	"--export",
 ]);
+const EARLY_LAUNCH_VALUE_FLAGS = new Set([
+	"--mode",
+	"--daemon-socket",
+	"--provider",
+	"--model",
+	"--api-key",
+	"--cwd",
+	"--system-prompt",
+	"--append-system-prompt",
+	"--fork",
+	"--session-dir",
+	"--models",
+	"--tools",
+	"-t",
+	"--thinking",
+	"--extension",
+	"-e",
+	"--skill",
+	"--prompt-template",
+	"--theme",
+	"--autonomous-gate",
+	"--autonomous-gate-retries",
+	"--autonomous-gate-timeout-ms",
+	"--autonomous-max-continuations",
+	"--autonomous-max-turns",
+	"--autonomous-max-tokens",
+	"--autonomous-timeout-ms",
+]);
+
+function findFirstEarlyLaunchPositional(args: readonly string[]): { index: number; value: string } | undefined {
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]!;
+		if (arg === "--") {
+			return args[index + 1] === undefined ? undefined : { index: index + 1, value: args[index + 1]! };
+		}
+		if (EARLY_LAUNCH_VALUE_FLAGS.has(arg)) {
+			index++;
+			continue;
+		}
+		if (arg === "--resume" || arg === "-r") {
+			if (args[index + 1] && !args[index + 1]!.startsWith("-")) {
+				index++;
+			}
+			continue;
+		}
+		if (!arg.startsWith("-")) {
+			return { index, value: arg };
+		}
+	}
+	return undefined;
+}
+
+export function shouldStartDaemonEarly(args: readonly string[], startupBenchmark: boolean): boolean {
+	if (startupBenchmark) {
+		return false;
+	}
+	const modeIndex = args.indexOf("--mode");
+	if (modeIndex !== -1 && args[modeIndex + 1] === "daemon") {
+		return false;
+	}
+	if (args.some((arg) => EARLY_LAUNCH_EXCLUDED_FLAGS.has(arg))) {
+		return false;
+	}
+	if (args.includes("--print") || args.includes("-p")) {
+		return true;
+	}
+	const firstPositional = findFirstEarlyLaunchPositional(args);
+	const isHelpCommand =
+		firstPositional?.value === "help" && isHelpCommandRequest(args.slice(firstPositional.index + 1));
+	if (
+		firstPositional &&
+		(REMOVED_COMMAND_NAMES.has(firstPositional.value) ||
+			(PUBLIC_COMMAND_NAMES.has(firstPositional.value) &&
+				firstPositional.value !== "agents" &&
+				(firstPositional.value !== "help" || isHelpCommand)))
+	) {
+		return false;
+	}
+	return true;
+}
 
 /** Conservative pre-parse of argv: true only when startup clearly heads into daemon-backed interactive mode. */
 export function shouldStartInteractiveDaemonEarly(
@@ -384,7 +461,7 @@ export function shouldStartInteractiveDaemonEarly(
 	) {
 		return false;
 	}
-	return !args.some((arg) => EARLY_LAUNCH_EXCLUDED_FLAGS.has(arg));
+	return !args.some((arg) => INTERACTIVE_EARLY_LAUNCH_EXCLUDED_FLAGS.has(arg));
 }
 
 /**
@@ -410,6 +487,24 @@ export function maybeStartInteractiveDaemonEarly(args: readonly string[]): void 
 	const spawnCwd = cwdArg ? resolve(expandTildePath(cwdArg)) : undefined;
 	if (spawnCwd && !existsSync(spawnCwd)) {
 		// Invalid --cwd: skip the early spawn; main() reports the error.
+		return;
+	}
+	void ensureInteractiveDaemonRunning(socketPath, spawnCwd);
+}
+
+export function maybeStartDaemonEarly(args: readonly string[]): void {
+	const benchmarkFlag = (process.env.PI_STARTUP_BENCHMARK ?? "").toLowerCase();
+	const startupBenchmark = benchmarkFlag === "1" || benchmarkFlag === "true" || benchmarkFlag === "yes";
+	if (!shouldStartDaemonEarly(args, startupBenchmark)) {
+		return;
+	}
+	const socketIndex = args.indexOf("--daemon-socket");
+	const socketPath =
+		socketIndex !== -1 && args[socketIndex + 1] ? (args[socketIndex + 1] as string) : defaultDaemonSocketPath();
+	const cwdIndex = args.indexOf("--cwd");
+	const cwdArg = cwdIndex !== -1 ? args[cwdIndex + 1] : undefined;
+	const spawnCwd = cwdArg ? resolve(expandTildePath(cwdArg)) : undefined;
+	if (spawnCwd && !existsSync(spawnCwd)) {
 		return;
 	}
 	void ensureInteractiveDaemonRunning(socketPath, spawnCwd);
