@@ -6781,6 +6781,9 @@ export class AgentSession {
 		}
 
 		const normalizedReference = reference.toLowerCase();
+		if (`${parentModel.provider}/${parentModel.id}`.toLowerCase() === normalizedReference) {
+			return { model: parentModel };
+		}
 		const model = (await this._authenticatedRlmModels()).find(
 			(candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === normalizedReference,
 		);

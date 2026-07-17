@@ -164,6 +164,30 @@ describe("ENG-4649 subagent model selection", () => {
 		}
 	});
 
+	it("does not warn when an unavailable selector is already the parent model", async () => {
+		const codexProvider = "openai-codex";
+		const harness = await createHarness({ provider: codexProvider, models: [{ id: "parent-model" }] });
+		const fetchModels = vi.fn().mockRejectedValue(new Error("offline"));
+		vi.stubGlobal("fetch", fetchModels);
+		try {
+			harness.authStorage.setRuntimeApiKey(codexProvider, openAICodexToken("account-1"));
+			await expect(harness.session.findRlmModels("parent", 8)).resolves.toEqual({ models: [] });
+			harness.setResponses([fauxAssistantMessage("same parent answer")]);
+
+			const result = await harness.session.runRlmChild("keep the parent model", {
+				model: `${codexProvider}/parent-model`,
+			});
+			expect(result).toMatchObject({
+				answer: "same parent answer",
+				model: `${codexProvider}/parent-model`,
+			});
+			expect(result.warning).toBeUndefined();
+		} finally {
+			vi.unstubAllGlobals();
+			harness.cleanup();
+		}
+	});
+
 	it("does not start a child after its parent is disposed during preflight", async () => {
 		const harness = await createHarness({
 			provider,
