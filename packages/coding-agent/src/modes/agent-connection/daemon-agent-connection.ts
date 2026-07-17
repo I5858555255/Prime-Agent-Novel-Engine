@@ -196,7 +196,9 @@ export class DaemonAgentConnection implements AgentConnection {
 						getAgentLogPath(),
 						`[${new Date().toISOString()}] daemon-message: ignored ${message.type} failure: ${String(error)}`,
 					);
-				} catch {}
+				} catch {
+					// Logging failure must not turn an isolated message error into a connection failure.
+				}
 			});
 		});
 		this.captureDaemonLogPath();
