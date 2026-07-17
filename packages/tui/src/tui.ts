@@ -1199,8 +1199,8 @@ export class TUI extends Container {
 			const { component, w, scrollback, aboveMarker } = renderedOverlay;
 			let { overlayLines, row, col } = renderedOverlay;
 			if (aboveMarker) {
-				const markerRow = aboveMarker.line - viewportStart + aboveMarker.offsetY;
-				if (markerRow <= 0 || markerRow >= termHeight) continue;
+				const markerRow = Math.max(1, aboveMarker.line - viewportStart + aboveMarker.offsetY);
+				if (markerRow >= termHeight) continue;
 				while (overlayLines.length > markerRow && stripAnsi(overlayLines[0] ?? "").trim().length === 0) {
 					overlayLines = overlayLines.slice(1);
 				}
