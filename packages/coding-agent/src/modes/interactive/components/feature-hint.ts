@@ -3,8 +3,47 @@ import { theme } from "../theme/theme.js";
 
 const SHIMMER_RADIUS = 4;
 const SHIMMER_CORE_RADIUS = 1;
+const SHIMMER_SPACING = 28;
 
 export const FEATURE_HINT_ANIMATION_INTERVAL_MS = 24;
+
+type ShimmerColor = "dim" | "muted" | "text";
+
+function shimmerColor(index: number, length: number, frame: number): ShimmerColor {
+	const highlightCount = Math.min(3, Math.max(1, Math.ceil(length / SHIMMER_SPACING)));
+	const phase = frame % length;
+	let nearestDistance = length;
+
+	for (let highlight = 0; highlight < highlightCount; highlight++) {
+		const center = (phase + (highlight * length) / highlightCount) % length;
+		const distance = Math.abs(index - center);
+		nearestDistance = Math.min(nearestDistance, distance, length - distance);
+	}
+
+	if (nearestDistance <= SHIMMER_CORE_RADIUS) return "text";
+	if (nearestDistance <= SHIMMER_RADIUS) return "muted";
+	return "dim";
+}
+
+function renderShimmer(characters: string[], frame: number): string {
+	if (characters.length === 0) return "";
+
+	let output = "";
+	let run = "";
+	let runColor = shimmerColor(0, characters.length, frame);
+
+	for (let index = 0; index < characters.length; index++) {
+		const color = shimmerColor(index, characters.length, frame);
+		if (color !== runColor) {
+			output += theme.fg(runColor, run);
+			run = "";
+			runColor = color;
+		}
+		run += characters[index]!;
+	}
+
+	return output + theme.fg(runColor, run);
+}
 
 export class FeatureHintComponent implements Component {
 	private frame = 0;
@@ -22,21 +61,7 @@ export class FeatureHintComponent implements Component {
 		const availableWidth = Math.max(1, width - paddingX * 2);
 		const displayText = truncateToWidth(`Hint: ${this.text}`, availableWidth);
 		const characters = Array.from(displayText);
-		const maxCenter = Math.max(0, characters.length - 1);
-		const cycleLength = maxCenter * 2;
-		const phase = cycleLength === 0 ? 0 : this.frame % cycleLength;
-		const center = phase <= maxCenter ? phase : cycleLength - phase;
-		const shimmerStart = Math.max(0, center - SHIMMER_RADIUS);
-		const coreStart = Math.max(shimmerStart, center - SHIMMER_CORE_RADIUS);
-		const coreEnd = Math.min(characters.length, center + SHIMMER_CORE_RADIUS + 1);
-		const shimmerEnd = Math.min(characters.length, center + SHIMMER_RADIUS + 1);
-		const styledText =
-			theme.fg("dim", characters.slice(0, shimmerStart).join("")) +
-			theme.fg("muted", characters.slice(shimmerStart, coreStart).join("")) +
-			theme.fg("text", characters.slice(coreStart, coreEnd).join("")) +
-			theme.fg("muted", characters.slice(coreEnd, shimmerEnd).join("")) +
-			theme.fg("dim", characters.slice(shimmerEnd).join(""));
-		const line = `${" ".repeat(paddingX)}${styledText}`;
+		const line = `${" ".repeat(paddingX)}${renderShimmer(characters, this.frame)}`;
 
 		return [line + " ".repeat(Math.max(0, width - visibleWidth(line))), " ".repeat(width)];
 	}
