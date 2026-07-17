@@ -2,6 +2,7 @@ import type { AgentConnection, AgentConnectionEventListener } from "../../src/mo
 import { runRpcModeWithConnection } from "../../src/modes/rpc/rpc-mode.js";
 
 let listener: AgentConnectionEventListener = () => {};
+let resolveExtensionUi: (() => void) | undefined;
 
 const heartbeat = {
 	id: "heartbeat-1",
@@ -23,9 +24,28 @@ const connection = {
 		listener = next;
 		return () => {};
 	},
-	async prompt(_message: string) {
+	async prompt(message: string) {
+		if (message === "extension-ui") {
+			await new Promise<void>((resolve) => {
+				resolveExtensionUi = resolve;
+				void listener({
+					type: "extension_ui_request",
+					request: {
+						id: "extension-ui-1",
+						method: "confirm",
+						payload: { title: "Confirm", message: "Continue?" },
+					},
+				});
+			});
+		}
 		await listener({ type: "session_event", event: { type: "agent_start" } });
 		await new Promise((resolve) => setTimeout(resolve, 10));
+	},
+	async respondToExtensionUiRequest(id: string) {
+		if (id === "extension-ui-1") {
+			resolveExtensionUi?.();
+			resolveExtensionUi = undefined;
+		}
 	},
 	async getAvailableModels() {
 		await new Promise((resolve) => setTimeout(resolve, 25));

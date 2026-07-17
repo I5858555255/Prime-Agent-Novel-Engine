@@ -175,6 +175,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly unsubscribeDaemonMessages: () => void;
 	private readonly unsubscribeDaemonClose: () => void;
 	private readonly clientId = `daemon-agent-connection:${randomUUID()}`;
+	private ownedSessionPromotionTail = Promise.resolve();
 	private lastEventCursor: DaemonEventCursor | undefined;
 	private readonly retiredEventGenerations = new Set<string>();
 	private lastEventSequence: number | undefined;
@@ -519,18 +520,16 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async addCronJob(schedule: string, prompt: string): Promise<AgentCronJob> {
-		const promoteOwnedSession = this.options.ownedSession === true;
-		const data = await this.requestData<{ job: AgentCronJob }>({
-			type: "cron_add",
-			activeSessionId: this.activeSessionId,
-			schedule,
-			prompt,
-			promoteOwnedSession,
+		return this.withOwnedSessionPromotion(async (promoteOwnedSession) => {
+			const data = await this.requestData<{ job: AgentCronJob }>({
+				type: "cron_add",
+				activeSessionId: this.activeSessionId,
+				schedule,
+				prompt,
+				promoteOwnedSession,
+			});
+			return data.job;
 		});
-		if (promoteOwnedSession) {
-			this.options.ownedSession = false;
-		}
-		return data.job;
 	}
 
 	async cancelCronJob(jobId: string): Promise<AgentCronJob> {
@@ -555,19 +554,17 @@ export class DaemonAgentConnection implements AgentConnection {
 		instruction: string,
 		deliveryMode?: AgentHeartbeatDeliveryMode,
 	): Promise<AgentCronJob> {
-		const promoteOwnedSession = this.options.ownedSession === true;
-		const data = await this.requestData<{ heartbeat: AgentCronJob }>({
-			type: "heartbeat_set",
-			activeSessionId: this.activeSessionId,
-			schedule,
-			prompt: instruction,
-			...(deliveryMode ? { deliveryMode } : {}),
-			promoteOwnedSession,
+		return this.withOwnedSessionPromotion(async (promoteOwnedSession) => {
+			const data = await this.requestData<{ heartbeat: AgentCronJob }>({
+				type: "heartbeat_set",
+				activeSessionId: this.activeSessionId,
+				schedule,
+				prompt: instruction,
+				...(deliveryMode ? { deliveryMode } : {}),
+				promoteOwnedSession,
+			});
+			return data.heartbeat;
 		});
-		if (promoteOwnedSession) {
-			this.options.ownedSession = false;
-		}
-		return data.heartbeat;
 	}
 
 	async updateHeartbeat(action: AgentHeartbeatUpdateAction): Promise<AgentCronJob | undefined> {
@@ -1135,8 +1132,26 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async promoteToResident(): Promise<void> {
-		await this.requestOk({ type: "promote_owned_session", activeSessionId: this.activeSessionId });
-		this.options.ownedSession = false;
+		await this.withOwnedSessionPromotion(async (promoteOwnedSession) => {
+			if (!promoteOwnedSession) return;
+			await this.requestOk({ type: "promote_owned_session", activeSessionId: this.activeSessionId });
+		});
+	}
+
+	private withOwnedSessionPromotion<T>(operation: (promoteOwnedSession: boolean) => Promise<T>): Promise<T> {
+		const run = this.ownedSessionPromotionTail.then(async () => {
+			const promoteOwnedSession = this.options.ownedSession === true;
+			const result = await operation(promoteOwnedSession);
+			if (promoteOwnedSession) {
+				this.options.ownedSession = false;
+			}
+			return result;
+		});
+		this.ownedSessionPromotionTail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
 	}
 
 	private async reconnect(cause: Error): Promise<void> {

@@ -3,12 +3,16 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCliSubprocessEnv, createCliSubprocessLaunchSpec } from "../../../src/cli/subprocess-launch.js";
 import { ENV_AGENT_DIR } from "../../../src/config.js";
 import type { AutonomousRuntimeState } from "../../../src/core/autonomous.js";
+import type { DaemonSocketClient } from "../../../src/modes/daemon/active-session-state.js";
 import { DaemonClient } from "../../../src/modes/daemon/daemon-client.js";
+import { DaemonSupervisor } from "../../../src/modes/daemon/daemon-supervisor.js";
 import { waitForHeadlessCompletion } from "../../../src/modes/headless-completion.js";
+import { RpcClient } from "../../../src/modes/rpc/rpc-client.js";
+import { createRpcExtensionUiBridge } from "../../../src/modes/rpc/rpc-extension-ui-context.js";
 import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "../harness.js";
 
 const fixturePath = resolve(__dirname, "../../fixtures/rpc-connection-mode-fixture.ts");
@@ -98,7 +102,10 @@ async function runCli(
 	return { ...exit, stdout, stderr };
 }
 
-async function runRpc(commands: object[]): Promise<{ stdout: object[]; stderr: string }> {
+async function runRpc(
+	commands: object[],
+	options: { trailingNewline?: boolean } = {},
+): Promise<{ stdout: object[]; stderr: string }> {
 	const child = spawn(process.execPath, [tsxPath, fixturePath], {
 		env: { ...process.env, TSX_TSCONFIG_PATH: repoTsconfigPath },
 		stdio: ["pipe", "pipe", "pipe"],
@@ -112,7 +119,8 @@ async function runRpc(commands: object[]): Promise<{ stdout: object[]; stderr: s
 	child.stderr?.on("data", (chunk: Buffer) => {
 		stderr += chunk.toString("utf8");
 	});
-	child.stdin?.end(`${commands.map((command) => JSON.stringify(command)).join("\n")}\n`);
+	const input = commands.map((command) => JSON.stringify(command)).join("\n");
+	child.stdin?.end(options.trailingNewline === false ? input : `${input}\n`);
 	const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
 		const timeout = setTimeout(() => reject(new Error(`RPC fixture timed out\n${stderr}`)), 10_000);
 		child.once("exit", (code, signal) => {
@@ -133,6 +141,62 @@ async function runRpc(commands: object[]): Promise<{ stdout: object[]; stderr: s
 }
 
 describe("ENG-4685 daemon-backed client modes", () => {
+	it("commits owned-worker promotion before best-effort peer synchronization", async () => {
+		const client = { id: "client-1" } as DaemonSocketClient;
+		const worker = {
+			descriptor: { ownerClientId: "protocol-client" },
+			launchEnv: { TEST: "value" },
+		};
+		const persistWorker = vi.fn();
+		const syncAgentPeers = vi.fn(async () => {
+			throw new Error("peer unavailable");
+		});
+		const log = vi.fn();
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			protocolClientId: () => "protocol-client",
+			persistWorker,
+			syncAgentPeers,
+			log,
+		}) as {
+			promoteOwnedWorker(client: DaemonSocketClient, resident: typeof worker): Promise<void>;
+		};
+
+		await supervisor.promoteOwnedWorker(client, worker);
+		await supervisor.promoteOwnedWorker(client, worker);
+
+		expect(worker.descriptor.ownerClientId).toBeUndefined();
+		expect(worker.launchEnv).toBeUndefined();
+		expect(persistWorker).toHaveBeenCalledOnce();
+		expect(syncAgentPeers).toHaveBeenCalledOnce();
+		expect(log).toHaveBeenCalledWith(expect.stringContaining("peer unavailable"));
+	});
+
+	it("rolls back owned-worker promotion when persistence fails", async () => {
+		const client = { id: "client-1" } as DaemonSocketClient;
+		const descriptor = { ownerClientId: "protocol-client" };
+		const timer = setTimeout(() => {}, 60_000);
+		const worker = {
+			descriptor,
+			launchEnv: { TEST: "value" },
+			ownerCleanupTimer: timer,
+		};
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			protocolClientId: () => "protocol-client",
+			persistWorker: () => {
+				throw new Error("disk full");
+			},
+		}) as {
+			promoteOwnedWorker(client: DaemonSocketClient, resident: typeof worker): Promise<void>;
+		};
+
+		await expect(supervisor.promoteOwnedWorker(client, worker)).rejects.toThrow("disk full");
+
+		expect(worker.descriptor).toBe(descriptor);
+		expect(worker.launchEnv).toEqual({ TEST: "value" });
+		expect(worker.ownerCleanupTimer).toBe(timer);
+		clearTimeout(timer);
+	});
+
 	it("runs host-owned autonomous gate retries through the shared completion loop", async () => {
 		const gate = `${process.execPath} -e "process.exit(0)"`;
 		const harness = await createHarness({
@@ -297,6 +361,63 @@ describe("ENG-4685 daemon-backed client modes", () => {
 				data: { models: [] },
 			},
 		]);
+	});
+
+	it("drains an unterminated final RPC command before EOF", async () => {
+		const result = await runRpc([{ id: "models", type: "get_available_models" }], {
+			trailingNewline: false,
+		});
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toEqual([
+			{
+				id: "models",
+				type: "response",
+				command: "get_available_models",
+				success: true,
+				data: { models: [] },
+			},
+		]);
+	});
+
+	it("cancels pending extension dialogs on RPC EOF", async () => {
+		const result = await runRpc([{ id: "prompt", type: "prompt", message: "extension-ui" }]);
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toEqual([
+			{
+				type: "extension_ui_request",
+				id: "extension-ui-1",
+				method: "confirm",
+				title: "Confirm",
+				message: "Continue?",
+			},
+			{ id: "prompt", type: "response", command: "prompt", success: true },
+			{ type: "agent_start" },
+		]);
+	});
+
+	it("closes local RPC extension dialogs and rejects future waits", async () => {
+		const bridge = createRpcExtensionUiBridge(() => {});
+		const pending = bridge.uiContext.editor("Edit", "draft");
+
+		bridge.close();
+
+		await expect(pending).resolves.toBeUndefined();
+		await expect(bridge.uiContext.editor("Edit again", "draft")).resolves.toBeUndefined();
+	});
+
+	it("isolates throwing RPC event listeners", () => {
+		const client = new RpcClient();
+		const observed: string[] = [];
+		client.onObservedSessionEvent(() => {
+			throw new Error("listener failed");
+		});
+		client.onObservedSessionEvent((event) => observed.push(event.type));
+
+		(client as unknown as { handleLine(line: string): void }).handleLine(
+			JSON.stringify({ type: "observed_session_closed", activeSessionId: "child" }),
+		);
+
+		expect(observed).toEqual(["observed_session_closed"]);
 	});
 
 	it("preserves prompt acknowledgements before events and repeated prompts", async () => {

@@ -613,15 +613,19 @@ export class RpcClient {
 				return;
 			}
 			if (data.type === "observed_session_event" || data.type === "observed_session_closed") {
-				for (const listener of this.observedSessionListeners) {
-					listener(data as RpcObservedSessionEvent);
+				for (const listener of [...this.observedSessionListeners]) {
+					try {
+						listener(data as RpcObservedSessionEvent);
+					} catch {}
 				}
 				return;
 			}
 
 			// Otherwise it's an event
-			for (const listener of this.eventListeners) {
-				listener(data as AgentEvent);
+			for (const listener of [...this.eventListeners]) {
+				try {
+					listener(data as AgentEvent);
+				} catch {}
 			}
 		} catch {
 			// Ignore non-JSON lines

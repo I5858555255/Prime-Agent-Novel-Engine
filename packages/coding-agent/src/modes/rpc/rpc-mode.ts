@@ -76,9 +76,11 @@ async function runRpcModeWithConnectionInternal(
 	let shutdownRequested = false;
 	let shuttingDown = false;
 	let detachInput = () => {};
+	let inputEnded = false;
 	let promptResponsePending = false;
 	let promptCommandTail = Promise.resolve();
 	const bufferedConnectionOutputs: object[] = [];
+	const pendingConnectionUiRequests = new Set<string>();
 	const signalCleanupHandlers: Array<() => void> = [];
 	const extensionUi = createRpcExtensionUiBridge(output);
 
@@ -90,6 +92,8 @@ async function runRpcModeWithConnectionInternal(
 		pendingEvents: object[];
 	}
 	const observations = new Map<string, ActiveObservation>();
+	const isDialogMethod = (method: string) =>
+		method === "select" || method === "confirm" || method === "input" || method === "editor";
 
 	const outputConnectionEvent = (event: object) => {
 		if (promptResponsePending) {
@@ -138,6 +142,10 @@ async function runRpcModeWithConnectionInternal(
 		}
 		if (event.type === "extension_ui_request") {
 			const method = event.request.method === "setEditorText" ? "set_editor_text" : event.request.method;
+			if (inputEnded && isDialogMethod(method)) {
+				void connection.respondToExtensionUiRequest(event.request.id, { cancelled: true }).catch(() => undefined);
+				return;
+			}
 			if (
 				method === "select" ||
 				method === "confirm" ||
@@ -149,7 +157,10 @@ async function runRpcModeWithConnectionInternal(
 				method === "setTitle" ||
 				method === "set_editor_text"
 			) {
-				outputConnectionEvent({
+				if (isDialogMethod(method)) {
+					pendingConnectionUiRequests.add(event.request.id);
+				}
+				output({
 					type: "extension_ui_request",
 					id: event.request.id,
 					method,
@@ -163,11 +174,19 @@ async function runRpcModeWithConnectionInternal(
 		}
 	});
 
+	const cancelPendingExtensionUi = async () => {
+		extensionUi.close();
+		const requestIds = [...pendingConnectionUiRequests];
+		pendingConnectionUiRequests.clear();
+		await Promise.allSettled(requestIds.map((id) => connection.respondToExtensionUiRequest(id, { cancelled: true })));
+	};
+
 	async function shutdown(exitCode = 0): Promise<never> {
 		if (shuttingDown) {
 			process.exit(exitCode);
 		}
 		shuttingDown = true;
+		await cancelPendingExtensionUi();
 		for (const cleanup of signalCleanupHandlers) cleanup();
 		unsubscribe();
 		detachInput();
@@ -442,6 +461,7 @@ async function runRpcModeWithConnectionInternal(
 		) {
 			const response = parsed as RpcExtensionUIResponse;
 			if (extensionUi.handleResponse(response)) return;
+			pendingConnectionUiRequests.delete(response.id);
 			const daemonResponse: AgentConnectionExtensionUiResponse =
 				"cancelled" in response && response.cancelled
 					? { cancelled: true }
@@ -493,9 +513,14 @@ async function runRpcModeWithConnectionInternal(
 		pendingInputHandlers.add(pending);
 	};
 	const onInputEnd = () => {
+		inputEnded = true;
 		detachInput();
 		process.stdin.pause();
-		void Promise.allSettled([...pendingInputHandlers]).then(() => shutdown());
+		queueMicrotask(() => {
+			void cancelPendingExtensionUi()
+				.then(() => Promise.allSettled([...pendingInputHandlers]))
+				.then(() => shutdown());
+		});
 	};
 	process.stdin.on("end", onInputEnd);
 	detachInput = (() => {

@@ -214,6 +214,7 @@ interface ResidentWorker {
 	stopRevision: number;
 	launchEnv?: Record<string, string>;
 	ownerCleanupTimer?: ReturnType<typeof setTimeout>;
+	promotedOwnerClientId?: string;
 }
 
 interface SnapshotDuplicateValidation {
@@ -1510,17 +1511,28 @@ export class DaemonSupervisor {
 	}
 
 	private async promoteOwnedWorker(client: DaemonSocketClient, worker: ResidentWorker): Promise<void> {
-		if (worker.descriptor.ownerClientId !== this.protocolClientId(client)) {
+		const clientId = this.protocolClientId(client);
+		if (worker.descriptor.ownerClientId === undefined && worker.promotedOwnerClientId === clientId) {
+			return;
+		}
+		if (worker.descriptor.ownerClientId !== clientId) {
 			throw new Error("Session is not owned by this client");
 		}
+		const previousDescriptor = worker.descriptor;
+		worker.descriptor = { ...previousDescriptor, ownerClientId: undefined };
+		try {
+			this.persistWorker(worker);
+		} catch (error) {
+			worker.descriptor = previousDescriptor;
+			throw error;
+		}
+		worker.promotedOwnerClientId = clientId;
 		if (worker.ownerCleanupTimer) {
 			clearTimeout(worker.ownerCleanupTimer);
 			worker.ownerCleanupTimer = undefined;
 		}
-		worker.descriptor.ownerClientId = undefined;
 		worker.launchEnv = undefined;
-		this.persistWorker(worker);
-		await this.syncAgentPeers();
+		await this.syncAgentPeers().catch((error) => this.log(`Could not synchronize agent peers: ${String(error)}`));
 	}
 
 	private async launchWorker(
@@ -1570,7 +1582,10 @@ export class DaemonSupervisor {
 			stdio: ["ignore", "ignore", "pipe", "pipe"],
 		});
 		const detachWorkerStderr = child.stderr
-			? attachJsonlLineReader(child.stderr, (line) => this.log(`Session worker ${workerId} stderr: ${line}`))
+			? attachJsonlLineReader(child.stderr, (line) => this.log(`Session worker ${workerId} stderr: ${line}`), {
+					maxLineLength: 64 * 1024,
+					onLineOverflow: (prefix) => this.log(`Session worker ${workerId} stderr: ${prefix} [truncated]`),
+				})
 			: () => {};
 		child.once("close", detachWorkerStderr);
 		const childClosed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));

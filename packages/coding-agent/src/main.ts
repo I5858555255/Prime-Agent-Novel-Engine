@@ -1531,7 +1531,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 		printTimings();
 		if (appMode === "rpc") {
-			await runRpcModeWithConnection(connection);
+			return await runRpcModeWithConnection(connection);
 		}
 		const exitCode = await runPrintModeWithConnection(connection, {
 			mode: toPrintOutputMode(appMode),

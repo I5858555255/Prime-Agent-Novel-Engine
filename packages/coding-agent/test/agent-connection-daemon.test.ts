@@ -45,6 +45,7 @@ class FakeDaemonClient {
 	connectionStateFactory: ((activeSessionId: string) => AgentConnectionState) | undefined;
 	abortBashUnknownCommand = false;
 	abortAndClearQueueUnknownCommand = false;
+	cronAddGate: Promise<void> | undefined;
 	updateRestartSessions: Array<Record<string, unknown>> = [];
 	private readonly messageListeners = new Set<DaemonClientMessageListener>();
 	private readonly closeListeners = new Set<DaemonClientCloseListener>();
@@ -336,6 +337,29 @@ class FakeDaemonClient {
 						harnessStatePath: "/tmp/harness_state.json",
 					},
 				};
+			case "cron_add":
+				await this.cronAddGate;
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: {
+						job: {
+							id: `cron-${this.requests.filter((request) => request.type === "cron_add").length}`,
+							status: "active",
+							source: "cron",
+							activeSessionId: command.activeSessionId,
+							sessionId: "session-current",
+							sessionFile: "/tmp/session-current.jsonl",
+							cwd: "/tmp/project",
+							prompt: command.prompt,
+							schedule: { kind: "cron", expression: command.schedule },
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							runCount: 0,
+						},
+					},
+				};
 			case "switch_session":
 				return {
 					type: "response",
@@ -591,6 +615,30 @@ function emitSequencedQueueUpdate(client: FakeDaemonClient, activeSessionId: str
 }
 
 describe("DaemonAgentConnection", () => {
+	it("serializes concurrent owned-session promotion commands", async () => {
+		const fakeClient = new FakeDaemonClient();
+		let releaseFirst = () => {};
+		fakeClient.cronAddGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1", {
+			ownedSession: true,
+		});
+
+		const first = connection.addCronJob("0 * * * *", "first");
+		const second = connection.addCronJob("30 * * * *", "second");
+		await vi.waitFor(() => {
+			expect(fakeClient.requests.filter((request) => request.type === "cron_add")).toHaveLength(1);
+		});
+		releaseFirst();
+		await Promise.all([first, second]);
+
+		const commands = fakeClient.requests.filter(
+			(command): command is Extract<DaemonCommand, { type: "cron_add" }> => command.type === "cron_add",
+		);
+		expect(commands.map((command) => command.promoteOwnedSession)).toEqual([true, false]);
+	});
+
 	it("reattaches an open window to its restored session after an update restart", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.emitCloseOnClose = true;

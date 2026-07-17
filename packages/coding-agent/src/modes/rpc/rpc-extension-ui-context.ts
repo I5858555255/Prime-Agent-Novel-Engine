@@ -11,10 +11,12 @@ import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "./rpc-types.
 export interface RpcExtensionUiBridge {
 	uiContext: ExtensionUIContext;
 	handleResponse(response: RpcExtensionUIResponse): boolean;
+	close(): void;
 }
 
 export function createRpcExtensionUiBridge(output: (request: RpcExtensionUIRequest) => void): RpcExtensionUiBridge {
 	const pending = new Map<string, (response: RpcExtensionUIResponse) => void>();
+	let closed = false;
 
 	const createDialogPromise = <T>(
 		opts: ExtensionUIDialogOptions | undefined,
@@ -22,7 +24,7 @@ export function createRpcExtensionUiBridge(output: (request: RpcExtensionUIReque
 		request: Record<string, unknown>,
 		parseResponse: (response: RpcExtensionUIResponse) => T,
 	): Promise<T> => {
-		if (opts?.signal?.aborted) {
+		if (closed || opts?.signal?.aborted) {
 			return Promise.resolve(defaultValue);
 		}
 		const id = randomUUID();
@@ -143,6 +145,13 @@ export function createRpcExtensionUiBridge(output: (request: RpcExtensionUIReque
 			pending.delete(response.id);
 			resolve(response);
 			return true;
+		},
+		close() {
+			closed = true;
+			for (const [id, resolve] of pending) {
+				resolve({ type: "extension_ui_response", id, cancelled: true });
+			}
+			pending.clear();
 		},
 	};
 }
