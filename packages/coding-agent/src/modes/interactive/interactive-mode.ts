@@ -7269,6 +7269,13 @@ export class InteractiveMode {
 				handle?.hide();
 				this.ui.requestRender();
 			};
+			const show = () => {
+				if (!hidden || settled) return;
+				hidden = false;
+				handle?.setHidden(false);
+				handle?.focus();
+				this.ui.requestRender();
+			};
 			const finish = () => {
 				if (settled) return;
 				settled = true;
@@ -7340,9 +7347,9 @@ export class InteractiveMode {
 				onSelectMcpConnection: (provider) => authenticate(provider, "mcp-connections"),
 				onSelectModel: (model) => {
 					void (async () => {
-						let ready = false;
+						let completed = false;
 						try {
-							ready = await this.ensureModelProviderConfigured(model, authFlows, providerOptions);
+							const ready = await this.ensureModelProviderConfigured(model, authFlows, providerOptions);
 							handle?.focus();
 							menu.refreshAuthentication();
 							menu.updateModels(
@@ -7353,10 +7360,12 @@ export class InteractiveMode {
 							if (!ready || settled) return;
 							hide();
 							await this.completeModelSelection(model);
+							completed = true;
 						} catch (error) {
+							show();
 							this.showError(error instanceof Error ? error.message : String(error));
 						} finally {
-							if (ready) finish();
+							if (completed) finish();
 						}
 					})();
 				},

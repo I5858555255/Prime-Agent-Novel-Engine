@@ -1370,6 +1370,8 @@ describe("InteractiveMode model selection persistence", () => {
 	}) {
 		let overlayComponent: Component | undefined;
 		const hide = vi.fn();
+		const setHidden = vi.fn();
+		const focus = vi.fn();
 		const registryModels = [...(options.registryModels ?? options.connectionModels)];
 		const catalogModels = [...(options.catalogModels ?? options.connectionModels)];
 		const configuredProviders = new Set(
@@ -1444,7 +1446,7 @@ describe("InteractiveMode model selection persistence", () => {
 		fakeThis.completeModelSelection = overlayPrototype.completeModelSelection;
 		fakeThis.showFullPaneOverlay = vi.fn((component: Component) => {
 			overlayComponent = component;
-			return { hide, setHidden: vi.fn(), focus: vi.fn() };
+			return { hide, setHidden, focus };
 		});
 		fakeThis.showConfigurationMenu = overlayPrototype.showConfigurationMenu;
 		fakeThis.maybeWarnAboutAnthropicSubscriptionAuth = vi.fn(async () => {});
@@ -1454,6 +1456,8 @@ describe("InteractiveMode model selection persistence", () => {
 		return {
 			fakeThis,
 			hide,
+			setHidden,
+			focus,
 			getSelector: () => {
 				if (!overlayComponent) {
 					throw new Error("Expected model selector overlay to be shown");
@@ -1772,6 +1776,30 @@ describe("InteractiveMode model selection persistence", () => {
 
 		await expect(result).resolves.toBeUndefined();
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
+	});
+
+	test("reopens the model selector when the selected model fails to apply", async () => {
+		const model = createModel("openai", "gpt-5.5");
+		const { fakeThis, getSelector, hide, setHidden, focus } = createSelectorOverlayHarness({
+			connectionModels: [model],
+			applySelectedModel: vi.fn(async () => {
+				throw new Error("model switch failed");
+			}),
+		});
+
+		const result = fakeThis.showConfigurationMenu("models");
+		await flushAsyncWork();
+		getSelector().handleInput("\r");
+		await flushAsyncWork();
+
+		expect(hide).toHaveBeenCalledTimes(1);
+		expect(setHidden).toHaveBeenCalledWith(false);
+		expect(focus).toHaveBeenCalled();
+		expect(fakeThis.showError).toHaveBeenCalledWith("model switch failed");
+
+		getSelector().handleInput("\x1b");
+		await expect(result).resolves.toBeUndefined();
+		expect(hide).toHaveBeenCalledTimes(2);
 	});
 
 	test("authenticates an unavailable model provider before applying the model", async () => {
