@@ -5,7 +5,7 @@ const LABEL = "Hint:";
 const SHIMMER_RADIUS = 1;
 const SHIMMER_PAUSE_FRAMES = 14;
 
-export const FEATURE_HINT_ANIMATION_INTERVAL_MS = 120;
+export const FEATURE_HINT_ANIMATION_INTERVAL_MS = 160;
 
 function renderLabelShimmer(characters: string[], frame: number): string {
 	if (characters.length === 0) return "";
@@ -38,7 +38,7 @@ export class FeatureHintComponent implements Component {
 		const characters = Array.from(displayText);
 		const labelLength = Math.min(LABEL.length, characters.length);
 		const label = renderLabelShimmer(characters.slice(0, labelLength), this.frame);
-		const hint = theme.fg("thinkingText", characters.slice(labelLength).join(""));
+		const hint = theme.fg("muted", characters.slice(labelLength).join(""));
 		const line = `${" ".repeat(paddingX)}${label}${hint}`;
 
 		return [line + " ".repeat(Math.max(0, width - visibleWidth(line))), " ".repeat(width)];
