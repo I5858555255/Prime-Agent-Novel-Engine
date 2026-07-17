@@ -7262,15 +7262,23 @@ export class InteractiveMode {
 			let handle: OverlayHandle | undefined;
 			let settled = false;
 			let hidden = false;
+			let removed = false;
 			let menu: ConfigurationMenuComponent;
 			const hide = () => {
-				if (hidden) return;
+				if (removed) return;
+				removed = true;
 				hidden = true;
 				handle?.hide();
 				this.ui.requestRender();
 			};
+			const conceal = () => {
+				if (hidden || removed) return;
+				hidden = true;
+				handle?.setHidden(true);
+				this.ui.requestRender();
+			};
 			const show = () => {
-				if (!hidden || settled) return;
+				if (!hidden || removed || settled) return;
 				hidden = false;
 				handle?.setHidden(false);
 				handle?.focus();
@@ -7358,7 +7366,7 @@ export class InteractiveMode {
 								this.connectionConfiguredProviders,
 							);
 							if (!ready || settled) return;
-							hide();
+							conceal();
 							await this.completeModelSelection(model);
 							completed = true;
 						} catch (error) {

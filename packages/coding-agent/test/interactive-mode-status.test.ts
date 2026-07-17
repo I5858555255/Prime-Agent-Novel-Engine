@@ -1752,7 +1752,7 @@ describe("InteractiveMode model selection persistence", () => {
 	test("closes the model selector before the selected model finishes applying", async () => {
 		const model = createModel("openai", "gpt-5.5");
 		const apply = createDeferred<void>();
-		const { fakeThis, getSelector, hide } = createSelectorOverlayHarness({
+		const { fakeThis, getSelector, hide, setHidden } = createSelectorOverlayHarness({
 			connectionModels: [model],
 			applySelectedModel: vi.fn(() => apply.promise),
 		});
@@ -1768,13 +1768,15 @@ describe("InteractiveMode model selection persistence", () => {
 		getSelector().handleInput("\r");
 		await flushAsyncWork();
 
-		expect(hide).toHaveBeenCalledTimes(1);
+		expect(setHidden).toHaveBeenCalledWith(true);
+		expect(hide).not.toHaveBeenCalled();
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Switching model: gpt-5.5");
 		expect(resolved).toBe(false);
 
 		apply.resolve();
 
 		await expect(result).resolves.toBeUndefined();
+		expect(hide).toHaveBeenCalledTimes(1);
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Model: gpt-5.5");
 	});
 
@@ -1792,14 +1794,15 @@ describe("InteractiveMode model selection persistence", () => {
 		getSelector().handleInput("\r");
 		await flushAsyncWork();
 
-		expect(hide).toHaveBeenCalledTimes(1);
-		expect(setHidden).toHaveBeenCalledWith(false);
+		expect(hide).not.toHaveBeenCalled();
+		expect(setHidden).toHaveBeenNthCalledWith(1, true);
+		expect(setHidden).toHaveBeenNthCalledWith(2, false);
 		expect(focus).toHaveBeenCalled();
 		expect(fakeThis.showError).toHaveBeenCalledWith("model switch failed");
 
 		getSelector().handleInput("\x1b");
 		await expect(result).resolves.toBeUndefined();
-		expect(hide).toHaveBeenCalledTimes(2);
+		expect(hide).toHaveBeenCalledTimes(1);
 	});
 
 	test("authenticates an unavailable model provider before applying the model", async () => {
