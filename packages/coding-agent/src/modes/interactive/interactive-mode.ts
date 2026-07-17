@@ -2954,19 +2954,8 @@ export class InteractiveMode {
 
 	private startFeatureHintPresentation(): void {
 		this.clearFeatureHintPresentation();
-		if (!this.currentFeatureHint) {
-			const hint = this.featureHintDeck.next({
-				getKeybinding: (action) => {
-					const key = keyText(action);
-					return key ? this.capitalizeKey(key) : undefined;
-				},
-				isResidentSession: this.options.returnToAgentsView === true,
-			});
-			this.currentFeatureHint = hint?.text;
+		if (this.featureHintEligibleAt === 0) {
 			this.featureHintEligibleAt = Date.now() + FEATURE_HINT_DELAY_MS;
-		}
-		if (!this.currentFeatureHint) {
-			return;
 		}
 		const delay = Math.max(0, this.featureHintEligibleAt - Date.now());
 		if (delay === 0) {
@@ -2982,11 +2971,23 @@ export class InteractiveMode {
 
 	private showFeatureHint(): void {
 		if (
-			!this.currentFeatureHint ||
 			!this.loadingAnimation ||
 			!this.shouldShowWorkingLoader() ||
 			!this.statusContainer.children.includes(this.loadingAnimation)
 		) {
+			return;
+		}
+		if (!this.currentFeatureHint) {
+			const hint = this.featureHintDeck.next({
+				getKeybinding: (action) => {
+					const key = keyText(action);
+					return key ? this.capitalizeKey(key) : undefined;
+				},
+				isResidentSession: this.options.returnToAgentsView === true,
+			});
+			this.currentFeatureHint = hint?.text;
+		}
+		if (!this.currentFeatureHint) {
 			return;
 		}
 		this.featureHintComponent = new FeatureHintComponent(this.currentFeatureHint);

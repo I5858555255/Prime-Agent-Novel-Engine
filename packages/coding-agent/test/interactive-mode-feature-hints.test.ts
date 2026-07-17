@@ -135,6 +135,7 @@ describe("InteractiveMode feature hints", () => {
 		vi.advanceTimersByTime(4_999);
 		expect(statusContainer.children).toHaveLength(1);
 		expect(featureHintContainer.children).toHaveLength(0);
+		expect(featureHintDeck.next).not.toHaveBeenCalled();
 
 		vi.advanceTimersByTime(1);
 		expect(statusContainer.children).toHaveLength(1);
@@ -155,7 +156,7 @@ describe("InteractiveMode feature hints", () => {
 	});
 
 	it("cancels a pending hint when the loader stops", () => {
-		const { mode, statusContainer, featureHintContainer, requestRender } = createMode();
+		const { mode, statusContainer, featureHintContainer, featureHintDeck, requestRender } = createMode();
 
 		callPrivate(mode, "startFeatureHintPresentation");
 		vi.advanceTimersByTime(2_000);
@@ -164,6 +165,7 @@ describe("InteractiveMode feature hints", () => {
 
 		expect(statusContainer.children).toHaveLength(0);
 		expect(featureHintContainer.children).toHaveLength(0);
+		expect(featureHintDeck.next).not.toHaveBeenCalled();
 		expect(requestRender).not.toHaveBeenCalled();
 	});
 
@@ -181,6 +183,7 @@ describe("InteractiveMode feature hints", () => {
 		vi.advanceTimersByTime(1_999);
 		expect(statusContainer.children).toHaveLength(1);
 		expect(featureHintContainer.children).toHaveLength(0);
+		expect(featureHintDeck.next).not.toHaveBeenCalled();
 
 		vi.advanceTimersByTime(1);
 		expect(statusContainer.children).toHaveLength(1);
