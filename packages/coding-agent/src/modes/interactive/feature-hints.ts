@@ -88,24 +88,16 @@ export const FEATURE_HINTS: readonly FeatureHintDefinition[] = [
 	},
 	{
 		id: "auto-compaction",
-		getText: () => "Prime Agent automatically summarizes long sessions before context fills up.",
+		getText: () => "Prime Agent automatically compacts long sessions before context fills up.",
 	},
 	{
 		id: "auto-refine",
-		getText: () => "Prime Agent automatically saves useful lessons from longer sessions.",
+		getText: () => "Prime Agent automatically refines skills, memory, prompts, and subagents.",
 	},
 	{
 		id: "background-running",
 		getText: ({ isResidentSession }) =>
 			isResidentSession ? "You can close the terminal while your agent keeps running in the background." : undefined,
-	},
-	{
-		id: "auto-retry",
-		getText: () => "Prime Agent automatically retries temporary provider errors.",
-	},
-	{
-		id: "session-autosave",
-		getText: () => "Prime Agent automatically saves sessions so you can resume them later.",
 	},
 ] as const;
 

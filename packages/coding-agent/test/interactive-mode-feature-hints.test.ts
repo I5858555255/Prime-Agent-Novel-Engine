@@ -89,11 +89,9 @@ describe("feature hint deck", () => {
 		expect(textById.get("context-usage")).toContain("/context");
 		expect(textById.get("session-fork")).toContain("/fork");
 		expect(textById.get("compaction")).toContain("/compact");
-		expect(textById.get("auto-compaction")).toContain("automatically summarizes");
-		expect(textById.get("auto-refine")).toContain("automatically saves useful lessons");
+		expect(textById.get("auto-compaction")).toContain("automatically compacts");
+		expect(textById.get("auto-refine")).toContain("skills, memory, prompts, and subagents");
 		expect(textById.get("background-running")).toContain("close the terminal");
-		expect(textById.get("auto-retry")).toContain("automatically retries");
-		expect(textById.get("session-autosave")).toContain("automatically saves sessions");
 	});
 
 	it("keeps every hint concise", () => {
