@@ -107,6 +107,63 @@ describe("ENG-4649 subagent model selection", () => {
 		}
 	});
 
+	it("includes private Prime models authorized for the selected team", async () => {
+		const harness = await createHarness({ provider, models: [{ id: "parent-model" }] });
+		const fetchModels = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ data: [{ id: "internal/glm-5.2-fast" }] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchModels);
+		try {
+			harness.authStorage.set("prime-inference", {
+				type: "api_key",
+				key: "prime-key",
+				primeTeam: { teamId: "engineering-team", name: "Prime Engineering" },
+			});
+
+			const discovered = await harness.session.findRlmModels("glm 5.2", 8);
+			expect(discovered.models.map((model) => model.selector)).toContain("prime-inference/internal/glm-5.2-fast");
+			expect(fetchModels).toHaveBeenCalledOnce();
+		} finally {
+			vi.unstubAllGlobals();
+			harness.cleanup();
+		}
+	});
+
+	it("does not reuse an expired ChatGPT model catalog after a refresh failure", async () => {
+		const codexProvider = "openai-codex";
+		const harness = await createHarness({ provider: codexProvider, models: [{ id: "parent-model" }] });
+		const fetchModels = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ models: [{ slug: "parent-model" }] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+			)
+			.mockRejectedValueOnce(new Error("offline"));
+		vi.stubGlobal("fetch", fetchModels);
+		let now = Date.now();
+		const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			harness.authStorage.setRuntimeApiKey(codexProvider, openAICodexToken("account-1"));
+			await expect(harness.session.findRlmModels("parent", 8)).resolves.toMatchObject({
+				models: [{ selector: `${codexProvider}/parent-model` }],
+			});
+
+			now += 300_001;
+			await expect(harness.session.findRlmModels("parent", 8)).resolves.toEqual({ models: [] });
+			expect(fetchModels).toHaveBeenCalledTimes(2);
+		} finally {
+			dateNow.mockRestore();
+			vi.unstubAllGlobals();
+			harness.cleanup();
+		}
+	});
+
 	it("does not start a child after its parent is disposed during preflight", async () => {
 		const harness = await createHarness({
 			provider,

@@ -756,11 +756,21 @@ export class ModelRegistry {
 		const previousPrivateModelIds = new Set(this.authorizedPrivatePrimeInferenceModelIds);
 		const previousTeamId = this.authorizedPrivatePrimeInferenceTeamId;
 		this.refresh();
+		await this.refreshPrivatePrimeInferenceAuthorization(previousPrivateModelIds, previousTeamId);
+		return this.getAvailable();
+	}
+
+	private async refreshPrivatePrimeInferenceAuthorization(
+		previousPrivateModelIds = new Set(this.authorizedPrivatePrimeInferenceModelIds),
+		previousTeamId = this.authorizedPrivatePrimeInferenceTeamId,
+	): Promise<void> {
 		const apiKey = await this.authStorage.getApiKey(PRIME_INFERENCE_PROVIDER_ID);
 		const teamHeaders = this.authStorage.getProviderHeaders(PRIME_INFERENCE_PROVIDER_ID);
 		const teamId = teamHeaders?.["X-Prime-Team-ID"];
 		if (!apiKey || !teamHeaders || !teamId) {
-			return this.getAvailable();
+			this.authorizedPrivatePrimeInferenceModelIds.clear();
+			this.authorizedPrivatePrimeInferenceTeamId = undefined;
+			return;
 		}
 
 		try {
@@ -773,9 +783,11 @@ export class ModelRegistry {
 			if (teamId === previousTeamId) {
 				this.authorizedPrivatePrimeInferenceModelIds = previousPrivateModelIds;
 				this.authorizedPrivatePrimeInferenceTeamId = teamId;
+			} else {
+				this.authorizedPrivatePrimeInferenceModelIds.clear();
+				this.authorizedPrivatePrimeInferenceTeamId = undefined;
 			}
 		}
-		return this.getAvailable();
 	}
 
 	async canUseModel(model: Model<Api>): Promise<boolean> {
@@ -791,6 +803,7 @@ export class ModelRegistry {
 	}
 
 	async getExecutableModels(): Promise<Model<Api>[]> {
+		await this.refreshPrivatePrimeInferenceAuthorization();
 		const availableModels = this.getAvailable();
 		const codexModels = availableModels.filter((model) => model.provider === "openai-codex");
 		if (codexModels.length === 0) {
@@ -828,7 +841,7 @@ export class ModelRegistry {
 			this.openAICodexModelsCache = { authFingerprint, modelIds, refreshedAt: Date.now() };
 			return availableModels.filter((model) => model.provider !== "openai-codex" || modelIds.has(model.id));
 		} catch {
-			if (cached?.authFingerprint === authFingerprint) {
+			if (cached?.authFingerprint === authFingerprint && Date.now() - cached.refreshedAt < 300_000) {
 				return availableModels.filter(
 					(model) => model.provider !== "openai-codex" || cached.modelIds.has(model.id),
 				);
