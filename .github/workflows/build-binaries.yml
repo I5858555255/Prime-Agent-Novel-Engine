@@ -13,6 +13,11 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: release-prime-agent
+  cancel-in-progress: false
+  queue: max
+
 permissions:
   contents: read
 
