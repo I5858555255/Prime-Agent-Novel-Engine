@@ -73,19 +73,24 @@ describe("feature hint deck", () => {
 		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Meta+A" }));
 		const textById = new Map(hints.map((hint) => [hint?.id, hint?.text]));
 
-		expect(textById.get("subagents")).toBe(
-			"Prime Agent can delegate independent work to subagents so tasks can run in parallel.",
-		);
+		expect(textById.get("subagents")).toBe("Prime Agent can delegate independent tasks to subagents in parallel.");
 		expect(textById.get("agents-view")).toContain("Agents View");
-		expect(textById.get("session-rewind")).toContain("tree view");
+		expect(textById.get("session-rewind")).toContain("tree");
 		expect(textById.get("steering")).toContain("steer");
-		expect(textById.get("agent-messaging")).toContain("message one another");
+		expect(textById.get("agent-messaging")).toContain("message each other");
 		expect(textById.get("goal")).toContain("/goal");
 		expect(textById.get("refine")).toContain("/refine");
 		expect(textById.get("persistent-ipython")).toContain("IPython");
 		expect(textById.get("context-usage")).toContain("/context");
 		expect(textById.get("session-fork")).toContain("/fork");
 		expect(textById.get("compaction")).toContain("/compact");
+	});
+
+	it("keeps every hint concise", () => {
+		const deck = new FeatureHintDeck(() => 0);
+		const hints = FEATURE_HINTS.map(() => deck.next({ getKeybinding: () => "Ctrl+Key" }));
+
+		expect(hints.every((hint) => hint !== undefined && hint.text.length <= 80)).toBe(true);
 	});
 });
 
