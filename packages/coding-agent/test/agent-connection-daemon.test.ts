@@ -1747,6 +1747,35 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.reconnectCount).toBe(1);
 	});
 
+	it("does not let a stalled subscriber block update recovery", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.updateRestartSessions = [
+			{
+				id: "active-restored",
+				activeSessionId: "active-restored",
+				sessionId: "session-current",
+				sessionFile: "/tmp/session-current.jsonl",
+			},
+		];
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");
+		const statuses: string[] = [];
+		connection.subscribe(() => new Promise<void>(() => undefined));
+		connection.subscribe((event) => {
+			if (event.type === "connection_status") {
+				statuses.push(event.status);
+			}
+		});
+		await connection.attach();
+
+		fakeClient.emitClose(new DaemonSocketClosedError("/tmp/prime-agent.sock", "update"));
+
+		await vi.waitFor(() => expect(statuses).toEqual(["reconnecting", "connected"]));
+		expect(fakeClient.requests.at(-1)).toMatchObject({
+			type: "attach",
+			activeSessionId: "active-restored",
+		});
+	});
+
 	it("refreshes initial snapshots after live events make the cached snapshot stale", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.attachResultFactory = (command) =>

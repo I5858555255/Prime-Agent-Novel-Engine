@@ -1009,7 +1009,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			return this.reconnectPromise;
 		}
 		this.reconnectPromise = (async () => {
-			await this.emit({ type: "connection_status", status: "reconnecting", error: cause.message });
+			void this.emit({ type: "connection_status", status: "reconnecting", error: cause.message });
 			const deadline = Date.now() + (this.options.reconnectTimeoutMs ?? DAEMON_RECONNECT_TIMEOUT_MS);
 			let attempt = 0;
 			let lastError: Error = cause;
@@ -1024,8 +1024,8 @@ export class DaemonAgentConnection implements AgentConnection {
 					await this.attach();
 					if (!this.disposed) {
 						const snapshot = await this.getInitialSnapshot();
-						await this.emit({ type: "session_resynced", snapshot });
-						await this.emit({ type: "connection_status", status: "connected" });
+						void this.emit({ type: "session_resynced", snapshot });
+						void this.emit({ type: "connection_status", status: "connected" });
 					}
 					return;
 				} catch (error) {
@@ -1250,16 +1250,16 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (this.updateReconnectPromise) {
 			return this.updateReconnectPromise;
 		}
-		const reconnectPromise = this.emit({
+		void this.emit({
 			type: "connection_status",
 			status: "reconnecting",
 			error: "The Prime Agent daemon is restarting for an update.",
-		})
-			.then(() => reconnectDaemonTransportAfterUpdate(this.client))
+		});
+		const reconnectPromise = reconnectDaemonTransportAfterUpdate(this.client)
 			.then(() => this.restoreConnectionAfterUpdate())
-			.then(async () => {
+			.then(() => {
 				if (!this.disposed) {
-					await this.emit({ type: "connection_status", status: "connected" });
+					void this.emit({ type: "connection_status", status: "connected" });
 				}
 			})
 			.catch(async (error: unknown) => {
@@ -1327,7 +1327,7 @@ export class DaemonAgentConnection implements AgentConnection {
 						return;
 					}
 					this.updateRestartPending = false;
-					await this.emit({ type: "session_resynced", snapshot });
+					void this.emit({ type: "session_resynced", snapshot });
 					return;
 				}
 			} catch (error) {
@@ -1608,13 +1608,15 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	private async emit(event: AgentConnectionEvent): Promise<void> {
+		const deliveries: Promise<void>[] = [];
 		for (const listener of [...this.listeners]) {
 			try {
-				await listener(event);
+				deliveries.push(Promise.resolve(listener(event)));
 			} catch {
 				// One attachment must not interrupt delivery or transport recovery for the others.
 			}
 		}
+		await Promise.allSettled(deliveries);
 	}
 
 	private observeSideQuestionEvent(event: AgentConnectionSideQuestionEvent): void {
