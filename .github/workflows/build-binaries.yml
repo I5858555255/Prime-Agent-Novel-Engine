@@ -85,10 +85,14 @@ jobs:
 
             if [ -z "$previous_version" ] || [ "$production_version" != "$previous_version" ]; then
               if git show-ref --verify --quiet "refs/tags/v${production_version}"; then
-                echo "Production v${production_version} already exists; only beta will advance."
-              else
-                publish_production=true
+                tagged_commit=$(git rev-list -n 1 "v${production_version}")
+                if [ "$tagged_commit" != "$GITHUB_SHA_VALUE" ]; then
+                  echo "Production v${production_version} already points to ${tagged_commit}, not ${GITHUB_SHA_VALUE}." >&2
+                  exit 1
+                fi
+                echo "Retrying production v${production_version} for ${GITHUB_SHA_VALUE}."
               fi
+              publish_production=true
             else
               echo "Package version is unchanged at ${production_version}; only beta will advance."
             fi
@@ -245,28 +249,6 @@ jobs:
             echo "Release v${PRODUCTION_VERSION}" > /tmp/release-notes.md
           fi
 
-      - name: Create production GitHub release
-        if: env.PUBLISH_PRODUCTION == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RELEASE_TAG="v${PRODUCTION_VERSION}"
-          PRODUCTION_DIR=release-artifacts/production
-          target_args=()
-          if [ "$BUILD_REF" != "$RELEASE_TAG" ]; then
-            target_args=(--target "$BUILD_REF")
-          fi
-
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$PRODUCTION_DIR"/* --clobber
-          else
-            gh release create "$RELEASE_TAG" \
-              --title "$RELEASE_TAG" \
-              "${target_args[@]}" \
-              --notes-file /tmp/release-notes.md \
-              "$PRODUCTION_DIR"/*
-          fi
-
       - name: Publish production channel to R2
         if: env.PUBLISH_PRODUCTION == 'true'
         run: |
@@ -312,6 +294,28 @@ jobs:
             --endpoint-url "$R2_ENDPOINT_URL" \
             --content-type text/x-shellscript \
             --cache-control no-cache
+
+      - name: Create production GitHub release
+        if: env.PUBLISH_PRODUCTION == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_TAG="v${PRODUCTION_VERSION}"
+          PRODUCTION_DIR=release-artifacts/production
+          target_args=()
+          if [ "$BUILD_REF" != "$RELEASE_TAG" ]; then
+            target_args=(--target "$BUILD_REF")
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$PRODUCTION_DIR"/* --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              "${target_args[@]}" \
+              --notes-file /tmp/release-notes.md \
+              "$PRODUCTION_DIR"/*
+          fi
 
       - name: Publish immutable beta artifacts to R2
         if: env.PUBLISH_BETA == 'true'
