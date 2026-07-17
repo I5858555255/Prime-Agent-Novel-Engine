@@ -340,6 +340,7 @@ function childAgentSummaryChanged(
 	const nextTokens = next.tokenCount === undefined ? undefined : formatTokenCount(next.tokenCount);
 	return (
 		previous.parentId !== next.parentId ||
+		previous.activeSessionId !== next.activeSessionId ||
 		previous.sessionName !== next.sessionName ||
 		previous.model !== next.model ||
 		previous.label !== next.label ||
