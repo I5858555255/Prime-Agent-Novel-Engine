@@ -3022,9 +3022,7 @@ export class InteractiveMode {
 	}
 
 	private prepareFeatureHintRun(): void {
-		if (this.getRetryAttempt() === 0) {
-			this.endFeatureHintRun();
-		}
+		this.endFeatureHintRun();
 	}
 
 	private updateWorkingPulse(): void {
@@ -4654,6 +4652,7 @@ export class InteractiveMode {
 		// A new user message resets the activity tracker to 0, so the in-flight baseline must
 		// reset with it. (agent_start on auto-retry does not reset the tracker.)
 		if (event.type === "message_start" && (event.message.role === "user" || isAgentSessionMessage(event.message))) {
+			this.prepareFeatureHintRun();
 			this.contextUsageTokenBaseline = 0;
 			this.setSessionHasMessages(true);
 			this.clearShortcutGuide();
@@ -4665,7 +4664,6 @@ export class InteractiveMode {
 
 		switch (event.type) {
 			case "agent_start":
-				this.prepareFeatureHintRun();
 				this.resetPendingToolState();
 				this.renderRecap();
 				if (this.settingsManager.getShowTerminalProgress()) {

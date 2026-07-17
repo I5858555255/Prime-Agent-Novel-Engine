@@ -196,16 +196,14 @@ describe("InteractiveMode feature hints", () => {
 		expect(Reflect.get(mode, "currentFeatureHint")).toBeUndefined();
 	});
 
-	it("keeps the current hint for retries and clears it for new runs", () => {
+	it("keeps the current hint across loader restarts and clears it for new runs", () => {
 		const { mode } = createMode();
 		Reflect.set(mode, "currentFeatureHint", "Existing hint");
 		Reflect.set(mode, "featureHintEligibleAt", 5_000);
-		Reflect.set(mode, "connectionState", { isStreaming: true, retryAttempt: 1 });
 
-		callPrivate(mode, "prepareFeatureHintRun");
+		callPrivate(mode, "clearFeatureHintPresentation");
 		expect(Reflect.get(mode, "currentFeatureHint")).toBe("Existing hint");
 
-		Reflect.set(mode, "connectionState", { isStreaming: true, retryAttempt: 0 });
 		callPrivate(mode, "prepareFeatureHintRun");
 		expect(Reflect.get(mode, "currentFeatureHint")).toBeUndefined();
 	});
