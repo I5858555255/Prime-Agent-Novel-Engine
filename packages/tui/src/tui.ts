@@ -18,6 +18,7 @@ import {
 	normalizeTerminalOutput,
 	sliceByColumn,
 	sliceWithWidth,
+	stripAnsi,
 	visibleContentSpan,
 	visibleWidth,
 } from "./utils.js";
@@ -1198,13 +1199,14 @@ export class TUI extends Container {
 			const { component, w, scrollback, aboveMarker } = renderedOverlay;
 			let { overlayLines, row, col } = renderedOverlay;
 			if (aboveMarker) {
-				const markerViewportRow = aboveMarker.line - viewportStart;
-				const requestedMarkerRow = markerViewportRow + aboveMarker.offsetY;
-				const markerRow =
-					aboveMarker.offsetY < 0 && overlayLines.length > requestedMarkerRow
-						? markerViewportRow
-						: requestedMarkerRow;
+				const markerRow = aboveMarker.line - viewportStart + aboveMarker.offsetY;
 				if (markerRow <= 0 || markerRow >= termHeight) continue;
+				while (overlayLines.length > markerRow && stripAnsi(overlayLines[0] ?? "").trim().length === 0) {
+					overlayLines = overlayLines.slice(1);
+				}
+				while (overlayLines.length > markerRow && stripAnsi(overlayLines.at(-1) ?? "").trim().length === 0) {
+					overlayLines = overlayLines.slice(0, -1);
+				}
 				if (overlayLines.length > markerRow) {
 					overlayLines = overlayLines.slice(overlayLines.length - markerRow);
 				}

@@ -72,7 +72,8 @@ describe("editor autocomplete overlay", () => {
 		await terminal.waitForRender();
 
 		const viewport = terminal.getViewport();
-		assert.ok(viewport.some((line) => line.includes("help")));
+		assert.ok(viewport[0]?.includes("help"));
+		assert.ok(viewport[1]?.includes("hotkeys"));
 		assert.ok(viewport[3]?.includes("/"));
 		tui.stop();
 	});
