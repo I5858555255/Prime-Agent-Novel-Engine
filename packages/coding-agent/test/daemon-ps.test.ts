@@ -100,10 +100,9 @@ describe("mergeDiscoveredDaemonProcesses", () => {
 });
 
 describe("evaluateShutdownQuietPeriod", () => {
-	it("expires instead of succeeding when the deadline arrives before a full quiet period", () => {
-		expect(evaluateShutdownQuietPeriod(10_500, 11_000, 10_000)).toBe("waiting");
-		expect(evaluateShutdownQuietPeriod(11_000, 11_000, 10_500)).toBe("expired");
-		expect(evaluateShutdownQuietPeriod(11_000, 11_000, 10_000)).toBe("complete");
+	it("requires a full quiet period independently of the convergence window", () => {
+		expect(evaluateShutdownQuietPeriod(10_500, 10_000)).toBe("waiting");
+		expect(evaluateShutdownQuietPeriod(11_000, 10_000)).toBe("complete");
 	});
 });
 

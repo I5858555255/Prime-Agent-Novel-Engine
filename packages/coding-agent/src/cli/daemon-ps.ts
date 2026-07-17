@@ -69,15 +69,11 @@ const STATUS_ORDER: Record<DaemonStatus, number> = {
 const SHUTDOWN_QUIET_PERIOD_MS = 1000;
 const SHUTDOWN_CONVERGENCE_TIMEOUT_MS = 10_000;
 
-export function evaluateShutdownQuietPeriod(
-	now: number,
-	deadline: number,
-	quietSince: number | undefined,
-): "complete" | "waiting" | "expired" {
+export function evaluateShutdownQuietPeriod(now: number, quietSince: number | undefined): "complete" | "waiting" {
 	if (quietSince !== undefined && now - quietSince >= SHUTDOWN_QUIET_PERIOD_MS) {
 		return "complete";
 	}
-	return now >= deadline ? "expired" : "waiting";
+	return "waiting";
 }
 
 // Linux comm names (and thus the process name ss reports) are capped at 15 chars.
@@ -744,38 +740,29 @@ async function terminateVerifiedResiduals(
 ): Promise<void> {
 	let previousSignature: string | undefined;
 	let quietSince: number | undefined;
-	let lastObservedSocketPath: string | undefined;
-	const deadline = Date.now() + SHUTDOWN_CONVERGENCE_TIMEOUT_MS + SHUTDOWN_QUIET_PERIOD_MS;
+	const deadline = Date.now() + SHUTDOWN_CONVERGENCE_TIMEOUT_MS;
 	while (true) {
 		await assertAdmission();
 		const listeners = scanListeningDaemons();
 		const now = Date.now();
 		if (listeners.length === 0) {
+			previousSignature = undefined;
 			quietSince ??= now;
-			const quietPeriod = evaluateShutdownQuietPeriod(now, deadline, quietSince);
+			const quietPeriod = evaluateShutdownQuietPeriod(now, quietSince);
 			if (quietPeriod === "complete") {
 				return;
 			}
-			if (quietPeriod === "expired") break;
 			await delay(100);
 			continue;
 		}
 		quietSince = undefined;
-		lastObservedSocketPath = listeners[0]?.socketPath;
-		if (now >= deadline) break;
 		const signature = daemonListenerSignature(listeners);
+		if (now >= deadline) {
+			recordResidualListenerFailures(listeners, failed, reportedFailures, "kept respawning during shutdown");
+			return;
+		}
 		if (signature === previousSignature) {
-			for (const listener of listeners) {
-				const processStartId = getProcessStartId(listener.pid);
-				if (processStartId && getProcessStartId(listener.pid) === processStartId) {
-					recordShutdownFailure(
-						failed,
-						reportedFailures,
-						listener.socketPath,
-						`daemon process remained after shutdown (pid ${listener.pid}, start ${processStartId})${describeDaemonParent(listener.pid)}`,
-					);
-				}
-			}
+			recordResidualListenerFailures(listeners, failed, reportedFailures, "remained after shutdown");
 			return;
 		}
 		previousSignature = signature;
@@ -797,26 +784,24 @@ async function terminateVerifiedResiduals(
 			}
 		}
 	}
-	const remainingListeners = scanListeningDaemons();
-	if (remainingListeners.length === 0) {
-		recordShutdownFailure(
-			failed,
-			reportedFailures,
-			lastObservedSocketPath ?? defaultDaemonSocketPath(),
-			`daemon did not remain stopped for the required ${SHUTDOWN_QUIET_PERIOD_MS}ms quiet period`,
-		);
-		return;
-	}
-	for (const listener of remainingListeners) {
+}
+
+function recordResidualListenerFailures(
+	listeners: readonly DiscoveredDaemonProcess[],
+	failed: Array<{ socketPath: string; reason: string }>,
+	reportedFailures: Set<string>,
+	reason: string,
+): void {
+	for (const listener of listeners) {
 		const processStartId = getProcessStartId(listener.pid);
-		if (!processStartId || getProcessStartId(listener.pid) !== processStartId) {
-			continue;
-		}
+		const identity = processStartId
+			? `pid ${listener.pid}, start ${processStartId}`
+			: `pid ${listener.pid}, process identity unavailable`;
 		recordShutdownFailure(
 			failed,
 			reportedFailures,
 			listener.socketPath,
-			`daemon kept respawning during shutdown (pid ${listener.pid}, start ${processStartId})${describeDaemonParent(listener.pid)}`,
+			`daemon ${reason} (${identity})${describeDaemonParent(listener.pid)}`,
 		);
 	}
 }
