@@ -329,44 +329,64 @@ export function normalizeTerminalOutput(str: string): string {
 	return normalized;
 }
 
+interface AnsiCode {
+	code: string;
+	length: number;
+}
+
+function extractControlString(str: string, pos: number, allowBel: boolean): AnsiCode | null {
+	let j = pos + 2;
+	while (j < str.length) {
+		if (allowBel && str[j] === "\x07") {
+			return { code: str.substring(pos, j + 1), length: j + 1 - pos };
+		}
+		if (str[j] === "\x1b" && str[j + 1] === "\\") {
+			return { code: str.substring(pos, j + 2), length: j + 2 - pos };
+		}
+		j++;
+	}
+	return null;
+}
+
 /**
  * Extract ANSI escape sequences from a string at the given position.
  */
-export function extractAnsiCode(str: string, pos: number): { code: string; length: number } | null {
+export function extractAnsiCode(str: string, pos: number): AnsiCode | null {
 	if (pos >= str.length || str[pos] !== "\x1b") return null;
 
 	const next = str[pos + 1];
 
-	// CSI sequence: ESC [ ... m/G/K/H/J
+	// CSI: parameter bytes, then intermediate bytes, then one final byte.
 	if (next === "[") {
 		let j = pos + 2;
-		while (j < str.length && !/[mGKHJ]/.test(str[j]!)) j++;
-		if (j < str.length) return { code: str.substring(pos, j + 1), length: j + 1 - pos };
-		return null;
-	}
-
-	// OSC sequence: ESC ] ... BEL or ESC ] ... ST (ESC \)
-	// Used for hyperlinks (OSC 8), window titles, etc.
-	if (next === "]") {
-		let j = pos + 2;
+		let hasIntermediate = false;
 		while (j < str.length) {
-			if (str[j] === "\x07") return { code: str.substring(pos, j + 1), length: j + 1 - pos };
-			if (str[j] === "\x1b" && str[j + 1] === "\\") return { code: str.substring(pos, j + 2), length: j + 2 - pos };
-			j++;
+			const byte = str.charCodeAt(j);
+			if (byte >= 0x30 && byte <= 0x3f && !hasIntermediate) {
+				j++;
+				continue;
+			}
+			if (byte >= 0x20 && byte <= 0x2f) {
+				hasIntermediate = true;
+				j++;
+				continue;
+			}
+			if (byte >= 0x40 && byte <= 0x7e) {
+				return { code: str.substring(pos, j + 1), length: j + 1 - pos };
+			}
+			return null;
 		}
 		return null;
 	}
 
-	// APC sequence: ESC _ ... BEL or ESC _ ... ST (ESC \)
-	// Used for cursor marker and application-specific commands
-	if (next === "_") {
-		let j = pos + 2;
-		while (j < str.length) {
-			if (str[j] === "\x07") return { code: str.substring(pos, j + 1), length: j + 1 - pos };
-			if (str[j] === "\x1b" && str[j + 1] === "\\") return { code: str.substring(pos, j + 2), length: j + 2 - pos };
-			j++;
-		}
-		return null;
+	// OSC uses BEL or ST. APC also accepts BEL for existing private markers.
+	if (next === "]" || next === "_") {
+		return extractControlString(str, pos, true);
+	}
+
+	// DCS, PM, and SOS are terminated by ST.
+	if (next === "P" || next === "^" || next === "X") {
+		return extractControlString(str, pos, false);
 	}
 
 	return null;

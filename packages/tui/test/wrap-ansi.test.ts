@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { visibleWidth, wrapTextWithAnsi } from "../src/utils.js";
+import { extractAnsiCode, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "../src/utils.js";
 
 describe("wrapTextWithAnsi", () => {
 	describe("underline styling", () => {
@@ -218,5 +218,64 @@ describe("wrapTextWithAnsi with OSC 8 hyperlinks", () => {
 		const closeCount = (lines[0].match(/\x1b\]8;;\x1b\\/g) ?? []).length;
 		assert.strictEqual(openCount, 1);
 		assert.strictEqual(closeCount, 1);
+	});
+});
+
+describe("ANSI sequence scanning", () => {
+	it("accepts the full CSI final-byte range and valid byte classes", () => {
+		const sequences = ["\x1b[@", "\x1b[2A", "\x1b[?25l", "\x1b[1 q", "\x1b[15~"];
+
+		for (const sequence of sequences) {
+			assert.deepStrictEqual(extractAnsiCode(sequence, 0), {
+				code: sequence,
+				length: sequence.length,
+			});
+		}
+	});
+
+	it("rejects incomplete and malformed CSI sequences", () => {
+		for (const sequence of ["\x1b[", "\x1b[31", "\x1b[1 ", "\x1b[1 2m", "\x1b[1\x7fm"]) {
+			assert.strictEqual(extractAnsiCode(sequence, 0), null);
+		}
+	});
+
+	it("keeps OSC and DCS payloads distinct from CSI scanning", () => {
+		const oscBel = "\x1b]0;title\x07";
+		const oscSt = "\x1b]0;title\x1b\\";
+		const dcs = "\x1bP1;2|payload[m~\x1b\\";
+		const apcBel = "\x1b_private-marker\x07";
+
+		for (const sequence of [oscBel, oscSt, dcs, apcBel]) {
+			assert.deepStrictEqual(extractAnsiCode(sequence, 0), {
+				code: sequence,
+				length: sequence.length,
+			});
+		}
+		assert.strictEqual(extractAnsiCode("\x1b]0;title", 0), null);
+		assert.strictEqual(extractAnsiCode("\x1bPpayload", 0), null);
+		assert.strictEqual(extractAnsiCode("\x1bPpayload\x07", 0), null);
+	});
+
+	it("ignores standard CSI and DCS sequences when measuring width", () => {
+		const text = "a\x1b[2Ab\x1b[?25lc\x1b[1 qd\x1bPpayload[m~\x1b\\e";
+		assert.strictEqual(visibleWidth(text), 5);
+	});
+
+	it("preserves scanned sequences while slicing by visible columns", () => {
+		const hideCursor = "\x1b[?25l";
+		const dcs = "\x1bPpayload\x1b\\";
+		const text = `a${hideCursor}bc${dcs}d`;
+
+		assert.strictEqual(sliceByColumn(text, 1, 3), `${hideCursor}bc${dcs}d`);
+	});
+
+	it("wraps by visible width without splitting standard CSI sequences", () => {
+		const hideCursor = "\x1b[?25l";
+		const showCursor = "\x1b[?25h";
+
+		assert.deepStrictEqual(wrapTextWithAnsi(`${hideCursor}abcdef${showCursor}`, 3), [
+			`${hideCursor}abc`,
+			`def${showCursor}`,
+		]);
 	});
 });
