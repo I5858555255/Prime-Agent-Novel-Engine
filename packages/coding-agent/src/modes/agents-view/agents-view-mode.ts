@@ -17,7 +17,7 @@ import {
 import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
-import type { ModelRegistry } from "../../core/model-registry.js";
+import type { ModelCatalogSnapshot, ModelRegistry } from "../../core/model-registry.js";
 import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
 import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-inference-model-selection.js";
 import { SessionManager } from "../../core/session-manager.js";
@@ -234,6 +234,15 @@ export async function getAgentsViewModelArgumentCompletions(
 ): Promise<AutocompleteItem[] | null> {
 	const catalog = await modelRegistry.refreshModelCatalog();
 	return getModelArgumentCompletions(prefix, catalog.models);
+}
+
+export function syncAgentsViewModelMenuAfterAuth(
+	menu: Pick<ConfigurationMenuComponent, "refreshAuthentication" | "updateModels">,
+	currentModel: Model<Api> | undefined,
+	catalog: ModelCatalogSnapshot,
+): void {
+	menu.refreshAuthentication();
+	menu.updateModels(currentModel, catalog.models, new Set(catalog.configuredProviders));
 }
 
 export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
@@ -1004,7 +1013,8 @@ class AgentsViewMode implements Component, Focusable {
 					const catalog = await this.options.uiServices.modelRegistry.refreshModelCatalog();
 					const match = findExactModelReferenceMatch(searchTerm, catalog.models);
 					if (match) {
-						if (await this.ensureDefaultModelProviderConfigured(match, authFlows, providerOptions)) {
+						const { ready } = await this.ensureDefaultModelProviderConfigured(match, authFlows, providerOptions);
+						if (ready) {
 							this.applyDefaultModel(match);
 						}
 						return;
@@ -1080,9 +1090,9 @@ class AgentsViewMode implements Component, Focusable {
 		model: Model<Api>,
 		authFlows: ProviderAuthFlows,
 		providerOptions: ReadonlyArray<AuthSelectorProvider>,
-	): Promise<boolean> {
+	): Promise<{ ready: boolean; refreshedCatalog?: ModelCatalogSnapshot }> {
 		const modelRegistry = this.options.uiServices.modelRegistry;
-		if (modelRegistry.hasConfiguredAuth(model)) return true;
+		if (modelRegistry.hasConfiguredAuth(model)) return { ready: true };
 
 		const provider = providerOptions.find(
 			(option) => option.id === model.provider && (option.category ?? "provider") === "provider",
@@ -1091,19 +1101,19 @@ class AgentsViewMode implements Component, Focusable {
 			this.setStatusMessage(`Authentication for ${model.provider} must be configured externally.`, {
 				tone: "error",
 			});
-			return false;
+			return { ready: false };
 		}
 
 		const result = await authFlows.loginProvider(provider);
-		if (result.status !== "success") return false;
+		if (result.status !== "success") return { ready: false };
 
-		await modelRegistry.refreshModelCatalog();
-		if (modelRegistry.hasConfiguredAuth(model)) return true;
+		const refreshedCatalog = await modelRegistry.refreshModelCatalog();
+		if (modelRegistry.hasConfiguredAuth(model)) return { ready: true, refreshedCatalog };
 
 		this.setStatusMessage(`Authentication completed, but ${model.provider} is still unavailable.`, {
 			tone: "error",
 		});
-		return false;
+		return { ready: false, refreshedCatalog };
 	}
 
 	private async showConfigurationMenu(initialTab: ConfigurationMenuTab, initialModelSearch?: string): Promise<void> {
@@ -1135,16 +1145,14 @@ class AgentsViewMode implements Component, Focusable {
 					.then(async (authResult) => {
 						if (settled) return;
 						handle?.focus();
-						menu.refreshAuthentication();
-						if (authResult.status !== "success" || tab === "mcp-connections") return;
+						if (authResult.status !== "success" || tab === "mcp-connections") {
+							menu.refreshAuthentication();
+							return;
+						}
 
 						await this.applyPrimeInferenceFallbackAfterLogin(authResult);
 						const catalog = await modelRegistry.refreshModelCatalog();
-						menu.updateModels(
-							this.getDefaultModelForNewAgents(),
-							catalog.models,
-							new Set(catalog.configuredProviders),
-						);
+						syncAgentsViewModelMenuAfterAuth(menu, this.getDefaultModelForNewAgents(), catalog);
 						menu.setActiveTab("models");
 					})
 					.catch((error) => {
@@ -1172,10 +1180,18 @@ class AgentsViewMode implements Component, Focusable {
 				onSelectModel: (model) => {
 					void (async () => {
 						try {
-							const ready = await this.ensureDefaultModelProviderConfigured(model, authFlows, providerOptions);
+							const result = await this.ensureDefaultModelProviderConfigured(model, authFlows, providerOptions);
 							handle?.focus();
-							menu.refreshAuthentication();
-							if (!ready || settled) return;
+							if (result.refreshedCatalog) {
+								syncAgentsViewModelMenuAfterAuth(
+									menu,
+									this.getDefaultModelForNewAgents(),
+									result.refreshedCatalog,
+								);
+							} else {
+								menu.refreshAuthentication();
+							}
+							if (!result.ready || settled) return;
 							this.applyDefaultModel(model);
 							finish();
 						} catch (error) {
