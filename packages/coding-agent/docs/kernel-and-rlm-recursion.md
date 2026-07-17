@@ -619,9 +619,12 @@ result = await rlm(
 )
 ```
 
-The system prompt advertises only models for providers with configured auth,
-using `provider-id/model-id` selectors. The host resolves the selector exactly
-and rechecks authentication and Prime team access before creating child state.
+The system prompt never injects the full authenticated model catalog. When the
+user supplies an explicit model scope, such as `--models`, it advertises only
+those choices that are currently authenticated and available, using
+`provider-id/model-id` selectors. A user or skill can also supply an exact
+selector directly. The host resolves every selector exactly and rechecks
+authentication and Prime team access before creating child state.
 Unknown, unauthenticated, or unavailable selectors are rejected. The selected
 model is persisted with the child and remains active on later turns; changing
 the parent model does not update existing children.

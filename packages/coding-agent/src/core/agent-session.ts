@@ -891,6 +891,7 @@ export class AgentSession {
 	private _rlmParentNodeId?: string;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
+	private _pendingRlmSubagentSessionNames = new Set<string>();
 	// Inline mode keeps finished child sessions so the inspector can still read them;
 	// the daemon does the same by leaving the child session resident in its registry.
 	private _retainedRlmChildSessions = new Map<string, AgentSession>();
@@ -2812,6 +2813,8 @@ export class AgentSession {
 	/** Update scoped models for cycling */
 	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>): void {
 		this._scopedModels = scopedModels;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._baseSystemPrompt;
 	}
 
 	/** File-based prompt templates */
@@ -2865,6 +2868,7 @@ export class AgentSession {
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 		const loadedSkills = this._modelVisibleSkills();
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+		const availableModels = this._modelRegistry.getAvailable();
 
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
@@ -2877,10 +2881,9 @@ export class AgentSession {
 			toolSnippets,
 			promptGuidelines,
 			allowRecursion: this._rlmDepth < this._rlmMaxDepth,
-			availableModels: this._modelRegistry.getAvailable().map((model) => ({
-				provider: model.provider,
-				id: model.id,
-			})),
+			subagentModelChoices: this._scopedModels
+				.filter((scoped) => availableModels.some((model) => modelsAreEqual(model, scoped.model)))
+				.map((scoped) => ({ provider: scoped.model.provider, id: scoped.model.id })),
 			harnessState: this._loadMergedHarnessState(),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
@@ -6701,6 +6704,9 @@ export class AgentSession {
 	}
 
 	private _assertRlmSubagentSessionNameAvailable(name: string): void {
+		if (this._pendingRlmSubagentSessionNames.has(name)) {
+			throw new Error(`RLM subagent session name "${name}" is already in use`);
+		}
 		const conflictsWithSelector = (endpoint: {
 			activeSessionId: string;
 			sessionId: string;
@@ -6785,9 +6791,17 @@ export class AgentSession {
 				`RLM recursion depth limit reached (RLM_DEPTH=${this._rlmDepth}, RLM_MAX_DEPTH=${this._rlmMaxDepth})`,
 			);
 		}
-		const model = await this._resolveRlmSubagentModel(requestedModel);
 		if (requestedSessionName) {
 			this._assertRlmSubagentSessionNameAvailable(requestedSessionName);
+			this._pendingRlmSubagentSessionNames.add(requestedSessionName);
+		}
+		let model: Model<Api>;
+		try {
+			model = await this._resolveRlmSubagentModel(requestedModel);
+		} finally {
+			if (requestedSessionName) {
+				this._pendingRlmSubagentSessionNames.delete(requestedSessionName);
+			}
 		}
 
 		const childSessionDir = this._createChildRlmSessionDir();

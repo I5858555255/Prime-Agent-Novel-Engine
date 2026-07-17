@@ -6,17 +6,52 @@ import { createHarness } from "../harness.js";
 const provider = "faux-eng-4649";
 
 describe("ENG-4649 subagent model selection", () => {
-	it("lists only authenticated provider-qualified models in the prompt", async () => {
+	it("advertises only user-scoped authenticated models instead of the full catalog", async () => {
 		const harness = await createHarness({
 			provider,
-			models: [{ id: "parent-model" }, { id: "child-model" }],
+			models: Array.from({ length: 320 }, (_, index) => ({ id: `model-${index}` })),
 		});
 		try {
-			const prompt = harness.session.agent.state.systemPrompt;
-			expect(prompt).toContain(`\`${provider}/parent-model\``);
-			expect(prompt).toContain(`\`${provider}/child-model\``);
-			expect(prompt).not.toContain("`anthropic/claude-sonnet-4-5`");
-			expect(prompt).toContain("do not choose a different model on your own");
+			const defaultPrompt = harness.session.agent.state.systemPrompt;
+			expect(defaultPrompt).not.toContain("model choices for subagents");
+			expect(defaultPrompt).not.toContain(`${provider}/model-319`);
+
+			const unauthenticatedModel = harness.session.modelRegistry
+				.getAll()
+				.find((model) => !harness.session.modelRegistry.hasConfiguredAuth(model));
+			expect(unauthenticatedModel).toBeDefined();
+			harness.session.setScopedModels([
+				{ model: harness.getModel("model-1")! },
+				{ model: harness.getModel("model-319")! },
+				{ model: unauthenticatedModel! },
+			]);
+
+			const scopedPrompt = harness.session.agent.state.systemPrompt;
+			const choices = scopedPrompt
+				.split("\n")
+				.find((line) => line.startsWith("User-scoped authenticated model choices for subagents:"));
+			expect(choices).toBe(
+				`User-scoped authenticated model choices for subagents: \`${provider}/model-1\`, \`${provider}/model-319\`.`,
+			);
+			expect(choices).not.toContain(`${unauthenticatedModel!.provider}/${unauthenticatedModel!.id}`);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("reserves an explicit child name while model validation is pending", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model" }],
+		});
+		try {
+			harness.setResponses([fauxAssistantMessage("first child answer")]);
+
+			const first = harness.session.runRlmChild("first task", { name: "shared-reviewer" });
+			await expect(harness.session.runRlmChild("second task", { name: "shared-reviewer" })).rejects.toThrow(
+				'RLM subagent session name "shared-reviewer" is already in use',
+			);
+			await expect(first).resolves.toMatchObject({ answer: "first child answer" });
 		} finally {
 			harness.cleanup();
 		}

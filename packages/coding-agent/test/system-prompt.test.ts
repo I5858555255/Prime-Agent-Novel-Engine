@@ -99,12 +99,12 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Each `%%bash` cell runs in a throw-away subshell");
 	});
 
-	test("advertises only provided authenticated models with provider-qualified selectors", () => {
+	test("advertises only provided user-scoped models with provider-qualified selectors", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
 			activeTools: ["ipython"],
-			availableModels: [
+			subagentModelChoices: [
 				{ provider: "deepseek", id: "deepseek-v4-flash" },
 				{ provider: "anthropic", id: "claude-sonnet-4-6" },
 			],
@@ -112,8 +112,18 @@ describe("buildRlmPrompt", () => {
 
 		expect(prompt).toContain("`deepseek/deepseek-v4-flash`");
 		expect(prompt).toContain("`anthropic/claude-sonnet-4-6`");
-		expect(prompt).toContain("exact provider-qualified selector");
+		expect(prompt).toContain("User-scoped authenticated model choices");
 		expect(prompt).toContain("do not choose a different model on your own");
+	});
+
+	test("omits the model-choice catalog when the user did not scope models", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			activeTools: ["ipython"],
+		});
+
+		expect(prompt).not.toContain("model choices for subagents");
 	});
 
 	test("only documents ipython shell prefixes when ipython is active", () => {
