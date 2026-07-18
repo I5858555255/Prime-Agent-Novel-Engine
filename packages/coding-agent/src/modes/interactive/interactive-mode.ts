@@ -7175,6 +7175,11 @@ export class InteractiveMode {
 		}
 	}
 
+	private async getConnectionModelCatalog(): Promise<AgentConnectionModel[]> {
+		await this.getConnectionAvailableModels();
+		return [...this.connectionModelCatalog];
+	}
+
 	private getCachedModelCandidates(): AgentConnectionModel[] {
 		const modelsById = new Map<string, AgentConnectionModel>();
 		for (const scoped of this.getScopedModelState()) {
@@ -7528,7 +7533,7 @@ export class InteractiveMode {
 	private async showModelsSelector(): Promise<void> {
 		let allModels: AgentConnectionModel[];
 		try {
-			allModels = await this.getConnectionAvailableModels();
+			allModels = await this.getConnectionModelCatalog();
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
 			return;

@@ -24,6 +24,7 @@ interface ConnectionAuthRefreshHarness {
 	invalidateConnectionModels(): void;
 	applyConnectionModelCatalog(catalog: AgentConnectionModelCatalog): void;
 	getConnectionAvailableModels(): Promise<AgentConnectionModel[]>;
+	getConnectionModelCatalog(): Promise<AgentConnectionModel[]>;
 	refreshConnectionModelsAfterAuthChange(): Promise<void>;
 }
 
@@ -140,6 +141,25 @@ describe("ENG-4575 model authentication", () => {
 		expect(fakeThis.connectionConfiguredProviders).toEqual(new Set());
 		expect(fakeThis.connectionModels).toEqual([]);
 		expect(fakeThis.connectionModelCatalog).toEqual([model]);
+	});
+
+	test("returns the full public catalog to catalog-facing selectors", async () => {
+		const harness = await createHarness({ models: [{ id: "base", name: "Base", reasoning: true }] });
+		harnesses.push(harness);
+		const model = { ...harness.getModel("base")!, provider: "openai" } as AgentConnectionModel;
+		const fakeThis = Object.create(InteractiveMode.prototype) as ConnectionAuthRefreshHarness;
+		fakeThis.agentConnection = {
+			getModelCatalog: vi.fn(async () => ({ models: [model], configuredProviders: [] })),
+		};
+		fakeThis.connectionModels = [];
+		fakeThis.connectionModelCatalog = [];
+		fakeThis.connectionConfiguredProviders = new Set();
+		fakeThis.connectionModelsFetchedAt = 0;
+		fakeThis.connectionModelsRefreshVersion = 0;
+		fakeThis.connectionModelsRefreshInFlight = undefined;
+
+		await expect(fakeThis.getConnectionModelCatalog()).resolves.toEqual([model]);
+		expect(fakeThis.connectionModels).toEqual([]);
 	});
 
 	test("uses the full public catalog for scoped-session model autocomplete", async () => {
