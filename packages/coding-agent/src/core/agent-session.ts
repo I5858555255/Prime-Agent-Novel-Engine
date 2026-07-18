@@ -286,6 +286,8 @@ export type AgentSessionEvent =
 			followUp: readonly string[];
 	  }
 	| { type: "compaction_start"; reason: CompactionReason; customInstructions?: string }
+	| { type: "refinement_start" }
+	| { type: "refinement_end" }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| { type: "service_tier_changed"; serviceTier: ServiceTier }
@@ -2748,6 +2750,11 @@ export class AgentSession {
 		);
 	}
 
+	/** Whether continual harness refinement is currently running. */
+	get isRefining(): boolean {
+		return this._refineInFlight !== undefined;
+	}
+
 	/** All messages including custom types like BashExecutionMessage */
 	get messages(): AgentMessage[] {
 		return this.agent.state.messages;
@@ -3207,8 +3214,22 @@ export class AgentSession {
 			// enqueue according to the requested behavior.
 			const shouldQueueForStreaming = this.isStreaming;
 			const shouldQueueForPendingWork = hasQueueIfBusyBackpressure();
-			if (shouldQueueForStreaming || shouldQueueForPendingWork) {
-				if (!options?.streamingBehavior) {
+			const shouldQueueUserPromptBehindExistingMessages =
+				options?.agentMessageId === undefined &&
+				this._pendingMessageResumeRequested &&
+				this.pendingMessageCount > 0;
+			const shouldQueueForRefinement = options?.agentMessageId === undefined && this.isRefining;
+			if (
+				shouldQueueForStreaming ||
+				shouldQueueForPendingWork ||
+				shouldQueueUserPromptBehindExistingMessages ||
+				shouldQueueForRefinement
+			) {
+				const streamingBehavior =
+					shouldQueueForRefinement || shouldQueueUserPromptBehindExistingMessages
+						? "followUp"
+						: options?.streamingBehavior;
+				if (!streamingBehavior) {
 					const stateDescription = shouldQueueForStreaming
 						? "Agent is already processing"
 						: "Agent has queued work";
@@ -3219,13 +3240,14 @@ export class AgentSession {
 				const queued = await this._queuePromptWithPendingNextTurnMessages(
 					expandedText,
 					currentImages,
-					options.streamingBehavior,
+					streamingBehavior,
 					{
-						queueKey: options.followUpQueueKey,
-						agentMessageId: options.agentMessageId,
-						suppressAutonomousContinuation: options.suppressAutonomousContinuation,
-						customMessage: options.customMessage,
-						resumeIfIdle: options.resumeIfIdle,
+						queueKey: options?.followUpQueueKey,
+						agentMessageId: options?.agentMessageId,
+						suppressAutonomousContinuation: options?.suppressAutonomousContinuation,
+						customMessage: options?.customMessage,
+						resumeIfIdle:
+							options?.resumeIfIdle || shouldQueueForRefinement || shouldQueueUserPromptBehindExistingMessages,
 					},
 				);
 				if (!queued) {
@@ -3385,18 +3407,27 @@ export class AgentSession {
 			reportPreflight(false);
 			throw new Error("Accepted agent message was cleared before delivery.");
 		}
+		const refiningAtHandoff = options?.agentMessageId === undefined && this.isRefining;
+		const shouldQueueUserPromptBehindExistingMessagesAtHandoff =
+			options?.agentMessageId === undefined && this._pendingMessageResumeRequested && this.pendingMessageCount > 0;
 		const shouldQueueAtHandoff =
-			options?.queueIfBusy === true &&
-			(this.isStreaming ||
-				this.pendingMessageCount > 0 ||
-				this.isCompacting ||
-				this.isRetrying ||
-				this.isBashRunning ||
-				this._acceptedPromptCompletions.size > 0 ||
-				(this._acceptedAgentMessagePrompt !== undefined &&
-					this._acceptedAgentMessagePrompt !== acceptedAgentMessagePrompt));
+			refiningAtHandoff ||
+			shouldQueueUserPromptBehindExistingMessagesAtHandoff ||
+			(options?.queueIfBusy === true &&
+				(this.isStreaming ||
+					this.pendingMessageCount > 0 ||
+					this.isCompacting ||
+					this.isRetrying ||
+					this.isBashRunning ||
+					this._acceptedPromptCompletions.size > 0 ||
+					(this._acceptedAgentMessagePrompt !== undefined &&
+						this._acceptedAgentMessagePrompt !== acceptedAgentMessagePrompt)));
 		if (shouldQueueAtHandoff) {
-			if (!options?.streamingBehavior) {
+			const streamingBehavior =
+				refiningAtHandoff || shouldQueueUserPromptBehindExistingMessagesAtHandoff
+					? "followUp"
+					: options?.streamingBehavior;
+			if (!streamingBehavior) {
 				if (acceptedAgentMessagePrompt && this._acceptedAgentMessagePrompt === acceptedAgentMessagePrompt) {
 					this._acceptedAgentMessagePrompt = undefined;
 				}
@@ -3413,13 +3444,14 @@ export class AgentSession {
 			const queued = await this._queuePromptWithPendingNextTurnMessages(
 				expandedText,
 				currentImages,
-				options.streamingBehavior,
+				streamingBehavior,
 				{
-					queueKey: options.followUpQueueKey,
-					agentMessageId: options.agentMessageId,
-					suppressAutonomousContinuation: options.suppressAutonomousContinuation,
-					customMessage: options.customMessage,
-					resumeIfIdle: options.resumeIfIdle,
+					queueKey: options?.followUpQueueKey,
+					agentMessageId: options?.agentMessageId,
+					suppressAutonomousContinuation: options?.suppressAutonomousContinuation,
+					customMessage: options?.customMessage,
+					resumeIfIdle:
+						options?.resumeIfIdle || refiningAtHandoff || shouldQueueUserPromptBehindExistingMessagesAtHandoff,
 				},
 			);
 			if (!queued) {
@@ -3692,6 +3724,7 @@ export class AgentSession {
 					agentMessageId: options.agentMessageId,
 					message: options.customMessage,
 					prefixMessages: pendingNextTurnMessages,
+					suppressAutonomousContinuation: options.suppressAutonomousContinuation,
 					resumeIfIdle: options.resumeIfIdle,
 				});
 				if (!queued) {
@@ -5160,13 +5193,15 @@ export class AgentSession {
 			() => undefined,
 		);
 		this._refineInFlight = settled;
+		this._emit({ type: "refinement_start" });
 		try {
 			return await run;
 		} finally {
 			if (this._refineInFlight === settled) {
 				this._refineInFlight = undefined;
+				this._schedulePendingMessageResume();
+				this._emit({ type: "refinement_end" });
 			}
-			this._schedulePendingMessageResume();
 		}
 	}
 

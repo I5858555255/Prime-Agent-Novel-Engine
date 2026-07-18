@@ -1164,7 +1164,7 @@ describe("AgentSession queue characterization", () => {
 		}
 	});
 
-	it("persists a prompt started while a background refine is in flight", async () => {
+	it("queues and resumes a prompt submitted during refinement", async () => {
 		const harness = await createAutoRefineHarness();
 		harnesses.push(harness);
 		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
@@ -1192,30 +1192,145 @@ describe("AgentSession queue characterization", () => {
 					);
 				},
 				fauxAssistantMessage("prompt reply"),
+				fauxAssistantMessage("second reply"),
 			]);
+			let secondPrompt: Promise<void> | undefined;
+			const refinementStates: Array<[string, boolean]> = [];
+			harness.session.subscribe((event) => {
+				if (event.type === "refinement_start" || event.type === "refinement_end") {
+					refinementStates.push([event.type, harness.session.isRefining]);
+				}
+				if (event.type === "refinement_end") {
+					secondPrompt = harness.session.prompt("second prompt");
+				}
+			});
 
 			const refinePromise = harness.session.refine({ instructions: "background refine" });
 			await planStartedPromise;
+			await harness.session.prompt("hello during refine");
 
-			const promptPromise = harness.session.prompt("hello during refine");
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			// The prompt must wait for the refine (its response is still queued);
-			// running now would drop its events while the session is detached.
-			expect(harness.getPendingResponseCount()).toBe(1);
+			expect(harness.session.getSteeringMessages()).toEqual([]);
+			expect(harness.session.getFollowUpMessages()).toEqual(["hello during refine"]);
+			expect(harness.getPendingResponseCount()).toBe(2);
 
 			releasePlan?.();
 			await refinePromise;
-			await promptPromise;
+			await secondPrompt;
+			await vi.waitFor(() => {
+				expect(getAssistantTexts(harness)).toContain("prompt reply");
+			});
 
-			expect(
-				harness
-					.eventsOfType("message_end")
-					.some((event) => event.message.role === "assistant" && getMessageText(event.message) === "prompt reply"),
-			).toBe(true);
+			expect(refinementStates).toEqual([
+				["refinement_start", true],
+				["refinement_end", false],
+			]);
+			expect(getUserTexts(harness)).toEqual(["hello during refine", "second prompt"]);
+			expect(harness.session.pendingMessageCount).toBe(0);
 			const persistedAssistants = harness.sessionManager
 				.getEntries()
 				.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
-			expect(persistedAssistants).toHaveLength(1);
+			expect(persistedAssistants).toHaveLength(2);
+		} finally {
+			if (previousAgentDir === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = previousAgentDir;
+			}
+		}
+	});
+
+	it("queues a handoff prompt behind refinement follow-ups already scheduled to resume", async () => {
+		let releasePreflight: (() => void) | undefined;
+		const preflightGate = new Promise<void>((resolve) => {
+			releasePreflight = resolve;
+		});
+		let preflightStarted: (() => void) | undefined;
+		const preflightStartedPromise = new Promise<void>((resolve) => {
+			preflightStarted = resolve;
+		});
+		const harness = await createAutoRefineHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async () => {
+						preflightStarted?.();
+						await preflightGate;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		let releaseRefine: (() => void) | undefined;
+		const refineGate = new Promise<void>((resolve) => {
+			releaseRefine = resolve;
+		});
+		const internals = harness.session as unknown as {
+			_refineInFlight?: Promise<void>;
+		};
+		harness.setResponses([fauxAssistantMessage("first reply"), fauxAssistantMessage("second reply")]);
+
+		const latePrompt = harness.session.prompt("late handoff prompt");
+		await preflightStartedPromise;
+		internals._refineInFlight = refineGate;
+		await harness.session.followUp("already queued", undefined, { resumeIfIdle: true });
+		releasePreflight?.();
+		await Promise.resolve();
+		internals._refineInFlight = undefined;
+		releaseRefine?.();
+
+		await latePrompt;
+		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
+		expect(getUserTexts(harness)).toEqual(["already queued", "late handoff prompt"]);
+		expect(getAssistantTexts(harness)).toEqual(["first reply", "second reply"]);
+	});
+
+	it("re-arms resume when an early prompt queues behind pending work", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first reply"), fauxAssistantMessage("second reply")]);
+		const internals = harness.session as unknown as {
+			_compactionAbortController?: AbortController;
+			_pendingMessageResumeQueue: Promise<void>;
+		};
+		internals._compactionAbortController = new AbortController();
+		await harness.session.followUp("already queued", undefined, { resumeIfIdle: true });
+		await internals._pendingMessageResumeQueue;
+		internals._compactionAbortController = undefined;
+
+		await harness.session.prompt("queued at early gate");
+
+		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
+		expect(getUserTexts(harness)).toEqual(["already queued", "queued at early gate"]);
+		expect(getAssistantTexts(harness)).toEqual(["first reply", "second reply"]);
+	});
+
+	it("resumes queued prompts after refinement failure", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = `${harness.tempDir}/agent`;
+		try {
+			let releasePlan: (() => void) | undefined;
+			const planGate = new Promise<void>((resolve) => {
+				releasePlan = resolve;
+			});
+			harness.setResponses([
+				async () => {
+					await planGate;
+					throw new Error("refinement failed");
+				},
+				fauxAssistantMessage("queued reply"),
+			]);
+
+			const refinePromise = harness.session.refine({ instructions: "fail this refinement" });
+			await vi.waitFor(() => expect(harness.session.isRefining).toBe(true));
+			await harness.session.prompt("preserve this prompt");
+			releasePlan?.();
+
+			await expect(refinePromise).rejects.toThrow();
+			await vi.waitFor(() => {
+				expect(getAssistantTexts(harness)).toContain("queued reply");
+			});
+			expect(harness.session.pendingMessageCount).toBe(0);
 		} finally {
 			if (previousAgentDir === undefined) {
 				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;

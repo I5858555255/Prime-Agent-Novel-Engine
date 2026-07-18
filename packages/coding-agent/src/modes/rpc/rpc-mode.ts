@@ -249,6 +249,7 @@ async function runRpcModeWithConnectionInternal(
 					thinkingLevel: state.thinkingLevel,
 					isStreaming: state.isStreaming,
 					isCompacting: state.isCompacting,
+					isRefining: state.isRefining ?? false,
 					steeringMode: state.steeringMode,
 					followUpMode: state.followUpMode,
 					sessionFile: state.sessionFile,

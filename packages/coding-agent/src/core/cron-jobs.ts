@@ -84,6 +84,7 @@ export interface AgentCronSchedulerHooks {
 export interface HeartbeatCronSessionActivity {
 	isStreaming: boolean;
 	isCompacting?: boolean;
+	isRefining?: boolean;
 	isRetrying?: boolean;
 	isBashRunning: boolean;
 	hasAcceptedPromptInFlight?: boolean;
@@ -1323,6 +1324,7 @@ export function shouldDeferHeartbeatCronJob(job: AgentCronJob, activity: Heartbe
 	// regardless of delivery mode.
 	const busyBesidesStreaming =
 		activity.isCompacting === true ||
+		activity.isRefining === true ||
 		activity.isRetrying === true ||
 		activity.isBashRunning ||
 		activity.hasAcceptedPromptInFlight === true ||

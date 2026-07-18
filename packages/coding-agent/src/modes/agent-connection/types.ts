@@ -321,6 +321,7 @@ export interface AgentConnectionState {
 	availableThinkingLevels: ThinkingLevel[];
 	isStreaming: boolean;
 	isCompacting: boolean;
+	isRefining?: boolean;
 	isBashRunning: boolean;
 	retryAttempt: number;
 	steeringMode: AgentConnectionQueueMode;
@@ -537,6 +538,8 @@ export type AgentConnectionSessionEvent =
 			reason: "manual" | "threshold" | "overflow" | "requested";
 			customInstructions?: string;
 	  }
+	| { type: "refinement_start" }
+	| { type: "refinement_end" }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| { type: "service_tier_changed"; serviceTier: ServiceTier }

@@ -418,6 +418,9 @@ function getSessionSubtitle(summary: SessionSummary): string {
 }
 
 function getSessionStatusLabel(summary: SessionSummary, hasActiveHeartbeat = summary.hasActiveHeartbeat): string {
+	if (summary.isRefining) {
+		return "refining";
+	}
 	if (summary.isCompacting) {
 		return "compacting";
 	}
