@@ -5276,8 +5276,7 @@ export class InteractiveMode {
 	}
 
 	private updateChildAgentInspector(child: AgentConnectionRlmChildAgentSnapshot): void {
-		// Cancelled subagents were deliberately stopped; drop them from the
-		// viewer instead of keeping a dead row around.
+		// Cancellation is also the lifecycle tombstone for deleted subagents.
 		if (child.status === "cancelled") {
 			this.removeChildAgentSnapshot(child.id);
 			this.refreshChildAgentInspector();
