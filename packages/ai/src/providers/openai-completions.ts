@@ -10,6 +10,7 @@ import type {
 	ChatCompletionSystemMessageParam,
 	ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
+import { getAnthropicCacheWriteCost } from "../cache-pricing.js";
 import { getEnvApiKey, getPrimeTeamId } from "../env-api-keys.js";
 import { calculateCost, clampThinkingLevel } from "../models.js";
 import type {
@@ -138,9 +139,13 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
 			const compat = getCompat(model);
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention);
+			const cacheControl = getCompatCacheControl(compat, cacheRetention);
+			const cacheWriteCost = cacheControl
+				? getAnthropicCacheWriteCost(model.cost.input, cacheControl.ttl === "1h" ? "1h" : "5m")
+				: undefined;
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const client = createClient(model, context, apiKey, options?.headers, cacheSessionId, compat);
-			let params = buildParams(model, context, options, compat, cacheRetention);
+			let params = buildParams(model, context, options, compat, cacheRetention, cacheControl);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
@@ -270,7 +275,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 					output.responseModel ||= chunk.model;
 				}
 				if (chunk.usage) {
-					output.usage = parseChunkUsage(chunk.usage, model);
+					output.usage = parseChunkUsage(chunk.usage, model, cacheWriteCost);
 				}
 
 				const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
@@ -279,7 +284,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 				// Fallback: some providers (e.g., Moonshot) return usage
 				// in choice.usage instead of the standard chunk.usage
 				if (!chunk.usage && (choice as any).usage) {
-					output.usage = parseChunkUsage((choice as any).usage, model);
+					output.usage = parseChunkUsage((choice as any).usage, model, cacheWriteCost);
 				}
 
 				if (choice.finish_reason) {
@@ -501,9 +506,9 @@ function buildParams(
 	options?: OpenAICompletionsOptions,
 	compat: ResolvedOpenAICompletionsCompat = getCompat(model),
 	cacheRetention: CacheRetention = resolveCacheRetention(options?.cacheRetention),
+	cacheControl: OpenAICompatCacheControl | undefined = getCompatCacheControl(compat, cacheRetention),
 ) {
 	const messages = convertMessages(model, context, compat);
-	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 		model: model.id,
@@ -1004,6 +1009,7 @@ function parseChunkUsage(
 		prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
 	},
 	model: Model<"openai-completions">,
+	cacheWriteCost?: number,
 ): AssistantMessage["usage"] {
 	const promptTokens = rawUsage.prompt_tokens || 0;
 	const reportedCachedTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
@@ -1028,7 +1034,7 @@ function parseChunkUsage(
 		totalTokens: input + outputTokens + cacheReadTokens + cacheWriteTokens,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
-	calculateCost(model, usage);
+	calculateCost(model, usage, cacheWriteCost === undefined ? undefined : { cacheWrite: cacheWriteCost });
 	return usage;
 }
 
