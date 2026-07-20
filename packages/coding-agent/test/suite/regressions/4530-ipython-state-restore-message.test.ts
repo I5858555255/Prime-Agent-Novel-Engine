@@ -21,7 +21,7 @@ type StateRestoreHost = {
 
 type QueueDrainHost = {
 	_followUpMessages: Array<{ prefixMessages: CustomMessage[]; message: AgentMessage }>;
-	_drainQueuedMessagesAfterBash(): Promise<void>;
+	_promptPendingMessagesWithNextTurnContext(): Promise<void>;
 };
 
 function stripAnsi(text: string): string {
@@ -167,9 +167,9 @@ describe("ENG-4530 IPython state restore message", () => {
 		});
 		const followUp = vi.spyOn(harness.session.agent, "followUp");
 
-		await queueHost._drainQueuedMessagesAfterBash();
+		await queueHost._promptPendingMessagesWithNextTurnContext();
 
 		expect(queued.prefixMessages).toEqual([]);
-		expect(followUp).toHaveBeenCalledWith([queued.message]);
+		expect(followUp).toHaveBeenCalledWith(queued.message);
 	});
 });

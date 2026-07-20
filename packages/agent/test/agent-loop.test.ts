@@ -1433,6 +1433,33 @@ describe("agentLoop with AgentMessage", () => {
 		]);
 	});
 
+	it("should stop before a subsequent assistant turn", async () => {
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+		let calls = 0;
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			getSteeringMessages: async () => (calls === 1 ? [createUserMessage("queued")] : []),
+			shouldStopBeforeTurn: () => calls === 1,
+		};
+		const stream = agentLoop([createUserMessage("start")], context, config, undefined, () => {
+			calls++;
+			const mockStream = new MockAssistantStream();
+			queueMicrotask(() => {
+				mockStream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: "done" }]),
+				});
+			});
+			return mockStream;
+		});
+		for await (const _event of stream) {
+			// consume
+		}
+		expect(calls).toBe(1);
+	});
+
 	it("should stop after a tool batch when every tool result sets terminate=true", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {

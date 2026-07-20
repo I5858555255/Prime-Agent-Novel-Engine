@@ -364,6 +364,7 @@ export class AgentDaemon {
 	private shuttingDown = false;
 	private updateRestartPreparing = false;
 	private preparedUpdateRestartManifest?: DaemonUpdateRestartManifest;
+	private activeWorkerMutations = 0;
 	private ownsSocketPath = false;
 	private socketIdentity?: DaemonSocketIdentity;
 	private readonly clients = new Set<DaemonSocketClient>();
@@ -2443,7 +2444,24 @@ export class AgentDaemon {
 				}
 			}
 			if (this.options.worker && typeof parsed.type === "string" && parsed.type.startsWith("worker_")) {
-				await this.handleWorkerCommand(client, parsed as DaemonWorkerCommand);
+				const workerCommand = parsed as DaemonWorkerCommand;
+				const allowedDuringPreparation =
+					workerCommand.type === "worker_prepare_update" ||
+					workerCommand.type === "worker_commit_update" ||
+					workerCommand.type === "worker_cancel_update";
+				if (this.updateRestartPreparing && !allowedDuringPreparation) {
+					this.write(
+						client,
+						failure(workerCommand.id, workerCommand.type, "Daemon is preparing an update restart"),
+					);
+					return;
+				}
+				this.activeWorkerMutations++;
+				try {
+					await this.handleWorkerCommand(client, workerCommand);
+				} finally {
+					this.activeWorkerMutations--;
+				}
 				return;
 			}
 			if (typeof parsed.type !== "string" || !DAEMON_COMMAND_TYPES.has(parsed.type)) {
@@ -2542,8 +2560,15 @@ export class AgentDaemon {
 					return;
 				}
 				case "worker_prepare_update": {
-					await this.waitForSessionCommands();
-					const manifest = this.prepareUpdateRestartCheckpoint();
+					this.beginUpdateRestartPreparation();
+					try {
+						while (this.activeWorkerMutations > 1) await delay(5);
+						await this.waitForSessionCommands();
+					} catch (error) {
+						this.cancelPreparedUpdateRestart();
+						throw error;
+					}
+					const manifest = this.prepareUpdateRestartCheckpoint(true);
 					this.write(client, {
 						id: command.id,
 						type: "response",
@@ -4298,14 +4323,14 @@ export class AgentDaemon {
 		return depth;
 	}
 
-	private prepareUpdateRestartCheckpoint(): DaemonUpdateRestartManifest {
-		if (this.updateRestartPreparing) {
-			throw new Error("Daemon is already preparing an update restart");
-		}
+	private beginUpdateRestartPreparation(): void {
+		if (this.updateRestartPreparing) throw new Error("Daemon is already preparing an update restart");
 		this.updateRestartPreparing = true;
-		// Keep persisted jobs for the replacement daemon, but stop this process
-		// from accepting another scheduled mutation while its checkpoint is held.
 		this.cronScheduler.stop();
+	}
+
+	private prepareUpdateRestartCheckpoint(alreadyPreparing = false): DaemonUpdateRestartManifest {
+		if (!alreadyPreparing) this.beginUpdateRestartPreparation();
 		try {
 			const states = [...this.sessions.values()];
 			const restartSessions = states
@@ -4363,13 +4388,15 @@ export class AgentDaemon {
 	}
 
 	private async waitForSessionCommands(): Promise<void> {
+		while (this.agentMessagePreparingTargets.size > 0) await delay(5);
 		await Promise.all([...this.sessions.values()].map((state) => state.runtime.session.waitForSessionCommand()));
 	}
 
 	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
-		await this.waitForSessionCommands();
-		const manifest = this.prepareUpdateRestartCheckpoint();
+		this.beginUpdateRestartPreparation();
 		try {
+			await this.waitForSessionCommands();
+			const manifest = this.prepareUpdateRestartCheckpoint(true);
 			this.writeUpdateRestartManifest(manifest);
 			return await this.commitPreparedUpdateRestart();
 		} catch (error) {

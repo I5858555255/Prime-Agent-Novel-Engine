@@ -1017,6 +1017,7 @@ export class AgentSession {
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
 		this._installAgentTurnHook();
+		this.agent.shouldStopBeforeTurn = () => this._stopBeforeQueuedSteeringCommand();
 		this._installAgentContinuationHook();
 
 		this._buildRuntime({
@@ -2097,6 +2098,12 @@ export class AgentSession {
 		}
 		const goalMessages = await this._getGoalContinuationMessages(context, signal);
 		if (this._nextQueuedInput()?.input.kind === "command") {
+			if (goalMessages.length > 0) {
+				this._setGoalState({
+					...this._goalState,
+					continuationsUsed: Math.max(0, this._goalState.continuationsUsed - 1),
+				});
+			}
 			this._deferredContinuation = context;
 			this._schedulePendingMessageResume(true);
 			return [];
@@ -3193,6 +3200,7 @@ export class AgentSession {
 					this.isCompacting ||
 					this.isRetrying ||
 					this.isBashRunning ||
+					this._sessionCommandOperation !== undefined ||
 					this.hasAcceptedPromptInFlight ||
 					this.pendingMessageCount > 0;
 				if (busy) {
@@ -3207,13 +3215,13 @@ export class AgentSession {
 						sessionCommand.text,
 						behavior === "steer" ? "steering" : "followUp",
 						{
-							resumeIfIdle: options?.resumeIfIdle,
+							resumeIfIdle: options?.resumeIfIdle ?? true,
 							images: currentImages,
 						},
 					);
 					reportPreflight(true, true);
 				} else {
-					await this.executeSessionSlashCommand(sessionCommand.text, true, currentImages);
+					await this.executeSessionSlashCommand(sessionCommand.text, false, currentImages);
 					reportPreflight(true);
 				}
 				return;
@@ -3634,6 +3642,7 @@ export class AgentSession {
 		const command = parseSessionSlashCommand(text);
 		if (!command) throw new Error(`Not a queueable session command: ${text}`);
 		this._queueFor(lane).push({ kind: "command", text, command, images: options.images });
+		if (lane === "steering") this._reclaimReleasedFollowUps();
 		this._releaseQueuedMessagePrefixes();
 		this._emitQueueUpdate();
 		if (options.resumeIfIdle) this._schedulePendingMessageResume(true);
@@ -3648,6 +3657,28 @@ export class AgentSession {
 		if (steering) return { lane: "steering", input: steering };
 		const followUp = this._followUpMessages[0];
 		return followUp ? { lane: "followUp", input: followUp } : undefined;
+	}
+
+	private _reclaimReleasedFollowUps(): void {
+		const released = this._followUpMessages.filter(
+			(input): input is QueuedMessage => input.kind === "message" && input.released,
+		);
+		if (released.length === 0) return;
+		const messages = new Set<AgentMessage>(released.flatMap((input) => [...input.prefixMessages, input.message]));
+		const removed = new Set(this.agent.removeQueuedMessages((message) => messages.has(message)));
+		for (const input of released) {
+			if ([...input.prefixMessages, input.message].some((message) => removed.has(message))) input.released = false;
+		}
+	}
+
+	private _stopBeforeQueuedSteeringCommand(): boolean {
+		if (this._steeringMessages[0]?.kind !== "command") return false;
+		this._reclaimReleasedFollowUps();
+		for (const input of this._followUpMessages) {
+			if (input.kind === "message" && input.released) input.released = false;
+		}
+		this._schedulePendingMessageResume(true);
+		return true;
 	}
 
 	private _releaseQueuedMessagePrefixes(): void {
@@ -3716,6 +3747,7 @@ export class AgentSession {
 			return await operation;
 		} finally {
 			if (this._sessionCommandOperation === operation) this._sessionCommandOperation = undefined;
+			this._schedulePendingMessageResume();
 		}
 	}
 
@@ -3774,6 +3806,13 @@ export class AgentSession {
 				if (args.startsWith("rollback ") && /\s--global$/.test(args)) {
 					global = true;
 					args = args.replace(/\s--global$/, "").trim();
+				}
+				if (args === "rollback") throw new Error("Usage: /refine rollback <refinement-id>");
+				if (!args.startsWith("rollback ")) {
+					const stats = this.getSessionStats();
+					if (stats.userMessages + stats.assistantMessages < 2) {
+						throw new Error("Nothing to refine (no trajectory yet)");
+					}
 				}
 				const result = args.startsWith("rollback ")
 					? await this.refine({ rollbackId: args.slice("rollback ".length).trim(), global }, atQueueBoundary)
@@ -4028,6 +4067,7 @@ export class AgentSession {
 			message,
 			released: false,
 		});
+		this._reclaimReleasedFollowUps();
 		this._releaseQueuedMessagePrefixes();
 		this._emitQueueUpdate();
 		if (options.resumeIfIdle) {
@@ -4081,9 +4121,7 @@ export class AgentSession {
 		});
 		this._releaseQueuedMessagePrefixes();
 		this._emitQueueUpdate();
-		if (options.resumeIfIdle) {
-			this._schedulePendingMessageResume(true);
-		}
+		if (options.resumeIfIdle) this._schedulePendingMessageResume(true);
 		return true;
 	}
 
@@ -4181,6 +4219,7 @@ export class AgentSession {
 					if (this._pendingNextTurnMessages.length > 0) {
 						await this._promptPendingMessagesWithNextTurnContext();
 					} else {
+						this._releaseQueuedMessagePrefixes();
 						await this.agent.continue();
 					}
 					continue;
@@ -7796,7 +7835,13 @@ export class AgentSession {
 		// Emitted after the slot is released so clients never observe a bash_end
 		// while the session still rejects new commands as already running.
 		this._emit({ type: "bash_end", ...end });
+		void this._drainQueuedMessagesAfterBash().catch(() => undefined);
+	}
+
+	private async _drainQueuedMessagesAfterBash(): Promise<void> {
 		this._schedulePendingMessageResume(true);
+		await this._pendingMessageResumeQueue;
+		await this._agentEventQueue;
 	}
 
 	private async _promptPendingMessagesWithNextTurnContext(): Promise<void> {

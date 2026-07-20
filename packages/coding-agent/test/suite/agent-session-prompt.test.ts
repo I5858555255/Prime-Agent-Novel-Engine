@@ -805,16 +805,14 @@ stale extension instructions`,
 		};
 		sessionInternals._compactionAbortController = new AbortController();
 
-		await expect(
-			harness.session.prompt("/autonomous on", {
-				queueIfBusy: true,
-				streamingBehavior: "followUp",
-			}),
-		).rejects.toThrow("Agent has queued work");
+		await harness.session.prompt("/autonomous on", {
+			queueIfBusy: true,
+			streamingBehavior: "followUp",
+		});
 		sessionInternals._compactionAbortController = undefined;
 
 		expect(harness.session.getAutonomousStatus().enabled).toBe(false);
-		expect(harness.session.getFollowUpMessages()).toEqual([]);
+		expect(harness.session.getFollowUpMessages()).toEqual(["/autonomous on"]);
 		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 

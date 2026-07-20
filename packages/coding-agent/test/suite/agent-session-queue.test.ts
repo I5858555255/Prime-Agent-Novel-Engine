@@ -1986,6 +1986,57 @@ describe("AgentSession queue characterization", () => {
 			'Extension command "/testcmd" cannot be queued. Use prompt() or execute the command when not streaming.',
 		);
 	});
+	it("parses refinement command arguments in the session owner", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		vi.spyOn(harness.session, "getSessionStats").mockReturnValue({
+			...harness.session.getSessionStats(),
+			userMessages: 1,
+			assistantMessages: 1,
+			totalMessages: 2,
+		});
+		const refine = vi.spyOn(harness.session, "refine").mockResolvedValue({
+			id: "refine_test",
+			summary: "test",
+			rationale: "test",
+			expectedOutcome: "test",
+			appliedEdits: [],
+			harnessStatePath: "/tmp/harness_state.json",
+		});
+
+		await harness.session.executeSessionSlashCommand("/refine rollback refine_123 --global", true);
+		await harness.session.executeSessionSlashCommand("/refine --global focus on validation", true);
+		await harness.session.executeSessionSlashCommand("/refine update docs to explain --global", true);
+
+		expect(refine.mock.calls).toEqual([
+			[{ rollbackId: "refine_123", global: true }, true],
+			[{ instructions: "focus on validation", global: true }, true],
+			[{ instructions: "update docs to explain --global", global: false }, true],
+		]);
+	});
+
+	it("rejects plain refinement without a trajectory", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const refine = vi.spyOn(harness.session, "refine");
+
+		await expect(harness.session.executeSessionSlashCommand("/refine focus on validation", true)).rejects.toThrow(
+			"Nothing to refine (no trajectory yet)",
+		);
+		expect(refine).not.toHaveBeenCalled();
+	});
+
+	it("rejects refinement rollback without an id after global parsing", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const refine = vi.spyOn(harness.session, "refine");
+
+		await expect(harness.session.executeSessionSlashCommand("/refine rollback --global", true)).rejects.toThrow(
+			"Usage: /refine rollback <refinement-id>",
+		);
+		expect(refine).not.toHaveBeenCalled();
+	});
+
 	it("persists skipped command warnings outside model context", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -2104,6 +2155,39 @@ describe("AgentSession queue characterization", () => {
 			["second", true, false],
 		]);
 		expect(getUserTexts(harness)).toEqual(["after commands"]);
+	});
+
+	it("runs a steering command before an already released follow-up", async () => {
+		const { harness, releaseToolExecution, promptPromise, waitForToolStart } = await createWaitingHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("after follow-up"),
+		]);
+		await waitForToolStart;
+		const order: string[] = [];
+		const compact = vi.spyOn(harness.session as any, "_compact").mockImplementation(async () => {
+			order.push("compact");
+			return { summary: "compacted", firstKeptEntryId: "kept", tokensBefore: 100 };
+		});
+		harness.session.subscribe((event) => {
+			if (
+				event.type === "message_start" &&
+				event.message.role === "user" &&
+				getMessageText(event.message) === "later"
+			) {
+				order.push("follow-up");
+			}
+		});
+
+		await harness.session.followUp("later");
+		await harness.session.queueSessionSlashCommand("/compact first", "steering");
+		releaseToolExecution();
+		await promptPromise;
+		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
+
+		expect(order.slice(0, 2)).toEqual(["compact", "follow-up"]);
+		expect(compact).toHaveBeenCalledOnce();
 	});
 
 	it("executes a queued session command at its follow-up position", async () => {

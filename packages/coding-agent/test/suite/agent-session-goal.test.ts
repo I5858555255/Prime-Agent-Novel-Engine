@@ -483,7 +483,7 @@ describe("AgentSession goals", () => {
 	it.each([
 		{ command: "/goal clear", status: "idle" },
 		{ command: "/goal pause", status: "paused" },
-	])("removes queued goal context after $command while streaming", async ({ command, status }) => {
+	])("executes queued goal commands in order before $command", async ({ command, status }) => {
 		const waiting = createWaitingTool();
 		const harness = await createGoalHarness([waiting.tool]);
 		harness.setResponses([
@@ -498,11 +498,12 @@ describe("AgentSession goals", () => {
 		await harness.session.prompt(command);
 		waiting.release();
 		await promptPromise;
+		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
 
-		expect(goalContextMessages(harness)).toHaveLength(0);
-		expect(visibleAssistantTexts(harness)).toEqual([]);
+		expect(goalContextMessages(harness)).toHaveLength(1);
+		expect(visibleAssistantTexts(harness)).toEqual(["stale goal response"]);
 		expect(harness.session.goalState.status).toBe(status);
-		expect(harness.getPendingResponseCount()).toBe(1);
+		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
 	it("pauses an active goal with /goal pause", async () => {
@@ -618,7 +619,9 @@ describe("AgentSession goals", () => {
 
 		await harness.session.prompt("/goal clear");
 
-		expect(harness.session.messages).toEqual([]);
+		expect(harness.session.messages).toEqual([
+			expect.objectContaining({ role: "custom", customType: "session_slash_command", content: "/goal clear" }),
+		]);
 		expect(harness.eventsOfType("goal_update").at(-1)?.goal.status).toBe("idle");
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
@@ -633,7 +636,10 @@ describe("AgentSession goals", () => {
 			active: false,
 			status: "idle",
 		});
-		expect(harness.session.messages).toEqual([]);
+		expect(harness.session.messages).toEqual([
+			expect.objectContaining({ role: "custom", customType: "session_slash_command", content: "/goal do task" }),
+			expect.objectContaining({ role: "custom", customType: "session_slash_command_result" }),
+		]);
 	});
 
 	it("completes a goal whose completing turn crosses the budget without a stale budget-limit steer", async () => {
@@ -827,7 +833,9 @@ describe("AgentSession goals", () => {
 
 		await harness.session.prompt("/goal status");
 
-		expect(harness.session.messages).toEqual([]);
+		expect(harness.session.messages).toEqual([
+			expect.objectContaining({ role: "custom", customType: "session_slash_command", content: "/goal status" }),
+		]);
 		expect(harness.eventsOfType("goal_update").at(-1)?.goal.status).toBe("idle");
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});

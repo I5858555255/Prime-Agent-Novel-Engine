@@ -537,6 +537,8 @@ export class DaemonSupervisor {
 	private ownership?: Awaited<ReturnType<typeof acquireDaemonSupervisorOwnership>>;
 	private cleanupPromise?: Promise<void>;
 	private shuttingDown = false;
+	private updateRestartPreparing = false;
+	private activeMutations = 0;
 	private readonly clients = new Set<DaemonSocketClient>();
 	private readonly protocolClientIds = new WeakMap<DaemonSocketClient, string>();
 	private readonly workers = new Map<string, ResidentWorker>();
@@ -958,6 +960,11 @@ export class DaemonSupervisor {
 			return;
 		}
 
+		if (this.updateRestartPreparing && isDaemonMutatingCommand(command)) {
+			this.write(client, failure(command.id, command.type, "Daemon is preparing an update restart"));
+			return;
+		}
+
 		const journalIdentity =
 			envelopeClientId && command.id && isDaemonMutatingCommand(command)
 				? { clientId: envelopeClientId, commandId: command.id }
@@ -980,6 +987,8 @@ export class DaemonSupervisor {
 			}
 		}
 
+		const mutation = isDaemonMutatingCommand(command);
+		if (mutation) this.activeMutations++;
 		try {
 			const response = await this.handleCommand(client, command);
 			if (response) {
@@ -1001,6 +1010,10 @@ export class DaemonSupervisor {
 				}
 			}
 			this.write(client, response);
+		} finally {
+			if (mutation) {
+				this.activeMutations--;
+			}
 		}
 	}
 
@@ -1008,6 +1021,9 @@ export class DaemonSupervisor {
 		client: DaemonSocketClient,
 		command: DaemonCommand,
 	): Promise<DaemonResponse | undefined> {
+		if (this.updateRestartPreparing && isDaemonMutatingCommand(command)) {
+			throw new Error("Daemon is preparing an update restart");
+		}
 		switch (command.type) {
 			case "ack_result":
 				this.commandJournal.acknowledge(client.id, command.commandId);
@@ -3549,6 +3565,18 @@ export class DaemonSupervisor {
 	}
 
 	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
+		if (this.updateRestartPreparing) throw new Error("Daemon is already preparing an update restart");
+		this.updateRestartPreparing = true;
+		try {
+			while (this.activeMutations > 1) await delay(5);
+			return await this.prepareUpdateRestartFenced();
+		} catch (error) {
+			this.updateRestartPreparing = false;
+			throw error;
+		}
+	}
+
+	private async prepareUpdateRestartFenced(): Promise<DaemonUpdateRestartManifest> {
 		const workers = [...this.workers.values()].filter(
 			(worker): worker is ResidentWorker & { client: DaemonWorkerClient } => worker.client !== undefined,
 		);

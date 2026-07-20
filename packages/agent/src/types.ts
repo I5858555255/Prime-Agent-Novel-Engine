@@ -191,6 +191,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 */
 	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
 
+	/** Returns true to end the run before starting the next assistant turn. */
+	shouldStopBeforeTurn?: () => boolean;
+
 	/**
 	 * Returns steering messages to inject into the conversation mid-run.
 	 *

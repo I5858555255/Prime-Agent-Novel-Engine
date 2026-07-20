@@ -421,6 +421,8 @@ describe("AgentSession bash and persistence characterization", () => {
 		await bashRun;
 		await steerDelivery;
 		await followUpDelivery;
+		await harness.session.agent.waitForIdle();
+		await (harness.session as unknown as { _agentEventQueue: Promise<void> })._agentEventQueue;
 
 		const userTexts = harness.session.messages.filter((message) => message.role === "user").map(getMessageText);
 		expect(userTexts.findIndex((text) => text.includes("steer after bash"))).toBeLessThan(
