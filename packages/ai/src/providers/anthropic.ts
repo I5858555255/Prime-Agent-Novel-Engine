@@ -6,7 +6,7 @@ import type {
 	MessageParam,
 	RawMessageStreamEvent,
 } from "@anthropic-ai/sdk/resources/messages.js";
-import { getAnthropicCacheWriteCost } from "../cache-pricing.js";
+import { getAnthropicCacheWriteCost, hasStandardAnthropicCachePricing } from "../cache-pricing.js";
 import { getEnvApiKey } from "../env-api-keys.js";
 import { calculateCost, clampThinkingLevel } from "../models.js";
 import type {
@@ -512,9 +512,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				isOAuth = created.isOAuthToken;
 			}
 			const { cacheControl } = getCacheControl(model, options?.cacheRetention);
-			let cacheWriteCost = cacheControl
-				? getAnthropicCacheWriteCost(model.cost.input, cacheControl.ttl === "1h" ? "1h" : "5m")
-				: undefined;
+			const usesAnthropicCachePricing = hasStandardAnthropicCachePricing(model);
+			let cacheWriteCost =
+				cacheControl && usesAnthropicCachePricing
+					? getAnthropicCacheWriteCost(model.cost.input, cacheControl.ttl === "1h" ? "1h" : "5m")
+					: undefined;
 			let params = buildParams(model, context, isOAuth, options, cacheControl);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -545,7 +547,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					// Anthropic doesn't provide total_tokens, compute from components
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-					if (cacheControl) {
+					if (cacheControl && usesAnthropicCachePricing) {
 						cacheWriteCost = getAnthropicCacheWriteCost(
 							model.cost.input,
 							cacheControl.ttl === "1h" ? "1h" : "5m",

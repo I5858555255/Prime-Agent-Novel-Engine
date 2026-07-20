@@ -153,6 +153,21 @@ describe("Anthropic raw SSE parsing", () => {
 		expect(result.usage.cost.cacheWrite).toBeCloseTo(testCase.expectedCacheWriteCost);
 	});
 
+	it("preserves configured cache write pricing for non-Anthropic models", async () => {
+		const model = getModel("minimax", "MiniMax-M2.7-highspeed");
+		const response = createSseResponse(
+			createCacheUsageEvents({ ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 0 }),
+		);
+		const result = await streamAnthropic(
+			model,
+			{ messages: [{ role: "user", content: "Say hello.", timestamp: Date.now() }] },
+			{ client: createFakeAnthropicClient(response) },
+		).result();
+
+		expect(result.usage.cacheWrite).toBe(1000);
+		expect(result.usage.cost.cacheWrite).toBeCloseTo((1000 * model.cost.cacheWrite) / 1_000_000);
+	});
+
 	it("repairs malformed SSE JSON and malformed streamed tool JSON", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const context: Context = {

@@ -156,12 +156,7 @@ describe("openai-completions cacheControlFormat", () => {
 			baseUrl: "https://example.com/v1",
 			reasoning: true,
 			input: ["text"],
-			cost: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-			},
+			cost: { input: 4, output: 12, cacheRead: 0.4, cacheWrite: 9 },
 			contextWindow: 128000,
 			maxTokens: 32000,
 			compat: {
@@ -169,14 +164,22 @@ describe("openai-completions cacheControlFormat", () => {
 			},
 		};
 
-		const params = await capturePayload(model);
+		const { params, result } = await runCompletion(model);
 		expectAnthropicCacheMarkers(params);
+		expect(result.usage.cost.cacheWrite).toBeCloseTo((80 * model.cost.cacheWrite) / 1_000_000);
 	});
 
 	it("preserves Anthropic-style cache markers for OpenRouter Anthropic models", async () => {
 		const model = getModel("openrouter", "anthropic/claude-sonnet-4");
 		const params = await capturePayload(model);
 		expectAnthropicCacheMarkers(params);
+	});
+
+	it("preserves route-specific cache write pricing for Anthropic models", async () => {
+		const model = getModel("openrouter", "anthropic/claude-3-haiku");
+		const { params, result } = await runCompletion(model);
+		expectAnthropicCacheMarkers(params);
+		expect(result.usage.cost.cacheWrite).toBeCloseTo((80 * model.cost.cacheWrite) / 1_000_000);
 	});
 
 	it("applies Anthropic-style cache markers for Prime Inference Anthropic models", async () => {
