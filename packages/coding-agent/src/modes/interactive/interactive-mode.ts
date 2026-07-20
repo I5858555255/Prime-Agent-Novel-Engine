@@ -798,6 +798,8 @@ export class InteractiveMode {
 	private startedToolCalls = new Set<string>();
 	private pendingToolGeneration = 0;
 	private toolDefinitionCache = new Map<string, ToolExecutionDefinition | undefined>();
+	private toolDefinitionLoads = new Map<string, Promise<ToolExecutionDefinition | undefined>>();
+	private toolDefinitionGeneration = 0;
 	private agentRunFileChanges = new Map<string, FileChangeSummary>();
 
 	// RLM child-agent tray: inline list below the editor, full-screen detail on open.
@@ -1286,11 +1288,11 @@ export class InteractiveMode {
 		}
 		this.isInitialized = true;
 
-		// Initialize extensions first so resources are shown before messages
-		await this.rebindCurrentSession();
-
-		// Render initial messages AFTER showing loaded resources
-		await this.renderInitialMessages();
+		try {
+			await this.restoreInitialSession();
+		} catch (error) {
+			await this.handleFatalRuntimeError("Could not restore session", error);
+		}
 
 		// Jump straight into a subagent's read-only detail view when the agents
 		// view opened this session targeting one of its subagents.
@@ -2558,13 +2560,13 @@ export class InteractiveMode {
 		return this.connectionState?.scopedModels ?? [];
 	}
 
-	private async rebindCurrentSession(): Promise<void> {
+	private async rebindCurrentSession(options: { syncWorkingLoader?: boolean } = {}): Promise<void> {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		if (this.localSessionHost) {
 			this.uiServices = this.localSessionHost.createUiServices();
 		}
-		this.toolDefinitionCache.clear();
+		this.invalidateToolDefinitions();
 		this.applyRuntimeSettings();
 		if (this.bindLocalSessionExtensions) {
 			await this.bindCurrentSessionExtensions();
@@ -2581,7 +2583,30 @@ export class InteractiveMode {
 		this.updateTerminalTitle();
 		this.setGoalAnnouncementBaseline(this.getGoalState());
 		this.syncGoalTray(this.getGoalState());
-		this.syncWorkingLoader();
+		if (options.syncWorkingLoader !== false) {
+			this.syncWorkingLoader();
+		}
+	}
+
+	private async restoreInitialSession(): Promise<void> {
+		const loader = new Loader(
+			this.ui,
+			(spinner) => theme.fg("accent", spinner),
+			(text) => theme.fg("muted", text),
+			"Restoring transcript…",
+		);
+		this.statusContainer.clear();
+		this.statusContainer.addChild(loader);
+		this.ui.requestRender();
+		try {
+			await this.rebindCurrentSession({ syncWorkingLoader: false });
+			await this.renderInitialMessages();
+		} finally {
+			loader.stop();
+			this.statusContainer.removeChild(loader);
+			this.syncWorkingLoader();
+			this.ui.requestRender();
+		}
 	}
 
 	private async handleFatalRuntimeError(prefix: string, error: unknown): Promise<never> {
@@ -2682,17 +2707,40 @@ export class InteractiveMode {
 		return this.toolDefinitionCache.get(toolName);
 	}
 
+	private invalidateToolDefinitions(): void {
+		this.toolDefinitionGeneration++;
+		this.toolDefinitionCache.clear();
+		this.toolDefinitionLoads.clear();
+	}
+
 	private async loadToolDefinition(toolName: string): Promise<ToolExecutionDefinition | undefined> {
 		if (this.toolDefinitionCache.has(toolName)) {
 			return this.toolDefinitionCache.get(toolName);
 		}
-		const definition = this.createToolExecutionDefinition(
-			toolName,
-			await this.agentConnection.getToolDefinition(toolName),
-			this.localSessionHost?.getToolRendererDefinition(toolName),
-		);
-		this.toolDefinitionCache.set(toolName, definition);
-		return definition;
+		const existing = this.toolDefinitionLoads.get(toolName);
+		if (existing) {
+			return existing;
+		}
+
+		const generation = this.toolDefinitionGeneration;
+		const localDefinition = this.localSessionHost?.getToolRendererDefinition(toolName);
+		const load = this.agentConnection
+			.getToolDefinition(toolName)
+			.then((connectionDefinition) => {
+				const definition = this.createToolExecutionDefinition(toolName, connectionDefinition, localDefinition);
+				if (generation === this.toolDefinitionGeneration) {
+					this.toolDefinitionCache.set(toolName, definition);
+				}
+				return definition;
+			})
+			.catch(() => this.createToolExecutionDefinition(toolName, undefined, localDefinition))
+			.finally(() => {
+				if (this.toolDefinitionLoads.get(toolName) === load) {
+					this.toolDefinitionLoads.delete(toolName);
+				}
+			});
+		this.toolDefinitionLoads.set(toolName, load);
+		return load;
 	}
 
 	private getLatestStreamingToolCall(toolCallId: string): ToolCall | undefined {
@@ -2792,23 +2840,21 @@ export class InteractiveMode {
 		return definition;
 	}
 
-	private async preloadToolDefinitions(toolNames: Iterable<string>): Promise<void> {
-		const missingToolNames = Array.from(new Set(toolNames)).filter(
-			(toolName) => !this.toolDefinitionCache.has(toolName),
-		);
-		if (missingToolNames.length === 0) {
-			return;
+	private hydrateToolDefinitions(componentsByToolName: Map<string, ToolExecutionComponent[]>): void {
+		for (const [toolName, components] of componentsByToolName) {
+			if (this.toolDefinitionCache.has(toolName)) {
+				continue;
+			}
+			void this.loadToolDefinition(toolName)
+				.then((definition) => {
+					for (const component of components) {
+						if (this.chatContainer.children.includes(component)) {
+							component.setToolDefinition(definition);
+						}
+					}
+				})
+				.catch(() => undefined);
 		}
-		await Promise.all(
-			missingToolNames.map(async (toolName) => {
-				const definition = this.createToolExecutionDefinition(
-					toolName,
-					await this.agentConnection.getToolDefinition(toolName),
-					this.localSessionHost?.getToolRendererDefinition(toolName),
-				);
-				this.toolDefinitionCache.set(toolName, definition);
-			}),
-		);
 	}
 
 	/**
@@ -5955,18 +6001,7 @@ export class InteractiveMode {
 		this.ipythonToolComponents.clear();
 		this.lateIpythonSentAgentMessages.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
-		const toolNames: string[] = [];
-		for (const message of sessionContext.messages) {
-			if (message.role !== "assistant") {
-				continue;
-			}
-			for (const content of message.content) {
-				if (content.type === "toolCall") {
-					toolNames.push(content.name);
-				}
-			}
-		}
-		await this.preloadToolDefinitions(toolNames);
+		const componentsByToolName = new Map<string, ToolExecutionComponent[]>();
 
 		if (options.clearChat) {
 			this.chatContainer.clear();
@@ -6000,6 +6035,9 @@ export class InteractiveMode {
 						selectLatestToolExpandHint(this.chatContainer.children, component);
 						this.chatContainer.addChild(component);
 						this.registerIpythonToolComponent(content.name, content.id, component);
+						const components = componentsByToolName.get(content.name) ?? [];
+						components.push(component);
+						componentsByToolName.set(content.name, components);
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
 							let errorMessage: string;
@@ -6037,6 +6075,7 @@ export class InteractiveMode {
 			component.setIncludeImageDimensions(true);
 			this.pendingTools.set(toolCallId, component);
 		}
+		this.hydrateToolDefinitions(componentsByToolName);
 		this.ui.requestRender();
 	}
 
@@ -8247,7 +8286,7 @@ export class InteractiveMode {
 
 		try {
 			await this.agentConnection.reload();
-			this.toolDefinitionCache.clear();
+			this.invalidateToolDefinitions();
 			this.keybindings.reload();
 			const activeHeader = this.customHeader ?? this.builtInHeader;
 			if (isExpandable(activeHeader)) {

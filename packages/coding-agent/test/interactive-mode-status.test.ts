@@ -281,7 +281,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 				footer: { invalidate: vi.fn() },
 				updateEditorBorderColor: vi.fn(),
 				resetPendingToolState: vi.fn(),
-				preloadToolDefinitions: vi.fn(async () => {}),
+				hydrateToolDefinitions: vi.fn(),
 				settingsManager: {
 					getShowImages: () => true,
 				},
@@ -335,7 +335,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 				footer: { invalidate: vi.fn() },
 				updateEditorBorderColor: vi.fn(),
 				resetPendingToolState: vi.fn(),
-				preloadToolDefinitions: vi.fn(async () => {}),
+				hydrateToolDefinitions: vi.fn(),
 				settingsManager: {
 					getShowImages: () => true,
 				},
@@ -689,11 +689,13 @@ describe("InteractiveMode connection events", () => {
 		const createHarness = (
 			refreshConnectionQueue: () => Promise<void>,
 			refreshHeartbeatCatalog: () => Promise<void>,
-		) =>
-			({
+		) => {
+			const harness = {
 				unsubscribe: undefined,
 				localSessionHost: undefined,
+				toolDefinitionGeneration: 0,
 				toolDefinitionCache: { clear: vi.fn() },
+				toolDefinitionLoads: { clear: vi.fn() },
 				applyRuntimeSettings: vi.fn(),
 				bindLocalSessionExtensions: true,
 				bindCurrentSessionExtensions: vi.fn(async () => {}),
@@ -707,7 +709,10 @@ describe("InteractiveMode connection events", () => {
 				syncGoalTray: vi.fn(),
 				syncWorkingLoader: vi.fn(),
 				getGoalState: () => emptyGoalState(),
-			}) as unknown as InteractiveMode;
+			};
+			Object.setPrototypeOf(harness, InteractiveMode.prototype);
+			return harness as unknown as InteractiveMode;
+		};
 
 		await expect(
 			rebindCurrentSession.call(
