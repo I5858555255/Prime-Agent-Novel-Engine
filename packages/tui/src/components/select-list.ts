@@ -207,27 +207,38 @@ export class SelectList implements Component {
 		prefix: string,
 		prefixWidth: number,
 	): string {
-		const metadata = item.argumentHint ?? item.sourceTag;
-		const effectivePrimaryColumnWidth = metadata
+		const hasMetadata = item.argumentHint !== undefined || item.sourceTag !== undefined;
+		const effectivePrimaryColumnWidth = hasMetadata
 			? Math.max(1, Math.min(primaryColumnWidth, width - prefixWidth - 2))
 			: Math.max(1, width - prefixWidth - 2);
-		const maxPrimaryWidth = metadata
+		const maxPrimaryWidth = hasMetadata
 			? Math.max(1, effectivePrimaryColumnWidth - PRIMARY_COLUMN_GAP)
 			: effectivePrimaryColumnWidth;
 		const primary = this.truncatePrimary(item, isSelected, maxPrimaryWidth, effectivePrimaryColumnWidth);
 		const styledPrefix = isSelected ? this.theme.selectedPrefix(prefix) : prefix;
 		const styledPrimary = isSelected ? this.theme.selectedText(primary) : primary;
-		if (!metadata) {
+		if (!hasMetadata) {
 			return `${styledPrefix}${styledPrimary}`;
 		}
 
 		const spacing = " ".repeat(Math.max(1, effectivePrimaryColumnWidth - visibleWidth(primary)));
-		const maxMetadataWidth = Math.max(1, width - prefixWidth - visibleWidth(primary) - spacing.length - 2);
-		const truncatedMetadata = truncateToWidth(metadata, maxMetadataWidth, "…");
-		const styleMetadata = item.argumentHint
-			? (this.theme.argumentHint ?? this.theme.description)
-			: (this.theme.sourceTag ?? this.theme.description);
-		return `${styledPrefix}${styledPrimary}${spacing}${styleMetadata(truncatedMetadata)}`;
+		let remainingWidth = Math.max(1, width - prefixWidth - visibleWidth(primary) - spacing.length - 2);
+		const metadata: string[] = [];
+		if (item.argumentHint) {
+			const argumentHint = truncateToWidth(item.argumentHint, remainingWidth, "…");
+			metadata.push((this.theme.argumentHint ?? this.theme.description)(argumentHint));
+			remainingWidth -= visibleWidth(argumentHint);
+		}
+		if (item.sourceTag && remainingWidth > (metadata.length > 0 ? PRIMARY_COLUMN_GAP : 0)) {
+			if (metadata.length > 0) {
+				metadata.push(" ".repeat(PRIMARY_COLUMN_GAP));
+				remainingWidth -= PRIMARY_COLUMN_GAP;
+			}
+			metadata.push(
+				(this.theme.sourceTag ?? this.theme.description)(truncateToWidth(item.sourceTag, remainingWidth, "…")),
+			);
+		}
+		return `${styledPrefix}${styledPrimary}${spacing}${metadata.join("")}`;
 	}
 
 	private getPrimaryColumnWidth(): number {
