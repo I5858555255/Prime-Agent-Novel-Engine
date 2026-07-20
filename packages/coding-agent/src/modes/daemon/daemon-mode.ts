@@ -2542,6 +2542,7 @@ export class AgentDaemon {
 					return;
 				}
 				case "worker_prepare_update": {
+					await this.waitForSessionCommands();
 					const manifest = this.prepareUpdateRestartCheckpoint();
 					this.write(client, {
 						id: command.id,
@@ -4361,7 +4362,12 @@ export class AgentDaemon {
 		}
 	}
 
+	private async waitForSessionCommands(): Promise<void> {
+		await Promise.all([...this.sessions.values()].map((state) => state.runtime.session.waitForSessionCommand()));
+	}
+
 	private async prepareUpdateRestart(): Promise<DaemonUpdateRestartManifest> {
+		await this.waitForSessionCommands();
 		const manifest = this.prepareUpdateRestartCheckpoint();
 		try {
 			this.writeUpdateRestartManifest(manifest);

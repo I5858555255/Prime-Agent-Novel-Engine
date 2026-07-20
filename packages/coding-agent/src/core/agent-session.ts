@@ -839,6 +839,7 @@ export class AgentSession {
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: QueuedSessionInput[] = [];
 	private _deferredContinuation?: GetContinuationMessagesContext;
+	private _sessionCommandOperation?: Promise<{ message?: string }>;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -3212,8 +3213,8 @@ export class AgentSession {
 					);
 					reportPreflight(true, true);
 				} else {
-					reportPreflight(true);
 					await this.executeSessionSlashCommand(sessionCommand.text, true, currentImages);
+					reportPreflight(true);
 				}
 				return;
 			}
@@ -3673,6 +3674,7 @@ export class AgentSession {
 			(this.isStreaming ||
 				this.isCompacting ||
 				this.isBashRunning ||
+				this._sessionCommandOperation !== undefined ||
 				this.hasAcceptedPromptInFlight ||
 				this.pendingMessageCount > 0)
 		) {
@@ -3682,30 +3684,38 @@ export class AgentSession {
 					: this._followUpMessages.length > 0
 						? "followUp"
 						: "steering";
-			await this.queueSessionSlashCommand(text, lane, { resumeIfIdle: true });
+			await this.queueSessionSlashCommand(text, lane, { resumeIfIdle: true, images });
 			return {};
 		}
-		await this._emitSessionSlashCommandMessage(command);
-		try {
-			const result = await this._runSessionSlashCommand(command, atQueueBoundary, images);
-			if (
-				command.name === "compact" &&
-				!this.agent.state.messages.some(
-					(message) => message.role === "custom" && message.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE,
-				)
-			) {
-				this._persistSessionSlashCommandAfterCompaction(command);
+		const operation = (async () => {
+			await this._emitSessionSlashCommandMessage(command);
+			try {
+				const result = await this._runSessionSlashCommand(command, atQueueBoundary, images);
+				if (
+					command.name === "compact" &&
+					!this.agent.state.messages.some(
+						(message) => message.role === "custom" && message.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE,
+					)
+				) {
+					this._persistSessionSlashCommandAfterCompaction(command);
+				}
+				this._emit({ type: "session_command_end", text, ...(result.message ? { message: result.message } : {}) });
+				return result;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				await this._emitSessionSlashCommandResult(
+					message,
+					error instanceof CompactionSkippedError ? "warning" : "error",
+				);
+				this._emit({ type: "session_command_end", text, error: message });
+				throw error;
 			}
-			this._emit({ type: "session_command_end", text, ...(result.message ? { message: result.message } : {}) });
-			return result;
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			await this._emitSessionSlashCommandResult(
-				message,
-				error instanceof CompactionSkippedError ? "warning" : "error",
-			);
-			this._emit({ type: "session_command_end", text, error: message });
-			throw error;
+		})();
+		this._sessionCommandOperation = operation;
+		try {
+			return await operation;
+		} finally {
+			if (this._sessionCommandOperation === operation) this._sessionCommandOperation = undefined;
 		}
 	}
 
@@ -3786,7 +3796,7 @@ export class AgentSession {
 		options: { queueKey?: string; agentMessageId?: string; resumeIfIdle?: boolean } = {},
 	): Promise<void> {
 		if (parseSessionSlashCommand(text)) {
-			await this.queueSessionSlashCommand(text, "steering", { resumeIfIdle: options.resumeIfIdle });
+			await this.queueSessionSlashCommand(text, "steering", { resumeIfIdle: options.resumeIfIdle, images });
 			return;
 		}
 		// Check for extension commands (cannot be queued)
@@ -3818,7 +3828,7 @@ export class AgentSession {
 		options: { queueKey?: string; agentMessageId?: string; resumeIfIdle?: boolean } = {},
 	): Promise<boolean> {
 		if (parseSessionSlashCommand(text)) {
-			await this.queueSessionSlashCommand(text, "followUp", { resumeIfIdle: options.resumeIfIdle });
+			await this.queueSessionSlashCommand(text, "followUp", { resumeIfIdle: options.resumeIfIdle, images });
 			return true;
 		}
 		// Check for extension commands (cannot be queued)
@@ -4075,6 +4085,12 @@ export class AgentSession {
 			this._schedulePendingMessageResume(true);
 		}
 		return true;
+	}
+
+	async waitForSessionCommand(): Promise<void> {
+		while (this._sessionCommandOperation) {
+			await this._sessionCommandOperation.catch(() => undefined);
+		}
 	}
 
 	resumeQueuedWork(): void {
