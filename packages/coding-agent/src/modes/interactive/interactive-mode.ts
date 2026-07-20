@@ -1049,7 +1049,8 @@ export class InteractiveMode {
 			return undefined;
 		}
 
-		const scopePrefix = sourceInfo.scope === "user" ? "u" : sourceInfo.scope === "project" ? "p" : "t";
+		const scopePrefix =
+			sourceInfo.scope === "user" ? "user" : sourceInfo.scope === "project" ? "project" : "temporary";
 		const source = sourceInfo.source.trim();
 
 		if (source === "builtin") {
@@ -1073,15 +1074,9 @@ export class InteractiveMode {
 		return scopePrefix;
 	}
 
-	private prefixAutocompleteDescription(
-		description: string | undefined,
-		sourceInfo?: AgentConnectionSourceInfo,
-	): string | undefined {
+	private getAutocompleteSourceLabel(sourceInfo?: AgentConnectionSourceInfo): string | undefined {
 		const sourceTag = this.getAutocompleteSourceTag(sourceInfo);
-		if (!sourceTag) {
-			return description;
-		}
-		return description ? `[${sourceTag}] ${description}` : `[${sourceTag}]`;
+		return sourceTag ? `#${sourceTag}` : undefined;
 	}
 
 	private getBuiltInCommandConflictDiagnostics(
@@ -1139,7 +1134,8 @@ export class InteractiveMode {
 			.filter((cmd) => cmd.source === "prompt")
 			.map((cmd) => ({
 				name: cmd.name,
-				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
+				description: cmd.description,
+				sourceTag: this.getAutocompleteSourceLabel(cmd.sourceInfo),
 				...(cmd.argumentHint && { argumentHint: cmd.argumentHint }),
 			}));
 
@@ -1149,7 +1145,8 @@ export class InteractiveMode {
 			.filter((cmd) => !isBuiltinSlashCommandName(cmd.name))
 			.map((cmd) => ({
 				name: cmd.name,
-				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
+				description: cmd.description,
+				sourceTag: this.getAutocompleteSourceLabel(cmd.sourceInfo),
 				getArgumentCompletions: this.bindLocalSessionExtensions
 					? this.getLocalSessionHost().getExtensionRunner().getCommand(cmd.name)?.getArgumentCompletions
 					: undefined,
@@ -1163,7 +1160,8 @@ export class InteractiveMode {
 				const commandName = skill.name;
 				skillCommandList.push({
 					name: commandName,
-					description: this.prefixAutocompleteDescription(skill.description, skill.sourceInfo),
+					description: skill.description,
+					sourceTag: this.getAutocompleteSourceLabel(skill.sourceInfo),
 				});
 			}
 		}
