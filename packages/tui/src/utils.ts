@@ -77,9 +77,10 @@ function truncateFragmentToWidth(text: string, maxWidth: number): { text: string
 	let width = 0;
 	let i = 0;
 	let pendingAnsi = "";
+	const extractAnsi = createAnsiCodeExtractor(text);
 
 	while (i < text.length) {
-		const ansi = extractAnsiCode(text, i);
+		const ansi = extractAnsi(i);
 		if (ansi) {
 			pendingAnsi += ansi.code;
 			i += ansi.length;
@@ -102,7 +103,7 @@ function truncateFragmentToWidth(text: string, maxWidth: number): { text: string
 
 		let end = i;
 		while (end < text.length && text[end] !== "\t") {
-			const nextAnsi = extractAnsiCode(text, end);
+			const nextAnsi = extractAnsi(end);
 			if (nextAnsi) {
 				break;
 			}
@@ -224,8 +225,9 @@ export function visibleWidth(str: string): number {
 		// and APC sequences like CURSOR_MARKER.
 		let stripped = "";
 		let i = 0;
+		const extractAnsi = createAnsiCodeExtractor(clean);
 		while (i < clean.length) {
-			const ansi = extractAnsiCode(clean, i);
+			const ansi = extractAnsi(i);
 			if (ansi) {
 				i += ansi.length;
 				continue;
@@ -265,9 +267,10 @@ export function visibleContentSpan(line: string, maxWidth: number): { from: numb
 	let to = -1;
 	let currentCol = 0;
 	let i = 0;
+	const extractAnsi = createAnsiCodeExtractor(line);
 
 	while (i < line.length && currentCol < limit) {
-		const ansi = extractAnsiCode(line, i);
+		const ansi = extractAnsi(i);
 		if (ansi) {
 			i += ansi.length;
 			continue;
@@ -280,7 +283,7 @@ export function visibleContentSpan(line: string, maxWidth: number): { from: numb
 		}
 
 		let textEnd = i;
-		while (textEnd < line.length && line[textEnd] !== "\t" && !extractAnsiCode(line, textEnd)) {
+		while (textEnd < line.length && line[textEnd] !== "\t" && !extractAnsi(textEnd)) {
 			textEnd++;
 		}
 
@@ -336,10 +339,9 @@ interface AnsiCode {
 
 type ControlStringEnds = Map<number, number | null>;
 
-// Callers scan one string sequentially. Cache only the latest incomplete tail so
-// later control-string prefixes do not rescan the same suffix.
-let cachedControlStringSource: string | undefined;
-let cachedControlStringEnds: ControlStringEnds | undefined;
+interface AnsiScanState {
+	controlStringEnds?: ControlStringEnds;
+}
 
 function cacheControlStringEnds(str: string, from: number, ends: ControlStringEnds): void {
 	let nextBel = -1;
@@ -368,33 +370,31 @@ function cacheControlStringEnds(str: string, from: number, ends: ControlStringEn
 	}
 }
 
-function extractControlString(str: string, pos: number, allowBel: boolean): AnsiCode | null {
-	if (cachedControlStringSource === str && cachedControlStringEnds?.has(pos)) {
-		const end = cachedControlStringEnds.get(pos);
-		return end === null || end === undefined ? null : { code: str.substring(pos, end), length: end - pos };
+function extractControlStringEnd(str: string, pos: number, allowBel: boolean, state?: AnsiScanState): number | null {
+	if (state?.controlStringEnds?.has(pos)) {
+		const end = state.controlStringEnds.get(pos);
+		return end ?? null;
 	}
 
 	let j = pos + 2;
 	while (j < str.length) {
 		if (allowBel && str[j] === "\x07") {
-			return { code: str.substring(pos, j + 1), length: j + 1 - pos };
+			return j + 1;
 		}
 		if (str[j] === "\x1b" && str[j + 1] === "\\") {
-			return { code: str.substring(pos, j + 2), length: j + 2 - pos };
+			return j + 2;
 		}
 		j++;
 	}
-	const ends: ControlStringEnds = new Map();
-	cacheControlStringEnds(str, pos, ends);
-	cachedControlStringSource = str;
-	cachedControlStringEnds = ends;
+	if (state) {
+		const ends: ControlStringEnds = new Map();
+		cacheControlStringEnds(str, pos, ends);
+		state.controlStringEnds = ends;
+	}
 	return null;
 }
 
-/**
- * Extract ANSI escape sequences from a string at the given position.
- */
-export function extractAnsiCode(str: string, pos: number): AnsiCode | null {
+function extractAnsiEndAt(str: string, pos: number, state?: AnsiScanState): number | null {
 	if (pos >= str.length || str[pos] !== "\x1b") return null;
 
 	const next = str[pos + 1];
@@ -415,7 +415,7 @@ export function extractAnsiCode(str: string, pos: number): AnsiCode | null {
 				continue;
 			}
 			if (byte >= 0x40 && byte <= 0x7e) {
-				return { code: str.substring(pos, j + 1), length: j + 1 - pos };
+				return j + 1;
 			}
 			return null;
 		}
@@ -424,15 +424,36 @@ export function extractAnsiCode(str: string, pos: number): AnsiCode | null {
 
 	// OSC uses BEL or ST. APC also accepts BEL for existing private markers.
 	if (next === "]" || next === "_") {
-		return extractControlString(str, pos, true);
+		return extractControlStringEnd(str, pos, true, state);
 	}
 
 	// DCS, PM, and SOS are terminated by ST.
 	if (next === "P" || next === "^" || next === "X") {
-		return extractControlString(str, pos, false);
+		return extractControlStringEnd(str, pos, false, state);
 	}
 
 	return null;
+}
+
+function extractAnsiCodeAt(str: string, pos: number, state?: AnsiScanState): AnsiCode | null {
+	const end = extractAnsiEndAt(str, pos, state);
+	return end === null ? null : { code: str.substring(pos, end), length: end - pos };
+}
+
+/** Extract an ANSI escape sequence from a string at the given position. */
+export function extractAnsiCode(str: string, pos: number): AnsiCode | null {
+	return extractAnsiCodeAt(str, pos);
+}
+
+/** Create a scanner whose malformed-control-string cache is released after this string scan. */
+export function createAnsiCodeExtractor(str: string): (pos: number) => AnsiCode | null {
+	const state: AnsiScanState = {};
+	return (pos) => extractAnsiCodeAt(str, pos, state);
+}
+
+function createAnsiEndExtractor(str: string): (pos: number) => number | null {
+	const state: AnsiScanState = {};
+	return (pos) => extractAnsiEndAt(str, pos, state);
 }
 
 type Osc8Terminator = "\x07" | "\x1b\\";
@@ -698,8 +719,9 @@ class AnsiCodeTracker {
 
 function updateTrackerFromText(text: string, tracker: AnsiCodeTracker): void {
 	let i = 0;
+	const extractAnsi = createAnsiCodeExtractor(text);
 	while (i < text.length) {
-		const ansiResult = extractAnsiCode(text, i);
+		const ansiResult = extractAnsi(i);
 		if (ansiResult) {
 			tracker.process(ansiResult.code);
 			i += ansiResult.length;
@@ -718,9 +740,10 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 	let pendingAnsi = ""; // ANSI codes waiting to be attached to next visible content
 	let inWhitespace = false;
 	let i = 0;
+	const extractAnsi = createAnsiCodeExtractor(text);
 
 	while (i < text.length) {
-		const ansiResult = extractAnsiCode(text, i);
+		const ansiResult = extractAnsi(i);
 		if (ansiResult) {
 			// Hold ANSI codes separately - they'll be attached to the next visible char
 			pendingAnsi += ansiResult.code;
@@ -873,39 +896,36 @@ function wrapSingleLine(line: string, width: number): string[] {
 }
 
 const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+// Fast path for the common CSI form. The shared scanner handles the wider CSI
+// grammar, control strings, malformed sequences, and ordinary two-byte escapes.
+const COMMON_CSI_REGEX = /\x1b\[[0-9;:?<=>]*[\x40-\x7e]/g;
 
 /** Remove all escape sequences (CSI, OSC, DCS/APC, two-char) leaving plain text. */
 export function stripAnsi(str: string): string {
 	if (!str.includes("\x1b")) return str;
 
+	const input = str.replace(COMMON_CSI_REGEX, "");
+	let escapeIndex = input.indexOf("\x1b");
+	if (escapeIndex === -1) return input;
+
 	const result: string[] = [];
-	let i = 0;
 	let plainStart = 0;
-	while (i < str.length) {
-		const ansi = extractAnsiCode(str, i);
-		if (ansi) {
-			if (plainStart < i) result.push(str.slice(plainStart, i));
-			i += ansi.length;
-			plainStart = i;
-			continue;
+	const extractAnsiEnd = createAnsiEndExtractor(input);
+	while (escapeIndex !== -1) {
+		const ansiEnd = extractAnsiEnd(escapeIndex);
+		if (ansiEnd !== null) {
+			if (plainStart < escapeIndex) result.push(input.slice(plainStart, escapeIndex));
+			plainStart = ansiEnd;
+		} else {
+			const next = input.charCodeAt(escapeIndex + 1);
+			if (escapeIndex + 1 < input.length && next !== 0x0a && next !== 0x0d && next !== 0x2028 && next !== 0x2029) {
+				if (plainStart < escapeIndex) result.push(input.slice(plainStart, escapeIndex));
+				plainStart = escapeIndex + 2;
+			}
 		}
-		const next = str.charCodeAt(i + 1);
-		if (
-			str[i] === "\x1b" &&
-			i + 1 < str.length &&
-			next !== 0x0a &&
-			next !== 0x0d &&
-			next !== 0x2028 &&
-			next !== 0x2029
-		) {
-			if (plainStart < i) result.push(str.slice(plainStart, i));
-			i += 2;
-			plainStart = i;
-			continue;
-		}
-		i++;
+		escapeIndex = input.indexOf("\x1b", Math.max(escapeIndex + 1, plainStart));
 	}
-	if (plainStart < str.length) result.push(str.slice(plainStart));
+	if (plainStart < input.length) result.push(input.slice(plainStart));
 	return result.join("");
 }
 
@@ -932,9 +952,10 @@ function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): s
 	// We need to handle ANSI codes specially since they're not graphemes
 	let i = 0;
 	const segments: Array<{ type: "ansi" | "grapheme"; value: string }> = [];
+	const extractAnsi = createAnsiCodeExtractor(word);
 
 	while (i < word.length) {
-		const ansiResult = extractAnsiCode(word, i);
+		const ansiResult = extractAnsi(i);
 		if (ansiResult) {
 			segments.push({ type: "ansi", value: ansiResult.code });
 			i += ansiResult.length;
@@ -942,7 +963,7 @@ function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): s
 			// Find the next ANSI code or end of string
 			let end = i;
 			while (end < word.length) {
-				const nextAnsi = extractAnsiCode(word, end);
+				const nextAnsi = extractAnsi(end);
 				if (nextAnsi) break;
 				end++;
 			}
@@ -1087,8 +1108,9 @@ export function truncateToWidth(
 		exhaustedInput = !overflowed;
 	} else {
 		let i = 0;
+		const extractAnsi = createAnsiCodeExtractor(text);
 		while (i < text.length) {
-			const ansi = extractAnsiCode(text, i);
+			const ansi = extractAnsi(i);
 			if (ansi) {
 				pendingAnsi += ansi.code;
 				i += ansi.length;
@@ -1118,7 +1140,7 @@ export function truncateToWidth(
 
 			let end = i;
 			while (end < text.length && text[end] !== "\t") {
-				const nextAnsi = extractAnsiCode(text, end);
+				const nextAnsi = extractAnsi(end);
 				if (nextAnsi) {
 					break;
 				}
@@ -1182,9 +1204,10 @@ export function sliceWithWidth(
 		currentCol = 0,
 		i = 0,
 		pendingAnsi = "";
+	const extractAnsi = createAnsiCodeExtractor(line);
 
 	while (i < line.length) {
-		const ansi = extractAnsiCode(line, i);
+		const ansi = extractAnsi(i);
 		if (ansi) {
 			if (currentCol >= startCol && currentCol < endCol) result += ansi.code;
 			else if (currentCol < startCol) pendingAnsi += ansi.code;
@@ -1193,7 +1216,7 @@ export function sliceWithWidth(
 		}
 
 		let textEnd = i;
-		while (textEnd < line.length && !extractAnsiCode(line, textEnd)) textEnd++;
+		while (textEnd < line.length && !extractAnsi(textEnd)) textEnd++;
 
 		for (const { segment } of segmenter.segment(line.slice(i, textEnd))) {
 			const w = graphemeWidth(segment);
@@ -1240,12 +1263,13 @@ export function extractSegments(
 	let pendingAnsiBefore = "";
 	let afterStarted = false;
 	const afterEnd = afterStart + afterLen;
+	const extractAnsi = createAnsiCodeExtractor(line);
 
 	// Track styling state so "after" inherits styling from before the overlay
 	pooledStyleTracker.clear();
 
 	while (i < line.length) {
-		const ansi = extractAnsiCode(line, i);
+		const ansi = extractAnsi(i);
 		if (ansi) {
 			// Track all SGR codes to know styling state at afterStart
 			pooledStyleTracker.process(ansi.code);
@@ -1261,7 +1285,7 @@ export function extractSegments(
 		}
 
 		let textEnd = i;
-		while (textEnd < line.length && !extractAnsiCode(line, textEnd)) textEnd++;
+		while (textEnd < line.length && !extractAnsi(textEnd)) textEnd++;
 
 		for (const { segment } of segmenter.segment(line.slice(i, textEnd))) {
 			const w = graphemeWidth(segment);

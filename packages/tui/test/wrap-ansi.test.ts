@@ -283,11 +283,19 @@ describe("ANSI sequence scanning", () => {
 	it("strips every scanned sequence from copied text", () => {
 		const cursorStyle = "\x1b[1 q";
 		const dcs = "\x1bPone\x1bXtwo\x1b\\";
+		const dcsWithCsiPayload = "\x1bPbefore\x1b[31mafter\x1b\\";
 		const text = `a${cursorStyle}b${dcs}c`;
 
 		assert.strictEqual(stripAnsi(sliceByColumn(text, 0, 3)), "abc");
+		assert.strictEqual(stripAnsi(`a${dcsWithCsiPayload}b`), "ab");
 		assert.strictEqual(stripAnsi("a\x1bc b"), "a b");
 		assert.strictEqual(stripAnsi("a\x1b\nb"), "a\x1b\nb");
+	});
+
+	it("strips long ANSI-heavy copied text", () => {
+		const styled = "plain-text-1234567890\x1b[31mcolored\x1b[0m".repeat(10_000);
+
+		assert.strictEqual(stripAnsi(styled), "plain-text-1234567890colored".repeat(10_000));
 	});
 
 	it("scans repeated incomplete control strings without quadratic slowdown", () => {
