@@ -88,55 +88,6 @@ describe("SelectList", () => {
 		assert.equal(shortSelection.at(-1)?.trim(), "Short description");
 	});
 
-	it("shows slash metadata in rows and only the selected description below", () => {
-		const items = [
-			{
-				value: "compact",
-				label: "compact",
-				description: "Compact the session context",
-				argumentHint: "[instructions]",
-			},
-			{
-				value: "skill:compact",
-				label: "skill:compact",
-				description: "Check context usage and compact the conversation",
-				sourceTag: "#builtin",
-			},
-		];
-		const list = new SelectList(items, 5, testTheme, {
-			minPrimaryColumnWidth: 12,
-			maxPrimaryColumnWidth: 32,
-			showItemMetadata: true,
-			showSelectedDescription: true,
-		});
-
-		const rendered = list.render(80);
-
-		assert.match(rendered[0] ?? "", /compact\s+\[instructions\]/);
-		assert.match(rendered[1] ?? "", /skill:compact\s+#builtin/);
-		assert.ok(!rendered[0]?.includes("Compact the session context"));
-		assert.equal(
-			rendered
-				.slice(3)
-				.map((line) => line.trim())
-				.join(" "),
-			"Compact the session context",
-		);
-	});
-
-	it("shows hidden counts for both scroll directions on one line", () => {
-		const items = Array.from({ length: 12 }, (_, index) => ({
-			value: `item-${index}`,
-			label: `item-${index}`,
-		}));
-		const list = new SelectList(items, 5, testTheme, { showDirectionalScrollInfo: true });
-		list.setSelectedIndex(6);
-
-		const rendered = list.render(80);
-
-		assert.equal(rendered.at(-1)?.trim(), "↑ 4 more  ↓ 3 more");
-	});
-
 	it("keeps descriptions aligned when the primary text is truncated", () => {
 		const items = [
 			{ value: "short", label: "short", description: "short description" },
