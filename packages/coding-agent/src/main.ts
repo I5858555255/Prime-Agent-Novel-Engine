@@ -28,7 +28,12 @@ import { listModels } from "./cli/list-models.js";
 import { installOwnedSessionRecoveryTracking, isOwnedSessionWorkerProcess } from "./cli/owned-session-worker.js";
 import { handlePublicCommand } from "./cli/public-command.js";
 import { selectSession } from "./cli/session-picker.js";
-import { looksLikeSessionPath, resolveSessionPath, SessionSelectorNotFoundError } from "./cli/session-resolver.js";
+import {
+	looksLikeSessionPath,
+	resolveSessionPath,
+	SessionSelectorError,
+	SessionSelectorNotFoundError,
+} from "./cli/session-resolver.js";
 import { APP_NAME, expandTildePath, getAgentDir, getSessionDirEnvOverride, VERSION } from "./config.js";
 import {
 	type AgentSessionRuntimeConfig,
@@ -1196,10 +1201,13 @@ export async function main(args: string[], options?: MainOptions) {
 		try {
 			sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 		} catch (error) {
-			if (!(error instanceof SessionSelectorNotFoundError)) {
+			if (!(error instanceof SessionSelectorError)) {
 				throw error;
 			}
-			const suggestion = error.suggestion ? ` Did you mean '${error.suggestion}'?` : "";
+			const suggestion =
+				error instanceof SessionSelectorNotFoundError && error.suggestion
+					? ` Did you mean '${error.suggestion}'?`
+					: "";
 			console.error(chalk.red(`Error: ${error.message}.${suggestion}`));
 			console.error(chalk.dim(`Run "${APP_NAME} --resume" to browse sessions.`));
 			process.exit(1);

@@ -2,7 +2,12 @@ import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseArgs } from "../../../src/cli/args.js";
-import { findClosestSessionId, SessionSelectorNotFoundError } from "../../../src/cli/session-resolver.js";
+import {
+	findClosestSessionId,
+	SessionSelectorAmbiguousError,
+	SessionSelectorNotFoundError,
+} from "../../../src/cli/session-resolver.js";
+import { SessionManager } from "../../../src/core/session-manager.js";
 import { SettingsManager } from "../../../src/core/settings-manager.js";
 import { createSessionManager } from "../../../src/main.js";
 import { createHarness, type Harness } from "../harness.js";
@@ -42,4 +47,43 @@ describe("ENG-4722 invalid resume selectors", () => {
 		expect(findClosestSessionId("wxyz1234", [{ id: "abcdef0123456789" }])).toBeUndefined();
 		expect(findClosestSessionId("abcd", [])).toBeUndefined();
 	});
+
+	it("rejects an ambiguous saved session prefix", async () => {
+		harness = await createHarness();
+		const sessionDir = join(harness.tempDir, "sessions");
+		createSavedSession(harness.tempDir, sessionDir, "11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+		createSavedSession(harness.tempDir, sessionDir, "11111111-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+		const parsed = parseArgs(["--resume", "11111111", "do not submit this"]);
+
+		await expect(
+			createSessionManager(parsed, harness.tempDir, sessionDir, SettingsManager.inMemory()),
+		).rejects.toMatchObject({
+			name: SessionSelectorAmbiguousError.name,
+			selector: "11111111",
+		});
+		expect(parsed.messages).toEqual(["do not submit this"]);
+	});
+
+	it("accepts the normalized suffix displayed by the session list", async () => {
+		harness = await createHarness();
+		const sessionDir = join(harness.tempDir, "sessions");
+		const sessionId = "019e71ec-e08a-75a9-b573-aaaaaaaaaaaa";
+		createSavedSession(harness.tempDir, sessionDir, sessionId);
+		const parsed = parseArgs(["--resume", "aaaaaaaaaaaa"]);
+
+		const sessionManager = await createSessionManager(
+			parsed,
+			harness.tempDir,
+			sessionDir,
+			SettingsManager.inMemory(),
+		);
+
+		expect(sessionManager.getSessionId()).toBe(sessionId);
+	});
 });
+
+function createSavedSession(cwd: string, sessionDir: string, sessionId: string): void {
+	const session = SessionManager.create(cwd, sessionDir);
+	session.newSession({ id: sessionId });
+	session.appendSessionState({ status: "archived" });
+}
