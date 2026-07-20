@@ -28,6 +28,7 @@ export const HEARTBEAT_PROMPT_CUSTOM_TYPE = "heartbeat_prompt";
 export const HEARTBEAT_PROMPT_PREVIEW_LABEL = "Heartbeat prompt";
 export const IPYTHON_STATE_RESTORED_CUSTOM_TYPE = "ipython_state_restored";
 export const SESSION_SLASH_COMMAND_CUSTOM_TYPE = "session_slash_command";
+export const SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE = "session_slash_command_result";
 
 /**
  * Message type for bash executions via the ! command.
@@ -204,7 +205,12 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				case "custom": {
-					if (m.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE) return undefined;
+					if (
+						m.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE ||
+						m.customType === SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE
+					) {
+						return undefined;
+					}
 					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
 					return {
 						role: "user",

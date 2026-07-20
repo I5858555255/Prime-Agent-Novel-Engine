@@ -177,6 +177,7 @@ import {
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
 	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 	SESSION_SLASH_COMMAND_CUSTOM_TYPE,
+	SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -3664,6 +3665,7 @@ export class AgentSession {
 			return result;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
+			this._emitSessionSlashCommandResult(message, error instanceof CompactionSkippedError ? "warning" : "error");
 			this._emit({ type: "session_command_end", text, error: message });
 			throw error;
 		}
@@ -3676,6 +3678,21 @@ export class AgentSession {
 			content: command.text,
 			display: true,
 			details: { command: command.name },
+			timestamp: Date.now(),
+		};
+		this.agent.state.messages.push(message);
+		this.sessionManager.appendCustomMessageEntry(message.customType, message.content, true, message.details);
+		this._emit({ type: "message_start", message });
+		this._emit({ type: "message_end", message });
+	}
+
+	private _emitSessionSlashCommandResult(content: string, severity: "warning" | "error"): void {
+		const message: CustomMessage = {
+			role: "custom",
+			customType: SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE,
+			content,
+			display: true,
+			details: { severity },
 			timestamp: Date.now(),
 		};
 		this.agent.state.messages.push(message);

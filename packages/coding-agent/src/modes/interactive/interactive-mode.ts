@@ -103,6 +103,7 @@ import {
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
 	SESSION_SLASH_COMMAND_CUSTOM_TYPE,
+	SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE,
 } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
@@ -201,6 +202,7 @@ import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SideQuestionComponent } from "./components/side-question.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
 import { SlashCommandMessageComponent, styleSlashCommandText } from "./components/slash-command-message.js";
+import { SlashCommandResultMessageComponent } from "./components/slash-command-result-message.js";
 import {
 	selectLatestToolExpandHint,
 	ToolExecutionComponent,
@@ -4955,8 +4957,7 @@ export class InteractiveMode {
 				break;
 
 			case "session_command_end":
-				if (event.error) this.showError(`Command failed: ${event.error}`);
-				else if (event.message) this.showStatus(event.message);
+				if (!event.error && event.message) this.showStatus(event.message);
 				break;
 
 			case "compaction_start": {
@@ -5867,19 +5868,21 @@ export class InteractiveMode {
 					const component =
 						message.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE && typeof message.content === "string"
 							? new SlashCommandMessageComponent(message.content, this.getMarkdownThemeWithSettings())
-							: isAgentSessionMessage(message)
-								? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings())
-								: isInjectedPromptMessage(message)
-									? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
-									: new CustomMessageComponent(
-											message,
-											this.bindLocalSessionExtensions
-												? this.getLocalSessionHost()
-														.getExtensionRunner()
-														.getMessageRenderer(message.customType)
-												: undefined,
-											this.getMarkdownThemeWithSettings(),
-										);
+							: message.customType === SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE
+								? new SlashCommandResultMessageComponent(message)
+								: isAgentSessionMessage(message)
+									? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings())
+									: isInjectedPromptMessage(message)
+										? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
+										: new CustomMessageComponent(
+												message,
+												this.bindLocalSessionExtensions
+													? this.getLocalSessionHost()
+															.getExtensionRunner()
+															.getMessageRenderer(message.customType)
+													: undefined,
+												this.getMarkdownThemeWithSettings(),
+											);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 				}

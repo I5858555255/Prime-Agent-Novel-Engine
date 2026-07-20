@@ -1986,6 +1986,24 @@ describe("AgentSession queue characterization", () => {
 			'Extension command "/testcmd" cannot be queued. Use prompt() or execute the command when not streaming.',
 		);
 	});
+	it("persists skipped command warnings outside model context", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await expect(harness.session.executeSessionSlashCommand("/compact nothing todo")).rejects.toThrow(
+			"Session is too short to compact",
+		);
+
+		const result = harness.session.messages.find(
+			(message) => message.role === "custom" && message.customType === "session_slash_command_result",
+		);
+		expect(result).toMatchObject({
+			display: true,
+			details: { severity: "warning" },
+		});
+		expect(harness.session.agent.convertToLlm([result!])).toEqual([]);
+	});
+
 	it("queues direct session commands behind pending idle work", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
