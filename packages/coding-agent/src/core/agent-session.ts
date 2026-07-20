@@ -3674,9 +3674,6 @@ export class AgentSession {
 	private _stopBeforeQueuedSteeringCommand(): boolean {
 		if (this._steeringMessages[0]?.kind !== "command") return false;
 		this._reclaimReleasedFollowUps();
-		for (const input of this._followUpMessages) {
-			if (input.kind === "message" && input.released) input.released = false;
-		}
 		this._schedulePendingMessageResume(true);
 		return true;
 	}
@@ -3719,16 +3716,23 @@ export class AgentSession {
 			return {};
 		}
 		const operation = (async () => {
-			await this._emitSessionSlashCommandMessage(command);
+			const commandMessage = this._emitSessionSlashCommandMessage(command);
 			try {
 				const result = await this._runSessionSlashCommand(command, atQueueBoundary, images);
 				if (
 					command.name === "compact" &&
 					!this.agent.state.messages.some(
-						(message) => message.role === "custom" && message.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE,
+						(message) =>
+							message.role === "custom" &&
+							message.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE &&
+							(message.details as { commandEntryId?: string } | undefined)?.commandEntryId ===
+								(commandMessage.details as { commandEntryId: string }).commandEntryId,
 					)
 				) {
-					this._persistSessionSlashCommandAfterCompaction(command);
+					this._persistSessionSlashCommandAfterCompaction(
+						command,
+						(commandMessage.details as { commandEntryId: string }).commandEntryId,
+					);
 				}
 				this._emit({ type: "session_command_end", text, ...(result.message ? { message: result.message } : {}) });
 				return result;
@@ -3751,26 +3755,34 @@ export class AgentSession {
 		}
 	}
 
-	private _persistSessionSlashCommandAfterCompaction(command: SessionSlashCommand): void {
+	private _persistSessionSlashCommandAfterCompaction(command: SessionSlashCommand, commandEntryId: string): void {
 		const message: CustomMessage = {
 			role: "custom",
 			customType: SESSION_SLASH_COMMAND_CUSTOM_TYPE,
 			content: command.text,
 			display: true,
-			details: { command: command.name },
+			details: { command: command.name, commandEntryId },
 			timestamp: Date.now(),
 		};
 		this.agent.state.messages.push(message);
 		this.sessionManager.appendCustomMessageEntry(message.customType, message.content, true, message.details);
 	}
 
-	private _emitSessionSlashCommandMessage(command: SessionSlashCommand): Promise<void> {
-		return this.sendCustomMessage({
+	private _emitSessionSlashCommandMessage(command: SessionSlashCommand): CustomMessage {
+		const commandEntryId = randomUUID();
+		const message: CustomMessage = {
+			role: "custom",
 			customType: SESSION_SLASH_COMMAND_CUSTOM_TYPE,
 			content: command.text,
 			display: true,
-			details: { command: command.name },
-		});
+			details: { command: command.name, commandEntryId },
+			timestamp: Date.now(),
+		};
+		this.agent.state.messages.push(message);
+		this.sessionManager.appendCustomMessageEntry(message.customType, message.content, true, message.details);
+		this._emit({ type: "message_start", message });
+		this._emit({ type: "message_end", message });
+		return message;
 	}
 
 	private _emitSessionSlashCommandResult(content: string, severity: "warning" | "error"): Promise<void> {
@@ -4226,11 +4238,16 @@ export class AgentSession {
 				}
 
 				const continuation = this._deferredContinuation;
-				this._deferredContinuation = undefined;
 				this._flushPendingBashMessages();
 				if (continuation) {
-					const messages = await this._getContinuationMessages(continuation);
-					if (messages.length > 0) await this.agent.prompt(messages);
+					this._deferredContinuation = undefined;
+					try {
+						const messages = await this._getContinuationMessages(continuation);
+						if (messages.length > 0) await this.agent.prompt(messages);
+					} catch (error) {
+						this._deferredContinuation ??= continuation;
+						throw error;
+					}
 				}
 			}
 		} finally {

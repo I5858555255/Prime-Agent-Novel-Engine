@@ -326,6 +326,7 @@ async function runLoop(
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
 			throwIfAborted(signal);
 			if (!firstTurn && config.shouldStopBeforeTurn?.()) {
+				config.restoreMessagesBeforeTurn?.(pendingMessages);
 				await emit({ type: "agent_end", messages: newMessages });
 				return;
 			}

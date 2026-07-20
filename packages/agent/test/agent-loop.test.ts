@@ -1436,11 +1436,13 @@ describe("agentLoop with AgentMessage", () => {
 	it("should stop before a subsequent assistant turn", async () => {
 		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
 		let calls = 0;
+		const restored: AgentMessage[] = [];
 		const config: AgentLoopConfig = {
 			model: createModel(),
 			convertToLlm: identityConverter,
 			getSteeringMessages: async () => (calls === 1 ? [createUserMessage("queued")] : []),
 			shouldStopBeforeTurn: () => calls === 1,
+			restoreMessagesBeforeTurn: (messages) => restored.push(...messages),
 		};
 		const stream = agentLoop([createUserMessage("start")], context, config, undefined, () => {
 			calls++;
@@ -1458,6 +1460,7 @@ describe("agentLoop with AgentMessage", () => {
 			// consume
 		}
 		expect(calls).toBe(1);
+		expect(restored.map((message) => message.role)).toEqual(["user"]);
 	});
 
 	it("should stop after a tool batch when every tool result sets terminate=true", async () => {

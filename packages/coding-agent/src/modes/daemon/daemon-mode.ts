@@ -366,6 +366,7 @@ export class AgentDaemon {
 	private updateRestartPreparing = false;
 	private preparedUpdateRestartManifest?: DaemonUpdateRestartManifest;
 	private activeWorkerMutations = 0;
+	private workerUpdateLifecycle: Promise<void> = Promise.resolve();
 	private ownsSocketPath = false;
 	private socketIdentity?: DaemonSocketIdentity;
 	private readonly clients = new Set<DaemonSocketClient>();
@@ -2457,11 +2458,18 @@ export class AgentDaemon {
 					);
 					return;
 				}
-				this.activeWorkerMutations++;
-				try {
-					await this.handleWorkerCommand(client, workerCommand);
-				} finally {
-					this.activeWorkerMutations--;
+				if (allowedDuringPreparation) {
+					const run = () => this.handleWorkerCommand(client, workerCommand);
+					const operation = this.workerUpdateLifecycle.then(run, run);
+					this.workerUpdateLifecycle = operation.catch(() => undefined);
+					await operation;
+				} else {
+					this.activeWorkerMutations++;
+					try {
+						await this.handleWorkerCommand(client, workerCommand);
+					} finally {
+						this.activeWorkerMutations--;
+					}
 				}
 				return;
 			}
@@ -2563,7 +2571,7 @@ export class AgentDaemon {
 				case "worker_prepare_update": {
 					this.beginUpdateRestartPreparation();
 					try {
-						while (this.activeWorkerMutations > 1) await delay(5);
+						while (this.activeWorkerMutations > 0) await delay(5);
 						await this.waitForSessionCommands();
 					} catch (error) {
 						this.cancelPreparedUpdateRestart();

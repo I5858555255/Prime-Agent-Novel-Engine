@@ -129,6 +129,10 @@ class PendingMessageQueue {
 		}
 	}
 
+	prepend(messages: AgentMessage[]): void {
+		if (messages.length > 0) this.batches.unshift(messages.slice());
+	}
+
 	hasItems(): boolean {
 		return this.batches.length > 0;
 	}
@@ -470,6 +474,7 @@ export class Agent {
 
 	private createLoopConfig(options: { skipInitialSteeringPoll?: boolean } = {}): AgentLoopConfig {
 		let skipInitialSteeringPoll = options.skipInitialSteeringPoll === true;
+		let lastPolledLane: "steering" | "followUp" = "steering";
 		return {
 			model: this._state.model,
 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
@@ -485,17 +490,25 @@ export class Agent {
 			afterToolCall: this.afterToolCall,
 			shouldStopAfterTurn: async (context) => this.shouldStopAfterTurn?.(context) ?? false,
 			shouldStopBeforeTurn: () => this.shouldStopBeforeTurn?.() ?? false,
+			restoreMessagesBeforeTurn: (messages) => {
+				if (messages.length === 0) return;
+				(lastPolledLane === "steering" ? this.steeringQueue : this.followUpQueue).prepend(messages);
+			},
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,
 			getSteeringMessages: async () => {
+				lastPolledLane = "steering";
 				if (skipInitialSteeringPoll) {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
 				return this.steeringQueue.drain();
 			},
-			getFollowUpMessages: async () => this.followUpQueue.drain(),
+			getFollowUpMessages: async () => {
+				lastPolledLane = "followUp";
+				return this.followUpQueue.drain();
+			},
 			getContinuationMessages: async (context, signal) => this.getContinuationMessages?.(context, signal) ?? [],
 		};
 	}

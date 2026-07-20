@@ -193,6 +193,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	/** Returns true to end the run before starting the next assistant turn. */
 	shouldStopBeforeTurn?: () => boolean;
+	/** Restores messages polled just before a turn was stopped. */
+	restoreMessagesBeforeTurn?: (messages: AgentMessage[]) => void;
 
 	/**
 	 * Returns steering messages to inject into the conversation mid-run.
