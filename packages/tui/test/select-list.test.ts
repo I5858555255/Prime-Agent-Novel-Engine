@@ -155,6 +155,32 @@ describe("SelectList", () => {
 		}
 	});
 
+	it("normalizes multiline metadata to a single row", () => {
+		const list = new SelectList(
+			[
+				{
+					value: "review",
+					label: "review",
+					argumentHint: "<first>\n<second>",
+					sourceTag: "#project\nscope",
+				},
+			],
+			5,
+			testTheme,
+			{
+				minPrimaryColumnWidth: 12,
+				maxPrimaryColumnWidth: 32,
+				showItemMetadata: true,
+			},
+		);
+
+		const rendered = list.render(80);
+
+		assert.equal(rendered.length, 1);
+		assert.doesNotMatch(rendered[0] ?? "", /[\r\n]/);
+		assert.match(rendered[0] ?? "", /review\s+<first> <second>\s+#project scope/);
+	});
+
 	it("shows directional hidden counts at the top, middle, and bottom", () => {
 		const items = Array.from({ length: 12 }, (_, index) => ({
 			value: `item-${index}`,

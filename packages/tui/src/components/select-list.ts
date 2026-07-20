@@ -207,7 +207,9 @@ export class SelectList implements Component {
 		prefix: string,
 		prefixWidth: number,
 	): string {
-		const hasMetadata = item.argumentHint !== undefined || item.sourceTag !== undefined;
+		const argumentHint = item.argumentHint ? normalizeToSingleLine(item.argumentHint) : undefined;
+		const sourceTag = item.sourceTag ? normalizeToSingleLine(item.sourceTag) : undefined;
+		const hasMetadata = Boolean(argumentHint || sourceTag);
 		const contentWidth = Math.max(1, width - prefixWidth - 2);
 		const showMetadata = hasMetadata && contentWidth > primaryColumnWidth;
 		const effectivePrimaryColumnWidth = showMetadata ? primaryColumnWidth : contentWidth;
@@ -224,18 +226,18 @@ export class SelectList implements Component {
 		const spacing = " ".repeat(Math.max(1, effectivePrimaryColumnWidth - visibleWidth(primary)));
 		let remainingWidth = Math.max(0, width - prefixWidth - visibleWidth(primary) - spacing.length - 2);
 		const metadata: string[] = [];
-		if (item.argumentHint && remainingWidth > 0) {
-			const argumentHint = truncateToWidth(item.argumentHint, remainingWidth, "…");
-			metadata.push((this.theme.argumentHint ?? this.theme.description)(argumentHint));
-			remainingWidth -= visibleWidth(argumentHint);
+		if (argumentHint && remainingWidth > 0) {
+			const truncatedArgumentHint = truncateToWidth(argumentHint, remainingWidth, "…");
+			metadata.push((this.theme.argumentHint ?? this.theme.description)(truncatedArgumentHint));
+			remainingWidth -= visibleWidth(truncatedArgumentHint);
 		}
-		if (item.sourceTag && remainingWidth > (metadata.length > 0 ? PRIMARY_COLUMN_GAP : 0)) {
+		if (sourceTag && remainingWidth > (metadata.length > 0 ? PRIMARY_COLUMN_GAP : 0)) {
 			if (metadata.length > 0) {
 				metadata.push(" ".repeat(PRIMARY_COLUMN_GAP));
 				remainingWidth -= PRIMARY_COLUMN_GAP;
 			}
 			metadata.push(
-				(this.theme.sourceTag ?? this.theme.description)(truncateToWidth(item.sourceTag, remainingWidth, "…")),
+				(this.theme.sourceTag ?? this.theme.description)(truncateToWidth(sourceTag, remainingWidth, "…")),
 			);
 		}
 		return truncateToWidth(`${styledPrefix}${styledPrimary}${spacing}${metadata.join("")}`, width, "");
