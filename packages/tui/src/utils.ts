@@ -334,7 +334,46 @@ interface AnsiCode {
 	length: number;
 }
 
+type ControlStringEnds = Map<number, number | null>;
+
+// Callers scan one string sequentially. Cache only the latest incomplete tail so
+// later control-string prefixes do not rescan the same suffix.
+let cachedControlStringSource: string | undefined;
+let cachedControlStringEnds: ControlStringEnds | undefined;
+
+function cacheControlStringEnds(str: string, from: number, ends: ControlStringEnds): void {
+	let nextBel = -1;
+	let nextSt = -1;
+
+	for (let i = str.length - 1; i >= from; i--) {
+		if (str[i] === "\x07") {
+			nextBel = i;
+		}
+		if (str[i] !== "\x1b") {
+			continue;
+		}
+
+		const next = str[i + 1];
+		if (next === "\\") {
+			nextSt = i;
+		} else if (next === "]" || next === "_") {
+			if (nextBel !== -1 && (nextSt === -1 || nextBel < nextSt)) {
+				ends.set(i, nextBel + 1);
+			} else {
+				ends.set(i, nextSt === -1 ? null : nextSt + 2);
+			}
+		} else if (next === "P" || next === "^" || next === "X") {
+			ends.set(i, nextSt === -1 ? null : nextSt + 2);
+		}
+	}
+}
+
 function extractControlString(str: string, pos: number, allowBel: boolean): AnsiCode | null {
+	if (cachedControlStringSource === str && cachedControlStringEnds?.has(pos)) {
+		const end = cachedControlStringEnds.get(pos);
+		return end === null || end === undefined ? null : { code: str.substring(pos, end), length: end - pos };
+	}
+
 	let j = pos + 2;
 	while (j < str.length) {
 		if (allowBel && str[j] === "\x07") {
@@ -345,6 +384,10 @@ function extractControlString(str: string, pos: number, allowBel: boolean): Ansi
 		}
 		j++;
 	}
+	const ends: ControlStringEnds = new Map();
+	cacheControlStringEnds(str, pos, ends);
+	cachedControlStringSource = str;
+	cachedControlStringEnds = ends;
 	return null;
 }
 
@@ -833,7 +876,37 @@ const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
 
 /** Remove all escape sequences (CSI, OSC, DCS/APC, two-char) leaving plain text. */
 export function stripAnsi(str: string): string {
-	return str.replace(/\x1b(?:\[[0-9;:?<=>]*[\x40-\x7e]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[P_^X][^\x1b]*\x1b\\|.)/g, "");
+	if (!str.includes("\x1b")) return str;
+
+	const result: string[] = [];
+	let i = 0;
+	let plainStart = 0;
+	while (i < str.length) {
+		const ansi = extractAnsiCode(str, i);
+		if (ansi) {
+			if (plainStart < i) result.push(str.slice(plainStart, i));
+			i += ansi.length;
+			plainStart = i;
+			continue;
+		}
+		const next = str.charCodeAt(i + 1);
+		if (
+			str[i] === "\x1b" &&
+			i + 1 < str.length &&
+			next !== 0x0a &&
+			next !== 0x0d &&
+			next !== 0x2028 &&
+			next !== 0x2029
+		) {
+			if (plainStart < i) result.push(str.slice(plainStart, i));
+			i += 2;
+			plainStart = i;
+			continue;
+		}
+		i++;
+	}
+	if (plainStart < str.length) result.push(str.slice(plainStart));
+	return result.join("");
 }
 
 /**

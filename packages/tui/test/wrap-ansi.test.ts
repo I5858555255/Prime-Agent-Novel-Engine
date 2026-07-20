@@ -1,6 +1,7 @@
 import assert from "node:assert";
+import { performance } from "node:perf_hooks";
 import { describe, it } from "node:test";
-import { extractAnsiCode, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "../src/utils.js";
+import { extractAnsiCode, sliceByColumn, stripAnsi, visibleWidth, wrapTextWithAnsi } from "../src/utils.js";
 
 describe("wrapTextWithAnsi", () => {
 	describe("underline styling", () => {
@@ -277,5 +278,29 @@ describe("ANSI sequence scanning", () => {
 			`${hideCursor}abc`,
 			`def${showCursor}`,
 		]);
+	});
+
+	it("strips every scanned sequence from copied text", () => {
+		const cursorStyle = "\x1b[1 q";
+		const dcs = "\x1bPone\x1bXtwo\x1b\\";
+		const text = `a${cursorStyle}b${dcs}c`;
+
+		assert.strictEqual(stripAnsi(sliceByColumn(text, 0, 3)), "abc");
+		assert.strictEqual(stripAnsi("a\x1bc b"), "a b");
+		assert.strictEqual(stripAnsi("a\x1b\nb"), "a\x1b\nb");
+	});
+
+	it("scans repeated incomplete control strings without quadratic slowdown", () => {
+		const text = "\x1bP".repeat(50_000);
+		const start = performance.now();
+
+		assert.strictEqual(visibleWidth(text), 50_000);
+		assert.ok(performance.now() - start < 1_000);
+	});
+
+	it("still finds valid control strings after an incomplete prefix", () => {
+		const text = "\x1bPunterminated\x1b]0;title\x07x";
+
+		assert.strictEqual(visibleWidth(text), visibleWidth("Punterminatedx"));
 	});
 });
