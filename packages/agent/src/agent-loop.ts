@@ -439,6 +439,11 @@ async function runLoop(
 			continue;
 		}
 
+		if (config.shouldStopForQueueBarrier?.()) {
+			await emit({ type: "agent_end", messages: newMessages });
+			return;
+		}
+
 		const continuationMessagesResult = lastTurn
 			? await settlePostTurn(
 					maybePromiseWithAbort(config.getContinuationMessages?.(lastTurn, signal) ?? [], signal),
@@ -450,6 +455,10 @@ async function runLoop(
 			return;
 		}
 		const continuationMessages = continuationMessagesResult.value || [];
+		if (config.shouldStopForQueueBarrier?.()) {
+			await emit({ type: "agent_end", messages: newMessages });
+			return;
+		}
 		if (continuationMessages.length > 0) {
 			pendingMessages = continuationMessages;
 			continue;
