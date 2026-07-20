@@ -108,6 +108,21 @@ describe("resolveDaemonSessionPath", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
+
+	it("prefers an exact normalized ID over prefix and suffix matches", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-daemon-session-id-"));
+		try {
+			const cwd = join(tempDir, "project");
+			const sessionDir = join(tempDir, "sessions");
+			const exactPath = createSavedSession(cwd, sessionDir, "abcd");
+			createSavedSession(cwd, sessionDir, "abcd1");
+			createSavedSession(cwd, sessionDir, "1abcd");
+
+			await expect(resolveDaemonSessionPath("AB-CD", cwd, sessionDir)).resolves.toBe(exactPath);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
 });
 
 function makeSessionMap(states: ActiveSessionState[]): Map<string, ActiveSessionState> {

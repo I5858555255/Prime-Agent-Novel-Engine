@@ -80,6 +80,24 @@ describe("ENG-4722 invalid resume selectors", () => {
 
 		expect(sessionManager.getSessionId()).toBe(sessionId);
 	});
+
+	it("prefers an exact normalized ID over prefix and suffix matches", async () => {
+		harness = await createHarness();
+		const sessionDir = join(harness.tempDir, "sessions");
+		createSavedSession(harness.tempDir, sessionDir, "abcd");
+		createSavedSession(harness.tempDir, sessionDir, "abcd1");
+		createSavedSession(harness.tempDir, sessionDir, "1abcd");
+		const parsed = parseArgs(["--resume", "AB-CD"]);
+
+		const sessionManager = await createSessionManager(
+			parsed,
+			harness.tempDir,
+			sessionDir,
+			SettingsManager.inMemory(),
+		);
+
+		expect(sessionManager.getSessionId()).toBe("abcd");
+	});
 });
 
 function createSavedSession(cwd: string, sessionDir: string, sessionId: string): void {

@@ -52,13 +52,23 @@ export async function resolveSessionPath(selector: string, cwd: string, sessionD
 	}
 
 	const localSessions = await SessionManager.list(cwd, sessionDir);
-	const localMatch = resolveUniqueMatch(selector, localSessions);
+	const localExactMatch = resolveExactMatch(selector, localSessions);
+	if (localExactMatch) {
+		return { type: "local", path: localExactMatch.path };
+	}
+
+	const allSessions = await SessionManager.listAll(undefined, sessionDir);
+	const globalExactMatch = resolveExactMatch(selector, allSessions);
+	if (globalExactMatch) {
+		return { type: "global", path: globalExactMatch.path, cwd: globalExactMatch.cwd };
+	}
+
+	const localMatch = resolvePartialMatch(selector, localSessions);
 	if (localMatch) {
 		return { type: "local", path: localMatch.path };
 	}
 
-	const allSessions = await SessionManager.listAll(undefined, sessionDir);
-	const globalMatch = resolveUniqueMatch(selector, allSessions);
+	const globalMatch = resolvePartialMatch(selector, allSessions);
 	if (globalMatch) {
 		return { type: "global", path: globalMatch.path, cwd: globalMatch.cwd };
 	}
@@ -98,8 +108,20 @@ export function findClosestSessionId(
 	return closest && !tied && closest.distance <= maximumDistance ? closest.id : undefined;
 }
 
-function resolveUniqueMatch(selector: string, sessions: readonly SessionInfo[]): SessionInfo | undefined {
+function resolveExactMatch(selector: string, sessions: readonly SessionInfo[]): SessionInfo | undefined {
+	const normalizedSelector = normalizeSessionId(selector);
+	return resolveUniqueMatch(
+		selector,
+		sessions.filter((session) => normalizeSessionId(session.id) === normalizedSelector),
+	);
+}
+
+function resolvePartialMatch(selector: string, sessions: readonly SessionInfo[]): SessionInfo | undefined {
 	const matches = sessions.filter((session) => matchesSavedSessionSelector(session.id, selector));
+	return resolveUniqueMatch(selector, matches);
+}
+
+function resolveUniqueMatch(selector: string, matches: readonly SessionInfo[]): SessionInfo | undefined {
 	if (matches.length > 1) {
 		throw new SessionSelectorAmbiguousError(selector, matches);
 	}
