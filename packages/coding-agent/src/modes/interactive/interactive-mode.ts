@@ -2370,8 +2370,7 @@ export class InteractiveMode {
 		this.heartbeats = heartbeats;
 		this.heartbeatManager?.setHeartbeats(heartbeats);
 		this.scheduleHeartbeatManagerRefresh();
-		this.childAgentSummary.invalidate();
-		this.ui.requestRender();
+		this.refreshChildAgentInspector();
 	}
 
 	private applyConnectionStateSnapshot(state: AgentConnectionState): void {
@@ -5260,8 +5259,7 @@ export class InteractiveMode {
 	}
 
 	private updateChildAgentInspector(child: AgentConnectionRlmChildAgentSnapshot): void {
-		// Cancelled subagents were deliberately stopped; drop them from the
-		// viewer instead of keeping a dead row around.
+		// Cancellation is also the lifecycle tombstone for deleted subagents.
 		if (child.status === "cancelled") {
 			this.removeChildAgentSnapshot(child.id);
 			this.refreshChildAgentInspector();
@@ -5673,6 +5671,11 @@ export class InteractiveMode {
 	}
 
 	private buildChildAgentInspectorNodes(): ChildAgentInspectorNode[] {
+		const activeHeartbeatSessionIds = new Set(
+			this.heartbeats
+				.filter((heartbeat) => heartbeat.job.status === "active")
+				.map((heartbeat) => heartbeat.job.activeSessionId),
+		);
 		const childrenByParent = new Map<string | undefined, AgentConnectionRlmChildAgentSnapshot[]>();
 		for (const child of this.childAgentSnapshots.values()) {
 			const siblings = childrenByParent.get(child.parentId) ?? [];
@@ -5694,6 +5697,8 @@ export class InteractiveMode {
 			recap: child.recap,
 			sessionDir: child.sessionDir,
 			activity: child.activity,
+			hasActiveHeartbeat:
+				child.activeSessionId !== undefined && activeHeartbeatSessionIds.has(child.activeSessionId),
 			error: child.error,
 			children: childrenByParent.get(child.id)?.map(build),
 		});
