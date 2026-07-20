@@ -4141,20 +4141,6 @@ export class InteractiveMode {
 		return Math.max(6, Math.min(12, Math.floor(this.ui.terminal.rows * 0.3)));
 	}
 
-	private executeSessionCommand(text: string): Promise<void> {
-		if (!this.agentConnection.executeSessionSlashCommand) {
-			throw new Error("This connection does not support session slash commands");
-		}
-		return this.agentConnection.executeSessionSlashCommand(text);
-	}
-
-	private queueSessionCommand(text: string, lane: "steering" | "followUp"): Promise<void> {
-		if (!this.agentConnection.queueSessionSlashCommand) {
-			throw new Error("This connection does not support queued session slash commands");
-		}
-		return this.agentConnection.queueSessionSlashCommand(text, lane);
-	}
-
 	private setupEditorSubmitHandler(): void {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
@@ -4169,22 +4155,6 @@ export class InteractiveMode {
 				const commandArgs = slashCommand?.args ?? "";
 				const canonicalCommandText = commandName ? `/${commandName}${commandArgs ? ` ${commandArgs}` : ""}` : text;
 				const sessionCommand = parseSessionSlashCommand(canonicalCommandText);
-				if (sessionCommand && (this.isAgentStreaming() || this.isAgentCompacting())) {
-					if (this.isAgentCompacting()) {
-						this.queueCompactionMessage(canonicalCommandText, "steer", true);
-					} else {
-						this.editor.addToHistory?.(text);
-						this.editor.setText("");
-						try {
-							await this.queueSessionCommand(canonicalCommandText, "steering");
-						} catch (error) {
-							this.editor.setText(text);
-							throw error;
-						}
-						this.updatePendingMessagesDisplay();
-					}
-					return;
-				}
 
 				// Handle commands
 				if (commandName === "btw") {
@@ -4334,11 +4304,17 @@ export class InteractiveMode {
 					await this.handleClearCommand();
 					return;
 				}
-				if (sessionCommand) {
+				if (sessionCommand && !this.isAgentStreaming() && !this.isAgentCompacting()) {
 					this.editor.setText("");
-					await this.executeSessionCommand(canonicalCommandText).catch(() => undefined);
+					try {
+						await this.agentConnection.prompt(canonicalCommandText);
+					} catch (error) {
+						this.editor.setText(text);
+						throw error;
+					}
 					return;
 				}
+				if (sessionCommand) text = canonicalCommandText;
 				if (commandName === "reload" && !commandArgs) {
 					this.editor.setText("");
 					await this.handleReloadCommand();
@@ -4439,7 +4415,7 @@ export class InteractiveMode {
 						this.editor.setText("");
 						await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
 					} else {
-						this.queueCompactionMessage(text, "steer");
+						this.queueCompactionMessage(text, "steer", parseSessionSlashCommand(text) !== undefined);
 					}
 					return;
 				}
@@ -6442,21 +6418,6 @@ export class InteractiveMode {
 		let clearedSubmittedText: string | undefined;
 
 		try {
-			const sessionCommand = parseSessionSlashCommand(text);
-			if (sessionCommand && (this.isAgentStreaming() || this.isAgentCompacting())) {
-				if (this.isAgentCompacting()) {
-					this.queueCompactionMessage(text, "followUp", true);
-				} else {
-					this.editor.addToHistory?.(text);
-					clearedSubmittedText = text;
-					this.editor.setText("");
-					await this.queueSessionCommand(text, "followUp");
-					clearedSubmittedText = undefined;
-					this.updatePendingMessagesDisplay();
-				}
-				return;
-			}
-
 			// Queue input during compaction (extension commands execute immediately)
 			if (this.isAgentCompacting()) {
 				if (this.isExtensionCommand(text)) {
@@ -6466,7 +6427,7 @@ export class InteractiveMode {
 					await this.agentConnection.prompt(text, { images: this.collectImagesFor(text) });
 					clearedSubmittedText = undefined;
 				} else {
-					this.queueCompactionMessage(text, "followUp");
+					this.queueCompactionMessage(text, "followUp", parseSessionSlashCommand(text) !== undefined);
 				}
 				return;
 			}
@@ -6822,6 +6783,16 @@ export class InteractiveMode {
 		return this.connectionCommands.some((command) => command.source === "extension" && command.name === commandName);
 	}
 
+	private async dispatchCompactionQueuedMessage(message: CompactionQueuedMessage, queue: boolean): Promise<void> {
+		const images = this.collectImagesFor(message.text);
+		if (message.command || (queue && !this.isExtensionCommand(message.text))) {
+			if (message.mode === "followUp") await this.agentConnection.followUp(message.text, images);
+			else await this.agentConnection.steer(message.text, images);
+			return;
+		}
+		await this.agentConnection.prompt(message.text, { images });
+	}
+
 	private async flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
 		if (this.compactionQueuedMessages.length === 0) {
 			return;
@@ -6846,17 +6817,7 @@ export class InteractiveMode {
 		try {
 			if (options?.willRetry) {
 				// When retry is pending, queue messages for the retry turn
-				for (const message of queuedMessages) {
-					if (message.command) {
-						await this.queueSessionCommand(message.text, message.mode === "steer" ? "steering" : "followUp");
-					} else if (this.isExtensionCommand(message.text)) {
-						await this.agentConnection.prompt(message.text, { images: this.collectImagesFor(message.text) });
-					} else if (message.mode === "followUp") {
-						await this.agentConnection.followUp(message.text, this.collectImagesFor(message.text));
-					} else {
-						await this.agentConnection.steer(message.text, this.collectImagesFor(message.text));
-					}
-				}
+				for (const message of queuedMessages) await this.dispatchCompactionQueuedMessage(message, true);
 				this.updatePendingMessagesDisplay();
 				return;
 			}
@@ -6866,13 +6827,7 @@ export class InteractiveMode {
 				(message) => !message.command && !this.isExtensionCommand(message.text),
 			);
 			if (firstPromptIndex === -1) {
-				for (const message of queuedMessages) {
-					if (message.command) {
-						await this.queueSessionCommand(message.text, message.mode === "steer" ? "steering" : "followUp");
-					} else {
-						await this.agentConnection.prompt(message.text, { images: this.collectImagesFor(message.text) });
-					}
-				}
+				for (const message of queuedMessages) await this.dispatchCompactionQueuedMessage(message, false);
 				return;
 			}
 
@@ -6881,11 +6836,7 @@ export class InteractiveMode {
 			const firstPrompt = queuedMessages[firstPromptIndex];
 			const rest = queuedMessages.slice(firstPromptIndex + 1);
 
-			for (const message of preCommands) {
-				if (message.command)
-					await this.queueSessionCommand(message.text, message.mode === "steer" ? "steering" : "followUp");
-				else await this.agentConnection.prompt(message.text, { images: this.collectImagesFor(message.text) });
-			}
+			for (const message of preCommands) await this.dispatchCompactionQueuedMessage(message, false);
 
 			// Send first prompt (starts streaming)
 			const promptPromise = this.agentConnection
@@ -6895,17 +6846,7 @@ export class InteractiveMode {
 				});
 
 			// Queue remaining messages
-			for (const message of rest) {
-				if (message.command) {
-					await this.queueSessionCommand(message.text, message.mode === "steer" ? "steering" : "followUp");
-				} else if (this.isExtensionCommand(message.text)) {
-					await this.agentConnection.prompt(message.text, { images: this.collectImagesFor(message.text) });
-				} else if (message.mode === "followUp") {
-					await this.agentConnection.followUp(message.text, this.collectImagesFor(message.text));
-				} else {
-					await this.agentConnection.steer(message.text, this.collectImagesFor(message.text));
-				}
-			}
+			for (const message of rest) await this.dispatchCompactionQueuedMessage(message, true);
 			this.updatePendingMessagesDisplay();
 			void promptPromise;
 		} catch (error) {
@@ -9370,92 +9311,6 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 	private checkDaxnutsEasterEgg(model: { provider: string; id: string }): void {
 		if (model.provider === "opencode" && model.id.toLowerCase().includes("kimi-k2.5")) {
 			this.handleDaxnuts();
-		}
-	}
-
-	async handleCompactCommand(customInstructions?: string): Promise<void> {
-		let messageCount: number;
-		try {
-			const stats = await this.agentConnection.getSessionStats();
-			messageCount = stats.totalMessages;
-		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
-			return;
-		}
-
-		if (messageCount < 2) {
-			this.showWarning("Nothing to compact (no messages yet)");
-			return;
-		}
-
-		this.stopWorkingLoader();
-
-		try {
-			await this.agentConnection.compact(customInstructions);
-		} catch {
-			// Ignore, will be emitted as an event
-		}
-	}
-
-	async handleRefineCommand(args?: string): Promise<void> {
-		let trimmedArgs = args?.trim() ?? "";
-		const globalOption: { global: boolean } = { global: false };
-		if (/^--global(?=\s|$)/.test(trimmedArgs)) {
-			globalOption.global = true;
-			trimmedArgs = trimmedArgs.replace(/^--global(?=\s|$)/, "").trim();
-		}
-		const rollbackPrefix = "rollback ";
-		let options: { instructions?: string; rollbackId?: string; global?: boolean };
-
-		if (trimmedArgs === "rollback") {
-			this.showWarning("Usage: /refine rollback <refinement-id>");
-			return;
-		}
-
-		if (trimmedArgs?.startsWith(rollbackPrefix) && trimmedArgs.slice(rollbackPrefix.length).trim()) {
-			// Rollback uses the global refinement history, not the current trajectory,
-			// so it must work even in a fresh session with no messages yet.
-			let rollbackId = trimmedArgs.slice(rollbackPrefix.length).trim();
-			if (/\s--global$/.test(rollbackId)) {
-				globalOption.global = true;
-				rollbackId = rollbackId.replace(/\s--global$/, "").trim();
-			}
-			options = { rollbackId, ...globalOption };
-		} else {
-			let messageCount: number;
-			try {
-				const stats = await this.agentConnection.getSessionStats();
-				messageCount = stats.totalMessages;
-			} catch (error) {
-				this.showError(error instanceof Error ? error.message : String(error));
-				return;
-			}
-
-			if (messageCount < 2) {
-				this.showWarning("Nothing to refine (no trajectory yet)");
-				return;
-			}
-			options = { instructions: trimmedArgs || undefined, ...globalOption };
-		}
-
-		this.stopWorkingLoader();
-		this.showStatus(
-			options.rollbackId
-				? `Rolling back refinement ${options.rollbackId}...`
-				: `Refining ${options.global ? "global" : "local"} continual harness state...`,
-		);
-
-		try {
-			const result = await this.agentConnection.refine(options);
-			const applied = result.appliedEdits.filter((edit) => edit.applied).length;
-			const failed = result.appliedEdits.length - applied;
-			const failedSuffix = failed > 0 ? `, ${failed} failed` : "";
-			this.showStatus(
-				`Refined continual harness state: ${applied} edit${applied === 1 ? "" : "s"} applied${failedSuffix}`,
-			);
-			this.showStatus(`Harness state: ${result.harnessStatePath}`);
-		} catch (error) {
-			this.showError(`Refinement failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 

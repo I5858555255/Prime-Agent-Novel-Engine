@@ -23,18 +23,22 @@ type AgentDaemonUpdateInternals = {
 
 type QueueInternals = {
 	_steeringMessages: Array<{
+		kind: "message";
 		text: string;
 		queueKey?: string;
 		agentMessageId?: string;
 		prefixMessages: CustomMessage[];
 		message: UserMessage | CustomMessage;
+		released: boolean;
 	}>;
 	_followUpMessages: Array<{
+		kind: "message";
 		text: string;
 		queueKey?: string;
 		agentMessageId?: string;
 		prefixMessages: CustomMessage[];
 		message: UserMessage | CustomMessage;
+		released: boolean;
 	}>;
 	_pendingNextTurnMessages: CustomMessage[];
 	_acceptedAgentMessagePrompt?: {
@@ -321,27 +325,33 @@ describe("issue #4257 update restart resume", () => {
 		const queueInternals = parentHarness.session as unknown as QueueInternals;
 		queueInternals._steeringMessages = [
 			{
+				kind: "message",
 				text: "queued work",
 				queueKey: "heartbeat:steer",
 				agentMessageId: "agentmsg_steer",
 				prefixMessages: [queuedContext],
 				message,
+				released: false,
 			},
 		];
 		queueInternals._followUpMessages = [
 			{
+				kind: "message",
 				text: "heartbeat",
 				queueKey: "heartbeat:job-1",
 				agentMessageId: "agentmsg_followup",
 				prefixMessages: [followUpContext],
 				message: followUpMessage,
+				released: false,
 			},
 			{
+				kind: "message",
 				text: "custom heartbeat",
 				queueKey: "heartbeat:custom",
 				agentMessageId: "agentmsg_custom",
 				prefixMessages: [],
 				message: customFollowUp,
+				released: false,
 			},
 		];
 		childHarness.session.recordBashResult("echo child", {
@@ -505,11 +515,13 @@ describe("issue #4257 update restart resume", () => {
 		const queueInternals = harness.session as unknown as QueueInternals;
 		queueInternals._followUpMessages = [
 			{
+				kind: "message",
 				text: "queued follow-up",
 				queueKey: "heartbeat:job-1",
 				agentMessageId: "agentmsg_followup",
 				prefixMessages: [],
 				message: { role: "user", content: followUpContent, timestamp: Date.now() },
+				released: false,
 			},
 		];
 
@@ -769,11 +781,13 @@ describe("issue #4257 update restart resume", () => {
 		const restoredPrefix = createCustomMessage("restored custom prefix");
 		queueInternals._followUpMessages = [
 			{
+				kind: "message",
 				text: "existing",
 				queueKey: "heartbeat:job-1",
 				agentMessageId: "agentmsg_existing",
 				prefixMessages: [],
 				message: { role: "user", content: [{ type: "text", text: "existing" }], timestamp: Date.now() },
+				released: false,
 			},
 		];
 		const writes: string[] = [];

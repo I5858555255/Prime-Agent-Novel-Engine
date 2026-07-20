@@ -1,4 +1,4 @@
-import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Box, Container, Markdown, type MarkdownTheme, Text } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -11,16 +11,20 @@ const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 export class UserMessageComponent extends Container {
 	private contentBox: Box;
 
-	constructor(text: string, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
+	constructor(text: string, markdownTheme: MarkdownTheme = getMarkdownTheme(), styledText?: string) {
 		super();
 		this.contentBox = new Box(2, 1, (content: string) => theme.getUserMessageBackgroundColor()(content));
 		this.contentBox.addChild(
-			new Markdown(text, 0, 0, markdownTheme, {
-				color: (content: string) => theme.fg("userMessageText", content),
-			}),
+			styledText === undefined
+				? new Markdown(text, 0, 0, markdownTheme, {
+						color: (content: string) => theme.fg("userMessageText", content),
+					})
+				: new Text(styledText, 0, 0),
 		);
 		this.addChild(this.contentBox);
 	}
+
+	setExpanded(_expanded: boolean): void {}
 
 	override render(width: number): string[] {
 		const lines = super.render(width);

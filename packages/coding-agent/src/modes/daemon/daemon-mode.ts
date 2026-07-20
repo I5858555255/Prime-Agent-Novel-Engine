@@ -212,8 +212,6 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"prompt_and_wait",
 	"steer",
 	"follow_up",
-	"execute_session_command",
-	"queue_session_command",
 	"restore_next_turn",
 	"append_custom_message",
 	"resume_queue",
@@ -2889,19 +2887,6 @@ export class AgentDaemon {
 				return success(command.id, "steer");
 			}
 
-			case "execute_session_command": {
-				const state = this.getBoundSessionState(command.activeSessionId);
-				await state.runtime.session.executeSessionSlashCommand(command.text);
-				return success(command.id, "execute_session_command");
-			}
-
-			case "queue_session_command": {
-				const state = this.getBoundSessionState(command.activeSessionId);
-				await state.runtime.session.queueSessionSlashCommand(command.text, command.lane, { resumeIfIdle: true });
-				this.recordWorkerRecoveryState(state, "session_command_queued", true);
-				return success(command.id, "queue_session_command");
-			}
-
 			case "follow_up": {
 				const state = this.getBoundSessionState(command.activeSessionId);
 				let queued: boolean;
@@ -2940,24 +2925,7 @@ export class AgentDaemon {
 
 			case "resume_queue": {
 				const state = this.getSessionState(command.activeSessionId);
-				let checkedStart = false;
-				let startError: unknown;
-				void state.runtime.session.agent.continue().then(undefined, (error: unknown) => {
-					if (checkedStart) {
-						this.broadcastToSession(
-							state,
-							failure(undefined, "resume_queue", error, serializeDaemonError(error)),
-						);
-					} else {
-						startError = error;
-					}
-				});
-				// Self-update restore must acknowledge that queued work restarted without waiting for it to finish.
-				await Promise.resolve();
-				checkedStart = true;
-				if (startError !== undefined) {
-					return failure(command.id, "resume_queue", startError, serializeDaemonError(startError));
-				}
+				state.runtime.session.resumeQueuedWork();
 				return success(command.id, "resume_queue");
 			}
 
@@ -4200,7 +4168,6 @@ export class AgentDaemon {
 		const queue = {
 			steering: [...session.getSteeringQueueSnapshots()].map((message) => ({
 				message: message.text,
-				...(message.command ? { command: message.command } : {}),
 				...(message.content ? { content: message.content } : {}),
 				...(message.images ? { images: message.images } : {}),
 				...(message.queueKey ? { queueKey: message.queueKey } : {}),
@@ -4210,7 +4177,6 @@ export class AgentDaemon {
 			})),
 			followUp: [...session.getFollowUpQueueSnapshots()].map((message) => ({
 				message: message.text,
-				...(message.command ? { command: message.command } : {}),
 				...(message.content ? { content: message.content } : {}),
 				...(message.images ? { images: message.images } : {}),
 				...(message.queueKey ? { queueKey: message.queueKey } : {}),

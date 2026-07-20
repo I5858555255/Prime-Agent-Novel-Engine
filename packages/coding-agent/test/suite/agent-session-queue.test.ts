@@ -2004,14 +2004,29 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.agent.convertToLlm([result!])).toEqual([]);
 	});
 
+	it("queues prompt-routed session commands while bash is running", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const compact = vi.spyOn(harness.session as any, "_compact");
+		(harness.session as unknown as { _userBashRunning: boolean })._userBashRunning = true;
+
+		await harness.session.prompt("/compact after bash");
+
+		expect(compact).not.toHaveBeenCalled();
+		expect(harness.session.getSteeringMessages()).toEqual(["/compact after bash"]);
+	});
+
 	it("queues direct session commands behind pending idle work", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("queued prompt"), fauxAssistantMessage("after compact")]);
-		const compact = vi.spyOn(harness.session as any, "_compact").mockResolvedValue({
-			summary: "compacted",
-			firstKeptEntryId: "kept",
-			tokensBefore: 100,
+		const order: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "message_end" && event.message.role === "assistant") order.push("queued first");
+		});
+		const compact = vi.spyOn(harness.session as any, "_compact").mockImplementation(async () => {
+			order.push("compact");
+			return { summary: "compacted", firstKeptEntryId: "kept", tokensBefore: 100 };
 		});
 		await harness.session.followUp("queued first");
 
@@ -2020,7 +2035,33 @@ describe("AgentSession queue characterization", () => {
 		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
 
 		expect(getUserTexts(harness)).toEqual(["queued first", "after compact"]);
-		expect(compact).toHaveBeenCalledWith("after queued work", true);
+		expect(order.slice(0, 2)).toEqual(["queued first", "compact"]);
+		expect(compact).toHaveBeenCalledWith("after queued work", true, false);
+	});
+
+	it("resumes a restored head command without an extra model turn", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const compact = vi.spyOn(harness.session as any, "_compact").mockResolvedValue({
+			summary: "compacted",
+			firstKeptEntryId: "kept",
+			tokensBefore: 100,
+		});
+
+		await harness.session.restoreFollowUpMessage("/compact restored", undefined, {
+			customMessage: {
+				role: "custom",
+				customType: "session_slash_command",
+				content: "/compact restored",
+				display: false,
+				timestamp: Date.now(),
+			},
+		});
+		harness.session.resumeQueuedWork();
+		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
+
+		expect(compact).toHaveBeenCalledWith("restored", true, false);
+		expect(getUserTexts(harness)).toEqual([]);
 	});
 
 	it("does not drain queued commands as model messages after bash", async () => {
@@ -2034,12 +2075,12 @@ describe("AgentSession queue characterization", () => {
 		harness.setResponses([fauxAssistantMessage("after command")]);
 		await harness.session.queueSessionSlashCommand("/compact after bash", "followUp");
 		await harness.session.followUp("after command");
-		const internals = harness.session as unknown as { _drainQueuedMessagesAfterBash(): Promise<void> };
+		const internals = harness.session as unknown as { _schedulePendingMessageResume(request?: boolean): void };
 
-		await internals._drainQueuedMessagesAfterBash();
+		internals._schedulePendingMessageResume(true);
 		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
 
-		expect(compact).toHaveBeenCalledWith("after bash", true);
+		expect(compact).toHaveBeenCalledWith("after bash", true, false);
 		expect(getUserTexts(harness)).toEqual(["after command"]);
 	});
 
@@ -2059,8 +2100,8 @@ describe("AgentSession queue characterization", () => {
 		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
 
 		expect(compact.mock.calls).toEqual([
-			["first", true],
-			["second", true],
+			["first", true, false],
+			["second", true, false],
 		]);
 		expect(getUserTexts(harness)).toEqual(["after commands"]);
 	});
@@ -2087,7 +2128,7 @@ describe("AgentSession queue characterization", () => {
 		await promptPromise;
 		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
 
-		expect(compact).toHaveBeenCalledWith("focus on queues", true);
+		expect(compact).toHaveBeenCalledWith("focus on queues", true, false);
 		expect(getUserTexts(harness)).toEqual(["start", "before command", "after command"]);
 		const command = harness.session.messages.find(
 			(message) => message.role === "custom" && message.customType === "session_slash_command",

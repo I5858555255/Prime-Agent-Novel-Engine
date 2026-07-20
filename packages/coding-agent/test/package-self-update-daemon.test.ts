@@ -1238,7 +1238,6 @@ describe("self-update daemon restart", () => {
 						steering: [
 							{
 								message: "/compact focus on queues",
-								command: { name: "compact", args: "focus on queues", text: "/compact focus on queues" },
 							},
 						],
 						followUp: [
@@ -1270,10 +1269,10 @@ describe("self-update daemon restart", () => {
 
 			expect(mockState.requestPayloads).toContainEqual(
 				expect.objectContaining({
-					type: "queue_session_command",
+					type: "steer",
 					activeSessionId: "restored-active",
-					text: "/compact focus on queues",
-					lane: "steering",
+					message: "/compact focus on queues",
+					expandPromptTemplates: false,
 				}),
 			);
 

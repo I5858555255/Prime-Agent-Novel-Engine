@@ -123,8 +123,6 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"prompt_and_wait",
 	"steer",
 	"follow_up",
-	"execute_session_command",
-	"queue_session_command",
 	"restore_next_turn",
 	"append_custom_message",
 	"resume_queue",

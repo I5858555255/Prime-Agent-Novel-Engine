@@ -57,13 +57,6 @@ const DEFAULT_MODEL = {
 
 type QueueMode = "all" | "one-at-a-time";
 
-export interface AgentQueueBarrier {
-	kind: "barrier";
-	id: string;
-}
-
-type PendingQueueBatch = { kind: "messages"; messages: AgentMessage[] } | AgentQueueBarrier;
-
 type MutableAgentState = Omit<AgentState, "isStreaming" | "streamingMessage" | "pendingToolCalls" | "errorMessage"> & {
 	isStreaming: boolean;
 	streamingMessage?: AgentMessage;
@@ -114,7 +107,6 @@ export interface AgentOptions {
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
 	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
 	getContinuationMessages?: (context: GetContinuationMessagesContext, signal?: AbortSignal) => Promise<AgentMessage[]>;
-	onQueueBarrier?: (barrier: AgentQueueBarrier, lane: "steering" | "followUp") => void | Promise<void>;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
 	sessionId?: string;
@@ -125,17 +117,15 @@ export interface AgentOptions {
 }
 
 class PendingMessageQueue {
-	private batches: PendingQueueBatch[] = [];
+	private batches: AgentMessage[][] = [];
 
 	constructor(public mode: QueueMode) {}
 
 	enqueue(message: AgentMessage | AgentMessage[]): void {
-		const messages = Array.isArray(message) ? message.slice() : [message];
-		if (messages.length > 0) this.batches.push({ kind: "messages", messages });
-	}
-
-	enqueueBarrier(barrier: AgentQueueBarrier): void {
-		this.batches.push(barrier);
+		const batch = Array.isArray(message) ? message.slice() : [message];
+		if (batch.length > 0) {
+			this.batches.push(batch);
+		}
 	}
 
 	hasItems(): boolean {
@@ -143,32 +133,18 @@ class PendingMessageQueue {
 	}
 
 	drain(): AgentMessage[] {
-		const first = this.batches[0];
-		if (!first || first.kind === "barrier") return [];
-		if (this.mode === "one-at-a-time") {
-			this.batches = this.batches.slice(1);
-			return first.messages;
+		if (this.mode === "all") {
+			const drained = this.batches.flat();
+			this.batches = [];
+			return drained;
 		}
-		const drained: AgentMessage[] = [];
-		while (this.batches[0]?.kind === "messages") {
-			drained.push(...(this.batches.shift() as { kind: "messages"; messages: AgentMessage[] }).messages);
-		}
-		return drained;
-	}
 
-	peekBarrier(): AgentQueueBarrier | undefined {
 		const first = this.batches[0];
-		return first?.kind === "barrier" ? first : undefined;
-	}
-
-	isBarrierAtHead(id: string): boolean {
-		return this.batches[0]?.kind === "barrier" && this.batches[0].id === id;
-	}
-
-	shiftBarrier(id: string): boolean {
-		if (this.batches[0]?.kind !== "barrier" || this.batches[0].id !== id) return false;
-		this.batches.shift();
-		return true;
+		if (!first) {
+			return [];
+		}
+		this.batches = this.batches.slice(1);
+		return first;
 	}
 
 	clear(): void {
@@ -177,11 +153,15 @@ class PendingMessageQueue {
 
 	removeWhere(predicate: (message: AgentMessage) => boolean): AgentMessage[] {
 		const removed: AgentMessage[] = [];
-		this.batches = this.batches.filter((batch) => {
-			if (batch.kind === "barrier" || !batch.messages.some(predicate)) return true;
-			removed.push(...batch.messages);
-			return false;
-		});
+		const retained: AgentMessage[][] = [];
+		for (const batch of this.batches) {
+			if (batch.some(predicate)) {
+				removed.push(...batch);
+			} else {
+				retained.push(batch);
+			}
+		}
+		this.batches = retained;
 		return removed;
 	}
 }
@@ -203,7 +183,6 @@ export class Agent {
 	private readonly listeners = new Set<(event: AgentEvent, signal: AbortSignal) => Promise<void> | void>();
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
-	private pendingBarrier?: { barrier: AgentQueueBarrier; lane: "steering" | "followUp" };
 
 	public convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	public transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
@@ -224,7 +203,6 @@ export class Agent {
 		context: GetContinuationMessagesContext,
 		signal?: AbortSignal,
 	) => Promise<AgentMessage[]>;
-	public onQueueBarrier?: (barrier: AgentQueueBarrier, lane: "steering" | "followUp") => void | Promise<void>;
 	private activeRun?: ActiveRun;
 	/** Session identifier forwarded to providers for cache-aware backends. */
 	public sessionId?: string;
@@ -249,7 +227,6 @@ export class Agent {
 		this.afterToolCall = options.afterToolCall;
 		this.shouldStopAfterTurn = options.shouldStopAfterTurn;
 		this.getContinuationMessages = options.getContinuationMessages;
-		this.onQueueBarrier = options.onQueueBarrier;
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
 		this.sessionId = options.sessionId;
@@ -309,14 +286,6 @@ export class Agent {
 	/** Queue a message batch to run only after the agent would otherwise stop. */
 	followUp(message: AgentMessage | AgentMessage[]): void {
 		this.followUpQueue.enqueue(message);
-	}
-
-	queueBarrier(barrier: AgentQueueBarrier, lane: "steering" | "followUp"): void {
-		(lane === "steering" ? this.steeringQueue : this.followUpQueue).enqueueBarrier(barrier);
-	}
-
-	completeQueueBarrier(id: string, lane: "steering" | "followUp"): boolean {
-		return (lane === "steering" ? this.steeringQueue : this.followUpQueue).shiftBarrier(id);
 	}
 
 	/** Remove all queued steering messages. */
@@ -394,47 +363,48 @@ export class Agent {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
 		}
 
-		const runQueuedMessages = async (): Promise<boolean> => {
-			const steeringBarrier = this.steeringQueue.peekBarrier();
-			if (steeringBarrier) {
-				await this.runQueueBarrier(steeringBarrier, "steering");
-				return true;
-			}
+		const runQueuedMessages = (): Promise<void> | undefined => {
 			const queuedSteering = this.steeringQueue.drain();
 			if (queuedSteering.length > 0) {
-				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
-				return true;
+				return this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
 			}
 
-			const followUpBarrier = this.followUpQueue.peekBarrier();
-			if (followUpBarrier) {
-				await this.runQueueBarrier(followUpBarrier, "followUp");
-				return true;
-			}
 			const queuedFollowUps = this.followUpQueue.drain();
 			if (queuedFollowUps.length > 0) {
-				await this.runPromptMessages(queuedFollowUps);
-				return true;
+				return this.runPromptMessages(queuedFollowUps);
 			}
-			return false;
+
+			return undefined;
 		};
 
 		const lastMessage = this._state.messages[this._state.messages.length - 1];
 		if (!lastMessage) {
-			if (await runQueuedMessages()) return;
+			const queuedRun = runQueuedMessages();
+			if (queuedRun) {
+				await queuedRun;
+				return;
+			}
 
 			throw new Error("No messages to continue from");
 		}
 
 		if (lastMessage.role === "assistant") {
-			if (await runQueuedMessages()) return;
+			const queuedRun = runQueuedMessages();
+			if (queuedRun) {
+				await queuedRun;
+				return;
+			}
 
 			throw new Error("Cannot continue from message role: assistant");
 		}
 
 		const lastMessageRole: string = lastMessage.role;
 		if (lastMessageRole === "custom") {
-			if (await runQueuedMessages()) return;
+			const queuedRun = runQueuedMessages();
+			if (queuedRun) {
+				await queuedRun;
+				return;
+			}
 		}
 
 		await this.runContinuation();
@@ -519,40 +489,11 @@ export class Agent {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
-				const messages = this.steeringQueue.drain();
-				const barrier = messages.length === 0 ? this.steeringQueue.peekBarrier() : undefined;
-				if (barrier) this.pendingBarrier = { barrier, lane: "steering" };
-				return messages;
+				return this.steeringQueue.drain();
 			},
-			getFollowUpMessages: async () => {
-				const steeringBarrier = this.steeringQueue.peekBarrier();
-				if (steeringBarrier) {
-					this.pendingBarrier = { barrier: steeringBarrier, lane: "steering" };
-					return [];
-				}
-				const messages = this.followUpQueue.drain();
-				const barrier = messages.length === 0 ? this.followUpQueue.peekBarrier() : undefined;
-				if (barrier) this.pendingBarrier = { barrier, lane: "followUp" };
-				return messages;
-			},
-			shouldStopForQueueBarrier: () => {
-				if (this.pendingBarrier) return true;
-				const steering = this.steeringQueue.peekBarrier();
-				if (steering) this.pendingBarrier = { barrier: steering, lane: "steering" };
-				else {
-					const followUp = this.followUpQueue.peekBarrier();
-					if (followUp) this.pendingBarrier = { barrier: followUp, lane: "followUp" };
-				}
-				return this.pendingBarrier !== undefined;
-			},
+			getFollowUpMessages: async () => this.followUpQueue.drain(),
 			getContinuationMessages: async (context, signal) => this.getContinuationMessages?.(context, signal) ?? [],
 		};
-	}
-
-	private async runQueueBarrier(barrier: AgentQueueBarrier, lane: "steering" | "followUp"): Promise<void> {
-		await this.runWithLifecycle(async () => {
-			await this.onQueueBarrier?.(barrier, lane);
-		});
 	}
 
 	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {
@@ -576,10 +517,6 @@ export class Agent {
 		} catch (error) {
 			await this.handleRunFailure(error, abortController.signal.aborted);
 		} finally {
-			const pendingBarrier = this.takePendingBarrier();
-			if (pendingBarrier) {
-				await this.onQueueBarrier?.(pendingBarrier.barrier, pendingBarrier.lane);
-			}
 			this.finishRun();
 		}
 	}
@@ -603,14 +540,6 @@ export class Agent {
 		await this.processEvents({ type: "message_start", message: failureMessage }).catch(() => undefined);
 		await this.processEvents({ type: "message_end", message: failureMessage }).catch(() => undefined);
 		await this.processEvents({ type: "agent_end", messages: [failureMessage] });
-	}
-
-	private takePendingBarrier(): { barrier: AgentQueueBarrier; lane: "steering" | "followUp" } | undefined {
-		const pendingBarrier = this.pendingBarrier;
-		this.pendingBarrier = undefined;
-		if (!pendingBarrier) return undefined;
-		const queue = pendingBarrier.lane === "steering" ? this.steeringQueue : this.followUpQueue;
-		return queue.isBarrierAtHead(pendingBarrier.barrier.id) ? pendingBarrier : undefined;
 	}
 
 	private finishRun(): void {

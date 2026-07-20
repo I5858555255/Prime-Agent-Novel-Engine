@@ -288,10 +288,6 @@ export async function runAgentLoopContinue(
 	const currentContext: AgentContext = { ...context };
 
 	await emit({ type: "agent_start" });
-	if (config.shouldStopForQueueBarrier?.()) {
-		await emit({ type: "agent_end", messages: newMessages });
-		return newMessages;
-	}
 	await emit({ type: "turn_start" });
 
 	await runLoop(currentContext, newMessages, config, signal, emit, streamFn);
@@ -320,6 +316,7 @@ async function runLoop(
 	let lastTurn: Parameters<NonNullable<AgentLoopConfig["getContinuationMessages"]>>[0] | undefined;
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = await pollMessagesUnlessAborted(config.getSteeringMessages, signal);
+
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
 		throwIfAborted(signal);
@@ -413,10 +410,6 @@ async function runLoop(
 				return;
 			}
 			pendingMessages = steeringMessagesResult.value;
-			if (pendingMessages.length === 0 && config.shouldStopForQueueBarrier?.()) {
-				await emit({ type: "agent_end", messages: newMessages });
-				return;
-			}
 		}
 
 		// Agent would stop here. Check for follow-up messages.
@@ -429,19 +422,10 @@ async function runLoop(
 			return;
 		}
 		const followUpMessages = followUpMessagesResult.value;
-		if (followUpMessages.length === 0 && config.shouldStopForQueueBarrier?.()) {
-			await emit({ type: "agent_end", messages: newMessages });
-			return;
-		}
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
 			continue;
-		}
-
-		if (config.shouldStopForQueueBarrier?.()) {
-			await emit({ type: "agent_end", messages: newMessages });
-			return;
 		}
 
 		const continuationMessagesResult = lastTurn
@@ -455,10 +439,6 @@ async function runLoop(
 			return;
 		}
 		const continuationMessages = continuationMessagesResult.value || [];
-		if (config.shouldStopForQueueBarrier?.()) {
-			await emit({ type: "agent_end", messages: newMessages });
-			return;
-		}
 		if (continuationMessages.length > 0) {
 			pendingMessages = continuationMessages;
 			continue;
