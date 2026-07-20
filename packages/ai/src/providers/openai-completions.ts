@@ -1092,7 +1092,9 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 
 	const isGrok = provider === "xai" || baseUrl.includes("api.x.ai");
 	const isDeepSeek = provider === "deepseek" || baseUrl.includes("deepseek.com");
-	const cacheControlFormat = provider === "openrouter" && model.id.startsWith("anthropic/") ? "anthropic" : undefined;
+	const isAnthropicModel = model.id.startsWith("anthropic/");
+	const cacheControlFormat =
+		isAnthropicModel && (provider === "openrouter" || isPrimeInference) ? "anthropic" : undefined;
 
 	return {
 		supportsStore: !isNonStandard,

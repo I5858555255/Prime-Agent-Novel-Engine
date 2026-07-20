@@ -116,6 +116,8 @@ const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
+const ANTHROPIC_CACHE_READ_COST_DIVISOR = 10;
+const ANTHROPIC_FIVE_MINUTE_CACHE_WRITE_COST_MULTIPLIER = 1.25;
 
 interface PrimeInferenceCatalogEntry {
 	id: string;
@@ -415,6 +417,15 @@ function getPrimeInferenceHeaders(apiKey: string | undefined, teamId: string | u
 	return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
+function getPrimeInferenceCacheCosts(modelId: string, inputCost: number): { cacheRead: number; cacheWrite: number } {
+	return modelId.toLowerCase().startsWith("anthropic/")
+		? {
+				cacheRead: inputCost / ANTHROPIC_CACHE_READ_COST_DIVISOR,
+				cacheWrite: inputCost * ANTHROPIC_FIVE_MINUTE_CACHE_WRITE_COST_MULTIPLIER,
+			}
+		: { cacheRead: 0, cacheWrite: 0 };
+}
+
 function getExistingPrimeInferenceModels(): Model<"openai-completions">[] {
 	const models = EXISTING_MODELS["prime-inference"] as unknown as Record<string, Model<"openai-completions">>;
 	return Object.values(models)
@@ -422,7 +433,10 @@ function getExistingPrimeInferenceModels(): Model<"openai-completions">[] {
 		.map((model) => ({
 			...model,
 			input: [...model.input],
-			cost: { ...model.cost },
+			cost: {
+				...model.cost,
+				...getPrimeInferenceCacheCosts(model.id, model.cost.input),
+			},
 			...(model.compat ? { compat: { ...model.compat } } : {}),
 			...(model.thinkingLevelMap ? { thinkingLevelMap: { ...model.thinkingLevelMap } } : {}),
 			...(model.headers ? { headers: { ...model.headers } } : {}),
@@ -672,6 +686,7 @@ function createPrimeInferenceModel(
 	openRouter: PrimeInferenceOpenRouterMetadata | undefined,
 ): Model<"openai-completions"> {
 	const vision = override?.vision ?? openRouter?.vision ?? false;
+	const cacheCosts = getPrimeInferenceCacheCosts(entry.id, entry.input);
 	const contextWindow =
 		entry.contextWindow ??
 		override?.contextWindow ??
@@ -695,8 +710,7 @@ function createPrimeInferenceModel(
 		cost: {
 			input: entry.input,
 			output: entry.output,
-			cacheRead: 0,
-			cacheWrite: 0,
+			...cacheCosts,
 		},
 		contextWindow,
 		maxTokens,

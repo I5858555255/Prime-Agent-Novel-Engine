@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added Kimi K3 to the Prime Inference and OpenRouter model catalogs with multimodal input and mandatory max reasoning.
+- Fixed prompt caching and default cache-cost estimates for Anthropic models routed through Prime Inference ([ENG-4723](https://linear.app/primeintellect/issue/ENG-4723)).
 
 ## [0.3.1] - 2026-07-15
 

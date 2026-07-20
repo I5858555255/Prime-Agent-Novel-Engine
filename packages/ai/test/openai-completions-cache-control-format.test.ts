@@ -121,6 +121,13 @@ function expectAnthropicCacheMarkers(params: CapturedParams): void {
 	expect((lastMessage.content as TextPart[])[0]?.cache_control).toEqual({ type: "ephemeral" });
 }
 
+function expectNoAnthropicCacheMarkers(params: CapturedParams): void {
+	const instructionMessage = getInstructionMessage(params);
+	expect(Array.isArray(instructionMessage?.content)).toBe(false);
+	expect(params.tools?.[0]?.cache_control).toBeUndefined();
+	expect(typeof params.messages[params.messages.length - 1]?.content).toBe("string");
+}
+
 describe("openai-completions cacheControlFormat", () => {
 	beforeEach(() => {
 		mockState.lastParams = undefined;
@@ -158,6 +165,18 @@ describe("openai-completions cacheControlFormat", () => {
 		expectAnthropicCacheMarkers(params);
 	});
 
+	it("applies Anthropic-style cache markers for Prime Inference Anthropic models", async () => {
+		const model = getModel("prime-inference", "anthropic/claude-fable-5");
+		const params = await capturePayload(model);
+		expectAnthropicCacheMarkers(params);
+	});
+
+	it("does not apply Anthropic-style cache markers to other Prime Inference models", async () => {
+		const model = getModel("prime-inference", "openai/gpt-5.6-sol");
+		const params = await capturePayload(model);
+		expectNoAnthropicCacheMarkers(params);
+	});
+
 	it("omits Anthropic-style cache markers when cacheRetention is none", async () => {
 		const model: Model<"openai-completions"> = {
 			id: "custom-qwen",
@@ -180,10 +199,6 @@ describe("openai-completions cacheControlFormat", () => {
 			},
 		};
 		const params = await capturePayload(model, { cacheRetention: "none" });
-		const instructionMessage = getInstructionMessage(params);
-
-		expect(Array.isArray(instructionMessage?.content)).toBe(false);
-		expect(params.tools?.[0]?.cache_control).toBeUndefined();
-		expect(typeof params.messages[params.messages.length - 1]?.content).toBe("string");
+		expectNoAnthropicCacheMarkers(params);
 	});
 });
