@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { getAnthropicCacheCosts } from "../src/cache-pricing.js";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
 	CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
@@ -116,9 +117,6 @@ const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
-const ANTHROPIC_CACHE_READ_COST_DIVISOR = 10;
-const ANTHROPIC_FIVE_MINUTE_CACHE_WRITE_COST_MULTIPLIER = 1.25;
-
 interface PrimeInferenceCatalogEntry {
 	id: string;
 	input: number;
@@ -419,10 +417,7 @@ function getPrimeInferenceHeaders(apiKey: string | undefined, teamId: string | u
 
 function getPrimeInferenceCacheCosts(modelId: string, inputCost: number): { cacheRead: number; cacheWrite: number } {
 	return modelId.toLowerCase().startsWith("anthropic/")
-		? {
-				cacheRead: inputCost / ANTHROPIC_CACHE_READ_COST_DIVISOR,
-				cacheWrite: inputCost * ANTHROPIC_FIVE_MINUTE_CACHE_WRITE_COST_MULTIPLIER,
-			}
+		? getAnthropicCacheCosts(inputCost, "5m")
 		: { cacheRead: 0, cacheWrite: 0 };
 }
 
