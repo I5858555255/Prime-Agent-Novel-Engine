@@ -208,23 +208,23 @@ export class SelectList implements Component {
 		prefixWidth: number,
 	): string {
 		const hasMetadata = item.argumentHint !== undefined || item.sourceTag !== undefined;
-		const effectivePrimaryColumnWidth = hasMetadata
-			? Math.max(1, Math.min(primaryColumnWidth, width - prefixWidth - 2))
-			: Math.max(1, width - prefixWidth - 2);
-		const maxPrimaryWidth = hasMetadata
+		const contentWidth = Math.max(1, width - prefixWidth - 2);
+		const showMetadata = hasMetadata && contentWidth > primaryColumnWidth;
+		const effectivePrimaryColumnWidth = showMetadata ? primaryColumnWidth : contentWidth;
+		const maxPrimaryWidth = showMetadata
 			? Math.max(1, effectivePrimaryColumnWidth - PRIMARY_COLUMN_GAP)
 			: effectivePrimaryColumnWidth;
 		const primary = this.truncatePrimary(item, isSelected, maxPrimaryWidth, effectivePrimaryColumnWidth);
 		const styledPrefix = isSelected ? this.theme.selectedPrefix(prefix) : prefix;
 		const styledPrimary = isSelected ? this.theme.selectedText(primary) : primary;
-		if (!hasMetadata) {
-			return `${styledPrefix}${styledPrimary}`;
+		if (!showMetadata) {
+			return truncateToWidth(`${styledPrefix}${styledPrimary}`, width, "");
 		}
 
 		const spacing = " ".repeat(Math.max(1, effectivePrimaryColumnWidth - visibleWidth(primary)));
-		let remainingWidth = Math.max(1, width - prefixWidth - visibleWidth(primary) - spacing.length - 2);
+		let remainingWidth = Math.max(0, width - prefixWidth - visibleWidth(primary) - spacing.length - 2);
 		const metadata: string[] = [];
-		if (item.argumentHint) {
+		if (item.argumentHint && remainingWidth > 0) {
 			const argumentHint = truncateToWidth(item.argumentHint, remainingWidth, "…");
 			metadata.push((this.theme.argumentHint ?? this.theme.description)(argumentHint));
 			remainingWidth -= visibleWidth(argumentHint);
@@ -238,7 +238,7 @@ export class SelectList implements Component {
 				(this.theme.sourceTag ?? this.theme.description)(truncateToWidth(item.sourceTag, remainingWidth, "…")),
 			);
 		}
-		return `${styledPrefix}${styledPrimary}${spacing}${metadata.join("")}`;
+		return truncateToWidth(`${styledPrefix}${styledPrimary}${spacing}${metadata.join("")}`, width, "");
 	}
 
 	private getPrimaryColumnWidth(): number {
