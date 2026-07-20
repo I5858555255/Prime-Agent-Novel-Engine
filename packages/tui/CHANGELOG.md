@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Changed slash-command autocomplete to show argument hints and source tags inline, selected descriptions separately, and directional hidden-result counts.
 - Removed the fullscreen image fallback instruction and kept fullscreen overlays from emitting terminal graphics ([#437](https://github.com/PrimeIntellect-ai/prime-agent/pull/437) by [@snimu](https://github.com/snimu)).
 - Changed the fullscreen follow shortcut from `Alt+Down` to `Ctrl+Shift+Down` for more reliable terminal input ([ENG-4684](https://linear.app/primeintellect/issue/ENG-4684/altdown-doesnt-work)).
 - Fixed autocomplete popups overlapping the prompt's top edge.
