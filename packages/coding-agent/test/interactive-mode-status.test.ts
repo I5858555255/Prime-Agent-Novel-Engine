@@ -581,9 +581,30 @@ describe("InteractiveMode.renderSessionContext", () => {
 		await renderMessages(harness, messages, { limitTranscript: true });
 
 		expect(addMessageToChat).toHaveBeenCalledTimes(399);
-		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 0" });
+		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ role: "assistant" });
+		expect(addMessageToChat.mock.calls[1]?.[0]).toMatchObject({ content: "message 1" });
 		expect(addMessageToChat.mock.calls.at(-1)?.[0]).toMatchObject({ content: "message 398" });
-		expect(renderAll(chatContainer)).toContain("Showing latest 399 of 401 messages for faster open.");
+		expect(renderAll(chatContainer)).toContain("Showing latest 400 of 401 messages for faster open.");
+	});
+
+	test("keeps a bounded tool-call context when the recent tail contains only tool results", async () => {
+		const { harness, chatContainer, addMessageToChat } = createRenderSessionContextHarness();
+		const toolCallIds = Array.from({ length: 400 }, (_, index) => `tool-${index}`);
+		const assistantMessage: Extract<AgentMessage, { role: "assistant" }> = {
+			...toolCallMessage(toolCallIds[0]!, "custom_tool"),
+			content: toolCallIds.map((id) => ({ type: "toolCall" as const, name: "custom_tool", id, arguments: {} })),
+		};
+		const messages = [
+			assistantMessage,
+			...toolCallIds.map((id) => toolResultMessage(id, "custom_tool", [{ type: "text", text: `result ${id}` }])),
+		];
+
+		await renderMessages(harness, messages, { limitTranscript: true });
+
+		expect(addMessageToChat).toHaveBeenCalledOnce();
+		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ role: "assistant" });
+		expect(harness.preloadToolDefinitions).toHaveBeenCalledWith(Array(399).fill("custom_tool"));
+		expect(renderAll(chatContainer)).toContain("Showing latest 400 of 401 messages for faster open.");
 	});
 });
 
