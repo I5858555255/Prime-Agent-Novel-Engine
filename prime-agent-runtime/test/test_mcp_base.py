@@ -192,15 +192,30 @@ class McpIntegrationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             Bad()
 
-    def _run_open_session_with_transport(self, transport):
+    def test_rejects_non_positive_transport_timeout(self):
+        class Bad(_Integration):
+            sse_read_timeout = 0
+
+        with self.assertRaisesRegex(ValueError, "sse_read_timeout must be positive"):
+            Bad()
+
+    def _run_open_session_with_transport(
+        self, transport, integration_cls=_Integration, *, with_auth=True
+    ):
         """Drive the real _open_session against a fake transport callable.
 
         `transport` must declare its real parameters (headers= or http_client=)
         so the signature inspection in _open_session is exercised faithfully.
         """
-        self._write_auth(
-            {"type": "oauth", "access": "tok-xyz", "refresh": "r", "expires": (time.time() + 3600) * 1000}
-        )
+        if with_auth:
+            self._write_auth(
+                {
+                    "type": "oauth",
+                    "access": "tok-xyz",
+                    "refresh": "r",
+                    "expires": (time.time() + 3600) * 1000,
+                }
+            )
 
         async def fake_host_request(req_type, payload):
             return {}  # no host URL override; _resolve_url falls back to self.url
@@ -215,7 +230,7 @@ class McpIntegrationTest(unittest.TestCase):
             )
             session_cls.return_value.__aenter__ = mock.AsyncMock(return_value=session)
             session_cls.return_value.__aexit__ = mock.AsyncMock(return_value=False)
-            _run(_Integration().call_tool("noop", {}))
+            _run(integration_cls().call_tool("noop", {}))
 
     def test_open_session_uses_headers_signature(self):
         # streamablehttp_client(url, headers=...)
@@ -235,6 +250,68 @@ class McpIntegrationTest(unittest.TestCase):
         self._run_open_session_with_transport(transport)
         self.assertEqual(captured["headers"], {"Authorization": "Bearer tok-xyz"})
 
+    def test_open_session_supports_anonymous_servers(self):
+        captured = {}
+
+        class AnonymousIntegration(_Integration):
+            requires_auth = False
+
+        class _CM:
+            async def __aenter__(self_inner):
+                return ("read", "write", None)
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+        def transport(url, headers=None):
+            captured["headers"] = headers
+            return _CM()
+
+        self._run_open_session_with_transport(
+            transport, AnonymousIntegration, with_auth=False
+        )
+        self.assertEqual(captured["headers"], {})
+
+    def test_open_session_passes_configured_transport_timeouts(self):
+        captured = {}
+
+        class LongRunningIntegration(_Integration):
+            request_timeout = 120
+            sse_read_timeout = 15_000
+
+        class _CM:
+            async def __aenter__(self_inner):
+                return ("read", "write", None)
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+        def transport(url, headers=None, timeout=30, sse_read_timeout=300):
+            captured["timeout"] = timeout
+            captured["sse_read_timeout"] = sse_read_timeout
+            return _CM()
+
+        self._run_open_session_with_transport(transport, LongRunningIntegration)
+        self.assertEqual(captured["timeout"], 120)
+        self.assertEqual(captured["sse_read_timeout"], 15_000)
+
+    def test_open_session_rejects_unsupported_configured_timeout(self):
+        class LongRunningIntegration(_Integration):
+            sse_read_timeout = 15_000
+
+        class _CM:
+            async def __aenter__(self_inner):
+                return ("read", "write", None)
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+        def transport(url, headers=None):
+            return _CM()
+
+        with self.assertRaisesRegex(RuntimeError, "sse_read_timeout"):
+            self._run_open_session_with_transport(transport, LongRunningIntegration)
+
     def test_open_session_uses_http_client_signature(self):
         # streamable_http_client(url, *, http_client=...) — must NOT pass headers=
         captured = {}
@@ -252,6 +329,32 @@ class McpIntegrationTest(unittest.TestCase):
 
         self._run_open_session_with_transport(transport)
         self.assertIsNotNone(captured["http_client"])
+
+    def test_http_client_signature_uses_streaming_read_timeout(self):
+        captured = {}
+
+        class LongRunningIntegration(_Integration):
+            requires_auth = False
+            request_timeout = 120
+            sse_read_timeout = 15_000
+
+        class _CM:
+            async def __aenter__(self_inner):
+                return ("read", "write", None)
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+        def transport(url, *, http_client=None):
+            captured["http_client"] = http_client
+            return _CM()
+
+        self._run_open_session_with_transport(
+            transport, LongRunningIntegration, with_auth=False
+        )
+        timeout = captured["http_client"].timeout
+        self.assertEqual(timeout.connect, 120)
+        self.assertEqual(timeout.read, 15_000)
 
     def test_resolve_config_prefers_host_override_and_headers(self):
         async def host_with_override(req_type, payload):

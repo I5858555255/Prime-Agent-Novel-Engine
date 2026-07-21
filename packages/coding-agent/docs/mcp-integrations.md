@@ -12,9 +12,9 @@ import linear
 issues = await linear.list_issues(team="Engineering")
 ```
 
-The MCP connection runs inside the kernel via the official `mcp` Python SDK. The
-host's only jobs are interactive login (browser OAuth) and minting/refreshing
-credentials in `auth.json`.
+The MCP connection runs inside the kernel via the official `mcp` Python SDK. For
+authenticated integrations, the host handles interactive login (browser OAuth)
+and minting/refreshing credentials in `auth.json`.
 
 ## Table of Contents
 
@@ -175,6 +175,20 @@ is a few lines — the package above is the whole integration.
 - **Static bearer token** (`"bearerTokenEnvVar": "ACME_TOKEN"`): no login needed;
   the integration is "connected" whenever that env var is set. Set the matching
   `bearer_token_env = "ACME_TOKEN"` on the subclass.
+- **No authentication**: for an endpoint that intentionally accepts anonymous
+  requests, set `requires_auth = False` on the subclass. The integration skips
+  `auth.json` and does not inject an `Authorization` header.
+
+Long-running MCP tools can also override the transport timeouts on the subclass:
+
+```python
+class Acme(McpIntegration):
+    server = "acme"
+    url = "https://mcp.acme.com/mcp"
+    requires_auth = False
+    request_timeout = 120       # regular HTTP operations, seconds
+    sse_read_timeout = 15_000   # silent streaming response, seconds
+```
 
 ## The `McpIntegration` API
 
@@ -186,6 +200,11 @@ Class attributes to set on your subclass:
 - `url: str | None` — the remote endpoint (required unless you override
   `_open_session` for a non-HTTP transport).
 - `bearer_token_env: str | None` — optional env var holding a static bearer token.
+- `requires_auth: bool` — whether to require and inject a bearer token; defaults
+  to `True`.
+- `request_timeout: float | None` — optional regular HTTP timeout in seconds.
+- `sse_read_timeout: float | None` — optional streaming read timeout in seconds
+  for long-running tools.
 
 Methods:
 
