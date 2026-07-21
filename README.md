@@ -29,11 +29,13 @@ Prime Agent: RLM-native Coding and Research Harness
 
 ## Overview
 
-Prime Agent is an RLM-native coding and research harness in which the model actively manages its context through a persistent runtime:
+Long-running agents eventually fill their context with logs, tool output, and intermediate work. Compaction helps, but it can discard useful detail.
 
-- **Programmatic:** IPython is the only built-in model tool; code is action, tools are functions, and skills are modules.
-- **Recursive:** subagents are spawned and orchestrated from Python with `rlm(...)`, including parallel work and direct agent-to-agent communication.
-- **Adaptive:** Python-backed skills pair markdown instructions with importable functionality, allowing the harness to gain reusable capabilities.
+Prime Agent addresses this with an RLM runtime that gives the model control over what enters its context:
+
+- It uses persistent IPython as its only built-in tool, so it can inspect, search, and transform information with code.
+- It can spawn subagents from Python with `rlm(...)`, run independent work in parallel, and bring only useful results back.
+- Skills can include importable Python packages, giving the agent reusable capabilities beyond markdown instructions.
 
 ## Getting Started
 
