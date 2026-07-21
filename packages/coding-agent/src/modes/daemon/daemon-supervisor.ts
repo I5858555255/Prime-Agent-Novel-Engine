@@ -1017,6 +1017,25 @@ export class DaemonSupervisor {
 			case "list_saved_sessions":
 				return this.handleSavedSessionList(client, command);
 			case "create": {
+				const parentActiveSessionId =
+					command.runtimeMetadata?.kind === "subagent" ? command.runtimeMetadata.parentActiveSessionId : undefined;
+				if (parentActiveSessionId) {
+					const parent = await this.findWorkerForClient(client, parentActiveSessionId);
+					const response = await this.forwardToWorker(parent.worker, withoutSupervisorCreateFields(command));
+					if (!response.success) {
+						return response;
+					}
+					if (!isSessionSummary(response.data)) {
+						throw new Error("Session worker returned an invalid subagent create response");
+					}
+					const activeSessionId = response.data.activeSessionId ?? response.data.id;
+					parent.worker.summaries.set(activeSessionId, response.data);
+					await this.subscribeWorker(parent.worker, activeSessionId);
+					await this.syncAgentPeers().catch((error) =>
+						this.log(`Could not synchronize agent peers after subagent creation: ${String(error)}`),
+					);
+					return { ...response, data: this.publicSummary(parent.worker, response.data) };
+				}
 				const worker = await this.createOrReuseWorker(this.protocolClientId(client), command);
 				const summary = worker.summaries.get(worker.descriptor.rootActiveSessionId);
 				if (!summary) {

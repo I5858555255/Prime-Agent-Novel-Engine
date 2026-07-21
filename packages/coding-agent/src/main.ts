@@ -22,6 +22,7 @@ import {
 	shutdownDaemonAndWait,
 } from "./cli/daemon-launch.js";
 import { confirmDaemonSessionLoss, type DaemonSessionLossCopy, pluralizeSessions } from "./cli/daemon-stop-confirm.js";
+import { recoverPendingDaemonUpdateRestart } from "./cli/daemon-update-recovery.js";
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
@@ -1150,6 +1151,9 @@ export async function main(args: string[], options?: MainOptions) {
 		getSessionDirEnvOverride() ??
 		startupSettingsManager.getSessionDir();
 	const daemonSocketPath = parsed.daemonSocket ?? defaultDaemonSocketPath();
+	if (useDaemonClient) {
+		await recoverPendingDaemonUpdateRestart(daemonSocketPath, agentDir, cwd);
+	}
 	// Kick off daemon spawn/readiness immediately so it overlaps session-manager
 	// and runtime-services preparation; attach only connects to an existing daemon.
 	let daemonReady = shouldEnsureInteractiveDaemonForStartup(useDaemonClient, publicCommand.attachAgent)

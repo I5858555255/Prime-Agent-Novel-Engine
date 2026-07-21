@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed interrupted updates leaving prepared daemon sessions unrestored on the next launch ([ENG-4746](https://linear.app/primeintellect/issue/ENG-4746/updating-still-doesnt-restore-old-running-sessions)).
+
 ## [0.3.2] - 2026-07-20
 
 - Fixed invalid `--resume` session IDs being submitted as prompts, with nearest-session guidance instead ([ENG-4722](https://linear.app/primeintellect/issue/ENG-4722/prime-agent-resume-accepts-incorrect-session-ids)).
