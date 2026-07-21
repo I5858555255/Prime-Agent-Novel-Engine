@@ -4,6 +4,9 @@
 
 - Kept session-command warnings and errors visible in the transcript.
 - Added ordered steering and follow-up execution for session slash commands, with visible command styling in queues and transcripts.
+
+## [0.3.2] - 2026-07-20
+
 - Fixed invalid `--resume` session IDs being submitted as prompts, with nearest-session guidance instead ([ENG-4722](https://linear.app/primeintellect/issue/ENG-4722/prime-agent-resume-accepts-incorrect-session-ids)).
 - Changed `/model` to show all public models with authenticated providers first and open provider authentication when an unavailable model is selected ([ENG-4575](https://linear.app/primeintellect/issue/ENG-4575/show-all-models-in-model-and-prompt-auth-on-selection)).
 - Changed the shared configuration menu to cycle tabs with Tab, use Shift+Tab for model scope, show an Escape close hint, preserve arrow-key search editing, and remove the model selector's provider shortcut.
