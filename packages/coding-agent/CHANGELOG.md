@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed `/refine` to run planning in the background so the conversation is not blocked during the LLM pass.
+
 ## [0.3.2] - 2026-07-20
 
 - Fixed invalid `--resume` session IDs being submitted as prompts, with nearest-session guidance instead ([ENG-4722](https://linear.app/primeintellect/issue/ENG-4722/prime-agent-resume-accepts-incorrect-session-ids)).
