@@ -121,7 +121,7 @@ children = await rlm.list_subagents()
 result = await task
 ```
 
-Children inherit the parent model unless the user requests another model. They run as TypeScript `AgentSession` instances under the same root worker and can use the same provider, tools, skills, session storage, and scheduling system. See [Kernel and RLM Recursion](kernel-and-rlm-recursion.md) and the [architecture overview](architecture.md).
+Children inherit the parent model unless the user requests another model. They run as TypeScript `AgentSession` instances under the same root worker and can use the same provider, tools, skills, session storage, and scheduling system. See [Kernel and RLM Recursion](kernel-and-rlm-recursion.md).
 
 ## Context Files
 

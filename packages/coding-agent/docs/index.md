@@ -25,7 +25,6 @@ Public releases are currently installed from versioned release artifacts. The in
 
 - [Quickstart](quickstart.md) - install, authenticate, and run a first session.
 - [Using Prime Agent](usage.md) - interactive mode, RLM subagents, slash commands, context files, and CLI reference.
-- [Architecture](architecture.md) - system diagrams, package boundaries, runtime ownership, prompt execution, storage, and trust boundaries.
 - [Providers](providers.md) - subscription and API-key setup for built-in providers.
 - [Settings](settings.md) - global and project settings.
 - [Keybindings](keybindings.md) - default shortcuts and custom keybindings.
@@ -63,10 +62,9 @@ Public releases are currently installed from versioned release artifacts. The in
 - [Terminal setup](terminal-setup.md)
 - [Shell aliases](shell-aliases.md)
 
-## Development and Architecture
+## Development
 
-- [Development](development.md) - local setup, project structure, validation, and architecture entrypoints.
-- [Architecture](architecture.md) - the current system-level overview.
+- [Development](development.md) - local setup, configuration, debugging, and validation.
 - [Daemon and Session Worker Architecture](daemon-implementation-summary.md) - supervisor, catalog, worker, lifecycle, and recovery details.
 - [AgentConnection Architecture](agent-connection-readme.md) - client/runtime connection boundary.
 - [Kernel and RLM Recursion](kernel-and-rlm-recursion.md) - ZeroMQ kernel transport and recursive subagent execution.

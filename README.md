@@ -13,9 +13,9 @@ Prime Agent: RLM-native Coding and Research Harness
 </h3>
 
 <p align="center">
-  <a href="packages/coding-agent/docs/index.md">Documentation</a> &bull;
-  <a href="packages/coding-agent/docs/architecture.md">Architecture</a> &bull;
-  <a href="packages/coding-agent/README.md">CLI Reference</a>
+  <a href="https://github.com/PrimeIntellect-ai/verifiers">Verifiers</a> &bull;
+  <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a> &bull;
+  <a href="packages/coding-agent/docs/index.md">Documentation</a>
 </p>
 
 <p align="center">
@@ -43,12 +43,6 @@ What sets it apart:
 4. Shared provider and auth stack for API-key providers, subscription providers, custom models, and OAuth flows.
 5. Python skill surface for Prime workflows such as environments, evals, training, and analysis.
 6. JSONL session storage with branching, resume, fork, clone, export, and compaction support.
-
-## Architecture
-
-The `prime-agent` CLI connects to a local supervisor. Each persistent root agent runs in an isolated worker process that owns its session runtime, IPython kernel, schedules, and RLM descendants. Closing the TUI detaches the client without stopping the worker; another client can attach later. Print, JSON, RPC, and ephemeral sessions use the same runtime behind client-owned workers.
-
-See the [architecture overview](packages/coding-agent/docs/architecture.md) for system diagrams, package responsibilities, process ownership, prompt execution, storage, and trust boundaries. Detailed references cover the [daemon and worker model](packages/coding-agent/docs/daemon-implementation-summary.md) and [kernel/RLM bridge](packages/coding-agent/docs/kernel-and-rlm-recursion.md).
 
 ## Getting Started
 
@@ -103,7 +97,6 @@ prime-agent shutdown [--force]       # Stop every agent, worker, and background 
 - [Documentation index](packages/coding-agent/docs/index.md)
 - [Quickstart](packages/coding-agent/docs/quickstart.md)
 - [Usage and CLI reference](packages/coding-agent/docs/usage.md)
-- [Architecture](packages/coding-agent/docs/architecture.md)
 - [Provider setup](packages/coding-agent/docs/providers.md)
 - [Development](packages/coding-agent/docs/development.md)
 

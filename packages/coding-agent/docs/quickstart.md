@@ -159,7 +159,6 @@ Use `--mode json` for JSON event output or `--mode rpc` for process integration.
 ## Next Steps
 
 - [Using Prime Agent](usage.md) - interactive mode, slash commands, sessions, context files, and CLI reference.
-- [Architecture](architecture.md) - package boundaries, processes, request flow, storage, and trust boundaries.
 - [Providers](providers.md) - authentication and model setup.
 - [Settings](settings.md) - global and project configuration.
 - [Keybindings](keybindings.md) - shortcuts and customization.

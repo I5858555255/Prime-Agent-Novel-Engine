@@ -36,44 +36,6 @@ Use an isolated config directory when manually exercising daemon behavior so dev
 PRIME_AGENT_CODING_AGENT_DIR=/tmp/prime-agent-dev /path/to/prime-agent/prime-agent.sh
 ```
 
-## Architecture
-
-Start with the [architecture overview](architecture.md). It describes the package graph, process ownership, prompt execution, session storage, and trust boundaries. The main implementation references are:
-
-- [Daemon and Session Worker Architecture](daemon-implementation-summary.md) for the supervisor, catalog subprocess, resident workers, client-owned workers, recovery, and protocol.
-- [AgentConnection Architecture](agent-connection-readme.md) for the boundary between clients and session runtimes.
-- [Kernel and RLM Recursion](kernel-and-rlm-recursion.md) for the ZeroMQ Jupyter transport, Python host bridge, and TypeScript-owned child agents.
-
-At runtime, the foreground CLI connects to a local supervisor. A worker process owns one root `AgentSessionRuntime`, its session tree, IPython kernel, schedules, and all RLM descendants. The kernel-side `rlm` package is a shim: child agent loops execute in the TypeScript host through normal `AgentSession` machinery.
-
-## Project Structure
-
-```text
-packages/
-  ai/             LLM provider abstraction, model catalog, and message conversion
-  agent/          Provider-independent agent loop and message types
-  tui/            Terminal rendering and input components
-  coding-agent/   CLI, daemon, workers, sessions, IPython bridge, skills, and extensions
-
-prime-agent-runtime/
-  src/rlm/        Python package installed into the persistent kernel environment
-
-scripts/          Release, installer, generation, and profiling utilities
-```
-
-The main coding-agent runtime areas are:
-
-```text
-packages/coding-agent/src/
-  cli/                     Public command routing and daemon launch
-  modes/daemon/            Supervisor, catalog, worker protocol, and recovery
-  modes/agent-connection/  Client/runtime adapters
-  modes/interactive/       Interactive TUI orchestration
-  core/agent-session.ts    Session runtime and parent/child lifecycle
-  core/kernel/             Jupyter ZeroMQ transport and host requests
-  core/tools/ipython.ts    Model-facing IPython tool
-```
-
 ## Daemon Protocol Changes
 
 Classify every daemon command, event, or response-shape change as backward-compatible, capability-gated, or incompatible. Optional behavior must be negotiated and degrade locally. Follow the protocol-version, schema-revision, compatibility-map, and cross-version test requirements in the root `AGENTS.md` before changing the wire contract.

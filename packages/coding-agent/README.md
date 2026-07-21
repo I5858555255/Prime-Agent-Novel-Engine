@@ -18,7 +18,6 @@ Prime Agent began as a hard fork of [pi-mono](https://github.com/badlogic/pi-mon
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Architecture](#architecture)
 - [Providers & Models](#providers--models)
 - [Interactive Mode](#interactive-mode)
   - [Editor](#editor)
@@ -72,14 +71,6 @@ Then just talk to Prime Agent. By default, Prime Agent gives the model one tool:
 The Python kernel runtime is set up automatically on first invocation. Set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`.
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
-
-## Architecture
-
-The foreground CLI is a client of a local supervisor. The supervisor owns public sockets, attachments, routing, worker health, and update coordination. Each persistent root session tree runs in an isolated worker process that owns one `AgentSessionRuntime`, its IPython kernel, schedules, and all recursive RLM descendants. Closing the TUI detaches from that worker rather than terminating it. Headless and ephemeral clients use the same runtime through client-owned workers with bounded lifecycles.
-
-Inside a worker, the TypeScript host sends code to a persistent Jupyter kernel over ZeroMQ. The kernel-side `rlm` module is a bridge back to the host: `await rlm("subtask")` asks the worker to create a child `AgentSession`, not a second Python agent loop.
-
-See the [architecture overview](docs/architecture.md), [daemon and worker architecture](docs/daemon-implementation-summary.md), and [kernel and RLM recursion](docs/kernel-and-rlm-recursion.md).
 
 ## Providers & Models
 
