@@ -764,6 +764,7 @@ export class InteractiveMode {
 	// activityTracker token count already folded into the context snapshot; only output beyond
 	// this counts as live in-flight (keeps auto-retries from re-adding a failed attempt).
 	private contextUsageTokenBaseline = 0;
+	private contextUsageRefreshId = 0;
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
@@ -2414,13 +2415,19 @@ export class InteractiveMode {
 
 	/** Refresh the tray's context usage from the session after a turn or compaction completes. */
 	private async refreshConnectionContextUsage(): Promise<void> {
+		const refreshId = ++this.contextUsageRefreshId;
 		const connection = this.agentConnection;
 		const sessionId = this.connectionState?.sessionId;
 		const stats = await connection?.getSessionStats?.().catch(() => undefined);
 		if (!stats) return;
-		// Drop the result if the user switched sessions or the connection was rebound while the
-		// async call was in flight — otherwise stale stats would overwrite the new session.
-		if (this.agentConnection !== connection || this.connectionState?.sessionId !== sessionId) return;
+		// Drop stale refreshes after session changes or a newer lifecycle event requests stats.
+		if (
+			refreshId !== this.contextUsageRefreshId ||
+			this.agentConnection !== connection ||
+			this.connectionState?.sessionId !== sessionId
+		) {
+			return;
+		}
 		// Anything counted so far is now reflected in the snapshot; only later output is in-flight.
 		this.contextUsageTokenBaseline = this.activityTracker.getStatus().tokens;
 		this.patchConnectionState({ contextUsage: stats.contextUsage });
@@ -4925,7 +4932,7 @@ export class InteractiveMode {
 				this.renderRecap();
 
 				this.applyOptimisticContextUsage();
-				await this.refreshConnectionContextUsage();
+				void this.refreshConnectionContextUsage();
 
 				await this.checkShutdownRequested();
 
@@ -4937,6 +4944,7 @@ export class InteractiveMode {
 				break;
 
 			case "compaction_start": {
+				this.contextUsageRefreshId++;
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -4983,8 +4991,6 @@ export class InteractiveMode {
 						this.showStatus("Auto-compaction cancelled");
 					}
 				} else if (event.result) {
-					this.chatContainer.clear();
-					// The rebuilt session context already contains the persisted compaction summary.
 					await this.rebuildChatFromMessages();
 					await this.refreshConnectionContextUsage();
 					this.footer.invalidate();
@@ -5815,11 +5821,15 @@ export class InteractiveMode {
 	// without round-tripping through the agent, so no user message event echoes
 	// the typed command. Render the turn ourselves, mirroring the "user" case
 	// above, so the output is anchored to a visible command instead of floating.
-	private echoLocalCommand(text: string): void {
+	private addUserLikeMessageToChat(component: Component): void {
 		if (this.chatContainer.children.length > 0) {
 			this.chatContainer.addChild(new Spacer(1));
 		}
-		this.chatContainer.addChild(new SlashCommandMessageComponent(text, this.getMarkdownThemeWithSettings()));
+		this.chatContainer.addChild(component);
+	}
+
+	private echoLocalCommand(text: string): void {
+		this.addUserLikeMessageToChat(new SlashCommandMessageComponent(text, this.getMarkdownThemeWithSettings()));
 	}
 
 	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
@@ -5859,7 +5869,11 @@ export class InteractiveMode {
 												this.getMarkdownThemeWithSettings(),
 											);
 					component.setExpanded(this.toolOutputExpanded);
-					this.chatContainer.addChild(component);
+					if (message.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE) {
+						this.addUserLikeMessageToChat(component);
+					} else {
+						this.chatContainer.addChild(component);
+					}
 				}
 				break;
 			}
@@ -5894,10 +5908,10 @@ export class InteractiveMode {
 						break;
 					}
 
-					if (this.chatContainer.children.length > 0) {
+					const skillBlock = parseSkillBlock(textContent);
+					if (skillBlock && this.chatContainer.children.length > 0) {
 						this.chatContainer.addChild(new Spacer(1));
 					}
-					const skillBlock = parseSkillBlock(textContent);
 					if (skillBlock) {
 						// Render skill block (collapsible)
 						const component = new SkillInvocationMessageComponent(
@@ -5915,8 +5929,9 @@ export class InteractiveMode {
 							this.chatContainer.addChild(userComponent);
 						}
 					} else {
-						const userComponent = new UserMessageComponent(textContent, this.getMarkdownThemeWithSettings());
-						this.chatContainer.addChild(userComponent);
+						this.addUserLikeMessageToChat(
+							new UserMessageComponent(textContent, this.getMarkdownThemeWithSettings()),
+						);
 					}
 					if (options?.populateHistory) {
 						this.editor.addToHistory?.(textContent);
@@ -5952,6 +5967,18 @@ export class InteractiveMode {
 	 * @param options.populateHistory Add user messages to editor history
 	 * @param options.clearChat Clear the current transcript immediately before rendering
 	 */
+	private orderMessagesForTranscript(messages: AgentMessage[]): AgentMessage[] {
+		const summary = messages.find((message) => message.role === "compactionSummary");
+		if (!summary) return messages;
+		const retained: AgentMessage[] = [];
+		const later: AgentMessage[] = [];
+		for (const message of messages) {
+			if (message === summary) continue;
+			(message.timestamp <= summary.timestamp ? retained : later).push(message);
+		}
+		return [...retained, summary, ...later];
+	}
+
 	private async renderSessionContext(
 		sessionContext: AgentConnectionSessionContext,
 		options: { updateFooter?: boolean; populateHistory?: boolean; clearChat?: boolean } = {},
@@ -5982,7 +6009,7 @@ export class InteractiveMode {
 			this.updateEditorBorderColor();
 		}
 
-		for (const message of sessionContext.messages) {
+		for (const message of this.orderMessagesForTranscript(sessionContext.messages)) {
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				this.addMessageToChat(message);
