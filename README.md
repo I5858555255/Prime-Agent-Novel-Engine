@@ -35,14 +35,27 @@ The model-facing runtime is centered on a persistent IPython kernel with recursi
 
 Prime Agent is designed for workflows where the model should work inside a durable Python state, compose tools through code, and delegate independent subtasks to child agents without leaving the same harness.
 
-What sets it apart:
+## Core Features
 
-1. Persistent IPython execution as the primary model tool.
-2. Recursive child agents through `await rlm("subtask")` and normal Python async patterns.
-3. Live terminal UI for messages, IPython cells, session history, and child-agent state.
-4. Shared provider and auth stack for API-key providers, subscription providers, custom models, and OAuth flows.
-5. Python skill surface for Prime workflows such as environments, evals, training, and analysis.
-6. JSONL session storage with branching, resume, fork, clone, export, and compaction support.
+### Programmatic RLM
+
+Prime Agent's default RLM runtime exposes one built-in model tool: a persistent IPython kernel. File operations, project commands, context management, skills, and delegation are composed as code instead of separate tool calls. [Learn about the RLM programming model](packages/coding-agent/docs/rlm.md).
+
+### Native Subagents
+
+Subagents are part of the RLM runtime and are created programmatically with `await rlm("subtask")`. Normal Python async patterns provide parallel and background delegation, while each child receives an independent Prime Agent session and context.
+
+### Python-Backed Skills
+
+Prime Agent extends markdown skills with installable Python packages. Python-backed skills keep `SKILL.md` for discovery and instructions, add callable functionality to the kernel, and can themselves use RLM delegation. [Learn how skills work and how to create one](packages/coding-agent/docs/skills.md).
+
+### Background Agents and Messaging
+
+Interactive sessions run in daemon-backed workers, so closing the terminal UI detaches without stopping the agent. Active agents and retained subagents can exchange direct messages through the CLI or the kernel-side `agent_message` skill.
+
+### Long-Running Work
+
+Automatic compaction, persistent goals, recurring heartbeats, scheduled prompts, quality-gated autonomous mode, and retained subagents let work continue across turns and terminal sessions. [Learn about long-running and background agents](packages/coding-agent/docs/long-running-agents.md).
 
 ## Getting Started
 
@@ -96,6 +109,8 @@ prime-agent shutdown [--force]       # Stop every agent, worker, and background 
 
 - [Documentation index](packages/coding-agent/docs/index.md)
 - [Quickstart](packages/coding-agent/docs/quickstart.md)
+- [RLM programming model](packages/coding-agent/docs/rlm.md)
+- [Long-running and background agents](packages/coding-agent/docs/long-running-agents.md)
 - [Usage and CLI reference](packages/coding-agent/docs/usage.md)
 - [Provider setup](packages/coding-agent/docs/providers.md)
 - [Development](packages/coding-agent/docs/development.md)
