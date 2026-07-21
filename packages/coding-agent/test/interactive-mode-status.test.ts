@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
@@ -21,6 +22,7 @@ import { emptyGoalState, type GoalState } from "../src/core/goals.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
+import { emptyUsage } from "../src/core/usage.js";
 import type {
 	AgentConnectionExtensionUiRequest,
 	AgentConnectionExtensionUiResponse,
@@ -30,6 +32,7 @@ import type {
 	AgentConnectionResourceDiagnostic,
 	AgentConnectionResourceSnapshot,
 	AgentConnectionRlmChildAgentSnapshot,
+	AgentConnectionSessionContext,
 	AgentConnectionSessionEvent,
 	AgentConnectionSnapshot,
 	AgentConnectionSourceInfo,
@@ -261,6 +264,109 @@ describe("InteractiveMode.showStatus", () => {
 	});
 });
 
+type RenderSessionContextHarness = {
+	pendingTools: Map<string, ToolExecutionComponent>;
+	ipythonToolComponents: Map<string, unknown>;
+	lateIpythonSentAgentMessages: Map<string, unknown[]>;
+	toolOutputExpanded: boolean;
+	chatContainer: Container;
+	editor: { addToHistory?: (text: string) => void };
+	footer: { invalidate: () => void };
+	updateEditorBorderColor: () => void;
+	resetPendingToolState: () => void;
+	preloadToolDefinitions: (toolNames: string[]) => Promise<void>;
+	settingsManager: { getShowImages: () => boolean };
+	getCachedToolDefinition: () => undefined;
+	getCurrentCwd: () => string;
+	getRetryAttempt: () => number;
+	ui: { requestRender: () => void };
+	addMessageToChat: (message: AgentMessage, options?: { populateHistory?: boolean }) => void;
+	connectionState?: AgentConnectionState;
+};
+
+type RenderSessionContextOptions = { updateFooter?: boolean; populateHistory?: boolean; clearChat?: boolean };
+
+const renderSessionContext = (
+	InteractiveMode.prototype as unknown as {
+		renderSessionContext(
+			this: RenderSessionContextHarness,
+			sessionContext: AgentConnectionSessionContext,
+			options?: RenderSessionContextOptions,
+		): Promise<void>;
+	}
+).renderSessionContext;
+
+function createRenderSessionContextHarness(overrides: Partial<RenderSessionContextHarness> = {}): {
+	harness: RenderSessionContextHarness;
+	chatContainer: Container;
+	addMessageToChat: ReturnType<typeof vi.fn>;
+	addToHistory: ReturnType<typeof vi.fn>;
+} {
+	const chatContainer = overrides.chatContainer ?? new Container();
+	const addMessageToChat = vi.fn(() => {
+		chatContainer.addChild({ render: () => ["assistant"], invalidate: () => {} });
+	});
+	const addToHistory = vi.fn();
+	const harness: RenderSessionContextHarness = {
+		pendingTools: new Map<string, ToolExecutionComponent>(),
+		ipythonToolComponents: new Map<string, unknown>(),
+		lateIpythonSentAgentMessages: new Map<string, unknown[]>(),
+		toolOutputExpanded: false,
+		chatContainer,
+		editor: { addToHistory },
+		footer: { invalidate: vi.fn() },
+		updateEditorBorderColor: vi.fn(),
+		resetPendingToolState: vi.fn(),
+		preloadToolDefinitions: vi.fn(async () => {}),
+		settingsManager: { getShowImages: () => true },
+		getCachedToolDefinition: () => undefined,
+		getCurrentCwd: () => process.cwd(),
+		getRetryAttempt: () => 0,
+		ui: { requestRender: vi.fn() },
+		addMessageToChat,
+		...overrides,
+	};
+	Object.setPrototypeOf(harness, InteractiveMode.prototype);
+	return { harness, chatContainer, addMessageToChat, addToHistory };
+}
+
+function userMessage(content: string, timestamp: number): Extract<AgentMessage, { role: "user" }> {
+	return { role: "user", content, timestamp };
+}
+
+function toolCallMessage(id: string, name: string): Extract<AgentMessage, { role: "assistant" }> {
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", name, id, arguments: {} }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "test-model",
+		usage: emptyUsage(),
+		stopReason: "toolUse",
+		timestamp: 0,
+	};
+}
+
+function toolResultMessage(
+	id: string,
+	name: string,
+	content: Extract<AgentMessage, { role: "toolResult" }>["content"],
+): Extract<AgentMessage, { role: "toolResult" }> {
+	return { role: "toolResult", toolCallId: id, toolName: name, content, isError: false, timestamp: 0 };
+}
+
+async function renderMessages(
+	harness: RenderSessionContextHarness,
+	messages: AgentMessage[],
+	options?: RenderSessionContextOptions,
+): Promise<void> {
+	await renderSessionContext.call(
+		harness,
+		{ messages, thinkingLevel: "medium", serviceTier: "default", model: null },
+		options,
+	);
+}
+
 describe("InteractiveMode.renderSessionContext", () => {
 	beforeAll(() => {
 		initTheme("dark");
@@ -370,6 +476,109 @@ describe("InteractiveMode.renderSessionContext", () => {
 		} finally {
 			resetCapabilitiesCache();
 		}
+	});
+
+	test("renders only the recent tail for very long initial transcripts", async () => {
+		const { harness, chatContainer, addMessageToChat } = createRenderSessionContextHarness();
+		const messages = Array.from({ length: 405 }, (_, index) => userMessage(`message ${index}`, index));
+
+		await renderMessages(harness, messages);
+
+		expect(addMessageToChat).toHaveBeenCalledTimes(400);
+		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 5" });
+		expect(renderAll(chatContainer)).toContain("Showing latest 400 of 405 messages for faster open.");
+	});
+
+	test("applies the recent-tail cap when rebuilding a cleared transcript", async () => {
+		const { harness, chatContainer, addMessageToChat } = createRenderSessionContextHarness();
+		chatContainer.addChild({ render: () => ["old transcript"], invalidate: () => {} });
+		const messages = Array.from({ length: 405 }, (_, index) => userMessage(`message ${index}`, index));
+
+		await renderMessages(harness, messages, { clearChat: true });
+
+		expect(addMessageToChat).toHaveBeenCalledTimes(400);
+		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 5" });
+		expect(renderAll(chatContainer)).not.toContain("old transcript");
+		expect(renderAll(chatContainer)).toContain("Showing latest 400 of 405 messages for faster open.");
+	});
+
+	test("populates editor history from the full transcript when initial rendering is capped", async () => {
+		const { harness, addMessageToChat, addToHistory } = createRenderSessionContextHarness();
+		const messages = Array.from({ length: 405 }, (_, index) => userMessage(`message ${index}`, index));
+
+		await renderMessages(harness, messages, { populateHistory: true });
+
+		expect(addMessageToChat).toHaveBeenCalledTimes(400);
+		expect(addToHistory).toHaveBeenCalledTimes(405);
+		expect(addToHistory.mock.calls[0]?.[0]).toBe("message 0");
+		expect(addToHistory.mock.calls.at(-1)?.[0]).toBe("message 404");
+	});
+
+	test("excludes legacy heartbeat prompts from editor history", async () => {
+		const timestamp = Date.parse("2026-01-01T00:05:00.000Z");
+		const heartbeat = {
+			id: "heartbeat-1",
+			status: "active",
+			source: "heartbeat",
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session.jsonl",
+			cwd: "/tmp/project",
+			prompt: "check whether there is follow-up work",
+			schedule: { kind: "interval", expression: "every 5m", intervalMs: 300_000 },
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			lastRunAt: "2026-01-01T00:05:00.000Z",
+			runCount: 1,
+		} satisfies AgentCronJob;
+		const { harness, addToHistory } = createRenderSessionContextHarness({
+			connectionState: createConnectionState({ heartbeat }),
+		});
+
+		await renderMessages(
+			harness,
+			[
+				userMessage(heartbeat.prompt, timestamp),
+				userMessage(heartbeat.prompt, timestamp + 86_400_000),
+				userMessage("ordinary prompt", timestamp + 86_400_001),
+			],
+			{ populateHistory: true },
+		);
+
+		expect(addToHistory).toHaveBeenCalledTimes(2);
+		expect(addToHistory).toHaveBeenNthCalledWith(1, heartbeat.prompt);
+		expect(addToHistory).toHaveBeenCalledWith("ordinary prompt");
+	});
+
+	test("trims capped initial renders past orphaned tool results", async () => {
+		const { harness, chatContainer, addMessageToChat } = createRenderSessionContextHarness();
+		const messages = [
+			toolCallMessage("tool-old", "old_tool"),
+			toolResultMessage("tool-old", "old_tool", [{ type: "text", text: "old result" }]),
+			...Array.from({ length: 399 }, (_, index) => userMessage(`message ${index}`, index)),
+		];
+
+		await renderMessages(harness, messages);
+
+		expect(addMessageToChat).toHaveBeenCalledTimes(399);
+		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 0" });
+		expect(renderAll(chatContainer)).toContain("Showing latest 399 of 401 messages for faster open.");
+	});
+
+	test("omits a trailing orphaned tool result without dropping the recent tail", async () => {
+		const { harness, chatContainer, addMessageToChat } = createRenderSessionContextHarness();
+		const messages = [
+			toolCallMessage("tool-old", "old_tool"),
+			...Array.from({ length: 399 }, (_, index) => userMessage(`message ${index}`, index)),
+			toolResultMessage("tool-old", "old_tool", [{ type: "text", text: "old result" }]),
+		];
+
+		await renderMessages(harness, messages);
+
+		expect(addMessageToChat).toHaveBeenCalledTimes(399);
+		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 0" });
+		expect(addMessageToChat.mock.calls.at(-1)?.[0]).toMatchObject({ content: "message 398" });
+		expect(renderAll(chatContainer)).toContain("Showing latest 399 of 401 messages for faster open.");
 	});
 });
 
