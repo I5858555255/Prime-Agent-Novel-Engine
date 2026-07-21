@@ -4,15 +4,20 @@ Prime Agent isolates each active root session tree in its own process. The daemo
 
 ## Process Topology
 
-```text
-interactive / print / JSON / RPC clients
-                    |
-                    v
-            detached supervisor
-              |- catalog subprocess
-              |- resident worker: root A + RLM descendants + kernels
-              |- resident worker: root B + RLM descendants + kernels
-              `- client-owned worker: hidden root + RLM descendants + kernels
+```mermaid
+flowchart TD
+    clients["Interactive · print · JSON · RPC clients"]
+    supervisor["Detached supervisor"]
+    catalog["Catalog subprocess<br/>saved-session scans"]
+    residentA["Resident worker<br/>root A · RLM descendants · kernels"]
+    residentB["Resident worker<br/>root B · RLM descendants · kernels"]
+    owned["Client-owned worker<br/>hidden root · RLM descendants · kernels"]
+
+    clients <-->|"public local protocol"| supervisor
+    supervisor --> catalog
+    supervisor --> residentA
+    supervisor --> residentB
+    supervisor --> owned
 ```
 
 The supervisor owns public sockets, client attachments, routing, global agent-message delivery, worker health, command journals, and coordinated updates. It does not execute providers, tools, compaction, bash, kernels, schedules, or transcript scans.

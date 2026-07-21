@@ -4,14 +4,17 @@
 
 The normal interactive path is:
 
-```text
-InteractiveMode
-    -> AgentConnection
-    -> DaemonAgentConnection
-    -> local daemon protocol
-    -> session worker
-    -> AgentSessionRuntime
-    -> AgentSession
+```mermaid
+flowchart LR
+    ui["InteractiveMode<br/>terminal UI"]
+    connection["AgentConnection<br/>client interface"]
+    adapter["DaemonAgentConnection<br/>transport adapter"]
+    protocol["Local daemon protocol<br/>commands · snapshots · events"]
+    worker["Session worker<br/>execution owner"]
+    runtime["AgentSessionRuntime"]
+    session["AgentSession"]
+
+    ui --> connection --> adapter --> protocol --> worker --> runtime --> session
 ```
 
 Explicit fallback and embedding paths may use `InProcessAgentConnection`, but `InteractiveMode` still talks to the same interface.

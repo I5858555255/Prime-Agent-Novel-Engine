@@ -12,8 +12,20 @@
           "path": "quickstart.md"
         },
         {
-          "title": "Using Pi",
+          "title": "Architecture Overview",
+          "path": "architecture.md"
+        },
+        {
+          "title": "Using Prime Agent",
           "path": "usage.md"
+        },
+        {
+          "title": "RLM Programming Model",
+          "path": "rlm.md"
+        },
+        {
+          "title": "Long-Running and Background Agents",
+          "path": "long-running-agents.md"
         },
         {
           "title": "Providers",
@@ -61,7 +73,7 @@
           "path": "themes.md"
         },
         {
-          "title": "Pi Packages",
+          "title": "Prime Agent Packages",
           "path": "packages.md"
         },
         {
@@ -135,6 +147,10 @@
         {
           "title": "Development",
           "path": "development.md"
+        },
+        {
+          "title": "Daemon and Session Worker Architecture",
+          "path": "daemon-implementation-summary.md"
         },
         {
           "title": "AgentConnection Architecture",
