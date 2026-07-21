@@ -3919,6 +3919,14 @@ export class AgentSession {
 				if (epoch !== this._pendingMessageResumeEpoch || this.pendingMessageCount === 0) {
 					return;
 				}
+				// Re-check adjacent to the handoff: background planning may have
+				// completed and entered _applyRefine during the awaits above,
+				// disconnecting event handling. Wait for it to finish so the
+				// resumed turn's events are not lost.
+				await this._waitForRefineIdle();
+				if (epoch !== this._pendingMessageResumeEpoch || this.pendingMessageCount === 0) {
+					return;
+				}
 				this._flushPendingBashMessages();
 				if (this._pendingNextTurnMessages.length > 0) {
 					await this._drainQueuedMessagesAfterBash();
