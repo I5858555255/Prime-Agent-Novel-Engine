@@ -2617,7 +2617,12 @@ export class AgentDaemon {
 		client: DaemonSocketClient,
 		command: DaemonCommand,
 	): Promise<DaemonResponse | undefined> {
-		if (this.updateRestartPreparing && command.type !== "shutdown" && command.type !== "ack_result") {
+		if (
+			this.updateRestartPreparing &&
+			command.type !== "shutdown" &&
+			command.type !== "ack_result" &&
+			command.type !== "list"
+		) {
 			throw new Error("Daemon is preparing an update restart");
 		}
 		switch (command.type) {
