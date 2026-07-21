@@ -5292,8 +5292,10 @@ export class AgentSession {
 			throw new Error("Cannot refine a disposed session.");
 		}
 		// Wait for any agent turn that started during the background planning phase
-		// to finish before disconnecting and aborting. This prevents aborting an
-		// in-flight prompt that was accepted because planning does not block turns.
+		// to finish before disconnecting. This prevents disconnecting while a
+		// turn is streaming and losing its events. We do NOT call abort()
+		// because concurrent work (bash, RLM children, compaction) that started
+		// during planning should continue running.
 		await this.agent.waitForIdle();
 		if (this._disposed || refineAbort.signal.aborted) {
 			throw new Error("Refinement cancelled because the session was disposed.");
@@ -5301,8 +5303,6 @@ export class AgentSession {
 		this._disconnectFromAgent();
 
 		try {
-			await this.abort();
-
 			const globalHarnessStateDir = getGlobalHarnessStateDir();
 			const localHarnessStateDir = this._localHarnessStateDir();
 			const requestedScope = options.global ? "global" : "local";
