@@ -5248,13 +5248,18 @@ export class AgentSession {
 	 * reattached event handling; otherwise the turn's messages are never
 	 * persisted or rendered.
 	 *
-	 * Only the application phase (`_refineInFlight`) blocks here. The background
-	 * planning phase (`_refinePlanInFlight`) does NOT block turn entry points.
+	 * The application phase (`_refineInFlight`) and the transition window
+	 * (`_refineApplyPending`) block here. The background planning phase
+	 * (`_refinePlanInFlight`) does NOT block turn entry points.
 	 * Refine failures surface to the refine caller, not here.
 	 */
 	private async _waitForRefineIdle(): Promise<void> {
-		while (this._refineInFlight) {
-			await this._refineInFlight;
+		while (this._refineInFlight || this._refineApplyPending) {
+			if (this._refineInFlight) {
+				await this._refineInFlight;
+			} else {
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			}
 		}
 	}
 
