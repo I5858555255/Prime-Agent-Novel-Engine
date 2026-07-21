@@ -91,7 +91,3 @@ prime-agent shutdown [--force]       # Stop every agent, worker, and background 
 - [Usage and CLI reference](packages/coding-agent/docs/usage.md)
 - [Provider setup](packages/coding-agent/docs/providers.md)
 - [Development](packages/coding-agent/docs/development.md)
-
-## Upstream and License
-
-Prime Agent is licensed under the MIT License. The root [LICENSE](LICENSE) preserves attribution for pi-mono by Mario Zechner and identifies Prime Intellect's subsequent work.
