@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed `SelectList` selection cursor from `→` to `›` for consistency with tree and user-message selectors.
+
 ## [0.3.2] - 2026-07-20
 
 - Removed the fullscreen image fallback instruction and kept fullscreen overlays from emitting terminal graphics ([#437](https://github.com/PrimeIntellect-ai/prime-agent/pull/437) by [@snimu](https://github.com/snimu)).

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Changed selection cursors from `→` to `›` across model selectors, scoped-models, and the theme default for consistency with tree and user-message selectors.
+- Changed the queued follow-up hint connector from `↳` to `╰─` to match the tool-execution continuation connector.
+- Changed `/context` tree connectors from `├ `/`└ ` to `├─ `/`└─ ` to match the tree selector and session picker.
+- Changed the IPython cell queued marker from `▸` to `◇` to match the subagent and context-tree status icons.
+
 ## [0.3.2] - 2026-07-20
 
 - Fixed invalid `--resume` session IDs being submitted as prompts, with nearest-session guidance instead ([ENG-4722](https://linear.app/primeintellect/issue/ENG-4722/prime-agent-resume-accepts-incorrect-session-ids)).
