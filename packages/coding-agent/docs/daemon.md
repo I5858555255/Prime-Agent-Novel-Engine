@@ -1,4 +1,4 @@
-# Daemon and Session Worker Architecture
+# Daemon Architecture
 
 Prime Agent isolates each active root session tree in its own process. The daemon is internal infrastructure: interactive, print, JSON, RPC, piped-stdin, and `--no-session` describe client behavior and retain their public I/O contracts.
 

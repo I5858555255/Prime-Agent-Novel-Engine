@@ -1,4 +1,4 @@
-# Kernel and RLM Recursion
+# RLM Runtime Architecture
 
 Prime Agent gives each agent session a persistent IPython kernel and a native recursive sub-agent interface. The Python `rlm` package is a model-facing shim; the TypeScript host owns child execution, persistence, usage accounting, and lifecycle.
 

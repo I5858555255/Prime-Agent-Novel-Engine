@@ -1,4 +1,4 @@
-# /refine verification log
+# /refine Manual Verification Log
 
 This log records manual benchmark-verification checks for Prime Agent continual
 harness features. It is intentionally artifact-oriented so later benchmark runs

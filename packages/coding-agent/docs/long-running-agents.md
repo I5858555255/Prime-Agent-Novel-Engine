@@ -233,4 +233,4 @@ await compact.run("Preserve the failing tests and remaining migration steps")
 
 Compaction is not a completion signal. It does not stop goals, autonomous continuations, heartbeats, or existing child sessions; later parent turns continue from the compacted context.
 
-For lower-level process and recovery behavior, see [Daemon and Session Worker Architecture](daemon-implementation-summary.md). For recursive child lifecycle details, see [RLM Programming Model](rlm.md) and [Kernel and RLM Recursion](kernel-and-rlm-recursion.md).
+For lower-level process and recovery behavior, see [Daemon Architecture](daemon.md). For recursive child lifecycle details, see [RLM Programming Model](rlm.md) and [RLM Runtime Architecture](rlm-runtime.md).

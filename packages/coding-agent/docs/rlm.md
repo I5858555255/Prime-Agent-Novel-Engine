@@ -137,4 +137,4 @@ This keeps credentials, provider execution, transcript writes, worker routing, a
 
 The IPython kernel runs model-generated Python and project commands with the worker's operating-system permissions. It is a durable control environment, not a security sandbox. Review third-party Python skills and use an external sandbox or restricted environment for untrusted repositories and instructions.
 
-For implementation details, see [Kernel and RLM Recursion](kernel-and-rlm-recursion.md).
+For implementation details, see [RLM Runtime Architecture](rlm-runtime.md).

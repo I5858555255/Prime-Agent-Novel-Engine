@@ -149,20 +149,16 @@
           "path": "development.md"
         },
         {
-          "title": "Daemon and Session Worker Architecture",
-          "path": "daemon-implementation-summary.md"
+          "title": "Daemon Architecture",
+          "path": "daemon.md"
         },
         {
-          "title": "AgentConnection Architecture",
-          "path": "agent-connection-readme.md"
+          "title": "Agent Connection Architecture",
+          "path": "agent-connection.md"
         },
         {
-          "title": "Kernel and RLM Recursion",
-          "path": "kernel-and-rlm-recursion.md"
-        },
-        {
-          "title": "/refine Verification Log",
-          "path": "refine-verification-log.md"
+          "title": "RLM Runtime Architecture",
+          "path": "rlm-runtime.md"
         }
       ]
     }

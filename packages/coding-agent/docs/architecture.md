@@ -87,7 +87,7 @@ From the session queue onward, the same execution and persistence path is used w
 
 ## Detailed Architecture
 
-- [AgentConnection Architecture](agent-connection-readme.md) explains the client/runtime boundary, snapshots, replay, and reconnect behavior.
-- [Daemon and Session Worker Architecture](daemon-implementation-summary.md) covers process ownership, leases, scheduling, backpressure, and crash recovery.
-- [Kernel and RLM Recursion](kernel-and-rlm-recursion.md) follows IPython host requests and recursive child execution.
+- [Agent Connection Architecture](agent-connection.md) explains the client/runtime boundary, snapshots, replay, and reconnect behavior.
+- [Daemon Architecture](daemon.md) covers process ownership, leases, scheduling, backpressure, and crash recovery.
+- [RLM Runtime Architecture](rlm-runtime.md) follows IPython host requests and recursive child execution.
 - [Long-Running and Background Agents](long-running-agents.md) shows how detached sessions, messages, goals, and scheduled work share the worker runtime.

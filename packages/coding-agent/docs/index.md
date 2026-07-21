@@ -69,6 +69,6 @@ Public releases are currently installed from versioned release artifacts. The in
 
 - [Development](development.md) - local setup, configuration, debugging, and validation.
 - [Architecture overview](architecture.md) - system topology and end-to-end prompt flow.
-- [Daemon and Session Worker Architecture](daemon-implementation-summary.md) - supervisor, catalog, worker, lifecycle, and recovery details.
-- [AgentConnection Architecture](agent-connection-readme.md) - client/runtime connection boundary.
-- [Kernel and RLM Recursion](kernel-and-rlm-recursion.md) - ZeroMQ kernel transport and recursive subagent execution.
+- [Daemon Architecture](daemon.md) - supervisor, catalog, worker, lifecycle, and recovery details.
+- [Agent Connection Architecture](agent-connection.md) - client/runtime connection boundary.
+- [RLM Runtime Architecture](rlm-runtime.md) - ZeroMQ kernel transport and recursive subagent execution.
