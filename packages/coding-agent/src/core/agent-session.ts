@@ -5199,7 +5199,17 @@ export class AgentSession {
 			}
 		}
 
+		// Wait for any agent turn that started during background planning to finish
+		// before entering the application critical section. This does NOT set
+		// _refineInFlight, so new prompts are not blocked during this wait.
+		await this.agent.waitForIdle();
+		if (this._disposed || refineAbort.signal.aborted) {
+			throw new Error("Refinement cancelled because the session was disposed.");
+		}
+
 		// Application phase — blocks turn entry points via _refineInFlight.
+		// _refineInFlight only covers the brief disconnect+apply+reconnect,
+		// not the waitForIdle wait above.
 		const applyRun = this._applyRefine(plan, options, refineAbort);
 		const applySettled = applyRun.then(
 			() => undefined,
@@ -5291,15 +5301,9 @@ export class AgentSession {
 		if (this._disposed) {
 			throw new Error("Cannot refine a disposed session.");
 		}
-		// Wait for any agent turn that started during the background planning phase
-		// to finish before disconnecting. This prevents disconnecting while a
-		// turn is streaming and losing its events. We do NOT call abort()
-		// because concurrent work (bash, RLM children, compaction) that started
-		// during planning should continue running.
-		await this.agent.waitForIdle();
-		if (this._disposed || refineAbort.signal.aborted) {
-			throw new Error("Refinement cancelled because the session was disposed.");
-		}
+		// The caller (refine()) has already waited for agent idle before
+		// setting _refineInFlight and calling us. We only need to disconnect
+		// for the brief apply + save + reconnect critical section.
 		this._disconnectFromAgent();
 
 		try {
