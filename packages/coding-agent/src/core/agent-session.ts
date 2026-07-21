@@ -951,6 +951,9 @@ export class AgentSession {
 	private _refineInFlight?: Promise<void>;
 	/** Settles when the background planning LLM pass completes. Planning does not block turn entry points. */
 	private _refinePlanInFlight?: Promise<void>;
+	/** True between planning completion and _refineInFlight being set. Covers the gap
+	 * in the serialization guard without blocking turn entry points via _waitForRefineIdle. */
+	private _refineApplyPending = false;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -4869,8 +4872,12 @@ export class AgentSession {
 		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		this._assistantTurnsSinceAutoRefine = 0;
 		this._autoRefineBranchVersion++;
-		while (this._refinePlanInFlight) {
-			await this._refinePlanInFlight;
+		while (this._refinePlanInFlight || this._refineApplyPending) {
+			if (this._refinePlanInFlight) {
+				await this._refinePlanInFlight;
+			} else if (this._refineApplyPending) {
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			}
 		}
 		await this._waitForRefineIdle();
 	}
@@ -5171,8 +5178,11 @@ export class AgentSession {
 		// starting a new run. This serializes concurrent /refine calls so two
 		// planning phases cannot race into concurrent _applyRefine calls that
 		// overwrite harness state.
-		while (this._refineInFlight || this._refinePlanInFlight) {
+		while (this._refineInFlight || this._refinePlanInFlight || this._refineApplyPending) {
 			await (this._refineInFlight ?? this._refinePlanInFlight);
+			if (this._refineApplyPending) {
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			}
 		}
 
 		const refineAbort = new AbortController();
@@ -5199,17 +5209,24 @@ export class AgentSession {
 			}
 		}
 
+		// Mark that we're between planning and application so the serialization
+		// guard blocks concurrent refine calls. This flag does NOT block turn
+		// entry points (_waitForRefineIdle only checks _refineInFlight).
+		this._refineApplyPending = true;
+
 		// Wait for any agent turn that started during background planning to finish
 		// before entering the application critical section. This does NOT set
 		// _refineInFlight, so new prompts are not blocked during this wait.
 		await this.agent.waitForIdle();
 		if (this._disposed || refineAbort.signal.aborted) {
+			this._refineApplyPending = false;
 			throw new Error("Refinement cancelled because the session was disposed.");
 		}
 
 		// Application phase — blocks turn entry points via _refineInFlight.
 		// _refineInFlight only covers the brief disconnect+apply+reconnect,
 		// not the waitForIdle wait above.
+		this._refineApplyPending = false;
 		const applyRun = this._applyRefine(plan, options, refineAbort);
 		const applySettled = applyRun.then(
 			() => undefined,
