@@ -29,7 +29,7 @@ Prime Agent: RLM-native Coding and Research Harness
 
 ## Overview
 
-Prime Agent began as a hard fork of [pi-mono](https://github.com/badlogic/pi-mono) and has since evolved into an independent RLM-native coding and research harness. Development now happens entirely in this repository.
+Prime Agent is an RLM-native coding and research harness.
 
 The model-facing runtime is centered on a persistent IPython kernel with recursive subagents exposed through a small `rlm` API. The TypeScript host owns model calls, tools, sessions, scheduling, and child-agent execution while Python provides a durable control environment for composing that functionality.
 
