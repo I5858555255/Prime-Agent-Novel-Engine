@@ -3,7 +3,7 @@ import { AgentActivityTracker } from "../src/modes/interactive/agent-activity.js
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 
 describe("InteractiveMode compaction events", () => {
-	test("rebuilds chat and appends a synthetic compaction summary at the bottom", async () => {
+	test("rebuilds chat from the persisted compaction summary without appending a duplicate", async () => {
 		const fakeThis = {
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
@@ -54,36 +54,8 @@ describe("InteractiveMode compaction events", () => {
 
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
 		expect(fakeThis.rebuildChatFromMessages).toHaveBeenCalledTimes(1);
-		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
-		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
-			expect.objectContaining({
-				role: "compactionSummary",
-				tokensBefore: 123,
-				summary: "summary",
-			}),
-		);
+		expect(fakeThis.addMessageToChat).not.toHaveBeenCalled();
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
-
-		await handleEvent.call(fakeThis, {
-			type: "compaction_end",
-			reason: "manual",
-			result: {
-				tokensBefore: 456,
-				summary: "focused summary",
-			},
-			aborted: false,
-			willRetry: false,
-			customInstructions: "focus on xyz",
-		});
-
-		expect(fakeThis.addMessageToChat).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				role: "compactionSummary",
-				tokensBefore: 456,
-				summary: "focused summary",
-				customInstructions: "focus on xyz",
-			}),
-		);
 
 		await handleEvent.call(fakeThis, {
 			type: "compaction_end",

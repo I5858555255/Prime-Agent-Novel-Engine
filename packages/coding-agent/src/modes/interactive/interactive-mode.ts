@@ -98,7 +98,6 @@ import { emptyGoalState, formatGoalUsage, GOAL_CONTEXT_PREVIEW_LABEL, type GoalS
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import {
-	createCompactionSummaryMessage,
 	createHeartbeatPromptMessage,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
 	HEARTBEAT_PROMPT_PREVIEW_LABEL,
@@ -4983,15 +4982,8 @@ export class InteractiveMode {
 					}
 				} else if (event.result) {
 					this.chatContainer.clear();
+					// The rebuilt session context already contains the persisted compaction summary.
 					await this.rebuildChatFromMessages();
-					this.addMessageToChat(
-						createCompactionSummaryMessage(
-							event.result.summary,
-							event.result.tokensBefore,
-							new Date().toISOString(),
-							event.customInstructions,
-						),
-					);
 					await this.refreshConnectionContextUsage();
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
