@@ -1646,7 +1646,7 @@ export class AgentSession {
 		if (await this._shouldStopForThresholdCompaction(context)) {
 			return true;
 		}
-		if (this._nextQueuedInput()?.input.kind === "command") {
+		if (this._steeringMessages[0]?.kind === "command") {
 			this._deferredContinuation = {
 				message: context.message,
 				toolResults: context.toolResults,

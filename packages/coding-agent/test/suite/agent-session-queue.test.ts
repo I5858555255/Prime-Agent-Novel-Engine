@@ -2190,6 +2190,34 @@ describe("AgentSession queue characterization", () => {
 		expect(compact).toHaveBeenCalledOnce();
 	});
 
+	it("lets the parent finish after a tool call before a follow-up command", async () => {
+		const { harness, releaseToolExecution, promptPromise, waitForToolStart } = await createWaitingHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("parent finished"),
+		]);
+		await waitForToolStart;
+		const order: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				const text = getMessageText(event.message);
+				if (text === "parent finished") order.push("parent");
+			}
+		});
+		vi.spyOn(harness.session as any, "_compact").mockImplementation(async () => {
+			order.push("compact");
+			return { summary: "compacted", firstKeptEntryId: "kept", tokensBefore: 100 };
+		});
+
+		await harness.session.queueSessionSlashCommand("/compact after parent", "followUp");
+		releaseToolExecution();
+		await promptPromise;
+		await vi.waitFor(() => expect(harness.session.pendingMessageCount).toBe(0));
+
+		expect(order).toEqual(["parent", "compact"]);
+	});
+
 	it("executes a queued session command at its follow-up position", async () => {
 		const { harness, releaseToolExecution, promptPromise, waitForToolStart } = await createWaitingHarness();
 		harnesses.push(harness);
