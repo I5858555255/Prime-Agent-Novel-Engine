@@ -8,10 +8,12 @@ methods, so the agent writes ordinary Python:
     import linear
     issues = await linear.list_issues(team="Engineering")
 
-Credentials live in the host's ``auth.json`` (single store, survives kernel
-rebuilds). This module reads that file directly for the common case; on token
-expiry it asks the host to refresh via ``rlm.host_request("mcp.refresh", ...)``
-and re-reads. Interactive login runs host-side, never here.
+Authenticated integrations keep credentials in the host's ``auth.json`` (single
+store, survives kernel rebuilds). This module reads that file directly for the
+common case; on token expiry it asks the host to refresh via
+``rlm.host_request("mcp.refresh", ...)`` and re-reads. Interactive login runs
+host-side, never here. Integrations whose endpoint intentionally accepts no
+authentication can set ``requires_auth = False``.
 """
 
 from __future__ import annotations
@@ -127,9 +129,25 @@ class McpIntegration:
     #: Optional env var holding a static bearer token (used instead of auth.json OAuth).
     bearer_token_env: str | None = None
 
+    #: Require and inject a bearer token. Set false only for endpoints that
+    #: intentionally accept unauthenticated requests.
+    requires_auth: bool = True
+
+    #: Optional regular HTTP request timeout, in seconds. ``None`` preserves the
+    #: transport SDK's default.
+    request_timeout: float | None = None
+
+    #: Optional streaming-response read timeout, in seconds. Use this for MCP
+    #: tools that may remain silent while performing long-running work.
+    sse_read_timeout: float | None = None
+
     def __init__(self) -> None:
         if not self.server:
             raise ValueError(f"{type(self).__name__} must set a non-empty `server`")
+        for attribute in ("request_timeout", "sse_read_timeout"):
+            value = getattr(self, attribute)
+            if value is not None and value <= 0:
+                raise ValueError(f"{type(self).__name__}.{attribute} must be positive")
         self._tools: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
 
@@ -219,19 +237,46 @@ class McpIntegration:
             raise ValueError(
                 f"{type(self).__name__} must set `url` or override `_open_session`"
             )
-        token = await self._resolve_token()
         transport = _resolve_streamable_http()
-        # Extra configured headers first, Authorization last so it always wins.
-        auth_header = {**extra_headers, "Authorization": f"Bearer {token}"}
+        headers = dict(extra_headers)
+        if self.requires_auth:
+            token = await self._resolve_token()
+            # Extra configured headers first, Authorization last so it always wins.
+            headers["Authorization"] = f"Bearer {token}"
 
         # SDK signatures vary: some take headers=, others only http_client=.
         params = inspect.signature(transport).parameters
         if "headers" in params:
-            cm = transport(url, headers=auth_header)
+            kwargs: dict[str, Any] = {"headers": headers}
+            unsupported: list[str] = []
+            if self.request_timeout is not None:
+                if "timeout" in params:
+                    kwargs["timeout"] = self.request_timeout
+                else:
+                    unsupported.append("request_timeout")
+            if self.sse_read_timeout is not None:
+                if "sse_read_timeout" in params:
+                    kwargs["sse_read_timeout"] = self.sse_read_timeout
+                else:
+                    unsupported.append("sse_read_timeout")
+            if unsupported:
+                raise RuntimeError(
+                    "mcp streamable-HTTP client does not support configured "
+                    + ", ".join(unsupported)
+                )
+            cm = transport(url, **kwargs)
         elif "http_client" in params:
             import httpx  # noqa: PLC0415
 
-            client = await stack.enter_async_context(httpx.AsyncClient(headers=auth_header))
+            client_kwargs: dict[str, Any] = {"headers": headers}
+            if self.sse_read_timeout is not None:
+                default_timeout = self.request_timeout or 5.0
+                client_kwargs["timeout"] = httpx.Timeout(
+                    default_timeout, read=self.sse_read_timeout
+                )
+            elif self.request_timeout is not None:
+                client_kwargs["timeout"] = self.request_timeout
+            client = await stack.enter_async_context(httpx.AsyncClient(**client_kwargs))
             cm = transport(url, http_client=client)
         else:
             raise RuntimeError(
