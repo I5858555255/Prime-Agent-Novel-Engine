@@ -90,6 +90,14 @@ prime-agent update [--force]         # Update Prime Agent
 prime-agent shutdown [--force]       # Stop every agent, worker, and background service
 ```
 
+## Built for Long-Running Work
+
+- **Direct agent-to-agent communication:** running agents and retained subagents can discover one another, exchange messages, steer active work, or queue follow-ups.
+- **Daemon-backed continuity:** active sessions, IPython state, schedules, and subagents keep running when the terminal detaches and can be reattached later.
+- **Heartbeats and schedules:** `/heartbeat`, `rlm_heartbeat`, and `prime-agent schedule` can re-enter a session periodically or at a specific time.
+- **Persistent goals:** `/goal` keeps an objective and its progress active across turns until it is completed, paused, or cleared.
+- **Bounded autonomous mode:** `/autonomous` continues working until its quality gates pass or a configured turn, token, or time limit is reached.
+
 ## Documentation
 
 - [Documentation index](packages/coding-agent/docs/index.md)
