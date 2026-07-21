@@ -29,13 +29,18 @@ Prime Agent: RLM-native Coding and Research Harness
 
 ## Overview
 
-Long-running agents eventually fill their context with logs, tool output, and intermediate work. Compaction helps, but it can discard useful detail.
+Prime Agent is a coding and research agent built for tasks that take hours, days, or longer.
 
-Prime Agent addresses this with an RLM runtime that gives the model control over what enters its context:
+Many agents are optimized for short, single-threaded sessions. As tasks grow, logs and tool output crowd the context, compaction can drop useful details, one model becomes the bottleneck, and closing the client can interrupt the work. Their skills are typically instructions rather than new executable capabilities.
 
-- It uses persistent IPython as its only built-in tool, so it can inspect, search, and transform information with code.
-- It can spawn subagents from Python with `rlm(...)`, run independent work in parallel, and bring only useful results back.
-- Skills can include importable Python packages, giving the agent reusable capabilities beyond markdown instructions.
+Prime Agent combines a Recursive Language Model (RLM) runtime with durable background processes:
+
+- **Everything is programmatic:** persistent IPython is the only built-in model tool; file operations, shell commands, tool use, and context management happen through code.
+- **Subagents are built in:** `rlm(...)` spawns real child agents from Python for parallel or background work and returns their results programmatically.
+- **Skills are executable:** skills can be importable Python packages, and the built-in skill creator can turn recurring workflows into project or personal skills.
+- **Sessions run in the background:** daemon-backed agents keep running when the terminal disconnects and can be reattached later.
+- **Agents communicate directly:** running agents can discover one another and exchange messages without routing everything through the user.
+- **Long tasks keep moving:** automatic compaction, persistent goals, heartbeats, cron schedules, autonomous mode, and retained subagents preserve progress across turns and terminal sessions.
 
 ## Getting Started
 
