@@ -951,8 +951,9 @@ export class AgentSession {
 	private _refineInFlight?: Promise<void>;
 	/** Settles when the background planning LLM pass completes. Planning does not block turn entry points. */
 	private _refinePlanInFlight?: Promise<void>;
-	/** True between planning completion and _refineInFlight being set. Covers the gap
-	 * in the serialization guard without blocking turn entry points via _waitForRefineIdle. */
+	/** True between planning completion and _refineInFlight being set. Blocks
+	 * turn entry points via _waitForRefineIdle and concurrent refine calls via the
+	 * serialization guard, so no prompt or second plan can start in the gap. */
 	private _refineApplyPending = false;
 
 	constructor(config: AgentSessionConfig) {
@@ -3062,7 +3063,7 @@ export class AgentSession {
 			return;
 		}
 
-		if (this._refineInFlight) {
+		if (this._refineInFlight || this._refineApplyPending) {
 			await this._waitForRefineIdle();
 		}
 		const shouldQueueAtHandoff =
@@ -3385,7 +3386,7 @@ export class AgentSession {
 		}
 		// Re-check adjacent to the handoff: extension before_agent_start handlers
 		// above may have suspended this turn long enough for a refine to start.
-		if (this._refineInFlight) {
+		if (this._refineInFlight || this._refineApplyPending) {
 			await this._waitForRefineIdle();
 		}
 		if (acceptedAgentMessagePrompt?.cleared) {
