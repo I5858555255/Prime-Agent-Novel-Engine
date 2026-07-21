@@ -108,6 +108,7 @@ import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../..
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
 import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-inference-model-selection.js";
 import { parseCommandArgs } from "../../core/prompt-templates.js";
+import { SessionCommandHandledError } from "../../core/session-command-errors.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
@@ -4307,6 +4308,7 @@ export class InteractiveMode {
 					try {
 						await this.agentConnection.prompt(canonicalCommandText);
 					} catch (error) {
+						if (error instanceof SessionCommandHandledError) return;
 						this.editor.setText(text);
 						throw error;
 					}

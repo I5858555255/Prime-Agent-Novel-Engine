@@ -2157,6 +2157,28 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toEqual(["after commands"]);
 	});
 
+	it("drains an Agent-internal continuation restored behind a command", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("continued")]);
+		const compact = vi.spyOn(harness.session as any, "_compact").mockResolvedValue({
+			summary: "compacted",
+			firstKeptEntryId: "kept",
+			tokensBefore: 100,
+		});
+		harness.session.agent.followUp({
+			role: "user",
+			content: [{ type: "text", text: "restored continuation" }],
+			timestamp: Date.now(),
+		});
+
+		await harness.session.queueSessionSlashCommand("/compact first", "steering", { resumeIfIdle: true });
+		await vi.waitFor(() => expect(getUserTexts(harness)).toContain("restored continuation"));
+
+		expect(compact).toHaveBeenCalledOnce();
+		expect(getUserTexts(harness)).toEqual(["restored continuation"]);
+	});
+
 	it("runs a steering command before an already released follow-up", async () => {
 		const { harness, releaseToolExecution, promptPromise, waitForToolStart } = await createWaitingHarness();
 		harnesses.push(harness);

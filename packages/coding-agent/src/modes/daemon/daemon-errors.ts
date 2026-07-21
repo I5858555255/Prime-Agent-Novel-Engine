@@ -1,3 +1,4 @@
+import { deserializeSessionCommandError } from "../../core/session-command-errors.js";
 import { MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { SessionAlreadyActiveError } from "../../core/session-lease.js";
@@ -31,5 +32,5 @@ export function deserializeDaemonError(response: Extract<DaemonResponse, { succe
 	if (errorInfo?.code === "session_already_active") {
 		return new SessionAlreadyActiveError(errorInfo.sessionPath, errorInfo.activeSessionId);
 	}
-	return new Error(response.error);
+	return deserializeSessionCommandError(response.error) ?? new Error(response.error);
 }

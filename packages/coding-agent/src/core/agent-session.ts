@@ -221,6 +221,7 @@ import {
 	type RlmUsage,
 	type SubagentRuntimeHost,
 } from "./rlm-runtime.js";
+import { SessionCommandHandledError } from "./session-command-errors.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionContext, SessionMessageEntry } from "./session-manager.js";
 import {
 	CURRENT_SESSION_VERSION,
@@ -3743,7 +3744,7 @@ export class AgentSession {
 					error instanceof CompactionSkippedError ? "warning" : "error",
 				);
 				this._emit({ type: "session_command_end", text, error: message });
-				throw error;
+				throw new SessionCommandHandledError(message, { cause: error });
 			}
 		})();
 		this._sessionCommandOperation = operation;
@@ -4222,6 +4223,9 @@ export class AgentSession {
 					}
 					if (this._findLastAssistantMessage() !== previousAssistant) this._deferredContinuation = undefined;
 					this._releaseQueuedMessagePrefixes();
+					if (this.pendingMessageCount === 0 && !this._deferredContinuation && this.agent.hasQueuedMessages()) {
+						await this.agent.continue();
+					}
 					continue;
 				}
 
