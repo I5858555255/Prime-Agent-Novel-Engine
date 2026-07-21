@@ -960,7 +960,7 @@ export class DaemonSupervisor {
 			return;
 		}
 
-		if (this.updateRestartPreparing && isDaemonMutatingCommand(command)) {
+		if (this.updateRestartPreparing && isDaemonMutatingCommand(command) && command.type !== "shutdown") {
 			this.write(client, failure(command.id, command.type, "Daemon is preparing an update restart"));
 			return;
 		}
@@ -1021,7 +1021,7 @@ export class DaemonSupervisor {
 		client: DaemonSocketClient,
 		command: DaemonCommand,
 	): Promise<DaemonResponse | undefined> {
-		if (this.updateRestartPreparing && isDaemonMutatingCommand(command)) {
+		if (this.updateRestartPreparing && isDaemonMutatingCommand(command) && command.type !== "shutdown") {
 			throw new Error("Daemon is preparing an update restart");
 		}
 		switch (command.type) {
