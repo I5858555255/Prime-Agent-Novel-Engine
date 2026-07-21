@@ -1,0 +1,53 @@
+<svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg" font-family="ABC Favorit Mono, ui-monospace, 'SF Mono', Menlo, monospace" role="img" aria-labelledby="title desc">
+  <!-- prime-intellect-data-viz: trusted -->
+  <title id="title">Prime Agent prompt execution sequence</title>
+  <desc id="desc">A prompt moves from the terminal through AgentConnection and the daemon to a session worker, provider, tools, and optional RLM children, then returns as sequenced events.</desc>
+  <rect width="1200" height="640" fill="#111111"/>
+  <text x="56" y="54" fill="#FFFFFF" font-size="24" font-weight="600">PROMPT EXECUTION</text>
+  <text x="56" y="82" fill="#7A7A7A" font-size="13" letter-spacing="1.2">COMMAND DOWN · STREAM AND CURSOR UP · TRANSCRIPT APPENDS DURABLY</text>
+
+  <line x1="126" y1="132" x2="126" y2="552" stroke="#353535"/>
+  <line x1="326" y1="132" x2="326" y2="552" stroke="#353535"/>
+  <line x1="526" y1="132" x2="526" y2="552" stroke="#353535"/>
+  <line x1="726" y1="132" x2="726" y2="552" stroke="#353535"/>
+  <line x1="926" y1="132" x2="926" y2="552" stroke="#353535"/>
+  <line x1="1080" y1="132" x2="1080" y2="552" stroke="#353535"/>
+
+  <text x="86" y="120" fill="#FFFFFF" font-size="14">TUI</text>
+  <text x="268" y="120" fill="#FFFFFF" font-size="14">CONNECTION</text>
+  <text x="480" y="120" fill="#FFFFFF" font-size="14">SUPERVISOR</text>
+  <text x="688" y="120" fill="#FFFFFF" font-size="14">WORKER</text>
+  <text x="890" y="120" fill="#FFFFFF" font-size="14">PROVIDER</text>
+  <text x="1042" y="120" fill="#FFFFFF" font-size="14">KERNEL</text>
+
+  <path d="M 126 164 L 326 164 M 326 164 L 318.5 159.5 M 326 164 L 318.5 168.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="150" y="154" fill="#BCBCBC" font-size="12">prompt(intent)</text>
+
+  <path d="M 326 212 L 526 212 M 526 212 L 518.5 207.5 M 526 212 L 518.5 216.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="348" y="202" fill="#BCBCBC" font-size="12">v4 envelope + command ID</text>
+
+  <path d="M 526 260 L 726 260 M 726 260 L 718.5 255.5 M 726 260 L 718.5 264.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="548" y="250" fill="#BCBCBC" font-size="12">journal + route</text>
+
+  <path d="M 726 308 L 926 308 M 926 308 L 918.5 303.5 M 926 308 L 918.5 312.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="748" y="298" fill="#BCBCBC" font-size="12">stream model request</text>
+
+  <path d="M 926 356 L 726 356 M 726 356 L 733.5 351.5 M 726 356 L 733.5 360.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="758" y="346" fill="#BCBCBC" font-size="12">text / tool-call deltas</text>
+
+  <path d="M 726 404 L 1080 404 M 1080 404 L 1072.5 399.5 M 1080 404 L 1072.5 408.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="750" y="394" fill="#BCBCBC" font-size="12">optional IPython execute / host.request</text>
+
+  <path d="M 1080 452 L 726 452 M 726 452 L 733.5 447.5 M 726 452 L 733.5 456.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="770" y="442" fill="#BCBCBC" font-size="12">output / RLM child result</text>
+
+  <path d="M 726 500 L 326 500 M 326 500 L 333.5 495.5 M 326 500 L 333.5 504.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="416" y="490" fill="#BCBCBC" font-size="12">sequenced session events</text>
+
+  <path d="M 326 540 L 126 540 M 126 540 L 133.5 535.5 M 126 540 L 133.5 544.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="150" y="530" fill="#BCBCBC" font-size="12">render updated snapshot</text>
+
+  <rect x="56" y="578" width="1088" height="38" fill="#1C1C1C" stroke="#353535"/>
+  <text x="76" y="602" fill="#7A7A7A" font-size="12" letter-spacing="1.1">DURABLE SIDE EFFECT</text>
+  <text x="246" y="602" fill="#BCBCBC" font-size="13">worker appends transcript entries, including child usage attribution</text>
+</svg>

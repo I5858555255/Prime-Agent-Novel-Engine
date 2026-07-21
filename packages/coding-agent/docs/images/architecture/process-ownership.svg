@@ -1,0 +1,57 @@
+<svg viewBox="0 0 1200 660" xmlns="http://www.w3.org/2000/svg" font-family="ABC Favorit Mono, ui-monospace, 'SF Mono', Menlo, monospace" role="img" aria-labelledby="title desc">
+  <!-- prime-intellect-data-viz: trusted -->
+  <title id="title">Prime Agent process ownership</title>
+  <desc id="desc">A detached supervisor routes clients to a catalog process and isolated session workers. Each worker owns one root runtime, its descendants, and kernels.</desc>
+  <rect width="1200" height="660" fill="#111111"/>
+  <text x="56" y="54" fill="#FFFFFF" font-size="24" font-weight="600">PROCESS OWNERSHIP</text>
+  <text x="56" y="82" fill="#7A7A7A" font-size="13" letter-spacing="1.2">ONE ROOT TREE PER WORKER · SUPERVISOR ROUTES ONLY</text>
+
+  <rect x="56" y="128" width="220" height="110" fill="none" stroke="#353535"/>
+  <text x="76" y="160" fill="#7A7A7A" font-size="12" letter-spacing="1.4">CLIENT PROCESSES</text>
+  <text x="76" y="192" fill="#FFFFFF" font-size="18">TUI · print · JSON · RPC</text>
+  <text x="76" y="216" fill="#BCBCBC" font-size="13">attach / detach / reconnect</text>
+
+  <path d="M 282 183 L 350 183 M 350 183 L 342.5 178.5 M 350 183 L 342.5 187.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+
+  <rect x="356" y="112" width="350" height="142" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="378" y="146" fill="#B6FF3C" font-size="12" letter-spacing="1.4">DETACHED SUPERVISOR</text>
+  <text x="378" y="178" fill="#FFFFFF" font-size="19">socket · routing · health</text>
+  <text x="378" y="204" fill="#BCBCBC" font-size="13">journals · fanout · updates</text>
+  <text x="378" y="230" fill="#7A7A7A" font-size="12">never runs providers, tools, kernels, or scans</text>
+
+  <path d="M 712 154 L 788 154 M 788 154 L 780.5 149.5 M 788 154 L 780.5 158.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <rect x="794" y="112" width="350" height="104" fill="none" stroke="#353535"/>
+  <text x="816" y="146" fill="#7A7A7A" font-size="12" letter-spacing="1.4">CATALOG SUBPROCESS</text>
+  <text x="816" y="178" fill="#FFFFFF" font-size="18">saved-session scans</text>
+  <text x="816" y="202" fill="#BCBCBC" font-size="13">inactive file operations</text>
+
+  <path d="M 531 260 L 531 308 M 531 308 L 526.5 300.5 M 531 308 L 535.5 300.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+
+  <rect x="56" y="322" width="528" height="260" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <text x="78" y="356" fill="#B6FF3C" font-size="12" letter-spacing="1.4">RESIDENT WORKER · ROOT A</text>
+  <rect x="78" y="380" width="222" height="78" fill="none" stroke="#353535"/>
+  <text x="94" y="412" fill="#FFFFFF" font-size="17">AgentSessionRuntime</text>
+  <text x="94" y="436" fill="#7A7A7A" font-size="12">root session + scheduler</text>
+  <path d="M 306 419 L 340 419 M 340 419 L 332.5 414.5 M 340 419 L 332.5 423.5" fill="none" stroke="#B6FF3C" stroke-width="1.5"/>
+  <rect x="346" y="380" width="216" height="78" fill="none" stroke="#353535"/>
+  <text x="362" y="412" fill="#FFFFFF" font-size="17">Provider + tools</text>
+  <text x="362" y="436" fill="#7A7A7A" font-size="12">compaction · retry</text>
+  <rect x="78" y="480" width="222" height="76" fill="none" stroke="#353535"/>
+  <text x="94" y="512" fill="#FFFFFF" font-size="17">RLM descendants</text>
+  <text x="94" y="536" fill="#7A7A7A" font-size="12">retained child sessions</text>
+  <rect x="346" y="480" width="216" height="76" fill="none" stroke="#353535"/>
+  <text x="362" y="512" fill="#FFFFFF" font-size="17">IPython kernels</text>
+  <text x="362" y="536" fill="#7A7A7A" font-size="12">one per active session</text>
+
+  <rect x="616" y="322" width="528" height="260" fill="none" stroke="#353535"/>
+  <text x="638" y="356" fill="#7A7A7A" font-size="12" letter-spacing="1.4">ANOTHER WORKER</text>
+  <text x="638" y="392" fill="#FFFFFF" font-size="18">Resident root B</text>
+  <text x="638" y="420" fill="#BCBCBC" font-size="13">or client-owned hidden root</text>
+  <line x1="638" y1="450" x2="1122" y2="450" stroke="#353535"/>
+  <text x="638" y="482" fill="#7A7A7A" font-size="12" letter-spacing="1.4">FAILURE DOMAIN</text>
+  <text x="638" y="512" fill="#BCBCBC" font-size="14">Crash and recovery are scoped to this root tree.</text>
+  <text x="638" y="540" fill="#BCBCBC" font-size="14">The supervisor and other workers continue.</text>
+
+  <line x1="56" y1="620" x2="1144" y2="620" stroke="#353535"/>
+  <text x="56" y="644" fill="#7A7A7A" font-size="12">Ownership isolation ≠ security sandbox. All processes normally share one OS user and filesystem view.</text>
+</svg>

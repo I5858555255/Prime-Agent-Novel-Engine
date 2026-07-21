@@ -13,9 +13,9 @@ Prime Agent: RLM-native Coding and Research Harness
 </h3>
 
 <p align="center">
-  <a href="https://github.com/PrimeIntellect-ai/verifiers">Verifiers</a> &bull;
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl">PRIME-RL</a> &bull;
-  <a href="https://github.com/badlogic/pi-mono">pi-mono</a>
+  <a href="packages/coding-agent/docs/index.md">Documentation</a> &bull;
+  <a href="packages/coding-agent/docs/architecture.md">Architecture</a> &bull;
+  <a href="packages/coding-agent/README.md">CLI Reference</a>
 </p>
 
 <p align="center">
@@ -29,7 +29,9 @@ Prime Agent: RLM-native Coding and Research Harness
 
 ## Overview
 
-Prime Agent is a fork of [pi-mono](https://github.com/badlogic/pi-mono) rebuilt around an RLM-native coding and research workflow. The TypeScript host keeps the original terminal UI, provider layer, session tree, slash commands, and extension system. The model-facing runtime is centered on a persistent IPython kernel with recursive subagents exposed through a small `rlm` API.
+Prime Agent began as a hard fork of [pi-mono](https://github.com/badlogic/pi-mono) and has since become an independent RLM-native coding and research harness. It retains MIT-licensed lineage in parts of the terminal UI, provider layer, session tree, slash commands, extension system, and internal source package names; pi-mono is not the current product, command, install source, or development repository.
+
+The model-facing runtime is centered on a persistent IPython kernel with recursive subagents exposed through a small `rlm` API. The TypeScript host owns model calls, tools, sessions, scheduling, and child-agent execution while Python provides a durable control environment for composing that functionality.
 
 Prime Agent is designed for workflows where the model should work inside a durable Python state, compose tools through code, and delegate independent subtasks to child agents without leaving the same harness.
 
@@ -41,6 +43,12 @@ What sets it apart:
 4. Shared provider and auth stack for API-key providers, subscription providers, custom models, and OAuth flows.
 5. Python skill surface for Prime workflows such as environments, evals, training, and analysis.
 6. JSONL session storage with branching, resume, fork, clone, export, and compaction support.
+
+## Architecture
+
+The `prime-agent` CLI connects to a local supervisor. Each persistent root agent runs in an isolated worker process that owns its session runtime, IPython kernel, schedules, and RLM descendants. Closing the TUI detaches the client without stopping the worker; another client can attach later. Print, JSON, RPC, and ephemeral sessions use the same runtime behind client-owned workers.
+
+See the [architecture overview](packages/coding-agent/docs/architecture.md) for system diagrams, package responsibilities, process ownership, prompt execution, storage, and trust boundaries. Detailed references cover the [daemon and worker model](packages/coding-agent/docs/daemon-implementation-summary.md) and [kernel/RLM bridge](packages/coding-agent/docs/kernel-and-rlm-recursion.md).
 
 ## Getting Started
 
@@ -77,6 +85,8 @@ Authenticate in the TUI with:
 /login
 ```
 
+Public releases are currently installed from versioned release artifacts through these installer scripts. The repository still contains inherited npm workspace identifiers for source compatibility; they are not the user-facing Prime Agent install path.
+
 ## Common Commands
 
 ```bash
@@ -87,3 +97,16 @@ prime-agent doctor [--fix]           # Inspect or repair background services
 prime-agent update [--force]         # Update Prime Agent
 prime-agent shutdown [--force]       # Stop every agent, worker, and background service
 ```
+
+## Documentation
+
+- [Documentation index](packages/coding-agent/docs/index.md)
+- [Quickstart](packages/coding-agent/docs/quickstart.md)
+- [Usage and CLI reference](packages/coding-agent/docs/usage.md)
+- [Architecture](packages/coding-agent/docs/architecture.md)
+- [Provider setup](packages/coding-agent/docs/providers.md)
+- [Development](packages/coding-agent/docs/development.md)
+
+## Upstream and License
+
+Prime Agent is licensed under the MIT License. The root [LICENSE](LICENSE) preserves attribution for pi-mono by Mario Zechner and identifies Prime Intellect's subsequent work.
