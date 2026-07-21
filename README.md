@@ -27,8 +27,6 @@ Prime Agent: RLM-native Coding and Research Harness
   </a>
 </p>
 
-## Overview
-
 Prime Agent is a coding and research agent built for long-running tasks.
 
 Most agents are optimized for short, single-threaded sessions. As tasks grow, logs and tool output lead to context rot, compaction drops useful details, and one model becomes the bottleneck. Their skills are simply markdown instructions, and sessions require a client to remain open.
@@ -64,25 +62,11 @@ Then start Prime Agent:
 prime-agent
 ```
 
-Alternatively, to test local changes, clone this repository and use the source runner:
-
-```bash
-npm ci
-./prime-agent.sh
-```
-
-Authenticate in the TUI with:
-
-```text
-/login
-```
-
 Public releases are currently installed from versioned release artifacts through these installer scripts. The repository still contains inherited npm workspace identifiers for source compatibility; they are not the user-facing Prime Agent install path.
 
-## Common Commands
+Other useful commands:
 
 ```bash
-prime-agent                          # Start a new session
 prime-agent agents                   # Open the agents view
 prime-agent --resume [path|id]       # Browse or resume a previous session
 prime-agent doctor [--fix]           # Inspect or repair background services
