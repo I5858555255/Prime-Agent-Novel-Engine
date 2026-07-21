@@ -284,7 +284,12 @@ type RenderSessionContextHarness = {
 	connectionState?: AgentConnectionState;
 };
 
-type RenderSessionContextOptions = { updateFooter?: boolean; populateHistory?: boolean; clearChat?: boolean };
+type RenderSessionContextOptions = {
+	updateFooter?: boolean;
+	populateHistory?: boolean;
+	clearChat?: boolean;
+	limitTranscript?: boolean;
+};
 
 const renderSessionContext = (
 	InteractiveMode.prototype as unknown as {
@@ -482,31 +487,31 @@ describe("InteractiveMode.renderSessionContext", () => {
 		const { harness, chatContainer, addMessageToChat } = createRenderSessionContextHarness();
 		const messages = Array.from({ length: 405 }, (_, index) => userMessage(`message ${index}`, index));
 
-		await renderMessages(harness, messages);
+		await renderMessages(harness, messages, { limitTranscript: true });
 
 		expect(addMessageToChat).toHaveBeenCalledTimes(400);
 		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 5" });
 		expect(renderAll(chatContainer)).toContain("Showing latest 400 of 405 messages for faster open.");
 	});
 
-	test("applies the recent-tail cap when rebuilding a cleared transcript", async () => {
+	test("preserves the full transcript when rebuilding a cleared transcript", async () => {
 		const { harness, chatContainer, addMessageToChat } = createRenderSessionContextHarness();
 		chatContainer.addChild({ render: () => ["old transcript"], invalidate: () => {} });
 		const messages = Array.from({ length: 405 }, (_, index) => userMessage(`message ${index}`, index));
 
 		await renderMessages(harness, messages, { clearChat: true });
 
-		expect(addMessageToChat).toHaveBeenCalledTimes(400);
-		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 5" });
+		expect(addMessageToChat).toHaveBeenCalledTimes(405);
+		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 0" });
 		expect(renderAll(chatContainer)).not.toContain("old transcript");
-		expect(renderAll(chatContainer)).toContain("Showing latest 400 of 405 messages for faster open.");
+		expect(renderAll(chatContainer)).not.toContain("for faster open");
 	});
 
 	test("populates editor history from the full transcript when initial rendering is capped", async () => {
 		const { harness, addMessageToChat, addToHistory } = createRenderSessionContextHarness();
 		const messages = Array.from({ length: 405 }, (_, index) => userMessage(`message ${index}`, index));
 
-		await renderMessages(harness, messages, { populateHistory: true });
+		await renderMessages(harness, messages, { populateHistory: true, limitTranscript: true });
 
 		expect(addMessageToChat).toHaveBeenCalledTimes(400);
 		expect(addToHistory).toHaveBeenCalledTimes(405);
@@ -558,7 +563,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 			...Array.from({ length: 399 }, (_, index) => userMessage(`message ${index}`, index)),
 		];
 
-		await renderMessages(harness, messages);
+		await renderMessages(harness, messages, { limitTranscript: true });
 
 		expect(addMessageToChat).toHaveBeenCalledTimes(399);
 		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 0" });
@@ -573,7 +578,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 			toolResultMessage("tool-old", "old_tool", [{ type: "text", text: "old result" }]),
 		];
 
-		await renderMessages(harness, messages);
+		await renderMessages(harness, messages, { limitTranscript: true });
 
 		expect(addMessageToChat).toHaveBeenCalledTimes(399);
 		expect(addMessageToChat.mock.calls[0]?.[0]).toMatchObject({ content: "message 0" });
@@ -950,6 +955,7 @@ describe("InteractiveMode connection events", () => {
 			{ state: createConnectionState(), messages: [] },
 			{ state: createConnectionState({ isStreaming: true }), messages: [], streamingMessage },
 		];
+		const renderSessionContextMock = vi.fn(async () => {});
 		const restoreStreamingMessageFromSnapshot = vi.fn(async () => {});
 		const fakeThis = {
 			agentConnection: { getInitialSnapshot: vi.fn(async () => snapshots.shift()!) },
@@ -961,7 +967,7 @@ describe("InteractiveMode connection events", () => {
 			seedChildAgentInspector: vi.fn(),
 			setSessionHasMessages: vi.fn(),
 			applyConnectionStateSnapshot: vi.fn(),
-			renderSessionContext: vi.fn(async () => {}),
+			renderSessionContext: renderSessionContextMock,
 			restoreStreamingMessageFromSnapshot,
 			showStatus: vi.fn(),
 		} as unknown as InteractiveMode;
@@ -976,6 +982,17 @@ describe("InteractiveMode connection events", () => {
 			(fakeThis as unknown as { agentConnection: { getInitialSnapshot: ReturnType<typeof vi.fn> } }).agentConnection
 				.getInitialSnapshot,
 		).toHaveBeenCalledTimes(2);
+		expect(renderSessionContextMock).toHaveBeenCalledTimes(2);
+		expect(renderSessionContextMock).toHaveBeenNthCalledWith(1, expect.anything(), {
+			updateFooter: true,
+			populateHistory: true,
+			limitTranscript: true,
+		});
+		expect(renderSessionContextMock).toHaveBeenNthCalledWith(2, expect.anything(), {
+			updateFooter: true,
+			populateHistory: true,
+			limitTranscript: true,
+		});
 		expect(restoreStreamingMessageFromSnapshot).toHaveBeenNthCalledWith(1, undefined);
 		expect(restoreStreamingMessageFromSnapshot).toHaveBeenNthCalledWith(2, streamingMessage);
 	});
@@ -1126,6 +1143,9 @@ describe("InteractiveMode connection events", () => {
 			(fakeThis as unknown as { activeConnectionExtensionUiRequests: unknown }).activeConnectionExtensionUiRequests,
 		).toBe(extensionRequests);
 		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBe(activeBashComponent);
+		expect(
+			(fakeThis as unknown as { renderSessionContext: ReturnType<typeof vi.fn> }).renderSessionContext,
+		).toHaveBeenCalledWith(expect.anything(), { clearChat: true, updateFooter: true });
 		expect(startAssistantStreamingMessage).toHaveBeenCalledWith(streamingMessage);
 	});
 

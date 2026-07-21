@@ -5987,13 +5987,21 @@ export class InteractiveMode {
 	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
 	 * @param options.clearChat Clear the current transcript immediately before rendering
+	 * @param options.limitTranscript Limit transcript replay to the recent tail
 	 */
 	private async renderSessionContext(
 		sessionContext: AgentConnectionSessionContext,
-		options: { updateFooter?: boolean; populateHistory?: boolean; clearChat?: boolean } = {},
+		options: {
+			updateFooter?: boolean;
+			populateHistory?: boolean;
+			clearChat?: boolean;
+			limitTranscript?: boolean;
+		} = {},
 	): Promise<void> {
 		this.resetPendingToolState();
-		const messagesToRender = initialRenderMessages(sessionContext.messages);
+		const messagesToRender = options.limitTranscript
+			? initialRenderMessages(sessionContext.messages)
+			: sessionContext.messages;
 		this.ipythonToolComponents.clear();
 		this.lateIpythonSentAgentMessages.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
@@ -6115,6 +6123,7 @@ export class InteractiveMode {
 		await this.renderSessionContext(context, {
 			updateFooter: true,
 			populateHistory: true,
+			limitTranscript: true,
 		});
 		await this.restoreStreamingMessageFromSnapshot(streamingMessage);
 
