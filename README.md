@@ -29,33 +29,11 @@ Prime Agent: RLM-native Coding and Research Harness
 
 ## Overview
 
-Prime Agent is an RLM-native coding and research harness.
+Prime Agent is an RLM-native coding and research harness in which the model actively manages its context through a persistent runtime:
 
-The model-facing runtime is centered on a persistent IPython kernel with recursive subagents exposed through a small `rlm` API. The TypeScript host owns model calls, tools, sessions, scheduling, and child-agent execution while Python provides a durable control environment for composing that functionality.
-
-Prime Agent is designed for workflows where the model should work inside a durable Python state, compose tools through code, and delegate independent subtasks to child agents without leaving the same harness.
-
-## Core Features
-
-### Programmatic RLM
-
-Prime Agent's default RLM runtime exposes one built-in model tool: a persistent IPython kernel. File operations, project commands, context management, skills, and delegation are composed as code instead of separate tool calls. [Learn about the RLM programming model](packages/coding-agent/docs/rlm.md).
-
-### Native Subagents
-
-Subagents are part of the RLM runtime and are created programmatically with `await rlm("subtask")`. Normal Python async patterns provide parallel and background delegation, while each child receives an independent Prime Agent session and context.
-
-### Python-Backed Skills
-
-Prime Agent extends markdown skills with installable Python packages. Python-backed skills keep `SKILL.md` for discovery and instructions, add callable functionality to the kernel, and can themselves use RLM delegation. [Learn how skills work and how to create one](packages/coding-agent/docs/skills.md).
-
-### Background Agents and Messaging
-
-Interactive sessions run in daemon-backed workers, so closing the terminal UI detaches without stopping the agent. Active agents and retained subagents can exchange direct messages through the CLI or the kernel-side `agent_message` skill.
-
-### Long-Running Work
-
-Automatic compaction, persistent goals, recurring heartbeats, scheduled prompts, quality-gated autonomous mode, and retained subagents let work continue across turns and terminal sessions. [Learn about long-running and background agents](packages/coding-agent/docs/long-running-agents.md).
+- **Programmatic:** IPython is the only built-in model tool; code is action, tools are functions, and skills are modules.
+- **Recursive:** subagents are spawned and orchestrated from Python with `rlm(...)`, including parallel work and direct agent-to-agent communication.
+- **Adaptive:** Python-backed skills pair markdown instructions with importable functionality, allowing the harness to gain reusable capabilities.
 
 ## Getting Started
 
