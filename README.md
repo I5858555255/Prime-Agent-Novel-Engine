@@ -29,17 +29,17 @@ Prime Agent: RLM-native Coding and Research Harness
 
 ## Overview
 
-Prime Agent is a coding and research agent built for tasks that take hours, days, or longer.
+Prime Agent is a coding and research agent built for long-running tasks.
 
-Many agents are optimized for short, single-threaded sessions. As tasks grow, logs and tool output crowd the context, compaction can drop useful details, one model becomes the bottleneck, and closing the client can interrupt the work. Their skills are typically instructions rather than new executable capabilities.
+Most agents are optimized for short, single-threaded sessions. As tasks grow, logs and tool output lead to context rot, compaction drops useful details, and one model becomes the bottleneck. Their skills are simply markdown instructions, and sessions require a client to remain open.
 
-Prime Agent combines a Recursive Language Model (RLM) runtime with durable background processes:
+Prime Agent combines a [Recursive Language Model (RLM)](https://www.primeintellect.ai/blog/rlm) runtime with durable background processes:
 
 - **Everything is programmatic:** persistent IPython is the only built-in model tool; file operations, shell commands, tool use, and context management happen through code.
 - **Subagents are built in:** `rlm(...)` spawns real child agents from Python for parallel or background work and returns their results programmatically.
-- **Skills are executable:** skills can be importable Python packages, and the built-in skill creator can turn recurring workflows into project or personal skills.
+- **Skills are executable:** skills are importable Python packages, and the built-in skill creator can turn recurring workflows into project or personal skills.
 - **Sessions run in the background:** daemon-backed agents keep running when the terminal disconnects and can be reattached later.
-- **Agents communicate directly:** running agents can discover one another and exchange messages without routing everything through the user.
+- **Agents communicate directly:** running agents can exchange messages and orchestrate one another without routing everything through the user.
 - **Long tasks keep moving:** automatic compaction, persistent goals, heartbeats, cron schedules, autonomous mode, and retained subagents preserve progress across turns and terminal sessions.
 
 ## Getting Started
