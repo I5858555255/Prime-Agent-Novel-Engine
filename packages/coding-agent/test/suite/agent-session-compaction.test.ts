@@ -133,6 +133,8 @@ describe("AgentSession compaction characterization", () => {
 			expect.objectContaining({
 				reason: "manual",
 				result: expect.objectContaining({ tokensBefore: result.tokensBefore }),
+				aborted: false,
+				willRetry: false,
 			}),
 		]);
 
