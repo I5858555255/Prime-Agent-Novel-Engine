@@ -193,12 +193,11 @@ describe("InteractiveMode update notifications", () => {
 			ui: { requestRender: vi.fn() },
 		} as unknown as InteractiveMode;
 
-		InteractiveMode.prototype.showPackageUpdateNotification.call(fakeThis, ["npm:@foo/bar"]);
+		InteractiveMode.prototype.showPackageUpdateNotification.call(fakeThis, ["npm:@foo/bar", "npm:@baz/qux"]);
 
 		const output = normalizeRenderedOutput(chatContainer);
 		expect(chatContainer.children).toHaveLength(1);
-		expect(output).toBe("Package updates available: npm:@foo/bar. Run /update --extensions");
-		expect(output).not.toContain("pi update");
+		expect(output).toBe("Package updates available: npm:@foo/bar, npm:@baz/qux. Run /update --extensions");
 	});
 });
 
