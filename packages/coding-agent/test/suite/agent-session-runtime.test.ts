@@ -502,6 +502,32 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(events).toEqual([{ type: "session_before_fork", entryId: "missing-entry", position: "at" }]);
 	});
 
+	it("forks before a selected middle prompt and preserves its selection metadata", async () => {
+		const { runtime } = await createRuntimeForTest(() => {});
+		await runtime.session.prompt("Say one");
+		await runtime.session.prompt("Say two");
+		await runtime.session.prompt("Say three");
+		const userMessages = runtime.session.getUserMessagesForForking();
+		expect(userMessages.map((message) => message.text)).toEqual(["Say one", "Say two", "Say three"]);
+
+		const result = await runtime.fork(userMessages[1]!.entryId);
+
+		expect(result).toEqual({ cancelled: false, selectedText: "Say two" });
+		expect(
+			runtime.session.messages.map((message) =>
+				message.role === "user"
+					? typeof message.content === "string"
+						? message.content
+						: message.content
+								.filter((part): part is { type: "text"; text: string } => part.type === "text")
+								.map((part) => part.text)
+								.join("")
+					: message.role,
+			),
+		).toEqual(["Say one", "assistant"]);
+		expect(runtime.session.sessionFile).toBeDefined();
+	});
+
 	it("duplicates the current active branch when forking at the current position", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
 		await runtime.session.prompt("hello");
