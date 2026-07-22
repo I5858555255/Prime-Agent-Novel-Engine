@@ -50,18 +50,21 @@ describe("LoginDialogComponent", () => {
 	});
 
 	it.each([
-		["darwin", "open", []],
-		["linux", "xdg-open", []],
-		["win32", "C:\\Windows\\System32\\rundll32.exe", ["url.dll,FileProtocolHandler"]],
-	] as const)("passes hostile URLs as a single argument on %s", (platform, command, prefixArgs) => {
+		["darwin", () => "open", []],
+		["linux", () => "xdg-open", []],
+		["win32", () => `${process.env.SystemRoot || "C:\Windows"}\\System32\\rundll32.exe`, ["url.dll,FileProtocolHandler"]],
+	] as const)("passes hostile URLs as a single argument on %s", (platform, getCommand, prefixArgs) => {
 		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
-		const dialog = new LoginDialogComponent(createFakeTui(), "anthropic", () => {}, "Anthropic");
-		const url = "https://example.com/oauth?state=$(touch /tmp/pwned);whoami&pipe=|id";
+		try {
+			const dialog = new LoginDialogComponent(createFakeTui(), "anthropic", () => {}, "Anthropic");
+			const url = "https://example.com/oauth?state=$(touch /tmp/pwned);whoami&pipe=|id";
 
-		dialog.showAuth(url);
+			dialog.showAuth(url);
 
-		expect(mocks.execFile).toHaveBeenCalledWith(command, [...prefixArgs, url], expect.any(Function));
-		platformSpy.mockRestore();
+			expect(mocks.execFile).toHaveBeenCalledWith(getCommand(), [...prefixArgs, url], expect.any(Function));
+		} finally {
+			platformSpy.mockRestore();
+		}
 	});
 
 	it("renders sign-in URLs as OSC 8 hyperlinks when supported", () => {
