@@ -4504,9 +4504,12 @@ export class InteractiveMode {
 				// An open side-question pane captures plain replies as follow-up side
 				// questions; slash commands and ! bash still route normally. Esc returns.
 				if (this.sideQuestionComponent && !text.startsWith("/")) {
-					if (!this.activeSideQuestionId) {
+					if (this.activeSideQuestionId) {
+						// The editor cleared its buffer before onSubmit fired; put the
+						// draft back so the wait warning doesn't cost the typed follow-up.
+						this.editor.setText(text);
+					} else {
 						this.editor.addToHistory?.(text);
-						this.editor.setText("");
 					}
 					await this.handleSideQuestion(text);
 					return;

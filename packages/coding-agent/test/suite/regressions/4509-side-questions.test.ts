@@ -336,6 +336,33 @@ describe("ENG-4509 side questions", () => {
 		expect(fakeThis.activeSideQuestionId).toBe(fakeThis.sideQuestionTurns[1].id);
 	});
 
+	it("restores the draft when a follow-up is submitted while a turn is still running", async () => {
+		const setText = vi.fn();
+		const addToHistory = vi.fn();
+		const showWarning = vi.fn();
+		const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			defaultEditor,
+			editor: { setText, addToHistory },
+			promptStashState: { stash: undefined },
+			clearShortcutGuide: vi.fn(),
+			sideQuestionComponent: {},
+			activeSideQuestionId: "turn-1",
+			showWarning,
+		});
+		(
+			InteractiveMode.prototype as unknown as { setupEditorSubmitHandler(this: typeof fakeThis): void }
+		).setupEditorSubmitHandler.call(fakeThis);
+
+		await defaultEditor.onSubmit?.("Queued follow-up?");
+
+		// The editor clears its buffer before onSubmit fires, so the handler must
+		// put the rejected draft back rather than merely skip clearing it.
+		expect(setText).toHaveBeenCalledWith("Queued follow-up?");
+		expect(addToHistory).not.toHaveBeenCalled();
+		expect(showWarning).toHaveBeenCalledWith("Wait for the current side question to finish or cancel it first.");
+	});
+
 	it("aligns the thinking placeholder with the streamed response", () => {
 		const running = new SideQuestionComponent(
 			{ id: "question-5", question: "Still running?", answer: "", status: "running" },
