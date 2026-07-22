@@ -160,7 +160,7 @@ describe("searchable selector navigation", () => {
 		expect(enabledModelIds).toEqual([`${harness.models[0]?.provider}/faux-1`]);
 	});
 
-	it("selects the first session after the search query changes", async () => {
+	it("selects the first session with right arrow after the search query changes", async () => {
 		const sessions = Array.from({ length: 12 }, (_, index) => makeSession(index + 1));
 		let selectedPath: string | undefined;
 		const selector = new SessionSelectorComponent(
@@ -178,8 +178,11 @@ describe("searchable selector navigation", () => {
 		const list = selector.getSessionList();
 		moveDown(list, 8);
 		list.handleInput("c");
-		list.handleInput("\r");
+		list.handleInput("\x1b[D");
+		list.handleInput("\x1b[C");
+		expect(selectedPath).toBeUndefined();
 
+		list.handleInput("\x1b[C");
 		expect(selectedPath).toBe(sessions.at(-1)?.path);
 	});
 });

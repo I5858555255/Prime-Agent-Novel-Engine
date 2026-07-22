@@ -654,8 +654,12 @@ class SessionList implements Component, Focusable {
 		else if (kb.matches(keyData, "tui.select.pageDown")) {
 			this.selectedIndex = Math.min(this.filteredSessions.length - 1, this.selectedIndex + this.maxVisible);
 		}
-		// Enter
-		else if (kb.matches(keyData, "tui.select.confirm")) {
+		// Enter, or right arrow when it is not needed to move within the search field
+		else if (
+			kb.matches(keyData, "tui.select.confirm") ||
+			(kb.matches(keyData, "tui.editor.cursorRight") &&
+				this.searchInput.getCursor() === this.searchInput.getValue().length)
+		) {
 			const selected = this.filteredSessions[this.selectedIndex];
 			if (selected && this.onSelect) {
 				this.onSelect(selected.session.path);
