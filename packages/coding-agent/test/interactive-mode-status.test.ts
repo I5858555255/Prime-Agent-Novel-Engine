@@ -183,13 +183,7 @@ describe("InteractiveMode update notifications", () => {
 
 		const output = normalizeRenderedOutput(chatContainer);
 		expect(chatContainer.children).toHaveLength(1);
-		expect(output.split("\n")).toHaveLength(1);
-		expect(output).toContain("Update available:");
-		expect(output).toContain("v1.2.3");
-		expect(output).toContain("/update");
-		expect(output).not.toContain("prime-agent update");
-		expect(output).not.toContain("pi update");
-		expect(output).not.toContain("Changelog:");
+		expect(output).toBe("Update available: v1.2.3. Run /update");
 	});
 
 	test("shows package updates in one compact line", () => {
@@ -203,11 +197,7 @@ describe("InteractiveMode update notifications", () => {
 
 		const output = normalizeRenderedOutput(chatContainer);
 		expect(chatContainer.children).toHaveLength(1);
-		expect(output.split("\n")).toHaveLength(1);
-		expect(output).toContain("Package updates available:");
-		expect(output).toContain("npm:@foo/bar");
-		expect(output).toContain("/update --extensions");
-		expect(output).not.toContain("prime-agent update");
+		expect(output).toBe("Package updates available: npm:@foo/bar. Run /update --extensions");
 		expect(output).not.toContain("pi update");
 	});
 });
