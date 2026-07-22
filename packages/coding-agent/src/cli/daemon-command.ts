@@ -1355,9 +1355,7 @@ class DaemonAttachTerminal {
 				this.rl?.prompt();
 				return;
 			case "session_event":
-				if (message.event.type !== "refine_complete") {
-					this.handleSessionEvent(message.event);
-				}
+				this.handleSessionEvent(message.event);
 				return;
 			case "session_replaced":
 				this.isStreaming = message.state.isStreaming;

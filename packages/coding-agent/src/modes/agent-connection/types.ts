@@ -567,8 +567,7 @@ export type AgentConnectionSessionEvent =
 			fullOutputPath?: string;
 			/** Set when execution failed before producing a result (e.g. spawn failure) */
 			errorMessage?: string;
-	  }
-	| { type: "refine_complete"; result: RefinementResult };
+	  };
 
 export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }

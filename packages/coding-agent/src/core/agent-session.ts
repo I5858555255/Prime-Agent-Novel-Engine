@@ -317,8 +317,7 @@ export type AgentSessionEvent =
 			fullOutputPath?: string;
 			/** Set when execution failed before producing a result (e.g. spawn failure) */
 			errorMessage?: string;
-	  }
-	| { type: "refine_complete"; result: RefinementResult };
+	  };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -947,14 +946,10 @@ export class AgentSession {
 	private _autoRefineReviewAbort?: AbortController;
 	private _refineAbortController?: AbortController;
 	private readonly _autoRefineReviewer?: AutoRefineReviewer;
-	/** Settles (never rejects) when the in-flight refine finishes; see _waitForRefineIdle. */
+	/** Settles (never rejects) after a planned refine waits for idle and finishes applying. */
 	private _refineInFlight?: Promise<void>;
 	/** Settles when the background planning LLM pass completes. Planning does not block turn entry points. */
 	private _refinePlanInFlight?: Promise<void>;
-	/** True between planning completion and _refineInFlight being set. Blocks
-	 * turn entry points via _waitForRefineIdle and concurrent refine calls via the
-	 * serialization guard, so no prompt or second plan can start in the gap. */
-	private _refineApplyPending = false;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -2613,7 +2608,6 @@ export class AgentSession {
 			// resolution cannot write harness state or re-subscribe handlers.
 			this._autoRefineReviewAbort?.abort();
 			this._refineAbortController?.abort();
-			this._refineApplyPending = false;
 			this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 			this._autoRefineBranchVersion++;
 			this._cancelActiveRlmChildRuns("Parent session disposed");
@@ -3065,7 +3059,7 @@ export class AgentSession {
 			return;
 		}
 
-		if (this._refineInFlight || this._refineApplyPending) {
+		if (this._refineInFlight) {
 			await this._waitForRefineIdle();
 			// A refine may have completed during the wait and rewritten
 			// _baseSystemPrompt. Re-apply the extension-modified prompt if
@@ -3140,6 +3134,7 @@ export class AgentSession {
 		let drainedNextTurnMessages: CustomMessage[] = [];
 		let expandedText = text;
 		let currentImages = options?.images;
+		let extensionResult: Awaited<ReturnType<typeof this._extensionRunner.emitBeforeAgentStart>> | undefined;
 
 		try {
 			let currentText = text;
@@ -3351,7 +3346,7 @@ export class AgentSession {
 				}
 
 				// Emit before_agent_start extension event
-				const extensionResult = await this._extensionRunner.emitBeforeAgentStart(
+				extensionResult = await this._extensionRunner.emitBeforeAgentStart(
 					expandedText,
 					currentImages,
 					this._baseSystemPrompt,
@@ -3392,12 +3387,12 @@ export class AgentSession {
 		}
 		// Re-check adjacent to the handoff: extension before_agent_start handlers
 		// above may have suspended this turn long enough for a refine to start.
-		if (this._refineInFlight || this._refineApplyPending) {
+		if (this._refineInFlight) {
 			await this._waitForRefineIdle();
 			// A refine may have completed during the wait and rewritten
 			// _baseSystemPrompt. Re-apply the extension-modified prompt if
 			// the extension provided one, otherwise use the refreshed base.
-			this.agent.state.systemPrompt = this._baseSystemPrompt;
+			this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
 		}
 		if (acceptedAgentMessagePrompt?.cleared) {
 			reportPreflight(false);
@@ -4883,12 +4878,8 @@ export class AgentSession {
 		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		this._assistantTurnsSinceAutoRefine = 0;
 		this._autoRefineBranchVersion++;
-		while (this._refinePlanInFlight || this._refineApplyPending) {
-			if (this._refinePlanInFlight) {
-				await this._refinePlanInFlight;
-			} else if (this._refineApplyPending) {
-				await new Promise<void>((resolve) => setTimeout(resolve, 0));
-			}
+		while (this._refinePlanInFlight) {
+			await this._refinePlanInFlight;
 		}
 		await this._waitForRefineIdle();
 	}
@@ -5189,11 +5180,8 @@ export class AgentSession {
 		// starting a new run. This serializes concurrent /refine calls so two
 		// planning phases cannot race into concurrent _applyRefine calls that
 		// overwrite harness state.
-		while (this._refineInFlight || this._refinePlanInFlight || this._refineApplyPending) {
+		while (this._refineInFlight || this._refinePlanInFlight) {
 			await (this._refineInFlight ?? this._refinePlanInFlight);
-			if (this._refineApplyPending) {
-				await new Promise<void>((resolve) => setTimeout(resolve, 0));
-			}
 		}
 
 		const refineAbort = new AbortController();
@@ -5221,33 +5209,21 @@ export class AgentSession {
 			}
 		}
 
-		// Mark that we're between planning and application so the serialization
-		// guard and _waitForRefineIdle block concurrent calls and new prompts.
-		this._refineApplyPending = true;
-		try {
-			// Wait for any agent turn that started during background planning
-			// to finish before entering the application critical section.
-			await this.agent.waitForIdle();
-		} finally {
-			this._refineApplyPending = false;
-		}
-		if (this._disposed || refineAbort.signal.aborted) {
-			this._schedulePendingMessageResume();
-			throw new Error("Refinement cancelled because the session was disposed.");
-		}
-
-		// Application phase — blocks turn entry points via _refineInFlight.
-		// _refineInFlight only covers the brief disconnect+apply+reconnect.
-		// Set _refineInFlight before starting _applyRefine so synchronous
-		// listeners on the refine_complete event see the guard.
+		// Block new turns before waiting for the current turn to finish. One shared
+		// settled promise covers the full transition and apply critical section.
 		let resolveApplySettled: () => void = () => {};
 		const applySettled = new Promise<void>((resolve) => {
 			resolveApplySettled = resolve;
 		});
 		this._refineInFlight = applySettled;
-		const applyRun = this._applyRefine(plan, options, refineAbort);
 		try {
-			return await applyRun;
+			// Wait for any agent turn that started during background planning
+			// to finish before entering the application critical section.
+			await this.agent.waitForIdle();
+			if (this._disposed || refineAbort.signal.aborted) {
+				throw new Error("Refinement cancelled because the session was disposed.");
+			}
+			return await this._applyRefine(plan, options, refineAbort);
 		} finally {
 			resolveApplySettled();
 			if (this._refineInFlight === applySettled) {
@@ -5262,18 +5238,13 @@ export class AgentSession {
 	 * reattached event handling; otherwise the turn's messages are never
 	 * persisted or rendered.
 	 *
-	 * The application phase (`_refineInFlight`) and the transition window
-	 * (`_refineApplyPending`) block here. The background planning phase
-	 * (`_refinePlanInFlight`) does NOT block turn entry points.
+	 * The idle-wait and application phase (`_refineInFlight`) block here. The
+	 * background planning phase (`_refinePlanInFlight`) does NOT block turns.
 	 * Refine failures surface to the refine caller, not here.
 	 */
 	private async _waitForRefineIdle(): Promise<void> {
-		while (this._refineInFlight || this._refineApplyPending) {
-			if (this._refineInFlight) {
-				await this._refineInFlight;
-			} else {
-				await new Promise<void>((resolve) => setTimeout(resolve, 0));
-			}
+		while (this._refineInFlight) {
+			await this._refineInFlight;
 		}
 	}
 
@@ -5307,6 +5278,17 @@ export class AgentSession {
 				? loadHarnessState(globalHarnessStateDir, "global")
 				: this._loadMergedHarnessState();
 		const history = this._loadRefinementHistory();
+		const rollbackTarget = options.rollbackId ? history.find((item) => item.id === options.rollbackId) : undefined;
+		let baselineScope = rollbackTarget?.scope ?? requestedScope;
+		let baselineHarnessStateDir = baselineScope === "global" ? globalHarnessStateDir : localHarnessStateDir;
+		if (rollbackTarget?.harnessStatePath) {
+			baselineHarnessStateDir = dirname(rollbackTarget.harnessStatePath);
+			baselineScope = resolve(baselineHarnessStateDir) === resolve(globalHarnessStateDir) ? "global" : "local";
+		}
+		if (!baselineHarnessStateDir) {
+			throw new Error("Local harness refinement requires a persisted session; use global refinement instead.");
+		}
+		const baselineState = loadHarnessState(baselineHarnessStateDir, baselineScope);
 		const plan = await planRefinement(
 			this.agent.state.messages,
 			planningState,
@@ -5321,7 +5303,7 @@ export class AgentSession {
 		if (this._disposed || signal.aborted) {
 			throw new Error("Refinement cancelled because the session was disposed.");
 		}
-		return plan;
+		return { ...plan, baselineState };
 	}
 
 	/**
@@ -5337,9 +5319,8 @@ export class AgentSession {
 		if (this._disposed) {
 			throw new Error("Cannot refine a disposed session.");
 		}
-		// The caller (refine()) has already waited for agent idle before
-		// setting _refineInFlight and calling us. We only need to disconnect
-		// for the brief apply + save + reconnect critical section.
+		// The caller has already set _refineInFlight and waited for agent idle.
+		// Disconnect only for the brief apply + save + reconnect critical section.
 		this._disconnectFromAgent();
 
 		try {
@@ -5391,6 +5372,7 @@ export class AgentSession {
 				id: plan.id,
 				rollbackOf: plan.rollbackOf,
 				scope: targetScope,
+				baselineState: plan.baselineState,
 			});
 			result.harnessStatePath = saveHarnessState(targetHarnessStateDir, state);
 			if (targetScope === "global") {
@@ -5399,12 +5381,6 @@ export class AgentSession {
 			this.sessionManager.appendCustomEntry("prime-agent.refinement", result);
 			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
-			try {
-				this._emit({ type: "refine_complete", result });
-			} catch {
-				// Listener failures must not flip a successful refinement into
-				// a reported failure — the refinement is already persisted.
-			}
 			return result;
 		} finally {
 			if (this._refineAbortController === refineAbort) {
