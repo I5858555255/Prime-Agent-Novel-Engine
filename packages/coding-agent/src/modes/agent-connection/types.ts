@@ -439,6 +439,11 @@ export interface AgentConnectionSideQuestionEvent {
 	errorMessage?: string;
 }
 
+export interface AgentConnectionSideQuestionTurn {
+	question: string;
+	answer: string;
+}
+
 export interface AgentConnectionExecuteBashOptions {
 	excludeFromContext?: boolean;
 }
@@ -642,7 +647,7 @@ export interface AgentConnection {
 
 	prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void>;
 	promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void>;
-	startSideQuestion(id: string, question: string): Promise<void>;
+	startSideQuestion(id: string, question: string, previousTurns?: AgentConnectionSideQuestionTurn[]): Promise<void>;
 	abortSideQuestion(id: string): Promise<boolean>;
 	steer(message: string, images?: ImageContent[]): Promise<void>;
 	followUp(message: string, images?: ImageContent[]): Promise<void>;

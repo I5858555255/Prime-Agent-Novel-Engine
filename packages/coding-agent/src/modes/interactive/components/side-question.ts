@@ -2,52 +2,77 @@ import { type Component, Markdown, Text, visibleWidth } from "@earendil-works/pi
 import type { AgentConnectionSideQuestionEvent } from "../../agent-connection/types.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
+interface SideQuestionTurnState {
+	event: AgentConnectionSideQuestionEvent;
+	answer: Markdown;
+}
+
 export class SideQuestionComponent implements Component {
 	private readonly paddingX: number;
-	private readonly answer: Markdown;
-	private event: AgentConnectionSideQuestionEvent;
+	private readonly turns: SideQuestionTurnState[] = [];
 
 	constructor(event: AgentConnectionSideQuestionEvent, paddingX = 2) {
-		this.event = event;
 		this.paddingX = Math.max(2, paddingX);
-		this.answer = new Markdown("", this.paddingX, 0, getMarkdownTheme(), {
+		this.addTurn(event);
+	}
+
+	addTurn(event: AgentConnectionSideQuestionEvent): void {
+		const answer = new Markdown("", this.paddingX, 0, getMarkdownTheme(), {
 			color: (content: string) => theme.fg("userMessageText", content),
 		});
-		this.answer.setText(event.answer);
+		answer.setText(event.answer);
+		this.turns.push({ event, answer });
 	}
 
 	update(event: AgentConnectionSideQuestionEvent): void {
-		this.event = event;
-		this.answer.setText(event.answer);
+		const turn = this.turns.find((candidate) => candidate.event.id === event.id);
+		if (!turn) {
+			return;
+		}
+		turn.event = event;
+		turn.answer.setText(event.answer);
 	}
 
 	invalidate(): void {
-		this.answer.invalidate();
+		for (const turn of this.turns) {
+			turn.answer.invalidate();
+		}
 	}
 
 	render(width: number): string[] {
 		const blank = " ".repeat(Math.max(1, width));
-		const question = new Text(
-			`${theme.fg("accent", "/btw")}  ${theme.bold(theme.fg("userMessageText", this.event.question))}`,
-			this.paddingX,
-			0,
-		).render(width);
-		const lines = [blank, ...question, blank, ...this.renderAnswer(width), blank];
+		const lines = [blank];
+		for (const [index, turn] of this.turns.entries()) {
+			const prefix = index === 0 ? "/btw" : "   ↳";
+			const question = new Text(
+				`${theme.fg("accent", prefix)}  ${theme.bold(theme.fg("userMessageText", turn.event.question))}`,
+				this.paddingX,
+				0,
+			).render(width);
+			lines.push(...question, blank, ...this.renderAnswer(turn, width), blank);
+		}
+		lines.push(...this.renderHint(width), blank);
 		return lines.map((line) => this.applySurface(line, width));
 	}
 
-	private renderAnswer(width: number): string[] {
-		if (this.event.answer) {
-			return this.answer.render(width);
+	private renderAnswer(turn: SideQuestionTurnState, width: number): string[] {
+		if (turn.event.answer) {
+			return turn.answer.render(width);
 		}
-		if (this.event.errorMessage) {
-			return new Text(theme.fg("error", this.event.errorMessage), this.paddingX, 0).render(width);
+		if (turn.event.errorMessage) {
+			return new Text(theme.fg("error", turn.event.errorMessage), this.paddingX, 0).render(width);
 		}
-		if (this.event.status === "cancelled") {
+		if (turn.event.status === "cancelled") {
 			return new Text(theme.fg("userMessageText", "Cancelled"), this.paddingX, 0).render(width);
 		}
-		const message = this.event.status === "complete" ? "No response" : "Thinking…";
+		const message = turn.event.status === "complete" ? "No response" : "Thinking…";
 		return new Text(theme.fg("userMessageText", message), this.paddingX, 0).render(width);
+	}
+
+	private renderHint(width: number): string[] {
+		const running = this.turns.at(-1)?.event.status === "running";
+		const hint = running ? "esc to cancel and return to session" : "reply to follow up · esc to return to session";
+		return new Text(theme.fg("dim", hint), this.paddingX, 0).render(width);
 	}
 
 	private applySurface(line: string, width: number): string {

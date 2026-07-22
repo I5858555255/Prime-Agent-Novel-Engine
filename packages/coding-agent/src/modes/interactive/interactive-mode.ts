@@ -870,6 +870,7 @@ export class InteractiveMode {
 	private streamingMessage: AssistantMessage | undefined = undefined;
 	private sideQuestionComponent: SideQuestionComponent | undefined;
 	private sideQuestionEvent: AgentConnectionSideQuestionEvent | undefined;
+	private sideQuestionTurns: AgentConnectionSideQuestionEvent[] = [];
 	private activeSideQuestionId: string | undefined;
 
 	// User bash execution tracking (! / !! prefix), driven by bash_* session events
@@ -4132,7 +4133,10 @@ export class InteractiveMode {
 			return;
 		}
 
-		this.clearSideQuestion();
+		// Turns already answered in the open pane seed the follow-up's context.
+		const previousTurns = this.sideQuestionTurns
+			.filter((turn) => turn.answer)
+			.map((turn) => ({ question: turn.question, answer: turn.answer }));
 		const event: AgentConnectionSideQuestionEvent = {
 			id: randomUUID(),
 			question,
@@ -4141,13 +4145,22 @@ export class InteractiveMode {
 		};
 		this.activeSideQuestionId = event.id;
 		this.sideQuestionEvent = event;
-		this.sideQuestionComponent = new SideQuestionComponent(event, this.settingsManager.getEditorPaddingX());
-		this.sideQuestionContainer.addChild(new Spacer(1));
-		this.sideQuestionContainer.addChild(this.sideQuestionComponent);
+		this.sideQuestionTurns.push(event);
+		if (this.sideQuestionComponent) {
+			this.sideQuestionComponent.addTurn(event);
+		} else {
+			this.sideQuestionComponent = new SideQuestionComponent(event, this.settingsManager.getEditorPaddingX());
+			this.sideQuestionContainer.addChild(new Spacer(1));
+			this.sideQuestionContainer.addChild(this.sideQuestionComponent);
+		}
 		this.ui.requestRender();
 
 		try {
-			await this.agentConnection.startSideQuestion(event.id, question);
+			await this.agentConnection.startSideQuestion(
+				event.id,
+				question,
+				previousTurns.length > 0 ? previousTurns : undefined,
+			);
 		} catch (error) {
 			this.handleSideQuestionEvent({
 				...event,
@@ -4165,6 +4178,9 @@ export class InteractiveMode {
 			return;
 		}
 		this.sideQuestionEvent = event;
+		if (this.sideQuestionTurns.length > 0) {
+			this.sideQuestionTurns[this.sideQuestionTurns.length - 1] = event;
+		}
 		this.sideQuestionComponent.update(event);
 		this.ui.requestRender();
 	}
@@ -4175,6 +4191,7 @@ export class InteractiveMode {
 			this.abortSideQuestion(event.id);
 		}
 		this.sideQuestionEvent = undefined;
+		this.sideQuestionTurns = [];
 		this.sideQuestionComponent = undefined;
 		this.sideQuestionContainer.clear();
 		if (this.isInitialized) {
@@ -4481,6 +4498,17 @@ export class InteractiveMode {
 						}
 						this.showError(error instanceof Error ? error.message : String(error));
 					}
+					return;
+				}
+
+				// An open side-question pane captures plain replies as follow-up side
+				// questions; slash commands and ! bash still route normally. Esc returns.
+				if (this.sideQuestionComponent && !text.startsWith("/")) {
+					if (!this.activeSideQuestionId) {
+						this.editor.addToHistory?.(text);
+						this.editor.setText("");
+					}
+					await this.handleSideQuestion(text);
 					return;
 				}
 

@@ -3016,6 +3016,7 @@ export class AgentDaemon {
 							this.sideQuestionRuns.delete(event.id);
 						}
 					},
+					command.previousTurns,
 				);
 				this.sideQuestionRuns.set(command.sideQuestionId, {
 					run,

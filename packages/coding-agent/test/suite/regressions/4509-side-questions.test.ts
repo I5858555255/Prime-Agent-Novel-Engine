@@ -70,6 +70,48 @@ describe("ENG-4509 side questions", () => {
 		}
 	});
 
+	it("seeds follow-up turns with the prior side conversation and fresh main context", async () => {
+		const harness = await createHarness();
+		try {
+			harness.setResponses([fauxAssistantMessage("main answer")]);
+			await harness.session.prompt("Main context message.");
+
+			harness.setResponses([
+				(context) => {
+					const texts = context.messages.map(getMessageText);
+					expect(texts).toEqual([
+						"Main context message.",
+						"main answer",
+						expect.stringContaining("First side question?"),
+						"first side answer",
+						expect.stringContaining("Second side question?"),
+					]);
+					expect(context.tools).toEqual([]);
+					// The instruction is repeated only on the first side turn.
+					expect(texts[2]).toContain("Answer this side question");
+					expect(texts[4]).not.toContain("Answer this side question");
+					return fauxAssistantMessage("second side answer");
+				},
+			]);
+
+			const events: SideQuestionEvent[] = [];
+			const run = startSideQuestion(
+				harness.session.agent,
+				"turn-2",
+				"Second side question?",
+				(event) => {
+					events.push(event);
+				},
+				[{ question: "First side question?", answer: "first side answer" }],
+			);
+			await run.done;
+
+			expect(events.at(-1)).toMatchObject({ status: "complete", answer: "second side answer" });
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("can finish while the main agent is still working", async () => {
 		const harness = await createHarness();
 		const mainStarted = deferred();
@@ -233,6 +275,65 @@ describe("ENG-4509 side questions", () => {
 		expect(rendered).toContain("First line");
 		expect(rendered).toContain("Fourth line");
 		expect(rendered).not.toContain("…");
+	});
+
+	it("renders follow-up turns with a visible escape hint", () => {
+		const component = new SideQuestionComponent({
+			id: "turn-1",
+			question: "First?",
+			answer: "First answer",
+			status: "complete",
+		});
+		component.addTurn({ id: "turn-2", question: "Second?", answer: "", status: "running" });
+		component.update({ id: "turn-2", question: "Second?", answer: "Second answer", status: "complete" });
+		const rendered = stripAnsi(component.render(60).join("\n"));
+
+		expect(rendered).toContain("/btw  First?");
+		expect(rendered).toContain("First answer");
+		expect(rendered).toContain("↳  Second?");
+		expect(rendered).toContain("Second answer");
+		expect(rendered).toContain("reply to follow up · esc to return to session");
+	});
+
+	it("shows a cancel hint while a turn is running", () => {
+		const component = new SideQuestionComponent({
+			id: "turn-1",
+			question: "Still going?",
+			answer: "",
+			status: "running",
+		});
+		const rendered = stripAnsi(component.render(60).join("\n"));
+
+		expect(rendered).toContain("esc to cancel and return to session");
+	});
+
+	it("continues the side conversation when the pane is open", async () => {
+		const startSideQuestion = vi.fn(async () => {});
+		const addTurn = vi.fn();
+		const firstTurn = { id: "turn-1", question: "First?", answer: "First answer", status: "complete" as const };
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			activeSideQuestionId: undefined,
+			sideQuestionEvent: firstTurn,
+			sideQuestionTurns: [firstTurn],
+			sideQuestionComponent: { addTurn },
+			agentConnection: { startSideQuestion },
+			ui: { requestRender: vi.fn() },
+			showWarning: vi.fn(),
+		});
+		const handleSideQuestion = (
+			InteractiveMode.prototype as unknown as {
+				handleSideQuestion(this: typeof fakeThis, question: string): Promise<void>;
+			}
+		).handleSideQuestion;
+
+		await handleSideQuestion.call(fakeThis, "And a follow-up?");
+
+		expect(addTurn).toHaveBeenCalledTimes(1);
+		expect(startSideQuestion).toHaveBeenCalledWith(expect.any(String), "And a follow-up?", [
+			{ question: "First?", answer: "First answer" },
+		]);
+		expect(fakeThis.sideQuestionTurns).toHaveLength(2);
+		expect(fakeThis.activeSideQuestionId).toBe(fakeThis.sideQuestionTurns[1].id);
 	});
 
 	it("aligns the thinking placeholder with the streamed response", () => {

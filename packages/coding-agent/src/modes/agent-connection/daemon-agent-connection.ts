@@ -70,6 +70,7 @@ import type {
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSessionWatcher,
 	AgentConnectionSideQuestionEvent,
+	AgentConnectionSideQuestionTurn,
 	AgentConnectionSlashCommand,
 	AgentConnectionSnapshot,
 	AgentConnectionState,
@@ -746,7 +747,11 @@ export class DaemonAgentConnection implements AgentConnection {
 		);
 	}
 
-	async startSideQuestion(id: string, question: string): Promise<void> {
+	async startSideQuestion(
+		id: string,
+		question: string,
+		previousTurns?: AgentConnectionSideQuestionTurn[],
+	): Promise<void> {
 		this.activeSideQuestionIds.add(id);
 		try {
 			await this.requestOk({
@@ -754,6 +759,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				activeSessionId: this.activeSessionId,
 				sideQuestionId: id,
 				question,
+				previousTurns,
 			});
 		} catch (error) {
 			this.activeSideQuestionIds.delete(id);
