@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
+- Fixed Vertex Gemini 2.5 Flash-Lite minimal reasoning requests to use the supported 512-token thinking budget.
+
+## [0.3.2] - 2026-07-20
+
 - Added Kimi K3 to the Prime Inference and OpenRouter model catalogs with multimodal input and mandatory max reasoning.
+- Fixed prompt caching and retention-aware cache-cost estimates for Anthropic models routed through Prime Inference ([ENG-4723](https://linear.app/primeintellect/issue/ENG-4723)).
 
 ## [0.3.1] - 2026-07-15
 
