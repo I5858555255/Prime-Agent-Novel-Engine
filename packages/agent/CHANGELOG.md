@@ -4,6 +4,8 @@
 
 - Fixed recovery event listener failures replacing the original agent lifecycle failure.
 
+## [0.3.2] - 2026-07-20
+
 ## [0.3.1] - 2026-07-15
 
 - Added provider service-tier propagation to agent requests.
