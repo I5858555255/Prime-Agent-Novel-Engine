@@ -192,6 +192,7 @@ import {
 	mergeHarnessStates,
 	mergeRefinementHistory,
 	planRefinement,
+	REFINE_SKILL_NAME,
 	type RefinementPlan,
 	type RefinementResult,
 	reviewAutoRefine,
@@ -831,6 +832,7 @@ export class AgentSession {
 	private _overflowRecoveryAttempted = false;
 	private _continueAfterThresholdCompaction = false;
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
+	private _pendingRequestedRefine: { instructions?: string; global?: boolean } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -1831,6 +1833,47 @@ export class AgentSession {
 	}
 
 	/**
+	 * Handle a refine.* request from the kernel host bridge. Like compact,
+	 * refinement waits for the current turn to become idle before applying
+	 * changes, so refine.run only schedules it; _consumePendingRequestedRefine
+	 * fires it at the turn boundary. This prevents a deadlock that would occur
+	 * if refine() awaited agent idle from within the active tool call.
+	 */
+	handleRefineHostRequest(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
+		switch (type) {
+			case "refine.status": {
+				return {
+					pending: this._pendingRequestedRefine !== undefined,
+					in_flight: this._refineInFlight !== undefined || this._refinePlanInFlight !== undefined,
+				};
+			}
+			case "refine.run": {
+				const instructions = payload.instructions;
+				if (instructions !== undefined && typeof instructions !== "string") {
+					throw new Error("refine.run instructions must be a string when provided");
+				}
+				const globalFlag = payload.global;
+				if (globalFlag !== undefined && typeof globalFlag !== "boolean") {
+					throw new Error("refine.run global must be a boolean when provided");
+				}
+				if (!this.isStreaming) {
+					return {
+						scheduled: false,
+						reason: "no active turn; refine can only be requested while a turn is running",
+					};
+				}
+				this._pendingRequestedRefine = { instructions, global: globalFlag };
+				return {
+					scheduled: true,
+					note: "Refinement runs when the current turn ends; the harness rebuilds the system prompt and resumes you automatically. Continue working normally.",
+				};
+			}
+			default:
+				throw new Error(`unknown refine request type "${type}"`);
+		}
+	}
+
+	/**
 	 * Handle an rlm_heartbeat.* request from the bundled rlm-heartbeat skill.
 	 * These heartbeats are internal to this active session and never read or
 	 * mutate the user-level /heartbeat.
@@ -2383,6 +2426,7 @@ export class AgentSession {
 			this._resolveRetry();
 			if (!compactionWillRetry) {
 				this._finishGoalForTerminalAssistantMessage(msg);
+				this._consumePendingRequestedRefine();
 				this._scheduleAutoRefineAfterAgentEnd();
 			}
 		}
@@ -2608,6 +2652,7 @@ export class AgentSession {
 			// resolution cannot write harness state or re-subscribe handlers.
 			this._autoRefineReviewAbort?.abort();
 			this._refineAbortController?.abort();
+			this._pendingRequestedRefine = undefined;
 			this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 			this._autoRefineBranchVersion++;
 			this._cancelActiveRlmChildRuns("Parent session disposed");
@@ -4884,6 +4929,23 @@ export class AgentSession {
 		await this._waitForRefineIdle();
 	}
 
+	/**
+	 * Consume a refine request that was scheduled by the agent-callable refine
+	 * skill (refine.run). Fire-and-forget: the refine() method handles its own
+	 * background planning, idle wait, application, and error recovery. Called
+	 * at the turn boundary after compaction checks and before auto-refine
+	 * scheduling so the manual request takes priority.
+	 */
+	private _consumePendingRequestedRefine(): void {
+		const pending = this._pendingRequestedRefine;
+		if (!pending) return;
+		this._pendingRequestedRefine = undefined;
+		void this.refine(pending).catch(() => {
+			// Agent-requested refine is best-effort; the refine() method
+			// already emits refine_complete on success and surfaces errors.
+		});
+	}
+
 	private _scheduleAutoRefineAfterAgentEnd(): void {
 		if (!this._autoRefineAllowedForSession()) {
 			return;
@@ -6104,6 +6166,9 @@ export class AgentSession {
 		if (!this._includeCompactSkill) {
 			skills = skills.filter((skill) => skill.name !== COMPACT_SKILL_NAME);
 		}
+		if (!this._autoRefineAllowedForSession()) {
+			skills = skills.filter((skill) => skill.name !== REFINE_SKILL_NAME);
+		}
 		if (!this._agentMessageController) {
 			skills = skills.filter((skill) => skill.name !== AGENT_MESSAGE_SKILL_NAME);
 		}
@@ -6139,6 +6204,11 @@ export class AgentSession {
 		if (this._includeCompactSkill) {
 			for (const type of ["compact.run", "compact.status"]) {
 				handlers[type] = async (payload) => this.handleCompactHostRequest(type, payload);
+			}
+		}
+		if (this._autoRefineAllowedForSession()) {
+			for (const type of ["refine.run", "refine.status"]) {
+				handlers[type] = async (payload) => this.handleRefineHostRequest(type, payload);
 			}
 		}
 		if (this._rlmHeartbeatController) {
