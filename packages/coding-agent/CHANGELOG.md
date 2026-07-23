@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Removed the bundled orchestration heartbeat skill from the model system prompt.
 - Fixed `/btw` truncating long answers by rendering side questions in the scrollable transcript.
 - Changed selection cursors from `→` to `›` across model selectors, scoped-models, and the theme default for consistency with tree and user-message selectors.
 - Changed the queued follow-up hint connector from `↳` to `╰─` to match the tool-execution continuation connector.
