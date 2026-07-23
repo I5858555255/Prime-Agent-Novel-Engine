@@ -6045,6 +6045,7 @@ export class AgentSession {
 				// after idle so a later public refine cannot spin on it forever.
 				if (this._serializedPlanInFlight === serializedPlanInFlight) {
 					this._serializedPlanInFlight = undefined;
+					this._serializedExplicitRefineOptions = undefined;
 				}
 			}
 		}
@@ -6365,6 +6366,7 @@ export class AgentSession {
 				await serializedPlanInFlight.catch(() => undefined);
 				if (this._serializedPlanInFlight === serializedPlanInFlight) {
 					this._serializedPlanInFlight = undefined;
+					this._serializedExplicitRefineOptions = undefined;
 				}
 			}
 			if (skipAbortedCheck) return false;

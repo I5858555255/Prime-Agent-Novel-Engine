@@ -2412,8 +2412,11 @@ describe("P0 concurrency regressions", () => {
 	it("public refine clears a settled serialized plan left by an aborted turn", async () => {
 		const harness = await createHarness({ persistSession: true, serializedRefine: true });
 		harnesses.push(harness);
-		const internals = harness.session as unknown as SerializedInternals;
+		const internals = harness.session as unknown as SerializedInternals & {
+			_serializedExplicitRefineOptions?: { instructions?: string; global?: boolean };
+		};
 		internals._serializedPlanInFlight = Promise.resolve({ status: "skip" });
+		internals._serializedExplicitRefineOptions = { instructions: "stale", global: true };
 		vi.spyOn(internals, "_planRefine").mockResolvedValue({ id: "public-plan", proposal: { edits: [] } });
 		const apply = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
 
@@ -2422,6 +2425,7 @@ describe("P0 concurrency regressions", () => {
 		);
 
 		expect(internals._serializedPlanInFlight).toBeUndefined();
+		expect(internals._serializedExplicitRefineOptions).toBeUndefined();
 		expect(apply).toHaveBeenCalledOnce();
 	});
 
