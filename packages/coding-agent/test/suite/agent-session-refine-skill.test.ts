@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, type Harness } from "./harness.js";
 
 type SessionInternals = {
-	_consumePendingRequestedRefine: () => void;
+	_consumePendingRequestedRefine: () => boolean;
 	_pendingRequestedRefine: { instructions?: string; global?: boolean } | undefined;
 	_createKernelHostHandlers: () => Record<string, unknown>;
 	refine: (options: { instructions?: string; global?: boolean }) => Promise<unknown>;
@@ -152,7 +152,7 @@ describe("AgentSession refine skill host requests", () => {
 
 		const internals = harness.session as unknown as SessionInternals;
 		const refineSpy = vi.spyOn(internals, "refine").mockResolvedValue({});
-		internals._consumePendingRequestedRefine();
+		expect(internals._consumePendingRequestedRefine()).toBe(false);
 		expect(refineSpy).not.toHaveBeenCalled();
 	});
 
@@ -168,7 +168,17 @@ describe("AgentSession refine skill host requests", () => {
 
 		const internals = harness.session as unknown as SessionInternals;
 		vi.spyOn(internals, "refine").mockRejectedValue(new Error("refine failed"));
-		expect(() => internals._consumePendingRequestedRefine()).not.toThrow();
+		const failed = new Promise<string>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "refine_failed") {
+					unsubscribe();
+					resolve(event.error);
+				}
+			});
+		});
+
+		expect(internals._consumePendingRequestedRefine()).toBe(true);
+		expect(await failed).toBe("refine failed");
 		expect(internals._pendingRequestedRefine).toBeUndefined();
 	});
 

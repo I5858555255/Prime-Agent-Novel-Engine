@@ -41,7 +41,7 @@ describe("buildRlmPrompt", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
-			installedSkills: ["websearch"],
+			installedSkills: ["websearch", "refine"],
 			activeTools: ["ipython"],
 			allowRecursion: false,
 		});
@@ -57,7 +57,7 @@ describe("buildRlmPrompt", () => {
 				`Pre-installed Python packages: ${DEFAULT_RLM_EXTRA_IMPORT_LABELS.join(", ")}.`,
 				"Install additional packages with `uv pip install <pkg>` (this is a uv-managed venv with no pip module).",
 				"",
-				"Installed Python skill modules (pre-imported): `websearch`.",
+				"Installed Python skill modules (pre-imported): `websearch`, `refine`.",
 				"Read each skill's SKILL.md for its API. Inspect a module with `help(<skill>)` or `dir(<skill>)`, then inspect a documented callable with `inspect.signature(<skill>.<function>)`.",
 				"Each skill is also available as a shell command by the same name: `<skill> ...`. Discover its CLI usage with `<skill> --help`.",
 				"",
@@ -302,7 +302,7 @@ describe("buildSystemPrompt", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: ["ipython"],
 			contextFiles: [],
-			skills: [],
+			skills: [pythonSkill("refine")],
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
 			harnessState,
@@ -383,7 +383,7 @@ describe("buildSystemPrompt", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: ["ipython"],
 			contextFiles: [],
-			skills: [],
+			skills: [pythonSkill("refine")],
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
 		});
@@ -518,6 +518,7 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("agent_observe.list_agents");
 		expect(prompt).not.toContain("asyncio.create_task");
 		expect(prompt).not.toContain("await <skill_import>");
+		expect(prompt).not.toContain("await refine.run()");
 	});
 
 	test("omits shell guidance from harness state when shell is inactive", () => {
@@ -561,6 +562,7 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("<skill_import> ...");
 		expect(prompt).not.toContain("asyncio.create_task");
 		expect(prompt).not.toContain("await <skill_import>");
+		expect(prompt).not.toContain("await refine.run()");
 	});
 
 	test("custom prompt override bypasses the rlm harness body", () => {
