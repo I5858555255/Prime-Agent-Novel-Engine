@@ -39,6 +39,7 @@ type SerializedInternals = {
 	_lastAssistantMessage: unknown;
 	_handleAgentEvent(event: { type: string; messages?: unknown[] }): void;
 	_agentEventQueue: Promise<void>;
+	_autoRefineReviewAbort?: AbortController | undefined;
 	_refineAbortController?: AbortController | undefined;
 	_compactionOperation?: Promise<void> | undefined;
 	_branchSummaryOperation?: Promise<void> | undefined;
@@ -1213,6 +1214,46 @@ describe("Serialized refine review-fix regressions", () => {
 		internals._refineAbortController = undefined;
 	});
 
+	it("public refine snapshots final events and operations after the agent becomes idle", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		let releaseIdle: () => void = () => {};
+		const idleOperation = new Promise<void>((resolve) => {
+			releaseIdle = resolve;
+		});
+		const waitForIdle = vi.spyOn(harness.session.agent, "waitForIdle").mockReturnValue(idleOperation);
+		vi.spyOn(internals, "_planRefine").mockResolvedValue({ id: "public-plan", proposal: { edits: [] } });
+		const applyRefine = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		const refinePromise = harness.session.refine({ instructions: "public" });
+		await vi.waitFor(() => expect(waitForIdle).toHaveBeenCalledOnce());
+
+		let releaseEventQueue: () => void = () => {};
+		internals._agentEventQueue = new Promise<void>((resolve) => {
+			releaseEventQueue = resolve;
+		});
+		let releaseCompaction: () => void = () => {};
+		internals._compactionOperation = new Promise<void>((resolve) => {
+			releaseCompaction = resolve;
+		});
+
+		releaseIdle();
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+		expect(applyRefine).not.toHaveBeenCalled();
+
+		releaseEventQueue();
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+		expect(applyRefine).not.toHaveBeenCalled();
+
+		releaseCompaction();
+		await refinePromise;
+		expect(applyRefine).toHaveBeenCalledOnce();
+
+		internals._compactionOperation = undefined;
+		internals._refineAbortController = undefined;
+	});
+
 	it("interval background plan derives instructions from review, not prepopulated", async () => {
 		const reviewer = vi.fn(async () => ({
 			shouldRefine: true,
@@ -2058,6 +2099,63 @@ describe("P0 concurrency regressions", () => {
 
 		expect(planSignal?.aborted).toBe(true);
 		await expect(refine).rejects.toThrow("cancelled");
+	});
+
+	it("explicit abort cancels direct serialized refinement planning", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const applyRefine = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+		let planSignal: AbortSignal | undefined;
+		vi.spyOn(internals, "_planRefine").mockImplementation(
+			(_options: { instructions?: string }, signal: AbortSignal) => {
+				planSignal = signal;
+				return new Promise((_, reject) => {
+					signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+				});
+			},
+		);
+
+		const refine = internals._runSerializedRefine({ instructions: "cancel direct plan" });
+		await vi.waitFor(() => expect(planSignal).toBeDefined());
+		expect(internals._serializedPlanInFlight).toBeUndefined();
+		expect(internals._refinePlanInFlight).toBeUndefined();
+		expect(internals._refineInFlight).toBeUndefined();
+		const branchVersion = internals._autoRefineBranchVersion;
+
+		harness.session.requestAbort();
+
+		expect(planSignal?.aborted).toBe(true);
+		expect(internals._autoRefineBranchVersion).toBeGreaterThan(branchVersion);
+		await expect(refine).rejects.toThrow("cancelled");
+		expect(applyRefine).not.toHaveBeenCalled();
+	});
+
+	it("explicit abort cancels a serialized auto-refine review", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		let reviewSignal: AbortSignal | undefined;
+		vi.spyOn(internals, "_reviewAutoRefine").mockImplementation((_context, signal) => {
+			reviewSignal = signal;
+			return new Promise((_, reject) => {
+				signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+			});
+		});
+		const applyRefine = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		const branchVersion = internals._autoRefineBranchVersion;
+		const review = internals._runSerializedAutoRefineReview("turn_interval", branchVersion);
+		await vi.waitFor(() => expect(reviewSignal).toBeDefined());
+		expect(internals._autoRefineReviewAbort?.signal).toBe(reviewSignal);
+
+		harness.session.requestAbort();
+
+		expect(reviewSignal?.aborted).toBe(true);
+		expect(internals._autoRefineBranchVersion).toBeGreaterThan(branchVersion);
+		await expect(review).resolves.toBeUndefined();
+		expect(applyRefine).not.toHaveBeenCalled();
+		expect(internals._autoRefineReviewAbort).toBeUndefined();
 	});
 
 	it("aborted serialized turn clears _pendingRequestedRefine so it does not leak to next checkpoint", async () => {

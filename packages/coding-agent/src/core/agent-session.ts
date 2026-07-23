@@ -4994,10 +4994,9 @@ export class AgentSession {
 		this.abortBranchSummary();
 		this.abortBash();
 		this._pendingRequestedRefine = undefined;
-		if (this._serializedPlanInFlight || this._refinePlanInFlight || this._refineInFlight) {
-			this._autoRefineBranchVersion++;
-			this._refineAbortController?.abort();
-		}
+		this._autoRefineBranchVersion++;
+		this._autoRefineReviewAbort?.abort();
+		this._refineAbortController?.abort();
 		this._pendingMessageResumeRequested = false;
 		this._pendingMessageResumeEpoch++;
 		this.agent.abort();
@@ -6060,14 +6059,24 @@ export class AgentSession {
 			// Wait for the session to become quiescent before applying. Planning is
 			// allowed to overlap active user work, but application must not disconnect
 			// event handling until that work and its queued events have completed.
-			const compactionOp = this._compactionOperation;
-			const branchSummaryOp = this._branchSummaryOperation;
-			await Promise.allSettled([
-				this.agent.waitForIdle(),
-				this._agentEventQueue,
-				...(compactionOp ? [compactionOp] : []),
-				...(branchSummaryOp ? [branchSummaryOp] : []),
-			]);
+			await this.agent.waitForIdle();
+			while (true) {
+				const eventQueue = this._agentEventQueue;
+				const compactionOp = this._compactionOperation;
+				const branchSummaryOp = this._branchSummaryOperation;
+				await Promise.allSettled([
+					eventQueue,
+					...(compactionOp ? [compactionOp] : []),
+					...(branchSummaryOp ? [branchSummaryOp] : []),
+				]);
+				if (
+					eventQueue === this._agentEventQueue &&
+					compactionOp === this._compactionOperation &&
+					branchSummaryOp === this._branchSummaryOperation
+				) {
+					break;
+				}
+			}
 			if (this._disposed || refineAbort.signal.aborted) {
 				throw new Error("Refinement cancelled because the session was disposed.");
 			}
