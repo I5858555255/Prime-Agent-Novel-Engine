@@ -1996,7 +1996,7 @@ export class AgentDaemon {
 			let rehydratedModel: Model<Api> | undefined;
 			if (entry.model) {
 				const resolved = modelRegistry.find(entry.model.provider, entry.model.modelId);
-				if (resolved && modelRegistry.hasConfiguredAuth(resolved)) {
+				if (resolved && (await modelRegistry.canUseModel(resolved))) {
 					rehydratedModel = resolved;
 				}
 			}

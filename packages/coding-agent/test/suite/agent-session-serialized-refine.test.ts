@@ -2197,6 +2197,28 @@ describe("P0 concurrency regressions", () => {
 		expect(internals._autoRefineReviewAbort).toBeUndefined();
 	});
 
+	it("does not stamp cooldown when the branch changes during serialized refinement", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		internals._assistantTurnsSinceAutoRefine = 4;
+		internals._lastAutoRefineReviewAt = 0;
+		vi.spyOn(internals, "_reviewAutoRefine").mockResolvedValue({
+			shouldRefine: true,
+			rationale: "capture lesson",
+			instructions: "capture it",
+		});
+		vi.spyOn(internals, "_runSerializedRefine").mockImplementation(async () => {
+			internals._autoRefineBranchVersion++;
+		});
+		const branchVersion = internals._autoRefineBranchVersion;
+
+		await internals._runSerializedAutoRefineReview("turn_interval", branchVersion);
+
+		expect(internals._lastAutoRefineReviewAt).toBe(0);
+		expect(internals._assistantTurnsSinceAutoRefine).toBe(4);
+	});
+
 	it("aborted serialized turn clears _pendingRequestedRefine so it does not leak to next checkpoint", async () => {
 		const harness = await createHarness({
 			persistSession: true,
@@ -2332,7 +2354,7 @@ describe("P0 concurrency regressions", () => {
 		await expect(second).resolves.toBeUndefined();
 	});
 
-	it("quiesces the agent before draining a due interactive auto-refine", async () => {
+	it("drains a due interactive auto-refine without waiting for agent idle", async () => {
 		const harness = await createHarness({
 			persistSession: true,
 			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
@@ -2345,9 +2367,8 @@ describe("P0 concurrency regressions", () => {
 
 		await internals._drainPendingRefinementForDisposal();
 
-		expect(waitForIdle).toHaveBeenCalledOnce();
+		expect(waitForIdle).not.toHaveBeenCalled();
 		expect(maybeAutoRefine).toHaveBeenCalledWith("turn_interval");
-		expect(waitForIdle.mock.invocationCallOrder[0]).toBeLessThan(maybeAutoRefine.mock.invocationCallOrder[0]!);
 	});
 
 	it("waits for an interactive auto-refine operation before disposal drain continues", async () => {

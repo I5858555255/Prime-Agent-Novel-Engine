@@ -3,7 +3,11 @@ import { createHarness, type Harness } from "./harness.js";
 
 type SessionInternals = {
 	_consumePendingRequestedRefine: () => boolean;
+	_emitRefineFailed: (error: unknown) => void;
 	_pendingRequestedRefine: { instructions?: string; global?: boolean } | undefined;
+	_serializedPlanInFlight?: Promise<unknown>;
+	_serializedExplicitRefineOptions?: { instructions?: string; global?: boolean };
+	_refineAbortController?: AbortController;
 	_createKernelHostHandlers: () => Record<string, unknown>;
 	refine: (options: { instructions?: string; global?: boolean }) => Promise<unknown>;
 };
@@ -74,12 +78,30 @@ describe("AgentSession refine skill host requests", () => {
 		await harness.session.prompt("two");
 
 		setStreaming(harness, true);
-		harness.session.handleRefineHostRequest("refine.run", { instructions: "first" });
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "first", global: true });
 		harness.session.handleRefineHostRequest("refine.run", { instructions: "second" });
 		setStreaming(harness, false);
 
 		const internals = harness.session as unknown as SessionInternals;
 		expect(internals._pendingRequestedRefine?.instructions).toBe("second");
+		expect(internals._pendingRequestedRefine?.global).toBe(true);
+	});
+
+	it("replaces an in-flight serialized plan instead of applying both requests", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SessionInternals;
+		const abort = new AbortController();
+		internals._serializedPlanInFlight = new Promise(() => {});
+		internals._serializedExplicitRefineOptions = { instructions: "first", global: true };
+		internals._refineAbortController = abort;
+
+		setStreaming(harness, true);
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "replacement" });
+		setStreaming(harness, false);
+
+		expect(abort.signal.aborted).toBe(true);
+		expect(internals._pendingRequestedRefine).toEqual({ instructions: "replacement", global: true });
 	});
 
 	it("rejects refine.run while no turn is active", async () => {
@@ -180,6 +202,24 @@ describe("AgentSession refine skill host requests", () => {
 		expect(internals._consumePendingRequestedRefine()).toBe(true);
 		expect(await failed).toBe("refine failed");
 		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
+	it("continues notifying refine listeners after one throws", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SessionInternals;
+		const observed: string[] = [];
+		harness.session.subscribe(() => {
+			throw new Error("broken listener");
+		});
+		harness.session.subscribe((event) => {
+			if (event.type === "refine_failed") {
+				observed.push(event.error);
+			}
+		});
+
+		expect(() => internals._emitRefineFailed(new Error("planning failed"))).not.toThrow();
+		expect(observed).toEqual(["planning failed"]);
 	});
 
 	it("registers refine.run and refine.status handlers when auto-refine is allowed", async () => {

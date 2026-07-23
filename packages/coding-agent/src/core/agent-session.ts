@@ -1005,6 +1005,7 @@ export class AgentSession {
 	 */
 	private _serializedPlanInFlight?: Promise<SerializedBackgroundPlanResult | undefined>;
 	private _serializedPlanClaim?: Promise<SerializedBackgroundPlanResult | undefined>;
+	private _serializedExplicitRefineOptions?: { instructions?: string; global?: boolean };
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -1188,7 +1189,12 @@ export class AgentSession {
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
 		for (const l of this._eventListeners) {
-			l(event);
+			try {
+				l(event);
+			} catch {
+				// A failing observer must not prevent other subscribers from
+				// receiving lifecycle and persistence events.
+			}
 		}
 	}
 
@@ -1931,6 +1937,9 @@ export class AgentSession {
 			await this._runSerializedRefine({
 				instructions: autoRefineInstructions(reason, review),
 			});
+			if (this._disposed || this._disposing || branchVersion !== this._autoRefineBranchVersion) {
+				return;
+			}
 			this._lastAutoRefineReviewAt = Date.now();
 			this._assistantTurnsSinceAutoRefine = 0;
 		} catch (error) {
@@ -1966,6 +1975,7 @@ export class AgentSession {
 		} finally {
 			if (this._serializedPlanInFlight === planInFlight) {
 				this._serializedPlanInFlight = undefined;
+				this._serializedExplicitRefineOptions = undefined;
 			}
 			if (this._serializedPlanClaim === claim) {
 				this._serializedPlanClaim = undefined;
@@ -2018,6 +2028,7 @@ export class AgentSession {
 		const pending = this._pendingRequestedRefine;
 		if (pending) {
 			this._pendingRequestedRefine = undefined;
+			this._serializedExplicitRefineOptions = pending;
 			const refineAbort = new AbortController();
 			this._refineAbortController = refineAbort;
 			const branchVersion = this._autoRefineBranchVersion;
@@ -2415,13 +2426,21 @@ export class AgentSession {
 						reason: "no active turn; refine can only be requested while a turn is running",
 					};
 				}
-				this._pendingRequestedRefine = { instructions, global: globalFlag };
+				const previous = this._pendingRequestedRefine ?? this._serializedExplicitRefineOptions;
+				this._pendingRequestedRefine = {
+					instructions: instructions ?? previous?.instructions,
+					global: globalFlag ?? previous?.global,
+				};
 				// In serialized mode, kick off background planning immediately
 				// (the primary response ended at message_end, tools are active).
 				// This lets planning overlap tool execution rather than waiting
 				// for the shouldStopAfterTurn boundary.
 				if (this._serializedRefine) {
-					this._maybeStartSerializedBackgroundPlan();
+					if (this._serializedPlanInFlight && this._serializedExplicitRefineOptions) {
+						this._refineAbortController?.abort();
+					} else {
+						this._maybeStartSerializedBackgroundPlan();
+					}
 				}
 				return {
 					scheduled: true,
@@ -3319,7 +3338,6 @@ export class AgentSession {
 		if (this._serializedRefine) {
 			await this._runSerializedRefineCheckpoint();
 		} else {
-			await this.agent.waitForIdle();
 			await this._maybeAutoRefine("turn_interval");
 		}
 	}
@@ -3365,6 +3383,7 @@ export class AgentSession {
 			}
 			this._scheduledAutoRefineTimers.clear();
 			this._serializedPlanInFlight = undefined;
+			this._serializedExplicitRefineOptions = undefined;
 			this._pendingRequestedRefine = undefined;
 			this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 			this._autoRefineBranchVersion++;
