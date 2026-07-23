@@ -133,6 +133,7 @@ export interface Settings {
 	compaction?: CompactionSettings;
 	autoRefine?: AutoRefineSettings;
 	agentTraces?: AgentTracesSettings;
+	telemetry?: TelemetrySettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
@@ -164,6 +165,11 @@ export interface Settings {
 
 export interface AgentTracesSettings {
 	enabled?: boolean;
+}
+
+export interface TelemetrySettings {
+	enabled?: boolean;
+	noticeShown?: boolean;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -764,6 +770,32 @@ export class SettingsManager {
 		}
 		this.globalSettings.agentTraces.enabled = enabled;
 		this.markModified("agentTraces", "enabled");
+		this.save();
+	}
+
+	getTelemetryEnabled(): boolean {
+		return this.settings.telemetry?.enabled ?? true;
+	}
+
+	setTelemetryEnabled(enabled: boolean): void {
+		if (!this.globalSettings.telemetry) {
+			this.globalSettings.telemetry = {};
+		}
+		this.globalSettings.telemetry.enabled = enabled;
+		this.markModified("telemetry", "enabled");
+		this.save();
+	}
+
+	getTelemetryNoticeShown(): boolean {
+		return this.settings.telemetry?.noticeShown ?? false;
+	}
+
+	setTelemetryNoticeShown(shown: boolean): void {
+		if (!this.globalSettings.telemetry) {
+			this.globalSettings.telemetry = {};
+		}
+		this.globalSettings.telemetry.noticeShown = shown;
+		this.markModified("telemetry", "noticeShown");
 		this.save();
 	}
 

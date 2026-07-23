@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added privacy-safe anonymous product analytics for run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Fixed `/btw` truncating long answers by rendering side questions in the scrollable transcript.
 - Changed selection cursors from `→` to `›` across model selectors, scoped-models, and the theme default for consistency with tree and user-message selectors.
 - Changed the queued follow-up hint connector from `↳` to `╰─` to match the tool-execution continuation connector.
