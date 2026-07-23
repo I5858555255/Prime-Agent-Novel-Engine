@@ -325,7 +325,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		expect(worker.snapshotGenerations.has(activeSessionId)).toBe(false);
 	});
 
-	it("quarantines a completed duplicate until exact replacement validation", async () => {
+	it("quarantines a completed duplicate until transcript validation", async () => {
 		const supervisor = new DaemonSupervisor("/tmp/eng-4602-supervisor.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
 			descriptorDir: "/tmp/eng-4602-supervisor-state",
@@ -364,6 +364,28 @@ describe("ENG-4602 snapshot transfer containment", () => {
 		internals.handleWorkerFrame(worker, frame(frames.end, "replacement"));
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		expect(worker.snapshotCache.has(activeSessionId)).toBe(true);
+		expect(streamSnapshot).toHaveBeenCalledOnce();
+		expect(close).not.toHaveBeenCalled();
+		streamSnapshot.mockClear();
+
+		const refreshedBegin = {
+			...frames.begin,
+			snapshot: {
+				...frames.begin.snapshot,
+				summary: {
+					...frames.begin.snapshot.summary,
+					activity: "working" as const,
+					attachedClients: 2,
+				},
+			},
+		};
+		internals.handleWorkerFrame(worker, frame(refreshedBegin, "replacement"));
+		internals.handleWorkerFrame(worker, frame(frames.chunk, "replacement"));
+		internals.handleWorkerFrame(worker, frame(frames.end, "replacement"));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(worker.snapshotCache.get(activeSessionId)?.snapshot.summary).toMatchObject({
+			activity: "working",
+		});
 		expect(streamSnapshot).toHaveBeenCalledOnce();
 		expect(close).not.toHaveBeenCalled();
 		streamSnapshot.mockClear();

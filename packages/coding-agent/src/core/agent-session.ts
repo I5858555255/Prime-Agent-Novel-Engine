@@ -1777,29 +1777,35 @@ export class AgentSession {
 			}
 			this._lastAutoRefineReviewAt = Date.now();
 			this._assistantTurnsSinceAutoRefine = 0;
-			return;
+			if (!this._pendingRequestedRefine) {
+				return;
+			}
 		}
 
 		if (bgResult?.status === "skip") {
 			// Reviewer declined during background planning.
-			// Reset exactly once; do NOT fall through to synchronous review.
+			// Reset exactly once. Never retry the interval review; only fall through for a separate pending refine.run.
 			this._lastAutoRefineReviewAt = Date.now();
 			this._assistantTurnsSinceAutoRefine = 0;
-			return;
+			if (!this._pendingRequestedRefine) {
+				return;
+			}
 		}
 
 		if (bgResult?.status === "failure") {
 			// Fix 3: Background review or planning failed. Stamp cooldown
-			// and return — do NOT fall through to synchronous retry (the
-			// discriminated contract says no duplicate boundary model call).
+			// without a synchronous retry (the discriminated contract says no duplicate boundary
+			// model call). A separately queued refine.run may still be serviced below.
 			if (branchVersion === this._autoRefineBranchVersion) {
 				this._lastAutoRefineReviewAt = Date.now();
 			}
-			return;
+			if (!this._pendingRequestedRefine) {
+				return;
+			}
 		}
 
-		// bgResult is undefined (no background plan started).
-		// Fall through to pending/interval checks.
+		// No background result, or a refine.run arrived while the background result was
+		// in flight. Fall through so an explicit pending request is serviced at this boundary.
 
 		// 2. Agent-callable refine.run requests that were NOT consumed by
 		//    background planning (e.g. interval not reached at message_end,

@@ -491,6 +491,58 @@ describe("Serialized background planning during tools", () => {
 		expect(internals._assistantTurnsSinceAutoRefine).toBe(0);
 	});
 
+	it("services refine.run at the same boundary when an interval plan is already in flight", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "interval review",
+			instructions: "interval plan",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+
+		let resolveIntervalPlan: () => void = () => {};
+		const intervalPlanReady = new Promise<void>((resolve) => {
+			resolveIntervalPlan = resolve;
+		});
+		let planCalls = 0;
+		vi.spyOn(internals, "_planRefine").mockImplementation(async () => {
+			planCalls++;
+			if (planCalls === 1) {
+				await intervalPlanReady;
+			}
+			return { id: `plan-${planCalls}`, proposal: { edits: [] } };
+		});
+		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		internals._assistantTurnsSinceAutoRefine = 1;
+		(
+			internals as unknown as { _maybeStartSerializedBackgroundPlan: () => void }
+		)._maybeStartSerializedBackgroundPlan();
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		expect(planCalls).toBe(1);
+
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "explicit plan" });
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+		expect(internals._pendingRequestedRefine?.instructions).toBe("explicit plan");
+
+		const checkpoint = internals._runSerializedRefineCheckpoint();
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		resolveIntervalPlan();
+		await checkpoint;
+
+		expect(reviewer).toHaveBeenCalledTimes(1);
+		expect(internals._planRefine).toHaveBeenCalledTimes(2);
+		expect(internals._applyRefine).toHaveBeenCalledTimes(2);
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
 	it("max concurrent model calls is one: planning does not start another model request", async () => {
 		// The background plan uses _reviewAutoRefine which calls the LLM via
 		// completeSimple (an independent non-streaming call). In serialized mode,
