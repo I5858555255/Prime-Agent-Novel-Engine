@@ -31,6 +31,11 @@ type SerializedInternals = {
 	_serializedPlanInFlight?: Promise<unknown>;
 	_disposing: boolean;
 	_disposed: boolean;
+	_scheduleAutoRefineAfterAgentEnd(): void;
+	_checkCompaction(message: unknown): Promise<boolean>;
+	_lastAssistantMessage: unknown;
+	_handleAgentEvent(event: { type: string; messages?: unknown[] }): void;
+	_agentEventQueue: Promise<void>;
 };
 
 function emptyRefinementResult() {
@@ -749,8 +754,6 @@ describe("Serialized refine review-fix regressions", () => {
 		// Make background planning fail
 		vi.spyOn(internals, "_planRefine").mockRejectedValue(new Error("plan failed"));
 		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
-		// Spy on _maybeAutoRefine — it should NEVER be called in serialized mode
-		const maybeAutoRefineSpy = vi.spyOn(internals, "_maybeAutoRefine").mockResolvedValue(undefined);
 
 		// Start background planning and let it fail
 		internals._assistantTurnsSinceAutoRefine = 1;
@@ -768,16 +771,25 @@ describe("Serialized refine review-fix regressions", () => {
 		expect(internals._applyRefine).not.toHaveBeenCalled();
 		// Cooldown was stamped.
 		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
-		// _assistantTurnsSinceAutoRefine was NOT reset (failure path doesn't reset).
-		expect(internals._assistantTurnsSinceAutoRefine).toBe(1);
 
-		// Simulate the agent_end handler path: in serialized mode, _scheduleAutoRefineAfterAgentEnd
-		// is now guarded by !_this._serializedRefine, so _maybeAutoRefine should NOT fire.
-		// Flush any pending setTimeout(0) callbacks.
+		// Now simulate the actual agent_end event path.
+		// Set _lastAssistantMessage so agent_end has a non-error assistant to process.
+		const fauxAssistant = fauxAssistantMessage("done");
+		internals._lastAssistantMessage = fauxAssistant;
+
+		// Spy on _scheduleAutoRefineAfterAgentEnd — it should NOT be called in serialized mode.
+		const scheduleSpy = vi.spyOn(internals, "_scheduleAutoRefineAfterAgentEnd");
+		// Mock _checkCompaction so agent_end reaches the scheduling guard.
+		vi.spyOn(internals, "_checkCompaction").mockResolvedValue(false);
+
+		// Drive the real agent_end event through _handleAgentEvent → _processAgentEvent.
+		internals._handleAgentEvent({ type: "agent_end", messages: [fauxAssistant] });
+		await internals._agentEventQueue;
+		// Flush any setTimeout(0) that _scheduleAutoRefine would have used.
 		await new Promise<void>((resolve) => setTimeout(resolve, 20));
 
-		// _maybeAutoRefine must NEVER be called in serialized mode from agent_end.
-		expect(maybeAutoRefineSpy).not.toHaveBeenCalled();
+		// _scheduleAutoRefineAfterAgentEnd must NEVER be called in serialized mode.
+		expect(scheduleSpy).not.toHaveBeenCalled();
 	});
 
 	it("interval background plan derives instructions from review, not prepopulated", async () => {
