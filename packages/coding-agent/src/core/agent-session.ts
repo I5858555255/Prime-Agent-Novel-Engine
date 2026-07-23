@@ -2135,13 +2135,6 @@ export class AgentSession {
 		if (this._disposed || this._disposing) {
 			return;
 		}
-		// Serialize against any in-flight refine (interactive background path).
-		while (this._refineInFlight || this._refinePlanInFlight) {
-			await (this._refineInFlight ?? this._refinePlanInFlight);
-		}
-		if (this._disposed || this._disposing) {
-			return;
-		}
 
 		const refineAbort = new AbortController();
 		this._refineAbortController = refineAbort;
@@ -4995,17 +4988,15 @@ export class AgentSession {
 		return this._resourceLoader;
 	}
 
-	requestAbort(options: { preserveRefinement?: boolean } = {}): void {
+	requestAbort(): void {
 		this.abortRetry();
 		this.abortCompaction();
 		this.abortBranchSummary();
 		this.abortBash();
-		if (!options.preserveRefinement) {
-			this._pendingRequestedRefine = undefined;
-			if (this._serializedPlanInFlight) {
-				this._autoRefineBranchVersion++;
-				this._refineAbortController?.abort();
-			}
+		this._pendingRequestedRefine = undefined;
+		if (this._serializedPlanInFlight || this._refinePlanInFlight || this._refineInFlight) {
+			this._autoRefineBranchVersion++;
+			this._refineAbortController?.abort();
 		}
 		this._pendingMessageResumeRequested = false;
 		this._pendingMessageResumeEpoch++;
@@ -6066,12 +6057,11 @@ export class AgentSession {
 		});
 		this._refineInFlight = applySettled;
 		try {
-			// Quiesce the session before applying: abort compaction, branch summary,
-			// bash, and the agent, then await all of them plus the event queue.
-			// Do not call abort(), which would also cancel child runs and goal state.
+			// Wait for the session to become quiescent before applying. Planning is
+			// allowed to overlap active user work, but application must not disconnect
+			// event handling until that work and its queued events have completed.
 			const compactionOp = this._compactionOperation;
 			const branchSummaryOp = this._branchSummaryOperation;
-			this.requestAbort({ preserveRefinement: true });
 			await Promise.allSettled([
 				this.agent.waitForIdle(),
 				this._agentEventQueue,
@@ -6108,8 +6098,8 @@ export class AgentSession {
 
 	/**
 	 * Background planning phase: runs the LLM planning call via `planRefinement`.
-	 * Does NOT call `_disconnectFromAgent` or `this.abort` — those happen in
-	 * `_applyRefine`. Returns the plan without applying anything.
+	 * Does not disconnect from or abort the agent. Returns the plan without
+	 * applying anything.
 	 */
 	private async _planRefine(
 		options: { instructions?: string; rollbackId?: string; global?: boolean },

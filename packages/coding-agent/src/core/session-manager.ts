@@ -1282,6 +1282,7 @@ export class SessionManager {
 	 */
 	flushNow(): void {
 		if (!this.persist || !this.sessionFile) return;
+		if (this.flushed && existsSync(this.sessionFile)) return;
 		this._rewriteFile();
 		this.flushed = true;
 	}

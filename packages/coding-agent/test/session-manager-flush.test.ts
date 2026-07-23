@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../src/core/session-manager.js";
 
 const tempDirs: string[] = [];
@@ -121,5 +121,44 @@ describe("SessionManager.flushNow", () => {
 		expect(custom.parentId).toBeNull();
 		expect(userMsg.parentId).toBe(custom.id);
 		expect(assistantMsg.parentId).toBe(userMsg.id);
+	});
+
+	it("does not rewrite an already-flushed session after an appended entry", () => {
+		const dir = createTempDir();
+		const sessionDir = join(dir, "sessions");
+		const mgr = SessionManager.create(dir, sessionDir);
+
+		mgr.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "ready" }],
+			api: "openai-completions",
+			provider: "openai",
+			model: "test",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		const rewriteFile = vi.spyOn(mgr as unknown as { _rewriteFile(): void }, "_rewriteFile");
+
+		mgr.appendCustomEntry("thread_goal_state", { active: true, status: "active" });
+		mgr.flushNow();
+
+		expect(rewriteFile).not.toHaveBeenCalled();
+		const entries = readFileSync(mgr.getSessionFile()!, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(entries.at(-1)).toMatchObject({
+			type: "custom",
+			customType: "thread_goal_state",
+			data: { active: true, status: "active" },
+		});
 	});
 });

@@ -1159,7 +1159,7 @@ describe("Serialized refine review-fix regressions", () => {
 		expect(secondOptions.instructions).toBe("public");
 	});
 
-	it("public refine aborts and waits for active compaction before apply", async () => {
+	it("public refine waits for active compaction without aborting it", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
 		const internals = harness.session as unknown as SerializedInternals;
@@ -1173,8 +1173,9 @@ describe("Serialized refine review-fix regressions", () => {
 		const abortCompaction = vi.spyOn(internals, "abortCompaction");
 
 		const refinePromise = harness.session.refine({ instructions: "public" });
-		await vi.waitFor(() => expect(abortCompaction).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(internals._refineInFlight).toBeDefined());
 
+		expect(abortCompaction).not.toHaveBeenCalled();
 		expect(applyRefine).not.toHaveBeenCalled();
 		expect(internals._refineAbortController?.signal.aborted).toBe(false);
 		releaseCompaction();
@@ -1185,7 +1186,7 @@ describe("Serialized refine review-fix regressions", () => {
 		internals._refineAbortController = undefined;
 	});
 
-	it("public refine aborts and waits for active branch summary before apply", async () => {
+	it("public refine waits for active branch summary without aborting it", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
 		const internals = harness.session as unknown as SerializedInternals;
@@ -1199,8 +1200,9 @@ describe("Serialized refine review-fix regressions", () => {
 		const abortBranchSummary = vi.spyOn(internals, "abortBranchSummary");
 
 		const refinePromise = harness.session.refine({ instructions: "public" });
-		await vi.waitFor(() => expect(abortBranchSummary).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(internals._refineInFlight).toBeDefined());
 
+		expect(abortBranchSummary).not.toHaveBeenCalled();
 		expect(applyRefine).not.toHaveBeenCalled();
 		expect(internals._refineAbortController?.signal.aborted).toBe(false);
 		releaseBranchSummary();
@@ -2035,6 +2037,29 @@ describe("P0 concurrency regressions", () => {
 		expect(internals._serializedPlanInFlight).toBeUndefined();
 	});
 
+	it("explicit abort cancels an in-flight public refinement plan", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		let planSignal: AbortSignal | undefined;
+		vi.spyOn(internals, "_planRefine").mockImplementation(
+			(_options: { instructions?: string }, signal: AbortSignal) => {
+				planSignal = signal;
+				return new Promise((_, reject) => {
+					signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+				});
+			},
+		);
+
+		const refine = harness.session.refine({ instructions: "cancel this plan" });
+		await vi.waitFor(() => expect(planSignal).toBeDefined());
+
+		harness.session.requestAbort();
+
+		expect(planSignal?.aborted).toBe(true);
+		await expect(refine).rejects.toThrow("cancelled");
+	});
+
 	it("aborted serialized turn clears _pendingRequestedRefine so it does not leak to next checkpoint", async () => {
 		const harness = await createHarness({
 			persistSession: true,
@@ -2086,7 +2111,7 @@ describe("P0 concurrency regressions", () => {
 		expect(applyRefine).not.toHaveBeenCalled();
 	});
 
-	it("public refine forces pending message resume after requestAbort clears it", async () => {
+	it("public refine resumes pending messages after the application phase", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
 		const internals = harness.session as unknown as SerializedInternals;
@@ -2102,9 +2127,6 @@ describe("P0 concurrency regressions", () => {
 		vi.spyOn(internals, "_planRefine").mockResolvedValue({ id: "plan", proposal: { edits: [] } });
 		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
 
-		// requestAbort inside refine clears _pendingMessageResumeRequested and
-		// bumps the epoch. The finally calls _schedulePendingMessageResume(true),
-		// which must re-arm so the queued follow-up is resumed.
 		await harness.session.refine({ instructions: "public" });
 
 		// The forced resume should consume the follow-up and run the provider.
@@ -2245,7 +2267,7 @@ describe("P0 concurrency regressions", () => {
 		expect(apply).toHaveBeenCalledOnce();
 	});
 
-	it("public refine does not call full abort() or cancel child runs", async () => {
+	it("public refine waits for idle without aborting the session or child runs", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
 		const internals = harness.session as unknown as SerializedInternals & {
@@ -2256,11 +2278,11 @@ describe("P0 concurrency regressions", () => {
 		vi.spyOn(internals, "_planRefine").mockResolvedValue({ id: "plan", proposal: { edits: [] } });
 		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
 		const cancelChildRuns = vi.spyOn(internals, "_cancelActiveRlmChildRuns");
+		const requestAbort = vi.spyOn(harness.session, "requestAbort");
 
 		await harness.session.refine({ instructions: "public" });
 
-		// requestAbort (not abort()) is used, so child runs are not cancelled
-		// and goal abort stays false.
+		expect(requestAbort).not.toHaveBeenCalled();
 		expect(cancelChildRuns).not.toHaveBeenCalled();
 		expect(internals._goalAbortInProgress).toBe(false);
 	});

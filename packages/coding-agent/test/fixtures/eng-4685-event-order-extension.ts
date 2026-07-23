@@ -23,21 +23,21 @@ export default function registerEng4685EventOrder(pi: ExtensionAPI): void {
 	pi.on("agent_start", (_event, ctx) => {
 		appendFileSync(
 			eventLogPath,
-			JSON.stringify({
+			`${JSON.stringify({
 				seq: seq++,
 				type: "agent_start",
 				modelId: ctx.model?.id,
 				modelProvider: ctx.model?.provider,
 				hasUI: ctx.hasUI,
 				ts: Date.now(),
-			}) + "\n",
+			})}\n`,
 		);
 	});
 
 	pi.on("refine_complete", (event) => {
 		appendFileSync(
 			eventLogPath,
-			JSON.stringify({
+			`${JSON.stringify({
 				seq: seq++,
 				type: "refine_complete",
 				id: event.id,
@@ -45,18 +45,18 @@ export default function registerEng4685EventOrder(pi: ExtensionAPI): void {
 				appliedEdits: event.appliedEdits,
 				scope: event.scope,
 				ts: Date.now(),
-			}) + "\n",
+			})}\n`,
 		);
 	});
 
 	pi.on("agent_end", () => {
 		appendFileSync(
 			eventLogPath,
-			JSON.stringify({
+			`${JSON.stringify({
 				seq: seq++,
 				type: "agent_end",
 				ts: Date.now(),
-			}) + "\n",
+			})}\n`,
 		);
 	});
 }
