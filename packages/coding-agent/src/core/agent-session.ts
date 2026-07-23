@@ -3603,6 +3603,7 @@ export class AgentSession {
 		let drainedNextTurnMessages: CustomMessage[] = [];
 		const previewLabel = injectedMessagePreviewLabel(message);
 		let extensionResult: Awaited<ReturnType<typeof this._extensionRunner.emitBeforeAgentStart>> | undefined;
+		let basePromptSnapshot: string | undefined;
 		try {
 			const shouldQueueForStreaming = this.isStreaming;
 			const shouldQueueForPendingWork =
@@ -3667,10 +3668,11 @@ export class AgentSession {
 			this._pendingNextTurnMessages = [];
 			messages = [...drainedNextTurnMessages, message];
 
+			basePromptSnapshot = this._baseSystemPrompt;
 			extensionResult = await this._extensionRunner.emitBeforeAgentStart(
 				text,
 				undefined,
-				this._baseSystemPrompt,
+				basePromptSnapshot,
 				this._baseSystemPromptOptions,
 			);
 			if (extensionResult?.messages) {
@@ -3685,7 +3687,13 @@ export class AgentSession {
 					});
 				}
 			}
-			this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
+			// If the base changed during the hook (e.g. a refine completed),
+			// the extension systemPrompt is stale — use the refreshed base.
+			if (extensionResult?.systemPrompt && this._baseSystemPrompt !== basePromptSnapshot) {
+				this.agent.state.systemPrompt = this._baseSystemPrompt;
+			} else {
+				this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
+			}
 		} catch (error) {
 			reportPreflight(false);
 			throw error;
@@ -3697,10 +3705,18 @@ export class AgentSession {
 
 		if (this._refineInFlight) {
 			await this._waitForRefineIdle();
-			// A refine may have completed during the wait and rewritten
-			// _baseSystemPrompt. Re-apply the extension-modified prompt if
-			// the extension provided one, otherwise use the refreshed base.
-			this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
+			// A refine may have completed during the wait (or during the hook
+			// above) and rewritten _baseSystemPrompt. If the extension provided a
+			// systemPrompt built from the pre-refine base, it is now stale.
+			if (
+				extensionResult?.systemPrompt &&
+				basePromptSnapshot !== undefined &&
+				this._baseSystemPrompt !== basePromptSnapshot
+			) {
+				this.agent.state.systemPrompt = this._baseSystemPrompt;
+			} else {
+				this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
+			}
 		}
 		const shouldQueueAtHandoff =
 			options?.queueIfBusy === true &&
@@ -3771,6 +3787,7 @@ export class AgentSession {
 		let expandedText = text;
 		let currentImages = options?.images;
 		let extensionResult: Awaited<ReturnType<typeof this._extensionRunner.emitBeforeAgentStart>> | undefined;
+		let basePromptSnapshot: string | undefined;
 
 		try {
 			let currentText = text;
@@ -3982,10 +3999,11 @@ export class AgentSession {
 				}
 
 				// Emit before_agent_start extension event
+				basePromptSnapshot = this._baseSystemPrompt;
 				extensionResult = await this._extensionRunner.emitBeforeAgentStart(
 					expandedText,
 					currentImages,
-					this._baseSystemPrompt,
+					basePromptSnapshot,
 					this._baseSystemPromptOptions,
 				);
 				// Add all custom messages from extensions
@@ -4001,12 +4019,13 @@ export class AgentSession {
 						});
 					}
 				}
-				// Apply extension-modified system prompt, or reset to base
-				if (extensionResult?.systemPrompt) {
-					this.agent.state.systemPrompt = extensionResult.systemPrompt;
-				} else {
-					// Ensure we're using the base prompt (in case previous turn had modifications)
+				// If the base changed during the hook (e.g. a refine completed),
+				// the extension systemPrompt is stale — use the refreshed base.
+				if (extensionResult?.systemPrompt && this._baseSystemPrompt !== basePromptSnapshot) {
 					this.agent.state.systemPrompt = this._baseSystemPrompt;
+				} else {
+					// Apply extension-modified system prompt, or reset to base
+					this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
 				}
 			}
 		} catch (error) {
@@ -4025,10 +4044,18 @@ export class AgentSession {
 		// above may have suspended this turn long enough for a refine to start.
 		if (this._refineInFlight) {
 			await this._waitForRefineIdle();
-			// A refine may have completed during the wait and rewritten
-			// _baseSystemPrompt. Re-apply the extension-modified prompt if
-			// the extension provided one, otherwise use the refreshed base.
-			this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
+			// A refine may have completed during the wait (or during the hook
+			// above) and rewritten _baseSystemPrompt. If the extension provided a
+			// systemPrompt built from the pre-refine base, it is now stale.
+			if (
+				extensionResult?.systemPrompt &&
+				basePromptSnapshot !== undefined &&
+				this._baseSystemPrompt !== basePromptSnapshot
+			) {
+				this.agent.state.systemPrompt = this._baseSystemPrompt;
+			} else {
+				this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
+			}
 		}
 		if (acceptedAgentMessagePrompt?.cleared) {
 			reportPreflight(false);
@@ -5845,11 +5872,7 @@ export class AgentSession {
 		// starting a new run. This serializes concurrent /refine calls so two
 		// planning phases cannot race into concurrent _applyRefine calls that
 		// overwrite harness state.
-		while (
-			this._refineInFlight ||
-			this._refinePlanInFlight ||
-			this._serializedPlanInFlight
-		) {
+		while (this._refineInFlight || this._refinePlanInFlight || this._serializedPlanInFlight) {
 			if (this._refineInFlight) {
 				await this._refineInFlight;
 			} else if (this._refinePlanInFlight) {
@@ -5903,9 +5926,18 @@ export class AgentSession {
 		});
 		this._refineInFlight = applySettled;
 		try {
-			// Wait for any agent turn that started during background planning
-			// to finish before entering the application critical section.
-			await this.agent.waitForIdle();
+			// Quiesce the session before applying: abort compaction, branch summary,
+			// bash, and the agent, then await all of them plus the event queue.
+			// Do not call abort(), which would also cancel child runs and goal state.
+			const compactionOp = this._compactionOperation;
+			const branchSummaryOp = this._branchSummaryOperation;
+			this.requestAbort();
+			await Promise.allSettled([
+				this.agent.waitForIdle(),
+				this._agentEventQueue,
+				...(compactionOp ? [compactionOp] : []),
+				...(branchSummaryOp ? [branchSummaryOp] : []),
+			]);
 			if (this._disposed || refineAbort.signal.aborted) {
 				throw new Error("Refinement cancelled because the session was disposed.");
 			}
@@ -5915,7 +5947,7 @@ export class AgentSession {
 			if (this._refineInFlight === applySettled) {
 				this._refineInFlight = undefined;
 			}
-			this._schedulePendingMessageResume();
+			this._schedulePendingMessageResume(true);
 		}
 	}
 
@@ -6147,6 +6179,12 @@ export class AgentSession {
 		// pre-prompt path (skipAbortedCheck=false) which continues to threshold checks.
 		if (assistantMessage.stopReason === "aborted") {
 			this._pendingRequestedCompaction = undefined;
+			// An abort also drops any pending explicit refine.run request: the
+			// turn that would service it (non-serialized: _consumePendingRequestedRefine
+			// at agent_end; serialized: the shouldStopAfterTurn checkpoint) never
+			// runs for an aborted turn, so a stale request would leak into the
+			// next turn or checkpoint.
+			this._pendingRequestedRefine = undefined;
 			if (skipAbortedCheck) return false;
 		}
 
