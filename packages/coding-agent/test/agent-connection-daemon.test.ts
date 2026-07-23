@@ -360,6 +360,8 @@ class FakeDaemonClient {
 					};
 				}
 				return { type: "response", command: command.type, success: true };
+			case "start_side_question":
+				return { type: "response", command: command.type, success: true };
 			case "delete_saved_session":
 				return {
 					type: "response",
@@ -711,6 +713,34 @@ describe("DaemonAgentConnection", () => {
 			(command): command is Extract<DaemonCommand, { type: "cron_add" }> => command.type === "cron_add",
 		);
 		expect(commands.map((command) => command.promoteOwnedSession)).toEqual([true, false]);
+	});
+
+	it("gates side-question follow-up transcripts on the daemon capability", async () => {
+		const oldDaemonClient = new FakeDaemonClient();
+		const oldConnection = new DaemonAgentConnection(asDaemonClient(oldDaemonClient), "active-original");
+
+		// First questions carry no transcript and must keep working on old daemons.
+		await oldConnection.startSideQuestion("turn-1", "What changed?");
+		expect(oldDaemonClient.requests.map((request) => request.type)).toEqual(["start_side_question"]);
+
+		// Follow-ups would silently lose their side context on an old daemon.
+		await expect(
+			oldConnection.startSideQuestion("turn-2", "And then?", [{ question: "What changed?", answer: "The parser." }]),
+		).rejects.toThrow("older build without side-conversation follow-ups");
+		expect(oldDaemonClient.requests).toHaveLength(1);
+
+		const newDaemonClient = new FakeDaemonClient();
+		newDaemonClient.serverCapabilities.add("side_question_transcript");
+		const newConnection = new DaemonAgentConnection(asDaemonClient(newDaemonClient), "active-original");
+
+		await newConnection.startSideQuestion("turn-2", "And then?", [
+			{ question: "What changed?", answer: "The parser." },
+		]);
+		const sent = newDaemonClient.requests.find(
+			(command): command is Extract<DaemonCommand, { type: "start_side_question" }> =>
+				command.type === "start_side_question",
+		);
+		expect(sent?.previousTurns).toEqual([{ question: "What changed?", answer: "The parser." }]);
 	});
 
 	it("degrades an unavailable heartbeat catalog without sending an unsupported command", async () => {

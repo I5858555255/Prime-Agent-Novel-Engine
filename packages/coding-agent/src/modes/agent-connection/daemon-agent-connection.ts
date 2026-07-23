@@ -752,6 +752,13 @@ export class DaemonAgentConnection implements AgentConnection {
 		question: string,
 		previousTurns?: AgentConnectionSideQuestionTurn[],
 	): Promise<void> {
+		if (previousTurns?.length && !this.client.supportsServerCapability("side_question_transcript")) {
+			// An older daemon would silently ignore previousTurns and answer the
+			// follow-up without the side-conversation context; fail loudly instead.
+			throw new Error(
+				"the daemon is running an older build without side-conversation follow-ups; restart the daemon and try again",
+			);
+		}
 		this.activeSideQuestionIds.add(id);
 		try {
 			await this.requestOk({

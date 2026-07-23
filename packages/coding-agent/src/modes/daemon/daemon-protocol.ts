@@ -74,7 +74,10 @@ export type DaemonServerCapability =
 	| DaemonClientCapability
 	| "heartbeat_catalog"
 	| "heartbeat_management"
-	| "model_catalog";
+	| "model_catalog"
+	// The daemon honors previousTurns on start_side_question (multi-turn side
+	// conversations). Clients must check before sending follow-up transcripts.
+	| "side_question_transcript";
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
 
 export interface DaemonProtocolInfo {
@@ -106,6 +109,7 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	"heartbeat_catalog",
 	"heartbeat_management",
 	"model_catalog",
+	"side_question_transcript",
 ];
 
 export interface DaemonRuntimeIdentity {

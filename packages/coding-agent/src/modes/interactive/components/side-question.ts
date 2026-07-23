@@ -82,11 +82,16 @@ export class SideQuestionComponent implements Component {
 	}
 
 	private renderAnswer(turn: SideQuestionTurnState, width: number): string[] {
+		const lines: string[] = [];
 		if (turn.event.answer) {
-			return turn.answer.render(width);
+			lines.push(...turn.answer.render(width));
 		}
 		if (turn.event.errorMessage) {
-			return new Text(theme.fg("error", turn.event.errorMessage), this.paddingX, 0).render(width);
+			// A turn can fail after streaming partial output; show both.
+			lines.push(...new Text(theme.fg("error", turn.event.errorMessage), this.paddingX, 0).render(width));
+		}
+		if (lines.length > 0) {
+			return lines;
 		}
 		if (turn.event.status === "cancelled") {
 			return new Text(theme.fg("userMessageText", "Cancelled"), this.paddingX, 0).render(width);

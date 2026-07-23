@@ -699,6 +699,20 @@ describe("ENG-4509 side questions", () => {
 		expect(rendered).toContain("\x1b[39mReadable response");
 	});
 
+	it("shows the failure reason beneath partial output", () => {
+		const component = new SideQuestionComponent({
+			id: "side-bash-1",
+			question: "!flaky-build",
+			answer: "```\ncompiling...\n```",
+			status: "error",
+			errorMessage: "spawn failed: exit 127",
+		});
+		const rendered = stripAnsi(component.render(60).join("\n"));
+
+		expect(rendered).toContain("compiling...");
+		expect(rendered).toContain("spawn failed: exit 127");
+	});
+
 	it("keeps streamed text when a side question is cancelled", () => {
 		const component = new SideQuestionComponent({
 			id: "question-5",
