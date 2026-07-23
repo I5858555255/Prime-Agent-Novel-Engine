@@ -1,5 +1,7 @@
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "typebox";
 import { createHarness, type Harness } from "./harness.js";
 
 type SerializedInternals = {
@@ -36,6 +38,7 @@ type SerializedInternals = {
 	_lastAssistantMessage: unknown;
 	_handleAgentEvent(event: { type: string; messages?: unknown[] }): void;
 	_agentEventQueue: Promise<void>;
+	_refineAbortController?: AbortController | undefined;
 };
 
 function emptyRefinementResult() {
@@ -977,6 +980,100 @@ describe("Serialized refine review-fix regressions", () => {
 		expect(internals._assistantTurnsSinceAutoRefine).toBe(0);
 		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
 		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
+	it("public refine waits for serialized bg plan: max concurrency 1, bg then public apply", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "test",
+			instructions: "test",
+		}));
+		// Tool that blocks until released.
+		let resolveGate: () => void = () => {};
+		const gateReady = new Promise<void>((resolve) => {
+			resolveGate = resolve;
+		});
+		const gateTool: AgentTool = {
+			name: "gate",
+			label: "Gate",
+			description: "Blocking gate",
+			parameters: Type.Object({}),
+			execute: async () => {
+				await gateReady;
+				return { content: [{ type: "text" as const, text: "gate done" }] };
+			},
+		};
+		// Use turnInterval=999 to avoid interval auto-refine; we trigger bg planning
+		// explicitly via handleRefineHostRequest("refine.run").
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 999, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+			tools: [gateTool],
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+
+		let planCalls = 0;
+		let maxConcurrentPlans = 0;
+		let activePlans = 0;
+		let resolveBgPlan: () => void = () => {};
+		const bgPlanReady = new Promise<void>((resolve) => {
+			resolveBgPlan = resolve;
+		});
+		vi.spyOn(internals, "_planRefine").mockImplementation(async () => {
+			activePlans++;
+			maxConcurrentPlans = Math.max(maxConcurrentPlans, activePlans);
+			planCalls++;
+			if (planCalls === 1) {
+				// Background plan — block until released.
+				await bgPlanReady;
+			}
+			activePlans--;
+			return { id: `plan-${planCalls}`, proposal: { edits: [] } };
+		});
+		const applySpy = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		// Set up faux responses: first turn calls the gate tool (turn stays active),
+		// second response is plain text (turn ends after tool).
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("gate", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		// Start the real prompt — the gate tool will block, keeping the turn active.
+		const promptPromise = harness.session.prompt("test");
+		// Wait for the tool to start executing (message_end has fired).
+		await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+		// Queue an explicit refine.run — this starts background planning at message_end.
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "bg" });
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+		expect(planCalls).toBe(1);
+		expect(internals._serializedPlanInFlight).toBeDefined();
+
+		// Call public refine concurrently while bg plan is in flight.
+		const publicRefinePromise = harness.session.refine({ instructions: "public" });
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+		// Public plan must NOT have started yet — max concurrency is 1.
+		expect(planCalls).toBe(1);
+		expect(maxConcurrentPlans).toBe(1);
+
+		// Release the bg plan, then the gate tool, then await everything.
+		resolveBgPlan();
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+		// Bg plan applied; public refine should now proceed after the checkpoint.
+		resolveGate();
+		await Promise.allSettled([promptPromise, publicRefinePromise]);
+
+		// Max concurrency was 1 throughout.
+		expect(maxConcurrentPlans).toBe(1);
+		// Bg plan was applied once, public plan was applied once.
+		expect(applySpy).toHaveBeenCalledTimes(2);
+		expect(planCalls).toBe(2);
 	});
 
 	it("interval background plan derives instructions from review, not prepopulated", async () => {

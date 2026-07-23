@@ -5845,8 +5845,29 @@ export class AgentSession {
 		// starting a new run. This serializes concurrent /refine calls so two
 		// planning phases cannot race into concurrent _applyRefine calls that
 		// overwrite harness state.
-		while (this._refineInFlight || this._refinePlanInFlight) {
-			await (this._refineInFlight ?? this._refinePlanInFlight);
+		while (
+			this._refineInFlight ||
+			this._refinePlanInFlight ||
+			this._serializedPlanInFlight
+		) {
+			if (this._refineInFlight) {
+				await this._refineInFlight;
+			} else if (this._refinePlanInFlight) {
+				await this._refinePlanInFlight;
+			} else {
+				// A serialized background plan is in flight (started during an
+				// active turn at message_end). First await the plan promise so the
+				// planning model call finishes (no overlapping model calls), then
+				// wait for the agent to become idle so the active turn's normal
+				// shouldStopAfterTurn checkpoint consumes and applies the plan.
+				// Loop again to catch any _refineInFlight from that apply, then
+				// start the public plan.
+				await this._serializedPlanInFlight;
+				if (this._refineInFlight || this._refinePlanInFlight) {
+					continue;
+				}
+				await this.agent.waitForIdle();
+			}
 		}
 
 		const refineAbort = new AbortController();
