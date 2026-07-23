@@ -370,6 +370,158 @@ describe("ENG-4509 side questions", () => {
 		expect(showWarning).toHaveBeenCalledWith("Wait for the current side question to finish or cancel it first.");
 	});
 
+	it("keeps path-like replies in the side conversation", async () => {
+		const handleSideQuestion = vi.fn(async () => {});
+		const prompt = vi.fn(async () => {});
+		const addToHistory = vi.fn();
+		const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			defaultEditor,
+			editor: { setText: vi.fn(), addToHistory },
+			promptStashState: { stash: undefined },
+			clearShortcutGuide: vi.fn(),
+			sideQuestionComponent: {},
+			activeSideQuestionId: undefined,
+			connectionCommands: [],
+			handleSideQuestion,
+			agentConnection: { prompt },
+		});
+		(
+			InteractiveMode.prototype as unknown as { setupEditorSubmitHandler(this: typeof fakeThis): void }
+		).setupEditorSubmitHandler.call(fakeThis);
+
+		await defaultEditor.onSubmit?.("/tmp/report.md can you summarize this?");
+
+		expect(handleSideQuestion).toHaveBeenCalledWith("/tmp/report.md can you summarize this?");
+		expect(addToHistory).toHaveBeenCalledWith("/tmp/report.md can you summarize this?");
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
+	it("rejects slash commands in side conversations with an in-pane notice", async () => {
+		const cases = [
+			{ text: "/context", connectionCommands: [] },
+			{ text: "/btw another question?", connectionCommands: [] },
+			{ text: "/mycmd do it", connectionCommands: [{ name: "mycmd", source: "extension", sourceInfo: {} }] },
+		];
+		for (const { text, connectionCommands } of cases) {
+			const handleSideQuestion = vi.fn(async () => {});
+			const clearSideQuestion = vi.fn();
+			const prompt = vi.fn(async () => {});
+			const addTurn = vi.fn();
+			const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
+			const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+				defaultEditor,
+				editor: { setText: vi.fn(), addToHistory: vi.fn() },
+				promptStashState: { stash: undefined },
+				clearShortcutGuide: vi.fn(),
+				sideQuestionComponent: { addTurn },
+				sideQuestionTurns: [],
+				activeSideQuestionId: undefined,
+				connectionCommands,
+				handleSideQuestion,
+				clearSideQuestion,
+				ui: { requestRender: vi.fn() },
+				agentConnection: { prompt },
+			});
+			(
+				InteractiveMode.prototype as unknown as { setupEditorSubmitHandler(this: typeof fakeThis): void }
+			).setupEditorSubmitHandler.call(fakeThis);
+
+			await defaultEditor.onSubmit?.(text);
+
+			expect(addTurn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					question: text,
+					answer:
+						"Slash commands are not available in side conversations. Press esc to return to the main thread.",
+					status: "complete",
+				}),
+			);
+			// The notice is pane-only: it never seeds follow-up context.
+			expect(fakeThis.sideQuestionTurns).toEqual([]);
+			expect(handleSideQuestion).not.toHaveBeenCalled();
+			expect(clearSideQuestion).not.toHaveBeenCalled();
+			expect(prompt).not.toHaveBeenCalled();
+		}
+	});
+
+	it("runs bash inside the side conversation without closing it", async () => {
+		const addTurn = vi.fn();
+		const update = vi.fn();
+		const clearSideQuestion = vi.fn();
+		const executeBash = vi.fn(async () => {});
+		const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			defaultEditor,
+			editor: { setText: vi.fn(), addToHistory: vi.fn() },
+			promptStashState: { stash: undefined },
+			clearShortcutGuide: vi.fn(),
+			sideQuestionComponent: { addTurn, update },
+			sideQuestionTurns: [],
+			activeSideQuestionId: undefined,
+			connectionCommands: [],
+			isBashRunning: () => false,
+			clearSideQuestion,
+			patchConnectionState: vi.fn(),
+			ui: { requestRender: vi.fn() },
+			agentConnection: { executeBash },
+		});
+		(
+			InteractiveMode.prototype as unknown as { setupEditorSubmitHandler(this: typeof fakeThis): void }
+		).setupEditorSubmitHandler.call(fakeThis);
+
+		await defaultEditor.onSubmit?.("!ls");
+
+		expect(addTurn).toHaveBeenCalledWith(expect.objectContaining({ question: "!ls", status: "running" }));
+		expect(executeBash).toHaveBeenCalledWith("ls", { excludeFromContext: true });
+		expect(clearSideQuestion).not.toHaveBeenCalled();
+		expect(fakeThis.sideQuestionBash).toMatchObject({ input: "!ls", seedTranscript: true });
+
+		fakeThis.sideQuestionBash.output = "README.md\nsrc\n";
+		const finishSideQuestionBash = (
+			InteractiveMode.prototype as unknown as {
+				finishSideQuestionBash(
+					this: typeof fakeThis,
+					event: { exitCode?: number; cancelled: boolean; truncated: boolean; errorMessage?: string },
+				): void;
+			}
+		).finishSideQuestionBash;
+		finishSideQuestionBash.call(fakeThis, { exitCode: 0, cancelled: false, truncated: false });
+
+		expect(update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				question: "!ls",
+				answer: "```\nREADME.md\nsrc\n```",
+				status: "complete",
+			}),
+		);
+		// A plain ! run seeds follow-up side questions with the output.
+		expect(fakeThis.sideQuestionTurns).toHaveLength(1);
+		expect(fakeThis.sideQuestionBash).toBeUndefined();
+	});
+
+	it("keeps !! side-conversation bash display-only", async () => {
+		const update = vi.fn();
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			sideQuestionComponent: { update },
+			sideQuestionTurns: [],
+			sideQuestionBash: { turnId: "side-bash-1", input: "!!pwd", output: "/repo\n", seedTranscript: false },
+		});
+		const finishSideQuestionBash = (
+			InteractiveMode.prototype as unknown as {
+				finishSideQuestionBash(
+					this: typeof fakeThis,
+					event: { exitCode?: number; cancelled: boolean; truncated: boolean; errorMessage?: string },
+				): void;
+			}
+		).finishSideQuestionBash;
+
+		finishSideQuestionBash.call(fakeThis, { exitCode: 0, cancelled: false, truncated: false });
+
+		expect(update).toHaveBeenCalledWith(expect.objectContaining({ answer: "```\n/repo\n```", status: "complete" }));
+		expect(fakeThis.sideQuestionTurns).toEqual([]);
+	});
+
 	it("aligns the thinking placeholder with the streamed response", () => {
 		const running = new SideQuestionComponent(
 			{ id: "question-5", question: "Still running?", answer: "", status: "running" },

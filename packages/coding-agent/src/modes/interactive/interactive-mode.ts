@@ -872,6 +872,9 @@ export class InteractiveMode {
 	private sideQuestionEvent: AgentConnectionSideQuestionEvent | undefined;
 	private sideQuestionTurns: AgentConnectionSideQuestionEvent[] = [];
 	private activeSideQuestionId: string | undefined;
+	// Set while a ! bash command runs inside the side conversation: its output
+	// streams into a pane turn instead of the main transcript.
+	private sideQuestionBash: { turnId: string; input: string; output: string; seedTranscript: boolean } | undefined;
 
 	// User bash execution tracking (! / !! prefix), driven by bash_* session events
 	private activeBashComponent: BashExecutionComponent | undefined = undefined;
@@ -4178,17 +4181,65 @@ export class InteractiveMode {
 			return;
 		}
 		this.sideQuestionEvent = event;
-		if (this.sideQuestionTurns.length > 0) {
-			this.sideQuestionTurns[this.sideQuestionTurns.length - 1] = event;
+		const turnIndex = this.sideQuestionTurns.findIndex((turn) => turn.id === event.id);
+		if (turnIndex !== -1) {
+			this.sideQuestionTurns[turnIndex] = event;
 		}
 		this.sideQuestionComponent.update(event);
 		this.ui.requestRender();
+	}
+
+	private buildSideBashEvent(status: AgentConnectionSideQuestionEvent["status"]): AgentConnectionSideQuestionEvent {
+		const bash = this.sideQuestionBash;
+		const output = bash?.output.replace(/\n+$/, "") ?? "";
+		return {
+			id: bash?.turnId ?? "",
+			question: bash?.input ?? "",
+			answer: output ? `\`\`\`\n${output}\n\`\`\`` : "",
+			status,
+		};
+	}
+
+	private finishSideQuestionBash(event: Extract<AgentConnectionSessionEvent, { type: "bash_end" }>): void {
+		const bash = this.sideQuestionBash;
+		if (!bash) {
+			return;
+		}
+		this.sideQuestionBash = undefined;
+		const output = bash.output.replace(/\n+$/, "");
+		let turn: AgentConnectionSideQuestionEvent;
+		if (event.errorMessage) {
+			turn = {
+				id: bash.turnId,
+				question: bash.input,
+				answer: output ? `\`\`\`\n${output}\n\`\`\`` : "",
+				status: "error",
+				errorMessage: event.errorMessage,
+			};
+		} else {
+			const exitSuffix = event.exitCode !== undefined && event.exitCode !== 0 ? `\nexit code ${event.exitCode}` : "";
+			turn = {
+				id: bash.turnId,
+				question: bash.input,
+				answer: output ? `\`\`\`\n${output}\n\`\`\`${exitSuffix}` : `(no output)${exitSuffix}`,
+				status: event.cancelled ? "cancelled" : "complete",
+			};
+			if (bash.seedTranscript && !event.cancelled) {
+				this.sideQuestionTurns.push(turn);
+			}
+		}
+		this.sideQuestionComponent?.update(turn);
 	}
 
 	private clearSideQuestion(options: { abort?: boolean } = {}): void {
 		const event = this.sideQuestionEvent;
 		if (options.abort && event?.status === "running") {
 			this.abortSideQuestion(event.id);
+		}
+		if (this.sideQuestionBash) {
+			// A side-conversation bash run dies with its pane.
+			this.sideQuestionBash = undefined;
+			void this.agentConnection.abortBash().catch(() => undefined);
 		}
 		this.sideQuestionEvent = undefined;
 		this.sideQuestionTurns = [];
@@ -4243,6 +4294,29 @@ export class InteractiveMode {
 				const commandName = slashCommand ? resolveBuiltinSlashCommandName(slashCommand.name) : undefined;
 				const commandArgs = slashCommand?.args ?? "";
 				const canonicalCommandText = commandName ? `/${commandName}${commandArgs ? ` ${commandArgs}` : ""}` : text;
+
+				// Slash commands are disabled while a side conversation is open: they
+				// act on the main session, which is confusing mid-side-chat. The notice
+				// renders as a pane response and never reaches the model. A reply that
+				// merely starts with "/" (e.g. an absolute path) is not a command and
+				// falls through to the side-conversation capture below.
+				if (
+					this.sideQuestionComponent &&
+					slashCommand !== undefined &&
+					(isBuiltinSlashCommandName(slashCommand.name) ||
+						this.connectionCommands.some((command) => command.name === slashCommand.name))
+				) {
+					this.editor.addToHistory?.(text);
+					this.sideQuestionComponent.addTurn({
+						id: `side-notice-${randomUUID()}`,
+						question: text,
+						answer:
+							"Slash commands are not available in side conversations. Press esc to return to the main thread.",
+						status: "complete",
+					});
+					this.ui.requestRender();
+					return;
+				}
 
 				// Handle commands
 				if (commandName === "btw") {
@@ -4479,14 +4553,33 @@ export class InteractiveMode {
 						);
 						return;
 					}
-					this.clearSideQuestion({ abort: true });
+					// Inside a side conversation the command runs as a pane turn: output
+					// streams there, stays out of the main-session context, and (for !,
+					// not !!) seeds follow-up side questions.
+					const sideBashTurn = this.sideQuestionComponent
+						? { id: `side-bash-${randomUUID()}`, question: text, answer: "", status: "running" as const }
+						: undefined;
+					if (sideBashTurn && this.sideQuestionComponent) {
+						this.sideQuestionBash = {
+							turnId: sideBashTurn.id,
+							input: text,
+							output: "",
+							seedTranscript: !isExcluded,
+						};
+						this.sideQuestionComponent.addTurn(sideBashTurn);
+						this.ui.requestRender();
+					} else {
+						this.clearSideQuestion({ abort: true });
+					}
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
 					// Optimistic: bash_start only fires after extension dispatch, and the
 					// clear key must already route to abortBash in that window.
 					this.patchConnectionState({ isBashRunning: true });
 					try {
-						await this.agentConnection.executeBash(command, { excludeFromContext: isExcluded });
+						await this.agentConnection.executeBash(command, {
+							excludeFromContext: isExcluded || sideBashTurn !== undefined,
+						});
 					} catch (error) {
 						// Re-sync rather than assume idle: the rejection may mean another
 						// client's bash run already holds the slot.
@@ -4496,14 +4589,22 @@ export class InteractiveMode {
 						} catch {
 							this.patchConnectionState({ isBashRunning: false });
 						}
-						this.showError(error instanceof Error ? error.message : String(error));
+						const message = error instanceof Error ? error.message : String(error);
+						if (sideBashTurn && this.sideQuestionBash?.turnId === sideBashTurn.id) {
+							this.sideQuestionBash = undefined;
+							this.sideQuestionComponent?.update({ ...sideBashTurn, status: "error", errorMessage: message });
+							this.ui.requestRender();
+						} else {
+							this.showError(message);
+						}
 					}
 					return;
 				}
 
-				// An open side-question pane captures plain replies as follow-up side
-				// questions; slash commands and ! bash still route normally. Esc returns.
-				if (this.sideQuestionComponent && !text.startsWith("/")) {
+				// An open side-question pane captures replies as follow-up side
+				// questions; ! bash routed above and slash commands were rejected
+				// earlier with a warning. Esc returns to the main thread.
+				if (this.sideQuestionComponent) {
 					if (this.activeSideQuestionId) {
 						// The editor cleared its buffer before onSubmit fired; put the
 						// draft back so the wait warning doesn't cost the typed follow-up.
@@ -4854,6 +4955,10 @@ export class InteractiveMode {
 				break;
 
 			case "bash_start": {
+				if (this.sideQuestionBash) {
+					// Rendered as a side-conversation pane turn, not a chat component.
+					break;
+				}
 				const component = new BashExecutionComponent(event.command, this.ui, event.excludeFromContext);
 				if (this.isAgentStreaming()) {
 					this.pendingMessagesContainer.addChild(component);
@@ -4867,14 +4972,20 @@ export class InteractiveMode {
 			}
 
 			case "bash_output":
-				if (this.activeBashComponent) {
+				if (this.sideQuestionBash) {
+					this.sideQuestionBash.output += event.chunk;
+					this.sideQuestionComponent?.update(this.buildSideBashEvent("running"));
+					this.ui.requestRender();
+				} else if (this.activeBashComponent) {
 					this.activeBashComponent.appendOutput(event.chunk);
 					this.ui.requestRender();
 				}
 				break;
 
 			case "bash_end":
-				if (this.activeBashComponent) {
+				if (this.sideQuestionBash) {
+					this.finishSideQuestionBash(event);
+				} else if (this.activeBashComponent) {
 					if (event.errorMessage) {
 						this.activeBashComponent.setFailed(event.errorMessage);
 					} else {
