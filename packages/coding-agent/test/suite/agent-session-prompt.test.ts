@@ -357,7 +357,11 @@ stale extension instructions`,
 							sessionInternals._refineInFlight = undefined;
 							releaseRefine?.();
 						}, 0);
-						return { systemPrompt: `${event.systemPrompt}\n\nextension instructions` };
+						return {
+							systemPrompt: `${event.systemPrompt}
+
+extension instructions`,
+						};
 					});
 				},
 			],

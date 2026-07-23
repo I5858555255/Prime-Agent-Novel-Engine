@@ -416,6 +416,18 @@ export interface AgentSessionConfig {
 	prewarmIpythonKernel?: boolean;
 	/** Test/extension hook for automatic refine review decisions. Defaults to the model-backed review gate. */
 	autoRefineReviewer?: AutoRefineReviewer;
+	/**
+	 * When true, auto-refine runs synchronously between turns at the
+	 * shouldStopAfterTurn boundary instead of in the background after
+	 * agent_end. Used for print/headless autonomous runs so refinement
+	 * never overlaps the primary model request. Default: false.
+	 */
+	serializedRefine?: boolean;
+	/**
+	 * Initial goal to seed at session creation. Only applied when rlmDepth
+	 * is 0 and no persisted thread_goal_state entry exists in the branch.
+	 */
+	initialGoal?: { objective: string; tokenBudget?: number };
 }
 
 export interface ExtensionBindings {
@@ -429,6 +441,25 @@ export interface AutoRefineReviewRequest {
 	reason: AutoRefineReason;
 	turnsSinceLastReview: number;
 }
+
+/**
+ * Discriminated result from a serialized-mode background planning pass.
+ * - "plan": review approved and planning succeeded; carry the exact plan,
+ *   options, and abort controller so the boundary can apply directly
+ *   without a second planning request.
+ * - "skip": reviewer declined; no refine needed.
+ * - "failure": review or planning threw; boundary should not retry.
+ */
+export type SerializedBackgroundPlanResult =
+	| {
+			status: "plan";
+			plan: RefinementPlan;
+			options: { instructions?: string; rollbackId?: string; global?: boolean };
+			abort: AbortController;
+			branchVersion: number;
+	  }
+	| { status: "skip" }
+	| { status: "failure" };
 
 export type AutoRefineReviewer = (request: AutoRefineReviewRequest, signal?: AbortSignal) => Promise<AutoRefineReview>;
 
@@ -948,10 +979,18 @@ export class AgentSession {
 	private _autoRefineReviewAbort?: AbortController;
 	private _refineAbortController?: AbortController;
 	private readonly _autoRefineReviewer?: AutoRefineReviewer;
+	/** When true, auto-refine runs synchronously between turns (serialized mode). */
+	private readonly _serializedRefine: boolean;
 	/** Settles (never rejects) after a planned refine waits for idle and finishes applying. */
 	private _refineInFlight?: Promise<void>;
 	/** Settles when the background planning LLM pass completes. Planning does not block turn entry points. */
 	private _refinePlanInFlight?: Promise<void>;
+	/**
+	 * Settles when a serialized-mode background planning pass completes.
+	 * Planning starts at assistant message_end (overlapping tool execution)
+	 * and is awaited at shouldStopAfterTurn before applying.
+	 */
+	private _serializedPlanInFlight?: Promise<SerializedBackgroundPlanResult | undefined>;
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -979,11 +1018,20 @@ export class AgentSession {
 		this._rlmMaxDepth = config.rlmMaxDepth ?? parseDepth(process.env.RLM_MAX_DEPTH, 1, "RLM_MAX_DEPTH");
 		this._prewarmIpythonKernel = (config.prewarmIpythonKernel ?? false) && this._rlmDepth === 0;
 		this._autoRefineReviewer = config.autoRefineReviewer;
+		this._serializedRefine = config.serializedRefine ?? false;
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
 		this._autonomousState = createAutonomousRuntimeState(config.autonomous, { cwd: this._cwd });
 		this._goalState = this._loadPersistedGoalState();
+		// Seed initial goal from CLI --goal flag, but only for top-level sessions
+		// and only when the branch contains only bootstrap entry types (model_change,
+		// thinking_level_change, service_tier_change) and no persisted
+		// thread_goal_state. This prevents reseeding after clear/complete/error
+		// or restart/rehydration of a session that already has messages or a goal.
+		if (this._rlmDepth === 0 && config.initialGoal && this._isBranchSeedable()) {
+			this._goalState = this._startGoal(config.initialGoal.objective, config.initialGoal.tokenBudget);
+		}
 		this._restoreLateIpythonSentAgentMessages();
 		if (this._goalState.status === "active") {
 			this._goalAccountingStartedAt = Date.now();
@@ -1000,6 +1048,15 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+	}
+
+	/**
+	 * Set the RLM heartbeat controller after construction. Used by
+	 * print/headless mode to attach an in-process heartbeat scheduler
+	 * when the session is created outside the daemon.
+	 */
+	setRlmHeartbeatController(controller: AgentRlmHeartbeatController): void {
+		this._rlmHeartbeatController = controller;
 	}
 
 	/** Model registry for API key resolution and model discovery */
@@ -1191,6 +1248,34 @@ export class AgentSession {
 		return emptyGoalState();
 	}
 
+	/**
+	 * Whether the session branch is seedable for an initial goal. Returns true
+	 * only when the branch contains exclusively bootstrap entry types
+	 * (model_change, thinking_level_change, service_tier_change) and no
+	 * thread_goal_state custom entry. Any message, custom entry, or persisted
+	 * goal (including cleared/complete/error) means the session has been used
+	 * and should not be reseeded.
+	 */
+	private _isBranchSeedable(): boolean {
+		const branch = this.sessionManager.getBranch();
+		for (const entry of branch) {
+			switch (entry.type) {
+				case "model_change":
+				case "thinking_level_change":
+				case "service_tier_change":
+					continue;
+				case "custom":
+					if (entry.customType === GOAL_STATE_CUSTOM_TYPE) {
+						return false;
+					}
+					return false;
+				default:
+					return false;
+			}
+		}
+		return true;
+	}
+
 	private _reloadGoalStateFromBranch(): void {
 		this._goalState = this._loadPersistedGoalState();
 		this._goalAccountingStartedAt = this._goalState.status === "active" ? Date.now() : undefined;
@@ -1199,6 +1284,10 @@ export class AgentSession {
 
 	private _persistGoalState(goal: GoalState): void {
 		this.sessionManager.appendCustomEntry(GOAL_STATE_CUSTOM_TYPE, goal);
+		// Force flush so the goal state is durable on disk immediately,
+		// even before the first assistant response. This ensures idempotent
+		// restart/rehydration can detect the persisted goal.
+		this.sessionManager.flushNow();
 	}
 
 	private _setGoalState(next: GoalState, options: { persist?: boolean } = {}): void {
@@ -1619,6 +1708,18 @@ export class AgentSession {
 		} catch {
 			// Goal accounting must not interrupt the core agent loop.
 		}
+		// Serialized refine checkpoint: in print/headless mode, run refinement
+		// planning+apply synchronously here — the quiescent boundary between
+		// turns — so it never overlaps the primary model request.
+		// This MUST run BEFORE threshold compaction to prevent the
+		// compaction model call from overlapping an in-flight refine
+		// plan/apply that was started at message_end.
+		if (this._serializedRefine) {
+			// Ensure the preceding message_end processing (counter increment,
+			// background plan kickoff) has completed before the checkpoint.
+			await this._agentEventQueue;
+			await this._runSerializedRefineCheckpoint();
+		}
 		if (await this._shouldStopForThresholdCompaction(context)) {
 			return true;
 		}
@@ -1634,6 +1735,354 @@ export class AgentSession {
 		const lastMessage = this.agent.state.messages[this.agent.state.messages.length - 1];
 		this._continueAfterThresholdCompaction = lastMessage !== undefined && lastMessage.role !== "assistant";
 		return true;
+	}
+
+	/**
+	 * Serialized-mode auto-refine checkpoint called from _shouldStopAfterTurn.
+	 * Runs the review, planning, and application phases inline between turns
+	 * at the quiescent shouldStopAfterTurn boundary. This path NEVER calls
+	 * _maybeAutoRefine, _runApprovedRefine, public refine(), agent.abort(),
+	 * or agent.waitForIdle — all of which would deadlock or defer because
+	 * the agent loop still owns activeRun at this point. Instead it calls
+	 * _reviewAutoRefine, _planRefine, and _applyRefine directly with proper
+	 * in-flight guards and counter resets.
+	 */
+	private async _runSerializedRefineCheckpoint(): Promise<void> {
+		if (this._disposed || this._disposing) {
+			return;
+		}
+
+		// 1. Await any background plan that was started at message_end
+		//    (either for a pending refine.run or for interval-triggered
+		//    auto-refine). This must be checked BEFORE the pending and
+		//    interval checks because background planning may have consumed
+		//    the pending request at message_end.
+		const branchVersion = this._autoRefineBranchVersion;
+		const bgResult = await this._awaitSerializedBackgroundPlan();
+		if (this._disposed || this._disposing) {
+			return;
+		}
+
+		if (bgResult?.status === "plan") {
+			// Fix 4: Validate branchVersion before applying the plan.
+			if (bgResult.branchVersion !== this._autoRefineBranchVersion) {
+				return;
+			}
+			// Apply the EXACT background plan directly via _applyRefine
+			// (no second _planRefine call).
+			try {
+				await this._applySerializedPlan(bgResult);
+			} catch {
+				// Apply failed; stamp cooldown and continue.
+			}
+			this._lastAutoRefineReviewAt = Date.now();
+			this._assistantTurnsSinceAutoRefine = 0;
+			return;
+		}
+
+		if (bgResult?.status === "skip") {
+			// Reviewer declined during background planning.
+			// Reset exactly once; do NOT fall through to synchronous review.
+			this._lastAutoRefineReviewAt = Date.now();
+			this._assistantTurnsSinceAutoRefine = 0;
+			return;
+		}
+
+		if (bgResult?.status === "failure") {
+			// Fix 3: Background review or planning failed. Stamp cooldown
+			// and return — do NOT fall through to synchronous retry (the
+			// discriminated contract says no duplicate boundary model call).
+			if (branchVersion === this._autoRefineBranchVersion) {
+				this._lastAutoRefineReviewAt = Date.now();
+			}
+			return;
+		}
+
+		// bgResult is undefined (no background plan started).
+		// Fall through to pending/interval checks.
+
+		// 2. Agent-callable refine.run requests that were NOT consumed by
+		//    background planning (e.g. interval not reached at message_end,
+		//    or cooldown was active). Service them synchronously.
+		const pending = this._pendingRequestedRefine;
+		if (pending) {
+			this._pendingRequestedRefine = undefined;
+			await this._runSerializedRefine(pending);
+			this._lastAutoRefineReviewAt = Date.now();
+			this._assistantTurnsSinceAutoRefine = 0;
+			return;
+		}
+
+		// 3. Interval-triggered auto-refine (no background plan was started).
+		if (!this._autoRefineAllowedForSession()) {
+			return;
+		}
+		const settings = this.settingsManager.getAutoRefineSettings();
+		if (!settings.enabled) {
+			return;
+		}
+		if (this._assistantTurnsSinceAutoRefine < settings.turnInterval) {
+			return;
+		}
+		const nowMs = Date.now();
+		const underCooldown =
+			this._lastAutoRefineReviewAt > 0 && nowMs - this._lastAutoRefineReviewAt < settings.cooldownMs;
+		if (underCooldown) {
+			return;
+		}
+
+		// Run review + plan + apply synchronously at the boundary.
+		const reviewAbort = new AbortController();
+		this._autoRefineReviewAbort = reviewAbort;
+		this._autoRefineInProgress = true;
+		try {
+			const review = await this._reviewAutoRefine(
+				{ reason: "turn_interval", turnsSinceLastReview: this._assistantTurnsSinceAutoRefine },
+				reviewAbort.signal,
+			);
+			if (this._disposed || this._disposing || branchVersion !== this._autoRefineBranchVersion) {
+				return;
+			}
+			if (!review.shouldRefine) {
+				this._lastAutoRefineReviewAt = Date.now();
+				this._assistantTurnsSinceAutoRefine = 0;
+				return;
+			}
+			await this._runSerializedRefine({
+				instructions: autoRefineInstructions("turn_interval", review),
+			});
+			this._lastAutoRefineReviewAt = Date.now();
+			this._assistantTurnsSinceAutoRefine = 0;
+		} catch {
+			if (branchVersion === this._autoRefineBranchVersion) {
+				this._lastAutoRefineReviewAt = Date.now();
+			}
+		} finally {
+			if (this._autoRefineReviewAbort === reviewAbort) {
+				this._autoRefineReviewAbort = undefined;
+			}
+			this._autoRefineInProgress = false;
+		}
+	}
+
+	/**
+	 * Await and clear the serialized background plan if in flight.
+	 * Returns the discriminated result or undefined if no plan was started.
+	 */
+	private async _awaitSerializedBackgroundPlan(): Promise<SerializedBackgroundPlanResult | undefined> {
+		if (!this._serializedPlanInFlight) {
+			return undefined;
+		}
+		let result: SerializedBackgroundPlanResult | undefined;
+		try {
+			result = await this._serializedPlanInFlight;
+		} catch {
+			result = undefined;
+		}
+		this._serializedPlanInFlight = undefined;
+		return result;
+	}
+
+	/**
+	 * Apply an exact background plan directly via _applyRefine without
+	 * calling _planRefine again. Sets _refineInFlight for safety.
+	 */
+	private async _applySerializedPlan(
+		bgResult: Extract<SerializedBackgroundPlanResult, { status: "plan" }>,
+	): Promise<void> {
+		let resolveApplySettled: () => void = () => {};
+		const applySettled = new Promise<void>((resolve) => {
+			resolveApplySettled = resolve;
+		});
+		this._refineInFlight = applySettled;
+		try {
+			await this._applyRefine(bgResult.plan, bgResult.options, bgResult.abort);
+		} finally {
+			resolveApplySettled();
+			if (this._refineInFlight === applySettled) {
+				this._refineInFlight = undefined;
+			}
+			this._schedulePendingMessageResume();
+		}
+	}
+
+	/**
+	 * Start background refinement planning at assistant message_end, while
+	 * tools are still executing. The plan (if any) is awaited at the
+	 * shouldStopAfterTurn boundary before applying. Planning overlaps tool
+	 * execution only — never another model request.
+	 */
+	private _maybeStartSerializedBackgroundPlan(): void {
+		if (!this._serializedRefine || this._disposed || this._disposing) {
+			return;
+		}
+		// Don't start if a plan is already in flight.
+		if (this._serializedPlanInFlight || this._refineInFlight || this._refinePlanInFlight) {
+			return;
+		}
+
+		// Bug 4 fix: Also start background planning for a pending agent-callable
+		// refine.run request, so its plan is ready at the shouldStopAfterTurn
+		// boundary. The pending request is consumed (cleared) here so the
+		// boundary doesn't re-plan it. Explicit refine.run skips the review gate.
+		const pending = this._pendingRequestedRefine;
+		if (pending) {
+			this._pendingRequestedRefine = undefined;
+			const refineAbort = new AbortController();
+			this._refineAbortController = refineAbort;
+			const branchVersion = this._autoRefineBranchVersion;
+			this._serializedPlanInFlight = this._runBackgroundPlan(pending, refineAbort, branchVersion, true);
+			return;
+		}
+
+		// Interval-triggered auto-refine background planning.
+		if (!this._autoRefineAllowedForSession()) {
+			return;
+		}
+		const settings = this.settingsManager.getAutoRefineSettings();
+		if (!settings.enabled) {
+			return;
+		}
+		if (this._assistantTurnsSinceAutoRefine < settings.turnInterval) {
+			return;
+		}
+		const nowMs = Date.now();
+		const underCooldown =
+			this._lastAutoRefineReviewAt > 0 && nowMs - this._lastAutoRefineReviewAt < settings.cooldownMs;
+		if (underCooldown) {
+			return;
+		}
+
+		const refineAbort = new AbortController();
+		this._refineAbortController = refineAbort;
+		const branchVersion = this._autoRefineBranchVersion;
+		// Pass empty options — _runBackgroundPlan derives instructions from
+		// the review result for interval-triggered auto-refine.
+		this._serializedPlanInFlight = this._runBackgroundPlan({}, refineAbort, branchVersion);
+	}
+
+	/**
+	 * Shared background planning coroutine. Runs review + planRefine and
+	 * returns a discriminated result so the boundary can distinguish
+	 * reviewer-declined ("skip") from failure ("failure") from a ready
+	 * plan ("plan") and apply that exact plan without re-planning.
+	 */
+	private async _runBackgroundPlan(
+		options: { instructions?: string; rollbackId?: string; global?: boolean },
+		refineAbort: AbortController,
+		branchVersion: number,
+		skipReview = false,
+	): Promise<SerializedBackgroundPlanResult | undefined> {
+		try {
+			let planOptions = options;
+			if (!skipReview) {
+				// Interval-triggered: run the review gate first, then derive
+				// instructions from the review result (not prepopulated).
+				const review = await this._reviewAutoRefine(
+					{ reason: "turn_interval", turnsSinceLastReview: this._assistantTurnsSinceAutoRefine },
+					refineAbort.signal,
+				);
+				if (this._disposed || this._disposing || branchVersion !== this._autoRefineBranchVersion) {
+					return undefined;
+				}
+				if (!review.shouldRefine) {
+					return { status: "skip" };
+				}
+				planOptions = { instructions: autoRefineInstructions("turn_interval", review) };
+			}
+			// For explicit refine.run (skipReview=true), plan directly with
+			// the user-provided options — no auto-review gate.
+			const plan = await this._planRefine(planOptions, refineAbort.signal);
+			if (this._disposed || this._disposing || branchVersion !== this._autoRefineBranchVersion) {
+				return undefined;
+			}
+			return { status: "plan", plan, options: planOptions, abort: refineAbort, branchVersion };
+		} catch {
+			return { status: "failure" };
+		} finally {
+			if (this._refineAbortController === refineAbort) {
+				this._refineAbortController = undefined;
+			}
+		}
+	}
+
+	/**
+	 * Direct serialized plan+apply. Calls _planRefine and _applyRefine with
+	 * proper in-flight guards but NEVER agent.waitForIdle or agent.abort.
+	 * The caller (shouldStopAfterTurn) is already at the quiescent boundary,
+	 * so the agent is between turns and _applyRefine's disconnect/reconnect
+	 * is safe.
+	 */
+	private async _runSerializedRefine(options: {
+		instructions?: string;
+		rollbackId?: string;
+		global?: boolean;
+	}): Promise<void> {
+		if (this._disposed || this._disposing) {
+			return;
+		}
+		// Guard: serialize against concurrent _runSerializedRefine calls.
+		// _serializedPlanInFlight covers background planning; _refineInFlight
+		// covers the apply phase. Both must be settled before starting a new
+		// plan+apply cycle.
+		while (this._serializedPlanInFlight || this._refineInFlight || this._refinePlanInFlight) {
+			if (this._serializedPlanInFlight) {
+				await this._awaitSerializedBackgroundPlan();
+			} else if (this._refineInFlight) {
+				await this._refineInFlight;
+			} else {
+				await this._refinePlanInFlight;
+			}
+		}
+		if (this._disposed || this._disposing) {
+			return;
+		}
+		// Serialize against any in-flight refine (interactive background path).
+		while (this._refineInFlight || this._refinePlanInFlight) {
+			await (this._refineInFlight ?? this._refinePlanInFlight);
+		}
+		if (this._disposed || this._disposing) {
+			return;
+		}
+
+		const refineAbort = new AbortController();
+		this._refineAbortController = refineAbort;
+
+		let plan: RefinementPlan;
+		try {
+			plan = await this._planRefine(options, refineAbort.signal);
+		} catch {
+			if (this._refineAbortController === refineAbort) {
+				this._refineAbortController = undefined;
+			}
+			this._schedulePendingMessageResume();
+			return;
+		}
+
+		if (this._disposed || refineAbort.signal.aborted) {
+			if (this._refineAbortController === refineAbort) {
+				this._refineAbortController = undefined;
+			}
+			this._schedulePendingMessageResume();
+			return;
+		}
+
+		// Do NOT call agent.waitForIdle() — we are at the quiescent boundary
+		// already (shouldStopAfterTurn). _applyRefine handles disconnect/reconnect internally.
+		let resolveApplySettled: () => void = () => {};
+		const applySettled = new Promise<void>((resolve) => {
+			resolveApplySettled = resolve;
+		});
+		this._refineInFlight = applySettled;
+		try {
+			await this._applyRefine(plan, options, refineAbort);
+		} finally {
+			resolveApplySettled();
+			if (this._refineInFlight === applySettled) {
+				this._refineInFlight = undefined;
+			}
+			this._schedulePendingMessageResume();
+		}
 	}
 
 	private async _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): Promise<boolean> {
@@ -1844,7 +2293,10 @@ export class AgentSession {
 			case "refine.status": {
 				return {
 					pending: this._pendingRequestedRefine !== undefined,
-					in_flight: this._refineInFlight !== undefined || this._refinePlanInFlight !== undefined,
+					in_flight:
+						this._refineInFlight !== undefined ||
+						this._refinePlanInFlight !== undefined ||
+						this._serializedPlanInFlight !== undefined,
 				};
 			}
 			case "refine.run": {
@@ -1863,6 +2315,13 @@ export class AgentSession {
 					};
 				}
 				this._pendingRequestedRefine = { instructions, global: globalFlag };
+				// In serialized mode, kick off background planning immediately
+				// (the primary response ended at message_end, tools are active).
+				// This lets planning overlap tool execution rather than waiting
+				// for the shouldStopAfterTurn boundary.
+				if (this._serializedRefine) {
+					this._maybeStartSerializedBackgroundPlan();
+				}
 				return {
 					scheduled: true,
 					note: "Refinement runs when the current turn ends; the harness rebuilds the system prompt and resumes you automatically. Continue working normally.",
@@ -2363,6 +2822,12 @@ export class AgentSession {
 				}
 				if (assistantMsg.stopReason !== "error" && assistantMsg.stopReason !== "aborted") {
 					this._assistantTurnsSinceAutoRefine++;
+					// In serialized mode, kick off background refinement planning
+					// immediately after the primary stream finishes, while tools
+					// are still executing. The plan is awaited at shouldStopAfterTurn
+					// before applying, so planning overlaps tools only — never another
+					// model request.
+					this._maybeStartSerializedBackgroundPlan();
 				}
 				if (assistantMsg.stopReason !== "error") {
 					this._overflowRecoveryAttempted = false;
@@ -2426,7 +2891,11 @@ export class AgentSession {
 			this._resolveRetry();
 			if (!compactionWillRetry) {
 				this._finishGoalForTerminalAssistantMessage(msg);
-				this._consumePendingRequestedRefine();
+				// In serialized mode, agent-callable refine.run is serviced
+				// at the shouldStopAfterTurn boundary, not here at agent_end.
+				if (!this._serializedRefine) {
+					this._consumePendingRequestedRefine();
+				}
 				this._scheduleAutoRefineAfterAgentEnd();
 			}
 		}
@@ -2611,9 +3080,96 @@ export class AgentSession {
 		if (this._disposeAsyncPromise) {
 			return this._disposeAsyncPromise;
 		}
+		// Drain any pending or in-flight refinement before marking _disposing so
+		// a refine triggered at the final agent_end completes rather than being
+		// aborted by dispose(). This covers both the background (interactive) path
+		// and the serialized (print/headless) path.
+		await this._drainPendingRefinementForDisposal();
+		if (this._disposed) {
+			return;
+		}
 		this._disposing = true;
 		this._disposeAsyncPromise = this._disposeAsyncOnce();
 		return this._disposeAsyncPromise;
+	}
+
+	/**
+	 * Await any in-flight refinement (planning or application) and run a
+	 * pending auto-refine that was scheduled but not yet started. Called
+	 * from disposeAsync before _disposing is set so refinement completes
+	 * before disposal.
+	 */
+	private async _drainPendingRefinementForDisposal(): Promise<void> {
+		// Wait for in-flight refinement (including serialized background plan) to settle.
+		while (this._refineInFlight || this._refinePlanInFlight || this._serializedPlanInFlight) {
+			if (this._refineInFlight) {
+				await this._refineInFlight;
+			} else if (this._refinePlanInFlight) {
+				await this._refinePlanInFlight;
+			} else if (this._serializedPlanInFlight) {
+				// Fix 5: Await the background plan and apply a ready "plan"
+				// result before teardown so the refinement is persisted.
+				// Do NOT discard a ready plan.
+				const bgResult = await this._awaitSerializedBackgroundPlan();
+				if (bgResult?.status === "plan" && bgResult.branchVersion === this._autoRefineBranchVersion) {
+					try {
+						await this._applySerializedPlan(bgResult);
+					} catch {
+						// Best-effort apply; errors must not block disposal.
+					}
+					// Stamp cooldown and reset counter so the interval
+					// check below does not trigger a duplicate refine.
+					this._lastAutoRefineReviewAt = Date.now();
+					this._assistantTurnsSinceAutoRefine = 0;
+				}
+				// For "skip" or "failure", stamp cooldown and reset counter
+				// so the interval check below does not trigger a duplicate
+				// terminal retry.
+				if (bgResult?.status === "skip" || bgResult?.status === "failure") {
+					this._lastAutoRefineReviewAt = Date.now();
+					this._assistantTurnsSinceAutoRefine = 0;
+				}
+			} else {
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			}
+		}
+		// Drain an agent-callable refine.run request that was scheduled but
+		// not yet consumed. Use the direct serialized path (no waitForIdle)
+		// since the agent may still own activeRun at the final agent_end.
+		if (this._pendingRequestedRefine) {
+			const pending = this._pendingRequestedRefine;
+			this._pendingRequestedRefine = undefined;
+			try {
+				await this._runSerializedRefine(pending);
+			} catch {
+				// Best-effort drain; refinement errors must not block disposal.
+			}
+		}
+		// If auto-refine is due but has not started yet, run it now so the
+		// refinement is persisted before disposal. Use the direct serialized
+		// path in serialized mode, or _maybeAutoRefine in interactive mode
+		// (where the agent is idle at this point).
+		if (this._disposed || !this._autoRefineAllowedForSession()) {
+			return;
+		}
+		const settings = this.settingsManager.getAutoRefineSettings();
+		if (!settings.enabled) {
+			return;
+		}
+		if (this._assistantTurnsSinceAutoRefine < settings.turnInterval) {
+			return;
+		}
+		const nowMs = Date.now();
+		const underCooldown =
+			this._lastAutoRefineReviewAt > 0 && nowMs - this._lastAutoRefineReviewAt < settings.cooldownMs;
+		if (underCooldown) {
+			return;
+		}
+		if (this._serializedRefine) {
+			await this._runSerializedRefineCheckpoint();
+		} else {
+			await this._maybeAutoRefine("turn_interval");
+		}
 	}
 
 	private async _disposeAsyncOnce(): Promise<void> {
@@ -2652,6 +3208,7 @@ export class AgentSession {
 			// resolution cannot write harness state or re-subscribe handlers.
 			this._autoRefineReviewAbort?.abort();
 			this._refineAbortController?.abort();
+			this._serializedPlanInFlight = undefined;
 			this._pendingRequestedRefine = undefined;
 			this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 			this._autoRefineBranchVersion++;
@@ -4922,7 +5479,19 @@ export class AgentSession {
 		this._autoRefineReviewAbort?.abort();
 		this._discardPendingAutoRefine({ cancelPostCompactionContinue: true });
 		this._assistantTurnsSinceAutoRefine = 0;
+		// Increment branch version BEFORE aborting/awaiting the serialized plan.
+		// This invalidates the plan's branchVersion check at the boundary
+		// so even if the plan completes, the boundary will reject it
+		// (bgResult.branchVersion !== this._autoRefineBranchVersion).
 		this._autoRefineBranchVersion++;
+		// Abort the in-flight refine/bplan controller so any pending
+		// _planRefine or _reviewAutoRefine call settles via signal abort
+		// rather than hanging forever.
+		this._refineAbortController?.abort();
+		// Await and clear serialized background plan if in flight.
+		if (this._serializedPlanInFlight) {
+			await this._awaitSerializedBackgroundPlan();
+		}
 		while (this._refinePlanInFlight) {
 			await this._refinePlanInFlight;
 		}
@@ -5443,6 +6012,24 @@ export class AgentSession {
 			this.sessionManager.appendCustomEntry("prime-agent.refinement", result);
 			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
+			try {
+				this._emit({ type: "refine_complete", result });
+			} catch {
+				// Listener failures must not flip a successful refinement into
+				// a reported failure — the refinement is already persisted.
+			}
+			try {
+				await this._extensionRunner.emit({
+					type: "refine_complete",
+					id: result.id,
+					summary: result.summary,
+					appliedEdits: result.appliedEdits.length,
+					scope: result.scope ?? "local",
+				});
+			} catch {
+				// Extension emit failures must not flip a successful refinement
+				// into a reported failure — the refinement is already persisted.
+			}
 			return result;
 		} finally {
 			if (this._refineAbortController === refineAbort) {

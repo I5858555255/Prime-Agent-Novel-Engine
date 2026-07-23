@@ -643,6 +643,7 @@ function runtimeConfigFromArgs(
 	cwd: string,
 	agentDir: string,
 	sessionDir: string | undefined,
+	appMode: AppMode,
 ): AgentSessionRuntimeConfig {
 	return {
 		cwd,
@@ -669,6 +670,12 @@ function runtimeConfigFromArgs(
 		noContextFiles: parsed.noContextFiles,
 		autonomous: runtimeAutonomousConfigFromArgs(parsed),
 		extensionFlagValues: parsed.unknownFlags.size > 0 ? Object.fromEntries(parsed.unknownFlags.entries()) : undefined,
+		// Serialized refine for print/json/rpc: the client's appMode is NOT
+		// "daemon" here — it's "print", "json", or "rpc". The daemon worker
+		// receives this flag via AgentSessionRuntimeConfig and uses it
+		// instead of its own appMode="daemon".
+		serializedRefine: appMode !== "interactive" && appMode !== "daemon",
+		initialGoal: parsed.goal ? { objective: parsed.goal, tokenBudget: parsed.goalTokenBudget } : undefined,
 	};
 }
 
@@ -1228,7 +1235,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("createSessionManager");
 
-	const defaultSessionConfig = runtimeConfigFromArgs(parsed, sessionManager.getCwd(), agentDir, sessionDir);
+	const defaultSessionConfig = runtimeConfigFromArgs(parsed, sessionManager.getCwd(), agentDir, sessionDir, appMode);
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -1257,6 +1264,12 @@ export async function main(args: string[], options?: MainOptions) {
 			// Main agents boot their kernel in the background at session creation;
 			// subagent sessions (rlmDepth > 0) keep the lazy first-call start.
 			prewarmIpythonKernel: true,
+			// Read serializedRefine from the merged runtime config (passed
+			// from the JSON/print client through AgentSessionRuntimeConfig)
+			// so it survives the daemon worker's appMode="daemon" context.
+			serializedRefine: config.serializedRefine ?? false,
+			// Only seed initial goal for top-level sessions (rlmDepth 0).
+			initialGoal: (runtimeSessionOptions?.rlmDepth ?? 0) === 0 ? config.initialGoal : undefined,
 		});
 		const cliThinkingOverride = config.thinking !== undefined || prepared.cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
