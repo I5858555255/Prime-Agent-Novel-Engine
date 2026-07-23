@@ -25,7 +25,17 @@ for (const dir of packageDirs) {
 		versionMap[pkg.name] = pkg.version;
 	} catch (e) {
 		console.error(`Failed to read ${pkgPath}:`, e.message);
+		process.exit(1);
 	}
+}
+
+const rootPkgPath = join(process.cwd(), 'package.json');
+try {
+	const rootPkg = JSON.parse(readFileSync(rootPkgPath, 'utf8'));
+	packages['.'] = { path: rootPkgPath, data: rootPkg };
+} catch (e) {
+	console.error(`Failed to read ${rootPkgPath}:`, e.message);
+	process.exit(1);
 }
 
 console.log('Current versions:');
@@ -55,7 +65,7 @@ for (const [dir, pkg] of Object.entries(packages)) {
 	if (pkg.data.dependencies) {
 		for (const [depName, currentVersion] of Object.entries(pkg.data.dependencies)) {
 			if (versionMap[depName]) {
-				const newVersion = `^${versionMap[depName]}`;
+				const newVersion = versionMap[depName];
 				if (currentVersion !== newVersion) {
 					console.log(`\n${pkg.data.name}:`);
 					console.log(`  ${depName}: ${currentVersion} → ${newVersion}`);
@@ -71,7 +81,7 @@ for (const [dir, pkg] of Object.entries(packages)) {
 	if (pkg.data.devDependencies) {
 		for (const [depName, currentVersion] of Object.entries(pkg.data.devDependencies)) {
 			if (versionMap[depName]) {
-				const newVersion = `^${versionMap[depName]}`;
+				const newVersion = versionMap[depName];
 				if (currentVersion !== newVersion) {
 					console.log(`\n${pkg.data.name}:`);
 					console.log(`  ${depName}: ${currentVersion} → ${newVersion} (devDependencies)`);
