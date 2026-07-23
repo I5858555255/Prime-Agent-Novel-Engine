@@ -1795,19 +1795,22 @@ export class AgentSession {
 		if (bgResult?.status === "plan") {
 			// Fix 4: Validate branchVersion before applying the plan.
 			if (bgResult.branchVersion !== this._autoRefineBranchVersion) {
-				return;
-			}
-			// Apply the EXACT background plan directly via _applyRefine
-			// (no second _planRefine call).
-			try {
-				await this._applySerializedPlan(bgResult);
-			} catch (error) {
-				this._emitRefineFailed(error);
-			}
-			this._lastAutoRefineReviewAt = Date.now();
-			this._assistantTurnsSinceAutoRefine = 0;
-			if (!this._pendingRequestedRefine) {
-				return;
+				if (!this._pendingRequestedRefine) {
+					return;
+				}
+			} else {
+				// Apply the EXACT background plan directly via _applyRefine
+				// (no second _planRefine call).
+				try {
+					await this._applySerializedPlan(bgResult);
+				} catch (error) {
+					this._emitRefineFailed(error);
+				}
+				this._lastAutoRefineReviewAt = Date.now();
+				this._assistantTurnsSinceAutoRefine = 0;
+				if (!this._pendingRequestedRefine) {
+					return;
+				}
 			}
 		}
 
@@ -1846,9 +1849,11 @@ export class AgentSession {
 		}
 
 		if (bgResult?.status === "invalidated") {
-			this._lastAutoRefineReviewAt = Date.now();
-			this._assistantTurnsSinceAutoRefine = 0;
-			return;
+			if (!this._pendingRequestedRefine) {
+				this._lastAutoRefineReviewAt = Date.now();
+				this._assistantTurnsSinceAutoRefine = 0;
+				return;
+			}
 		}
 
 		// No background result, or a refine.run arrived while the background result was
@@ -2437,7 +2442,14 @@ export class AgentSession {
 				// for the shouldStopAfterTurn boundary.
 				if (this._serializedRefine) {
 					if (this._serializedPlanInFlight && this._serializedExplicitRefineOptions) {
-						this._refineAbortController?.abort();
+						if (this._refineAbortController) {
+							this._refineAbortController.abort();
+						} else {
+							this._serializedPlanInFlight = Promise.resolve({
+								status: "invalidated",
+								branchVersion: this._autoRefineBranchVersion,
+							});
+						}
 					} else {
 						this._maybeStartSerializedBackgroundPlan();
 					}

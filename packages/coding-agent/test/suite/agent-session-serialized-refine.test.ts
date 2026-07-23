@@ -2219,6 +2219,20 @@ describe("P0 concurrency regressions", () => {
 		expect(internals._assistantTurnsSinceAutoRefine).toBe(4);
 	});
 
+	it("services a pending request after an invalidated background plan", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		internals._serializedPlanInFlight = Promise.resolve({ status: "invalidated" });
+		internals._pendingRequestedRefine = { instructions: "latest" };
+		const run = vi.spyOn(internals, "_runSerializedRefine").mockResolvedValue();
+
+		await internals._runSerializedRefineCheckpoint();
+
+		expect(run).toHaveBeenCalledWith({ instructions: "latest" });
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
 	it("aborted serialized turn clears _pendingRequestedRefine so it does not leak to next checkpoint", async () => {
 		const harness = await createHarness({
 			persistSession: true,

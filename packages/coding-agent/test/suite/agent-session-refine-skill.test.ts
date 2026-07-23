@@ -104,6 +104,24 @@ describe("AgentSession refine skill host requests", () => {
 		expect(internals._pendingRequestedRefine).toEqual({ instructions: "replacement", global: true });
 	});
 
+	it("discards a settled serialized plan when a replacement request arrives", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SessionInternals;
+		internals._serializedPlanInFlight = Promise.resolve({ status: "plan" });
+		internals._serializedExplicitRefineOptions = { instructions: "first", global: true };
+
+		setStreaming(harness, true);
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "replacement" });
+		setStreaming(harness, false);
+
+		await expect(internals._serializedPlanInFlight).resolves.toEqual({
+			status: "invalidated",
+			branchVersion: expect.any(Number),
+		});
+		expect(internals._pendingRequestedRefine).toEqual({ instructions: "replacement", global: true });
+	});
+
 	it("rejects refine.run while no turn is active", async () => {
 		const harness = await createHarness({ persistSession: true });
 		harnesses.push(harness);
