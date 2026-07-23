@@ -2139,15 +2139,25 @@ export class AgentSession {
 		const refineAbort = new AbortController();
 		this._refineAbortController = refineAbort;
 
+		const planRun = this._planRefine(options, refineAbort.signal);
+		const planSettled = planRun.then(
+			() => undefined,
+			() => undefined,
+		);
+		this._refinePlanInFlight = planSettled;
 		let plan: RefinementPlan;
 		try {
-			plan = await this._planRefine(options, refineAbort.signal);
+			plan = await planRun;
 		} catch (error) {
 			if (this._refineAbortController === refineAbort) {
 				this._refineAbortController = undefined;
 			}
 			this._schedulePendingMessageResume();
 			throw error;
+		} finally {
+			if (this._refinePlanInFlight === planSettled) {
+				this._refinePlanInFlight = undefined;
+			}
 		}
 
 		if (this._disposed || refineAbort.signal.aborted) {

@@ -2119,7 +2119,7 @@ describe("P0 concurrency regressions", () => {
 		const refine = internals._runSerializedRefine({ instructions: "cancel direct plan" });
 		await vi.waitFor(() => expect(planSignal).toBeDefined());
 		expect(internals._serializedPlanInFlight).toBeUndefined();
-		expect(internals._refinePlanInFlight).toBeUndefined();
+		expect(internals._refinePlanInFlight).toBeDefined();
 		expect(internals._refineInFlight).toBeUndefined();
 		const branchVersion = internals._autoRefineBranchVersion;
 
@@ -2129,6 +2129,45 @@ describe("P0 concurrency regressions", () => {
 		expect(internals._autoRefineBranchVersion).toBeGreaterThan(branchVersion);
 		await expect(refine).rejects.toThrow("cancelled");
 		expect(applyRefine).not.toHaveBeenCalled();
+	});
+
+	it("direct serialized planning blocks a concurrent public refinement plan", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		let releaseDirectPlan: () => void = () => {};
+		const directPlanGate = new Promise<void>((resolve) => {
+			releaseDirectPlan = resolve;
+		});
+		let planCalls = 0;
+		let activePlans = 0;
+		let maxActivePlans = 0;
+		vi.spyOn(internals, "_planRefine").mockImplementation(async () => {
+			planCalls++;
+			activePlans++;
+			maxActivePlans = Math.max(maxActivePlans, activePlans);
+			if (planCalls === 1) {
+				await directPlanGate;
+			}
+			activePlans--;
+			return { id: `plan-${planCalls}`, proposal: { edits: [] } };
+		});
+		const applyRefine = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		const directRefine = internals._runSerializedRefine({ instructions: "direct" });
+		await vi.waitFor(() => expect(internals._refinePlanInFlight).toBeDefined());
+
+		const publicRefine = harness.session.refine({ instructions: "public" });
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+		expect(planCalls).toBe(1);
+		expect(maxActivePlans).toBe(1);
+
+		releaseDirectPlan();
+		await Promise.all([directRefine, publicRefine]);
+
+		expect(planCalls).toBe(2);
+		expect(maxActivePlans).toBe(1);
+		expect(applyRefine).toHaveBeenCalledTimes(2);
 	});
 
 	it("explicit abort cancels a serialized auto-refine review", async () => {
