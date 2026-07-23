@@ -50,8 +50,12 @@ import type { SessionSummary } from "./daemon-session-list.js";
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
 export const DAEMON_PROTOCOL_VERSION = 4;
 export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 2;
-export const DAEMON_SCHEMA_REVISION = 3;
-export const DAEMON_SCHEMA_ID = "protocol-4-schema-3-43f35071b2bc";
+// Revision 4: side_question_transcript capability. The digest only covers the
+// command/outbound type source, so capability-list changes must bump this
+// revision by hand — otherwise a retained older daemon passes the staleness
+// probe and clients gate features against it forever.
+export const DAEMON_SCHEMA_REVISION = 4;
+export const DAEMON_SCHEMA_ID = "protocol-4-schema-4-43f35071b2bc";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
