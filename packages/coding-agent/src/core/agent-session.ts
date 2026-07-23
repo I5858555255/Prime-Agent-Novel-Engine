@@ -1839,14 +1839,37 @@ export class AgentSession {
 			return;
 		}
 
-		// 3. Interval-triggered auto-refine (no background plan was started).
+		// 3. Post-compaction auto-refine. Serialized sessions defer the
+		// compaction trigger to this boundary instead of entering the interactive
+		// path, which waits for agent idle and can never run inside a tool loop.
 		if (!this._autoRefineAllowedForSession()) {
+			this._compactAutoRefinePending = false;
 			return;
 		}
 		const settings = this.settingsManager.getAutoRefineSettings();
 		if (!settings.enabled) {
+			this._compactAutoRefinePending = false;
 			return;
 		}
+		if (this._compactAutoRefinePending) {
+			if (!settings.compact) {
+				this._compactAutoRefinePending = false;
+			} else {
+				const nowMs = Date.now();
+				const underCooldown =
+					this._lastAutoRefineReviewAt > 0 && nowMs - this._lastAutoRefineReviewAt < settings.cooldownMs;
+				if (underCooldown) {
+					// Preserve the compact trigger for a later boundary, matching the
+					// interactive path's pending behavior while the cooldown is active.
+					return;
+				}
+				this._compactAutoRefinePending = false;
+				await this._runSerializedAutoRefineReview("compact", branchVersion);
+				return;
+			}
+		}
+
+		// 4. Interval-triggered auto-refine (no background plan was started).
 		if (this._assistantTurnsSinceAutoRefine < settings.turnInterval) {
 			return;
 		}
@@ -1856,14 +1879,20 @@ export class AgentSession {
 		if (underCooldown) {
 			return;
 		}
+		await this._runSerializedAutoRefineReview("turn_interval", branchVersion);
+	}
 
-		// Run review + plan + apply synchronously at the boundary.
+	/** Run automatic review and, when approved, refinement at a serialized turn boundary. */
+	private async _runSerializedAutoRefineReview(
+		reason: "compact" | "turn_interval",
+		branchVersion: number,
+	): Promise<void> {
 		const reviewAbort = new AbortController();
 		this._autoRefineReviewAbort = reviewAbort;
 		this._autoRefineInProgress = true;
 		try {
 			const review = await this._reviewAutoRefine(
-				{ reason: "turn_interval", turnsSinceLastReview: this._assistantTurnsSinceAutoRefine },
+				{ reason, turnsSinceLastReview: this._assistantTurnsSinceAutoRefine },
 				reviewAbort.signal,
 			);
 			if (this._disposed || this._disposing || branchVersion !== this._autoRefineBranchVersion) {
@@ -1875,7 +1904,7 @@ export class AgentSession {
 				return;
 			}
 			await this._runSerializedRefine({
-				instructions: autoRefineInstructions("turn_interval", review),
+				instructions: autoRefineInstructions(reason, review),
 			});
 			this._lastAutoRefineReviewAt = Date.now();
 			this._assistantTurnsSinceAutoRefine = 0;
@@ -3153,6 +3182,17 @@ export class AgentSession {
 					this._lastAutoRefineReviewAt = Date.now();
 					this._assistantTurnsSinceAutoRefine = 0;
 				}
+				// Preserve a consumed explicit request when its background plan failed,
+				// matching the turn-boundary recovery path. The pending drain below
+				// retries it once before disposal.
+				if (
+					bgResult?.status === "failure" &&
+					bgResult.explicit &&
+					bgResult.branchVersion === this._autoRefineBranchVersion &&
+					!this._pendingRequestedRefine
+				) {
+					this._pendingRequestedRefine = bgResult.options;
+				}
 				// For "skip" or "failure", stamp cooldown and reset counter
 				// so the interval check below does not trigger a duplicate
 				// terminal retry.
@@ -3180,6 +3220,29 @@ export class AgentSession {
 			this._lastAutoRefineReviewAt = Date.now();
 			this._assistantTurnsSinceAutoRefine = 0;
 		}
+		// A serialized compaction can finish without another model turn. Drain its
+		// pending review here so disposal does not silently lose the trigger.
+		if (this._serializedRefine && this._compactAutoRefinePending && this._autoRefineAllowedForSession()) {
+			const compactSettings = this.settingsManager.getAutoRefineSettings();
+			if (!compactSettings.enabled || !compactSettings.compact) {
+				this._compactAutoRefinePending = false;
+			} else {
+				const nowMs = Date.now();
+				const underCooldown =
+					this._lastAutoRefineReviewAt > 0 && nowMs - this._lastAutoRefineReviewAt < compactSettings.cooldownMs;
+				if (underCooldown) {
+					return;
+				}
+				this._compactAutoRefinePending = false;
+				try {
+					await this._runSerializedAutoRefineReview("compact", this._autoRefineBranchVersion);
+				} catch {
+					// Best-effort drain; refinement errors must not block disposal.
+				}
+				return;
+			}
+		}
+
 		// If auto-refine is due but has not started yet, run it now so the
 		// refinement is persisted before disposal. Use the direct serialized
 		// path in serialized mode, or _maybeAutoRefine in interactive mode
@@ -5413,7 +5476,7 @@ export class AgentSession {
 				if (hadPostCompactionContinue) {
 					this._schedulePostCompactionContinue();
 				}
-				this._scheduleAutoRefine("compact");
+				this._scheduleAutoRefineAfterCompaction(hadPostCompactionContinue);
 			}
 		}
 	}
@@ -5598,6 +5661,12 @@ export class AgentSession {
 
 	private _scheduleAutoRefineAfterCompaction(willContinueAfterCompaction: boolean): void {
 		if (!this._autoRefineAllowedForSession()) {
+			return;
+		}
+		if (this._serializedRefine) {
+			// Serialized sessions must service compaction-triggered refinement at
+			// shouldStopAfterTurn (or disposal), never through the interactive path.
+			this._compactAutoRefinePending = true;
 			return;
 		}
 		if (willContinueAfterCompaction) {

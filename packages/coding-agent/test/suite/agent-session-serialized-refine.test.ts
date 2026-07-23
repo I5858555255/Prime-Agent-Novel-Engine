@@ -13,6 +13,7 @@ type SerializedInternals = {
 	}): Promise<boolean>;
 	_runSerializedRefineCheckpoint(): Promise<void>;
 	_runSerializedRefine(options: { instructions?: string; global?: boolean }): Promise<void>;
+	_runSerializedAutoRefineReview(reason: "turn_interval" | "compact", branchVersion: number): Promise<void>;
 	_consumePendingRequestedRefine(): void;
 	_maybeAutoRefine(reason: string): Promise<void>;
 	_reviewAutoRefine(context: { reason: string; turnsSinceLastReview: number }, signal?: AbortSignal): Promise<unknown>;
@@ -49,6 +50,16 @@ type SerializedInternals = {
 	_pendingMessageResumeQueue: Promise<void>;
 	_schedulePendingMessageResume(request?: boolean): void;
 	_maybeStartSerializedBackgroundPlan: () => void;
+	_compactAutoRefinePending: boolean;
+	_scheduleAutoRefine(reason: "turn_interval" | "compact"): void;
+	_scheduleAutoRefineAfterCompaction(willContinueAfterCompaction: boolean): void;
+	_getRequiredRequestAuth(model: unknown): Promise<{ apiKey: string; headers?: Record<string, string> }>;
+	_performCompaction(options: unknown): Promise<{
+		summary: string;
+		firstKeptEntryId: string;
+		tokensBefore: number;
+	}>;
+	_drainPendingRefinementForDisposal(): Promise<void>;
 };
 
 function emptyRefinementResult() {
@@ -1233,6 +1244,189 @@ describe("Serialized refine review-fix regressions", () => {
 		expect(applySpy).toHaveBeenCalledTimes(1);
 		expect((applySpy.mock.calls[0] as unknown[])[0]).toBe(exactPlan);
 		expect(internals._disposed).toBe(true);
+	});
+
+	it("services a compaction-triggered refine at the next serialized boundary", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "post-compaction lesson",
+			instructions: "capture it",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, compact: true, turnInterval: 999, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const { applyRefine } = mockSerializedRefine(harness);
+
+		internals._scheduleAutoRefineAfterCompaction(true);
+		expect(internals._compactAutoRefinePending).toBe(true);
+		await internals._runSerializedRefineCheckpoint();
+
+		expect(reviewer).toHaveBeenCalledWith(expect.objectContaining({ reason: "compact" }), expect.any(AbortSignal));
+		expect(applyRefine).toHaveBeenCalledTimes(1);
+		expect(internals._compactAutoRefinePending).toBe(false);
+	});
+
+	it("defers serialized compaction refinement even when no continuation was scheduled", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "terminal compaction lesson",
+			instructions: "capture it",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, compact: true, turnInterval: 999, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const interactiveSpy = vi.spyOn(internals, "_maybeAutoRefine");
+		const { applyRefine } = mockSerializedRefine(harness);
+
+		internals._scheduleAutoRefineAfterCompaction(false);
+		expect(internals._compactAutoRefinePending).toBe(true);
+		expect(interactiveSpy).not.toHaveBeenCalled();
+		await internals._drainPendingRefinementForDisposal();
+
+		expect(reviewer).toHaveBeenCalledWith(expect.objectContaining({ reason: "compact" }), expect.any(AbortSignal));
+		expect(applyRefine).toHaveBeenCalledTimes(1);
+		expect(internals._compactAutoRefinePending).toBe(false);
+	});
+
+	it("defers manual compaction refinement to the serialized checkpoint", async () => {
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, compact: true, turnInterval: 999, cooldownMs: 0 } },
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		vi.spyOn(internals, "_getRequiredRequestAuth").mockResolvedValue({ apiKey: "test" });
+		vi.spyOn(internals, "_performCompaction").mockResolvedValue({
+			summary: "manual summary",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 100,
+		});
+		const interactiveSpy = vi.spyOn(internals, "_scheduleAutoRefine");
+
+		await harness.session.compact();
+
+		expect(interactiveSpy).not.toHaveBeenCalled();
+		expect(internals._compactAutoRefinePending).toBe(true);
+	});
+
+	it("preserves a serialized compaction trigger while cooldown is active", async () => {
+		const reviewer = vi.fn(async () => ({ shouldRefine: false, rationale: "not called" }));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, compact: true, turnInterval: 999, cooldownMs: 60_000 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		internals._lastAutoRefineReviewAt = Date.now();
+		internals._scheduleAutoRefineAfterCompaction(true);
+
+		await internals._runSerializedRefineCheckpoint();
+
+		expect(reviewer).not.toHaveBeenCalled();
+		expect(internals._compactAutoRefinePending).toBe(true);
+	});
+
+	it("falls back to an interval review when compact-triggered refinement is disabled", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "interval lesson",
+			instructions: "capture it",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, compact: false, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const { applyRefine } = mockSerializedRefine(harness);
+		internals._assistantTurnsSinceAutoRefine = 1;
+		internals._scheduleAutoRefineAfterCompaction(true);
+
+		await internals._runSerializedRefineCheckpoint();
+
+		expect(reviewer).toHaveBeenCalledWith(
+			expect.objectContaining({ reason: "turn_interval" }),
+			expect.any(AbortSignal),
+		);
+		expect(applyRefine).toHaveBeenCalledTimes(1);
+		expect(internals._compactAutoRefinePending).toBe(false);
+	});
+
+	it("clears a compact trigger after a review decides no refinement is needed", async () => {
+		const reviewer = vi.fn(async () => ({ shouldRefine: false, rationale: "nothing durable" }));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, compact: true, turnInterval: 999, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const { applyRefine } = mockSerializedRefine(harness);
+		internals._scheduleAutoRefineAfterCompaction(true);
+
+		await internals._runSerializedRefineCheckpoint();
+
+		expect(reviewer).toHaveBeenCalledWith(expect.objectContaining({ reason: "compact" }), expect.any(AbortSignal));
+		expect(applyRefine).not.toHaveBeenCalled();
+		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
+		expect(internals._compactAutoRefinePending).toBe(false);
+	});
+
+	it("does not let a compact review failure block disposal", async () => {
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, compact: true, turnInterval: 999, cooldownMs: 0 } },
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		internals._compactAutoRefinePending = true;
+		vi.spyOn(internals, "_runSerializedAutoRefineReview").mockRejectedValue(
+			new Error("unexpected compact review failure"),
+		);
+
+		await expect(internals._drainPendingRefinementForDisposal()).resolves.toBeUndefined();
+		expect(internals._compactAutoRefinePending).toBe(false);
+	});
+
+	it("retries a failed explicit background plan during disposal", async () => {
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 999, cooldownMs: 0 } },
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const options = { instructions: "explicit recovery" };
+		internals._serializedPlanInFlight = Promise.resolve({
+			status: "failure",
+			explicit: true,
+			options,
+			branchVersion: internals._autoRefineBranchVersion,
+		});
+		const runSpy = vi.spyOn(internals, "_runSerializedRefine").mockResolvedValue();
+
+		await internals._drainPendingRefinementForDisposal();
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy).toHaveBeenCalledWith(options);
+		expect(internals._pendingRequestedRefine).toBeUndefined();
 	});
 });
 
