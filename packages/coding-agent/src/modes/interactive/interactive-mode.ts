@@ -875,6 +875,10 @@ export class InteractiveMode {
 	// Set while a ! bash command runs inside the side conversation: its output
 	// streams into a pane turn instead of the main transcript.
 	private sideQuestionBash: { turnId: string; input: string; output: string; seedTranscript: boolean } | undefined;
+	// Set when the pane closes with a side bash still in flight: its remaining
+	// bash_* events are swallowed (until bash_end) instead of leaking into the
+	// main transcript. Safe as a boolean — the session runs one bash at a time.
+	private sideQuestionBashDiscarded = false;
 
 	// User bash execution tracking (! / !! prefix), driven by bash_* session events
 	private activeBashComponent: BashExecutionComponent | undefined = undefined;
@@ -4237,8 +4241,10 @@ export class InteractiveMode {
 			this.abortSideQuestion(event.id);
 		}
 		if (this.sideQuestionBash) {
-			// A side-conversation bash run dies with its pane.
+			// A side-conversation bash run dies with its pane. Its bash_* events may
+			// still be in flight (even bash_start), so swallow them until bash_end.
 			this.sideQuestionBash = undefined;
+			this.sideQuestionBashDiscarded = true;
 			void this.agentConnection.abortBash().catch(() => undefined);
 		}
 		this.sideQuestionEvent = undefined;
@@ -4595,6 +4601,11 @@ export class InteractiveMode {
 							this.sideQuestionComponent?.update({ ...sideBashTurn, status: "error", errorMessage: message });
 							this.ui.requestRender();
 						} else {
+							if (sideBashTurn && this.sideQuestionBashDiscarded) {
+								// The pane discarded this run, but it never started, so no
+								// bash_end will arrive to consume the flag.
+								this.sideQuestionBashDiscarded = false;
+							}
 							this.showError(message);
 						}
 					}
@@ -4603,15 +4614,36 @@ export class InteractiveMode {
 
 				// An open side-question pane captures replies as follow-up side
 				// questions; ! bash routed above and slash commands were rejected
-				// earlier with a warning. Esc returns to the main thread.
+				// earlier with a notice. Esc returns to the main thread.
 				if (this.sideQuestionComponent) {
-					if (this.activeSideQuestionId) {
-						// The editor cleared its buffer before onSubmit fired; put the
-						// draft back so the wait warning doesn't cost the typed follow-up.
+					// A follow-up submitted mid-bash would seed the transcript ahead of
+					// the output it reacts to; make it wait like a running side turn.
+					// The editor cleared its buffer before onSubmit fired, so blocked
+					// paths put the draft back rather than merely skip clearing it.
+					if (this.sideQuestionBash) {
 						this.editor.setText(text);
-					} else {
-						this.editor.addToHistory?.(text);
+						this.showWarning("Wait for the running command to finish or cancel it first.");
+						return;
 					}
+					if (this.activeSideQuestionId) {
+						this.editor.setText(text);
+						await this.handleSideQuestion(text);
+						return;
+					}
+					// Side questions are text-only end to end; a reply with pasted
+					// images gets an in-pane notice instead of silently dropping them.
+					if (this.collectImagesFor(text)?.length) {
+						this.editor.setText(text);
+						this.sideQuestionComponent.addTurn({
+							id: `side-notice-${randomUUID()}`,
+							question: text,
+							answer: "Images are not supported in side conversations. Press esc to return to the main thread.",
+							status: "complete",
+						});
+						this.ui.requestRender();
+						return;
+					}
+					this.editor.addToHistory?.(text);
 					await this.handleSideQuestion(text);
 					return;
 				}
@@ -4955,8 +4987,9 @@ export class InteractiveMode {
 				break;
 
 			case "bash_start": {
-				if (this.sideQuestionBash) {
-					// Rendered as a side-conversation pane turn, not a chat component.
+				if (this.sideQuestionBash || this.sideQuestionBashDiscarded) {
+					// Rendered as a side-conversation pane turn (or discarded with it),
+					// not a chat component.
 					break;
 				}
 				const component = new BashExecutionComponent(event.command, this.ui, event.excludeFromContext);
@@ -4972,6 +5005,9 @@ export class InteractiveMode {
 			}
 
 			case "bash_output":
+				if (this.sideQuestionBashDiscarded) {
+					break;
+				}
 				if (this.sideQuestionBash) {
 					this.sideQuestionBash.output += event.chunk;
 					this.sideQuestionComponent?.update(this.buildSideBashEvent("running"));
@@ -4983,7 +5019,9 @@ export class InteractiveMode {
 				break;
 
 			case "bash_end":
-				if (this.sideQuestionBash) {
+				if (this.sideQuestionBashDiscarded) {
+					this.sideQuestionBashDiscarded = false;
+				} else if (this.sideQuestionBash) {
 					this.finishSideQuestionBash(event);
 				} else if (this.activeBashComponent) {
 					if (event.errorMessage) {

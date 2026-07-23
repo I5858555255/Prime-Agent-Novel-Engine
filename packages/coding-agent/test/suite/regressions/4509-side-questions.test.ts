@@ -383,6 +383,7 @@ describe("ENG-4509 side questions", () => {
 			sideQuestionComponent: {},
 			activeSideQuestionId: undefined,
 			connectionCommands: [],
+			collectImagesFor: () => undefined,
 			handleSideQuestion,
 			agentConnection: { prompt },
 		});
@@ -498,6 +499,99 @@ describe("ENG-4509 side questions", () => {
 		// A plain ! run seeds follow-up side questions with the output.
 		expect(fakeThis.sideQuestionTurns).toHaveLength(1);
 		expect(fakeThis.sideQuestionBash).toBeUndefined();
+	});
+
+	it("blocks follow-ups while a side-conversation bash is running", async () => {
+		const handleSideQuestion = vi.fn(async () => {});
+		const setText = vi.fn();
+		const showWarning = vi.fn();
+		const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			defaultEditor,
+			editor: { setText, addToHistory: vi.fn() },
+			promptStashState: { stash: undefined },
+			clearShortcutGuide: vi.fn(),
+			sideQuestionComponent: {},
+			sideQuestionTurns: [],
+			sideQuestionBash: { turnId: "side-bash-1", input: "!ls", output: "", seedTranscript: true },
+			activeSideQuestionId: undefined,
+			connectionCommands: [],
+			handleSideQuestion,
+			showWarning,
+		});
+		(
+			InteractiveMode.prototype as unknown as { setupEditorSubmitHandler(this: typeof fakeThis): void }
+		).setupEditorSubmitHandler.call(fakeThis);
+
+		await defaultEditor.onSubmit?.("what are those files?");
+
+		expect(setText).toHaveBeenCalledWith("what are those files?");
+		expect(showWarning).toHaveBeenCalledWith("Wait for the running command to finish or cancel it first.");
+		expect(handleSideQuestion).not.toHaveBeenCalled();
+	});
+
+	it("rejects image follow-ups with an in-pane notice and keeps the draft", async () => {
+		const handleSideQuestion = vi.fn(async () => {});
+		const addTurn = vi.fn();
+		const setText = vi.fn();
+		const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			defaultEditor,
+			editor: { setText, addToHistory: vi.fn() },
+			promptStashState: { stash: undefined },
+			clearShortcutGuide: vi.fn(),
+			sideQuestionComponent: { addTurn },
+			sideQuestionTurns: [],
+			activeSideQuestionId: undefined,
+			connectionCommands: [],
+			collectImagesFor: () => [{ type: "image", data: "abc", mimeType: "image/png" }],
+			handleSideQuestion,
+			ui: { requestRender: vi.fn() },
+		});
+		(
+			InteractiveMode.prototype as unknown as { setupEditorSubmitHandler(this: typeof fakeThis): void }
+		).setupEditorSubmitHandler.call(fakeThis);
+
+		await defaultEditor.onSubmit?.("what is in [image #1]?");
+
+		expect(addTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				question: "what is in [image #1]?",
+				answer: "Images are not supported in side conversations. Press esc to return to the main thread.",
+				status: "complete",
+			}),
+		);
+		expect(setText).toHaveBeenCalledWith("what is in [image #1]?");
+		expect(fakeThis.sideQuestionTurns).toEqual([]);
+		expect(handleSideQuestion).not.toHaveBeenCalled();
+	});
+
+	it("swallows discarded side-bash events after the pane closes", () => {
+		const abortBash = vi.fn(async () => {});
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			sideQuestionEvent: { id: "turn-1", question: "First?", answer: "done", status: "complete" },
+			sideQuestionTurns: [],
+			sideQuestionComponent: {},
+			sideQuestionContainer: new Container(),
+			sideQuestionBash: { turnId: "side-bash-1", input: "!sleep 5", output: "", seedTranscript: true },
+			sideQuestionBashDiscarded: false,
+			activeSideQuestionId: undefined,
+			agentConnection: { abortBash },
+			isInitialized: false,
+		});
+		const clearSideQuestion = (
+			InteractiveMode.prototype as unknown as {
+				clearSideQuestion(this: typeof fakeThis, options?: { abort?: boolean }): void;
+			}
+		).clearSideQuestion;
+
+		clearSideQuestion.call(fakeThis, { abort: true });
+
+		// bash_start may not have been observed yet: the flag must swallow the
+		// run's remaining events so cancelled side output never reaches the chat.
+		expect(fakeThis.sideQuestionBash).toBeUndefined();
+		expect(fakeThis.sideQuestionBashDiscarded).toBe(true);
+		expect(abortBash).toHaveBeenCalled();
 	});
 
 	it("keeps !! side-conversation bash display-only", async () => {
