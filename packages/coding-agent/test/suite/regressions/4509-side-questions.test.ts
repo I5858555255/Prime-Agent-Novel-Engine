@@ -501,6 +501,57 @@ describe("ENG-4509 side questions", () => {
 		expect(fakeThis.sideQuestionBash).toBeUndefined();
 	});
 
+	it("keeps the cancel hint while an earlier turn streams behind a notice", () => {
+		const component = new SideQuestionComponent({
+			id: "turn-1",
+			question: "Still thinking?",
+			answer: "",
+			status: "running",
+		});
+		component.addTurn({
+			id: "side-notice-1",
+			question: "/context",
+			answer: "Slash commands are not available in side conversations. Press esc to return to the main thread.",
+			status: "complete",
+		});
+		const rendered = stripAnsi(component.render(60).join("\n"));
+
+		expect(rendered).toContain("esc to cancel and return to session");
+		expect(rendered).not.toContain("reply to follow up");
+	});
+
+	it("blocks bash while a side question is still streaming", async () => {
+		const executeBash = vi.fn(async () => {});
+		const addTurn = vi.fn();
+		const setText = vi.fn();
+		const showWarning = vi.fn();
+		const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			defaultEditor,
+			editor: { setText, addToHistory: vi.fn() },
+			promptStashState: { stash: undefined },
+			clearShortcutGuide: vi.fn(),
+			sideQuestionComponent: { addTurn },
+			sideQuestionTurns: [],
+			activeSideQuestionId: "turn-1",
+			connectionCommands: [],
+			isBashRunning: () => false,
+			showWarning,
+			agentConnection: { executeBash },
+		});
+		(
+			InteractiveMode.prototype as unknown as { setupEditorSubmitHandler(this: typeof fakeThis): void }
+		).setupEditorSubmitHandler.call(fakeThis);
+
+		await defaultEditor.onSubmit?.("!ls");
+
+		expect(setText).toHaveBeenCalledWith("!ls");
+		expect(showWarning).toHaveBeenCalledWith("Wait for the current side question to finish or cancel it first.");
+		expect(executeBash).not.toHaveBeenCalled();
+		expect(addTurn).not.toHaveBeenCalled();
+		expect(fakeThis.sideQuestionBash).toBeUndefined();
+	});
+
 	it("blocks follow-ups while a side-conversation bash is running", async () => {
 		const handleSideQuestion = vi.fn(async () => {});
 		const setText = vi.fn();

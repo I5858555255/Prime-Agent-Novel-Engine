@@ -4559,6 +4559,13 @@ export class InteractiveMode {
 						);
 						return;
 					}
+					// A streaming side turn blocks bash just like it blocks follow-up
+					// replies: overlapping pane turns would seed out of order.
+					if (this.sideQuestionComponent && this.activeSideQuestionId) {
+						this.editor.setText(text);
+						this.showWarning("Wait for the current side question to finish or cancel it first.");
+						return;
+					}
 					// Inside a side conversation the command runs as a pane turn: output
 					// streams there, stays out of the main-session context, and (for !,
 					// not !!) seeds follow-up side questions.

@@ -96,7 +96,9 @@ export class SideQuestionComponent implements Component {
 	}
 
 	private renderHint(width: number): string[] {
-		const running = this.turns.at(-1)?.event.status === "running";
+		// Any running turn blocks follow-ups (a completed notice can be the last
+		// turn while an earlier question still streams), so check them all.
+		const running = this.turns.some((turn) => turn.event.status === "running");
 		const hint = running ? "esc to cancel and return to session" : "reply to follow up · esc to return to session";
 		return new Text(theme.fg("dim", hint), this.paddingX, 0).render(width);
 	}
