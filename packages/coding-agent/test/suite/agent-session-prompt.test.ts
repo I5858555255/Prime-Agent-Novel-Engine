@@ -476,7 +476,7 @@ stale extension instructions`,
 		expect(providerSystemPrompt).toBe("independent extension replacement");
 	});
 
-	it("discards a stale extension prompt when refine completes during an injected prompt hook", async () => {
+	it("refreshes an extension system prompt when refine completes during an injected prompt hook", async () => {
 		let signalHookStarted: () => void = () => {};
 		const hookStarted = new Promise<void>((resolve) => {
 			signalHookStarted = resolve;
@@ -563,8 +563,8 @@ stale injected extension instructions`,
 		releaseHook();
 		await injectedPrompt;
 
-		expect(providerSystemPrompt).toBe("refined injected base");
-		expect(providerSystemPrompt).not.toContain("stale injected extension instructions");
+		expect(providerSystemPrompt).toContain("refined injected base");
+		expect(providerSystemPrompt).toContain("stale injected extension instructions");
 		expect(providerMessages).toContain("injected extension message preserved");
 	});
 

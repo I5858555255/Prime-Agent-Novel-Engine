@@ -3819,13 +3819,9 @@ export class AgentSession {
 					});
 				}
 			}
-			// If the base changed during the hook (e.g. a refine completed),
-			// the extension systemPrompt is stale — use the refreshed base.
-			if (extensionResult?.systemPrompt && this._baseSystemPrompt !== basePromptSnapshot) {
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
-			} else {
-				this.agent.state.systemPrompt = extensionResult?.systemPrompt ?? this._baseSystemPrompt;
-			}
+			this.agent.state.systemPrompt = extensionResult?.systemPrompt
+				? this._refreshExtensionSystemPrompt(extensionResult.systemPrompt, basePromptSnapshot)
+				: this._baseSystemPrompt;
 		} catch (error) {
 			reportPreflight(false);
 			throw error;
