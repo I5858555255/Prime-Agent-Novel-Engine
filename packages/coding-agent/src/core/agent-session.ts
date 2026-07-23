@@ -4995,11 +4995,18 @@ export class AgentSession {
 		return this._resourceLoader;
 	}
 
-	requestAbort(): void {
+	requestAbort(options: { preserveRefinement?: boolean } = {}): void {
 		this.abortRetry();
 		this.abortCompaction();
 		this.abortBranchSummary();
 		this.abortBash();
+		if (!options.preserveRefinement) {
+			this._pendingRequestedRefine = undefined;
+			if (this._serializedPlanInFlight) {
+				this._autoRefineBranchVersion++;
+				this._refineAbortController?.abort();
+			}
+		}
 		this._pendingMessageResumeRequested = false;
 		this._pendingMessageResumeEpoch++;
 		this.agent.abort();
@@ -6064,7 +6071,7 @@ export class AgentSession {
 			// Do not call abort(), which would also cancel child runs and goal state.
 			const compactionOp = this._compactionOperation;
 			const branchSummaryOp = this._branchSummaryOperation;
-			this.requestAbort();
+			this.requestAbort({ preserveRefinement: true });
 			await Promise.allSettled([
 				this.agent.waitForIdle(),
 				this._agentEventQueue,

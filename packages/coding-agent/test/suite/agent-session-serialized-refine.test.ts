@@ -1971,6 +1971,70 @@ describe("P0 concurrency regressions", () => {
 		expect(refineSpy).not.toHaveBeenCalled();
 	});
 
+	it("explicit abort during a tool call clears a non-serialized refine.run before agent_end", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals & {
+			refine: (options: { instructions?: string }) => Promise<unknown>;
+		};
+		const refineSpy = vi.spyOn(internals, "refine").mockResolvedValue(undefined);
+
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		expect(
+			harness.session.handleRefineHostRequest("refine.run", {
+				instructions: "must not survive cancellation",
+			}),
+		).toMatchObject({ scheduled: true });
+		expect(internals._pendingRequestedRefine).toBeDefined();
+
+		harness.session.requestAbort();
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+		const toolUseAssistant = fauxAssistantMessage([fauxToolCall("ipython", { code: "await refine.run()" })], {
+			stopReason: "toolUse",
+		});
+		internals._lastAssistantMessage = toolUseAssistant;
+		internals._handleAgentEvent({ type: "agent_end", messages: [toolUseAssistant] });
+		await internals._agentEventQueue;
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+		expect(refineSpy).not.toHaveBeenCalled();
+	});
+
+	it("explicit abort invalidates an in-flight serialized refine.run plan", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const applyRefine = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+		let planSignal: AbortSignal | undefined;
+		vi.spyOn(internals, "_planRefine").mockImplementation(
+			(_options: { instructions?: string }, signal: AbortSignal) => {
+				planSignal = signal;
+				return new Promise((_, reject) => {
+					signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+				});
+			},
+		);
+
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		harness.session.handleRefineHostRequest("refine.run", {
+			instructions: "must not survive cancellation",
+		});
+		await vi.waitFor(() => expect(planSignal).toBeDefined());
+		expect(internals._serializedPlanInFlight).toBeDefined();
+		const branchVersion = internals._autoRefineBranchVersion;
+
+		harness.session.requestAbort();
+		expect(planSignal?.aborted).toBe(true);
+		expect(internals._autoRefineBranchVersion).toBeGreaterThan(branchVersion);
+
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+		await internals._runSerializedRefineCheckpoint();
+		expect(applyRefine).not.toHaveBeenCalled();
+		expect(internals._serializedPlanInFlight).toBeUndefined();
+	});
+
 	it("aborted serialized turn clears _pendingRequestedRefine so it does not leak to next checkpoint", async () => {
 		const harness = await createHarness({
 			persistSession: true,
