@@ -687,6 +687,10 @@ interface PreparedRuntimeServices {
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
+export function daemonServerDefaultSessionConfig(config: AgentSessionRuntimeConfig): AgentSessionRuntimeConfig {
+	return { ...config, initialGoal: undefined };
+}
+
 export function resolveRuntimeSessionOptions(
 	sessionOptions: CreateAgentSessionOptions,
 	runtimeSessionOptions?: CreateAgentSessionOptions,
@@ -1072,6 +1076,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("parseArgs");
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY);
+
 	if (shouldRejectNonInteractiveAttach(publicCommand.attachAgent, appMode)) {
 		console.error(chalk.red("Error: attach requires an interactive terminal"));
 		process.exit(1);
@@ -1236,6 +1241,10 @@ export async function main(args: string[], options?: MainOptions) {
 	time("createSessionManager");
 
 	const defaultSessionConfig = runtimeConfigFromArgs(parsed, sessionManager.getCwd(), agentDir, sessionDir, appMode);
+	// Verifier/headless clients pass initialGoal in each create request. The long-lived
+	// daemon fallback must not seed that goal into unrelated future sessions.
+	const daemonDefaultSessionConfig = daemonServerDefaultSessionConfig(defaultSessionConfig);
+	const runtimeDefaultSessionConfig = appMode === "daemon" ? daemonDefaultSessionConfig : defaultSessionConfig;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -1244,7 +1253,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionConfig,
 		sessionOptions: runtimeSessionOptions,
 	}) => {
-		const config = mergeAgentSessionRuntimeConfig(defaultSessionConfig, sessionConfig);
+		const config = mergeAgentSessionRuntimeConfig(runtimeDefaultSessionConfig, sessionConfig);
 		const prepared = await prepareRuntimeServices({
 			config,
 			cwd,
@@ -1292,7 +1301,7 @@ export async function main(args: string[], options?: MainOptions) {
 		if (isDaemonWorkerProcess()) {
 			await runDaemonMode({
 				socketPath: parsed.daemonSocket,
-				defaultSessionConfig,
+				defaultSessionConfig: daemonDefaultSessionConfig,
 				createRuntime,
 				worker: {
 					authenticationToken: requireDaemonWorkerAuthenticationToken(),
@@ -1302,7 +1311,7 @@ export async function main(args: string[], options?: MainOptions) {
 		} else {
 			await runDaemonSupervisorMode({
 				socketPath: parsed.daemonSocket,
-				defaultSessionConfig,
+				defaultSessionConfig: daemonDefaultSessionConfig,
 			});
 		}
 		return;

@@ -1812,6 +1812,7 @@ export class AgentDaemon {
 					// a late completion cannot overwrite a durable deletion tombstone.
 					if (options.parentSession.retainFinishedRlmChildSession(options.id, runtime.session)) {
 						if (runtime.session.sessionFile) {
+							const retainedModel = runtime.session.model ?? options.model;
 							this.recordRlmSubagentRegistryEntry(parentState, {
 								childId: options.id,
 								sessionName: runtime.session.sessionName ?? options.sessionName,
@@ -1822,8 +1823,8 @@ export class AgentDaemon {
 								rlmParentNodeId: options.rlmParentNodeId,
 								prompt: options.prompt.length <= 4096 ? options.prompt : undefined,
 								spawnCode: options.spawnCode,
-								...(options.model
-									? { model: { provider: options.model.provider, modelId: options.model.id } }
+								...(retainedModel
+									? { model: { provider: retainedModel.provider, modelId: retainedModel.id } }
 									: {}),
 								status: "completed",
 								createdAt: state.runtime.metadata.createdAt,

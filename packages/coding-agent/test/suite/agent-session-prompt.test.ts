@@ -383,8 +383,8 @@ stale extension instructions`,
 		};
 		vi.spyOn(internals, "_planRefine").mockResolvedValue({ id: "race-plan", proposal: { edits: [] } });
 		vi.spyOn(internals, "_applyRefine").mockImplementation(async () => {
-			internals._baseSystemPrompt = "refined base";
-			harness.session.agent.state.systemPrompt = "refined base";
+			internals._baseSystemPrompt = "refined $& base";
+			harness.session.agent.state.systemPrompt = "refined $& base";
 			internals._refineAbortController = undefined;
 			return {
 				id: "refine_race",
@@ -411,9 +411,69 @@ stale extension instructions`,
 		releaseHook();
 		await promptPromise;
 
-		expect(providerSystemPrompt).toBe("refined base");
-		expect(providerSystemPrompt).not.toContain("stale extension instructions");
+		expect(providerSystemPrompt).toContain("refined $& base");
+		expect(providerSystemPrompt).toContain("stale extension instructions");
 		expect(providerMessages).toContain("extension message preserved");
+	});
+
+	it("preserves an independent extension prompt when refine completes during its hook", async () => {
+		let releaseHook: () => void = () => {};
+		const hookRelease = new Promise<void>((resolve) => {
+			releaseHook = resolve;
+		});
+		let signalHookStarted: () => void = () => {};
+		const hookStarted = new Promise<void>((resolve) => {
+			signalHookStarted = resolve;
+		});
+		const harness = await createHarness({
+			persistSession: true,
+			systemPrompt: "pre-refine base",
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async () => {
+						signalHookStarted();
+						await hookRelease;
+						return { systemPrompt: "independent extension replacement" };
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as {
+			_baseSystemPrompt: string;
+			_refineAbortController?: AbortController;
+			_planRefine(options: unknown, signal: AbortSignal): Promise<unknown>;
+			_applyRefine(plan: unknown, options: unknown, abort: AbortController): Promise<unknown>;
+		};
+		vi.spyOn(internals, "_planRefine").mockResolvedValue({ id: "race-plan", proposal: { edits: [] } });
+		vi.spyOn(internals, "_applyRefine").mockImplementation(async () => {
+			internals._baseSystemPrompt = "refined base";
+			harness.session.agent.state.systemPrompt = "refined base";
+			internals._refineAbortController = undefined;
+			return {
+				id: "refine_independent",
+				summary: "refined",
+				rationale: "test",
+				expectedOutcome: "test",
+				appliedEdits: [],
+				harnessStatePath: "",
+			};
+		});
+		let providerSystemPrompt = "";
+		harness.setResponses([
+			(context) => {
+				providerSystemPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		const promptPromise = harness.session.prompt("normal prompt");
+		await hookStarted;
+		await harness.session.refine({ instructions: "refresh the base" });
+		releaseHook();
+		await promptPromise;
+
+		expect(providerSystemPrompt).toBe("independent extension replacement");
 	});
 
 	it("discards a stale extension prompt when refine completes during an injected prompt hook", async () => {
@@ -616,8 +676,8 @@ stale post-hook extension instructions`,
 		sessionInternals._refineInFlight = undefined;
 		await promptPromise;
 
-		expect(providerSystemPrompt).toBe("refined post-hook base");
-		expect(providerSystemPrompt).not.toContain("stale post-hook extension instructions");
+		expect(providerSystemPrompt).toContain("refined post-hook base");
+		expect(providerSystemPrompt).toContain("stale post-hook extension instructions");
 	});
 
 	it("queues accepted agent messages while compacting", async () => {

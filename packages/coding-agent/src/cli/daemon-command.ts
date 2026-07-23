@@ -1482,6 +1482,11 @@ class DaemonAttachTerminal {
 			case "goal_update":
 				this.writeLine(chalk.dim(`Goal: ${event.goal.status}`));
 				return;
+			case "refine_failed":
+				this.writeLine(chalk.red(`Refinement failed: ${event.error}`));
+				return;
+			case "refine_complete":
+				return;
 			case "turn_start":
 			case "turn_end":
 			case "message_start":

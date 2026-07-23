@@ -72,9 +72,15 @@ function streamedResult(messages: AgentMessage[]): DaemonAttachResult {
 			state: { activeSessionId, sessionId: "session-4602" } as DaemonAttachResult["snapshot"]["state"],
 			messages,
 			lastEventSequence: 1,
+			lastEventCursor: { generation: "generation-4602", sequence: 1 },
 		},
-		replay: { status: "complete", toSequence: 1 },
+		replay: {
+			status: "complete",
+			toSequence: 1,
+			toCursor: { generation: "generation-4602", sequence: 1 },
+		},
 		lastEventSequence: 1,
+		lastEventCursor: { generation: "generation-4602", sequence: 1 },
 		snapshotStream: { id: snapshotId, messageCount: messages.length, targetChunkBytes: 512 * 1024 },
 		client: { id: "worker", capabilities: ["chunked_snapshot"] },
 	};
@@ -158,6 +164,7 @@ function snapshotFrames(messages: AgentMessage[]) {
 			snapshotId,
 			chunkCount: 1,
 			lastEventSequence: 1,
+			lastEventCursor: { generation: "generation-4602", sequence: 1 },
 		} satisfies DaemonOutbound,
 	};
 }

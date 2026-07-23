@@ -13,6 +13,7 @@
 - Added agent-callable `refine` skill so the model can schedule continual harness refinement from IPython via `await refine.run()` without blocking the current turn.
 - Changed long live session opens to render a bounded recent transcript tail while preserving full prompt history ([#343](https://github.com/PrimeIntellect-ai/prime-agent/pull/343) by [@sethkarten](https://github.com/sethkarten)).
 - Changed `/refine` to run planning in the background so the conversation is not blocked during the LLM pass.
+- Fixed headless refinement, goal isolation, retained subagent state, and disposal races found during stacked review ([#514](https://github.com/PrimeIntellect-ai/prime-agent/pull/514)).
 
 
 ## [0.3.2] - 2026-07-20

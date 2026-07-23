@@ -20,6 +20,8 @@ type SerializedInternals = {
 	_rlmHeartbeatController?: unknown;
 	_agentMessageController?: unknown;
 	_agentObserveController?: unknown;
+	_ipythonKernelProvisioner?: unknown;
+	_createKernelHostHandlers(): Record<string, unknown>;
 };
 
 describe("Serialized refine config integration (unit)", () => {
@@ -147,8 +149,9 @@ describe("Serialized refine controller availability (unit)", () => {
 
 		const internals = harness.session as unknown as SerializedInternals;
 		expect(internals._rlmHeartbeatController).toBeUndefined();
+		const initialProvisioner = internals._ipythonKernelProvisioner;
 
-		// Simulate what the daemon does: attach a controller after construction.
+		// Simulate print/headless mode attaching a controller after construction.
 		const fakeController = {
 			listRlmHeartbeats: () => [],
 			createRlmHeartbeat: () => ({ id: "test", status: "active" }),
@@ -158,6 +161,8 @@ describe("Serialized refine controller availability (unit)", () => {
 		harness.session.setRlmHeartbeatController(fakeController);
 
 		expect(internals._rlmHeartbeatController).toBe(fakeController);
+		expect(internals._ipythonKernelProvisioner).not.toBe(initialProvisioner);
+		expect(internals._createKernelHostHandlers()).toHaveProperty("rlm_heartbeat.create");
 
 		// Verify the controller is usable via host request.
 		const result = harness.session.handleRlmHeartbeatHostRequest("rlm_heartbeat.list");

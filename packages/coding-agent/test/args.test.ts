@@ -638,6 +638,13 @@ describe("parseArgs", () => {
 			expect(result.diagnostics).toEqual([{ type: "error", message: "--goal requires a value" }]);
 		});
 
+		test("--goal followed by a short flag produces an error for --goal", () => {
+			const result = parseArgs(["--goal", "-p"]);
+			expect(result.goal).toBeUndefined();
+			expect(result.print).toBe(true);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--goal requires a value" }]);
+		});
+
 		test("--goal-token-budget without --goal produces an error", () => {
 			const result = parseArgs(["--goal-token-budget", "50000"]);
 			expect(result.diagnostics).toContainEqual({

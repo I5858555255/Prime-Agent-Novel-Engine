@@ -3054,7 +3054,8 @@ export class DaemonSupervisor {
 					generation.result.snapshotStream?.targetChunkBytes === begin.targetChunkBytes &&
 					generation.result.lastEventSequence === result.lastEventSequence &&
 					generation.result.snapshot.lastEventSequence === result.snapshot.lastEventSequence &&
-					generation.result.snapshot.lastEventCursor === result.snapshot.lastEventCursor;
+					generation.result.snapshot.lastEventCursor?.generation === result.snapshot.lastEventCursor?.generation &&
+					generation.result.snapshot.lastEventCursor?.sequence === result.snapshot.lastEventCursor?.sequence;
 				if (generation?.transcript.complete && !duplicate) {
 					this.failWorkerSnapshotCache(
 						worker,
