@@ -3819,9 +3819,10 @@ export class AgentSession {
 					});
 				}
 			}
-			this.agent.state.systemPrompt = extensionResult?.systemPrompt
-				? this._refreshExtensionSystemPrompt(extensionResult.systemPrompt, basePromptSnapshot)
-				: this._baseSystemPrompt;
+			this.agent.state.systemPrompt =
+				extensionResult?.systemPrompt !== undefined
+					? this._refreshExtensionSystemPrompt(extensionResult.systemPrompt, basePromptSnapshot)
+					: this._baseSystemPrompt;
 		} catch (error) {
 			reportPreflight(false);
 			throw error;
@@ -3833,7 +3834,7 @@ export class AgentSession {
 
 		if (this._refineInFlight) {
 			await this._waitForRefineIdle();
-			if (extensionResult?.systemPrompt && basePromptSnapshot !== undefined) {
+			if (extensionResult?.systemPrompt !== undefined && basePromptSnapshot !== undefined) {
 				this.agent.state.systemPrompt = this._refreshExtensionSystemPrompt(
 					extensionResult.systemPrompt,
 					basePromptSnapshot,

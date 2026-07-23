@@ -568,6 +568,61 @@ stale injected extension instructions`,
 		expect(providerMessages).toContain("injected extension message preserved");
 	});
 
+	it("preserves an empty extension system prompt across an injected refine handoff wait", async () => {
+		let sessionInternals: {
+			_refineInFlight?: Promise<void>;
+			_promptInjectedMessage(
+				text: string,
+				message: {
+					role: "custom";
+					customType: string;
+					content: string;
+					display: boolean;
+					details: Record<string, never>;
+					timestamp: number;
+				},
+			): Promise<void>;
+		};
+		const harness = await createHarness({
+			systemPrompt: "base prompt",
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async () => {
+						let releaseRefine: (() => void) | undefined;
+						sessionInternals._refineInFlight = new Promise<void>((resolve) => {
+							releaseRefine = resolve;
+						});
+						setTimeout(() => {
+							sessionInternals._refineInFlight = undefined;
+							releaseRefine?.();
+						}, 0);
+						return { systemPrompt: "" };
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		sessionInternals = harness.session as unknown as typeof sessionInternals;
+		let providerSystemPrompt = "not observed";
+		harness.setResponses([
+			(context) => {
+				providerSystemPrompt = context.systemPrompt ?? "";
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await sessionInternals._promptInjectedMessage("injected prompt", {
+			role: "custom",
+			customType: "injected-test",
+			content: "injected prompt",
+			display: true,
+			details: {},
+			timestamp: Date.now(),
+		});
+
+		expect(providerSystemPrompt).toBe("");
+	});
+
 	it("preserves an extension system prompt across a refine handoff wait", async () => {
 		let sessionInternals: { _refineInFlight?: Promise<void> };
 		const harness = await createHarness({
