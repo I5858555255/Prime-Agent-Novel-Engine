@@ -459,7 +459,14 @@ export type SerializedBackgroundPlanResult =
 			branchVersion: number;
 	  }
 	| { status: "skip" }
-	| { status: "failure" };
+	| {
+			status: "failure";
+			/** True when the background plan was for an explicit refine.run (skipReview). */
+			explicit: boolean;
+			/** Original options for the failed plan, to allow re-queue on explicit failure. */
+			options: { instructions?: string; rollbackId?: string; global?: boolean };
+			branchVersion: number;
+	  };
 
 export type AutoRefineReviewer = (request: AutoRefineReviewRequest, signal?: AbortSignal) => Promise<AutoRefineReview>;
 
@@ -1799,6 +1806,18 @@ export class AgentSession {
 			if (branchVersion === this._autoRefineBranchVersion) {
 				this._lastAutoRefineReviewAt = Date.now();
 			}
+			// Re-queue an explicit refine.run whose background plan failed,
+			// but only when branchVersion is still current and no newer
+			// pending request has arrived since the background plan consumed
+			// the original one. A newer request retains priority; interval
+			// failures keep existing no-retry cooldown semantics.
+			if (
+				bgResult.explicit &&
+				bgResult.branchVersion === this._autoRefineBranchVersion &&
+				!this._pendingRequestedRefine
+			) {
+				this._pendingRequestedRefine = bgResult.options;
+			}
 			if (!this._pendingRequestedRefine) {
 				return;
 			}
@@ -2004,7 +2023,12 @@ export class AgentSession {
 			}
 			return { status: "plan", plan, options: planOptions, abort: refineAbort, branchVersion };
 		} catch {
-			return { status: "failure" };
+			return {
+				status: "failure",
+				explicit: skipReview,
+				options,
+				branchVersion,
+			};
 		} finally {
 			if (this._refineAbortController === refineAbort) {
 				this._refineAbortController = undefined;

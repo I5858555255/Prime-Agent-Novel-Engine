@@ -792,6 +792,152 @@ describe("Serialized refine review-fix regressions", () => {
 		expect(scheduleSpy).not.toHaveBeenCalled();
 	});
 
+	it("explicit refine.run bg plan fails then boundary replan/apply succeeds", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "test",
+			instructions: "test",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+
+		let planCalls = 0;
+		vi.spyOn(internals, "_planRefine").mockImplementation(async () => {
+			planCalls++;
+			if (planCalls === 1) throw new Error("bg plan failed");
+			return { id: "replan", proposal: { edits: [] } };
+		});
+		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		// Queue an explicit refine.run — this starts background planning at message_end.
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "explicit" });
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+
+		// Let the background plan fail.
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+
+		// At the boundary, the failure re-queues the explicit options and the
+		// synchronous pending path replans + applies.
+		await internals._runSerializedRefineCheckpoint();
+
+		expect(planCalls).toBe(2); // bg plan (failed) + synchronous replan
+		expect(internals._applyRefine).toHaveBeenCalledTimes(1);
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
+	it("interval bg plan failure does not retry synchronously", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "test",
+			instructions: "test",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+
+		// Interval background planning fails (not explicit refine.run).
+		vi.spyOn(internals, "_planRefine").mockRejectedValue(new Error("plan failed"));
+		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		internals._assistantTurnsSinceAutoRefine = 1;
+		(
+			internals as unknown as { _maybeStartSerializedBackgroundPlan: () => void }
+		)._maybeStartSerializedBackgroundPlan();
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+		await internals._runSerializedRefineCheckpoint();
+
+		// Reviewer called once (interval bg plan), NOT retried at boundary.
+		expect(reviewer).toHaveBeenCalledTimes(1);
+		expect(internals._applyRefine).not.toHaveBeenCalled();
+		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
+	it("stale branch failure does not requeue explicit refine.run", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "test",
+			instructions: "test",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+
+		vi.spyOn(internals, "_planRefine").mockRejectedValue(new Error("plan failed"));
+		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		// Queue explicit refine.run — starts background planning.
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "explicit" });
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+		// Invalidate the branch (simulates a newer turn or branch reset).
+		internals._autoRefineBranchVersion++;
+
+		await internals._runSerializedRefineCheckpoint();
+
+		// Stale branch: no re-queue, no apply.
+		expect(internals._applyRefine).not.toHaveBeenCalled();
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
+	it("newer pending supersedes failed older explicit refine.run", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "test",
+			instructions: "test",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+
+		vi.spyOn(internals, "_planRefine").mockImplementation(async (opts) => {
+			if (opts.instructions === "older") throw new Error("bg plan failed");
+			return { id: "newer-plan", proposal: { edits: [] } };
+		});
+		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		// Queue older request — starts background planning.
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "older" });
+		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+		// Queue newer request before the boundary.
+		internals._pendingRequestedRefine = { instructions: "newer" };
+
+		await internals._runSerializedRefineCheckpoint();
+
+		// Newer request is serviced (plan with "newer", not "older").
+		expect(internals._applyRefine).toHaveBeenCalledTimes(1);
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
 	it("interval background plan derives instructions from review, not prepopulated", async () => {
 		const reviewer = vi.fn(async () => ({
 			shouldRefine: true,
