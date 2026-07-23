@@ -86,8 +86,10 @@ export interface DaemonWorkerDescriptor {
 	supervisorSocketPath: string;
 	authenticationToken: string;
 	rootActiveSessionId: string;
-	/** Stable protocol client that owns this worker. Omitted for resident sessions. */
+	/** Legacy descriptor field. Supervisors clear it when adopting older workers. */
 	ownerClientId?: string;
+	/** Supervisor-managed cleanup policy for workers created by short-lived clients. */
+	retention?: "ephemeral";
 	rootSessionId?: string;
 	sessionFile?: string;
 	createdAt: string;
