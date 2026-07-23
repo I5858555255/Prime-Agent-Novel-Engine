@@ -3050,7 +3050,10 @@ export class AgentDaemon {
 				// Respond before completion (bash can outlive the client request
 				// timeout); output and completion stream via bash_* session events.
 				void state.runtime.session
-					.runUserBash(command.command, { excludeFromContext: command.excludeFromContext })
+					.runUserBash(command.command, {
+						excludeFromContext: command.excludeFromContext,
+						transient: command.transient,
+					})
 					.catch((error) => {
 						this.broadcastToSession(
 							state,

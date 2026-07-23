@@ -446,6 +446,8 @@ export interface AgentConnectionSideQuestionTurn {
 
 export interface AgentConnectionExecuteBashOptions {
 	excludeFromContext?: boolean;
+	/** Run without recording into the session (side-conversation bash). */
+	transient?: boolean;
 }
 
 export interface AgentConnectionNewSessionOptions {

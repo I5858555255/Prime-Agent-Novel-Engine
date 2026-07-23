@@ -743,6 +743,31 @@ describe("DaemonAgentConnection", () => {
 		expect(sent?.previousTurns).toEqual([{ question: "What changed?", answer: "The parser." }]);
 	});
 
+	it("gates transient bash on the daemon capability", async () => {
+		const oldDaemonClient = new FakeDaemonClient();
+		const oldConnection = new DaemonAgentConnection(asDaemonClient(oldDaemonClient), "active-original");
+
+		// Regular bash keeps working on old daemons.
+		await oldConnection.executeBash("ls");
+		expect(oldDaemonClient.requests.map((request) => request.type)).toEqual(["execute_bash"]);
+
+		// A transient run on an old daemon would be recorded into the session.
+		await expect(oldConnection.executeBash("ls", { transient: true })).rejects.toThrow(
+			"older build without side-conversation bash",
+		);
+		expect(oldDaemonClient.requests).toHaveLength(1);
+
+		const newDaemonClient = new FakeDaemonClient();
+		newDaemonClient.serverCapabilities.add("transient_bash");
+		const newConnection = new DaemonAgentConnection(asDaemonClient(newDaemonClient), "active-original");
+
+		await newConnection.executeBash("ls", { excludeFromContext: true, transient: true });
+		const sent = newDaemonClient.requests.find(
+			(command): command is Extract<DaemonCommand, { type: "execute_bash" }> => command.type === "execute_bash",
+		);
+		expect(sent).toMatchObject({ command: "ls", excludeFromContext: true, transient: true });
+	});
+
 	it("degrades an unavailable heartbeat catalog without sending an unsupported command", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-original");

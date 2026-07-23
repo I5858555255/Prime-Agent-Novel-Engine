@@ -50,12 +50,13 @@ import type { SessionSummary } from "./daemon-session-list.js";
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
 export const DAEMON_PROTOCOL_VERSION = 4;
 export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 2;
+// Revision 5: transient execute_bash + transient_bash capability.
 // Revision 4: side_question_transcript capability. The digest only covers the
 // command/outbound type source, so capability-list changes must bump this
 // revision by hand — otherwise a retained older daemon passes the staleness
 // probe and clients gate features against it forever.
-export const DAEMON_SCHEMA_REVISION = 4;
-export const DAEMON_SCHEMA_ID = "protocol-4-schema-4-43f35071b2bc";
+export const DAEMON_SCHEMA_REVISION = 5;
+export const DAEMON_SCHEMA_ID = "protocol-4-schema-5-e41b546484da";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -81,7 +82,10 @@ export type DaemonServerCapability =
 	| "model_catalog"
 	// The daemon honors previousTurns on start_side_question (multi-turn side
 	// conversations). Clients must check before sending follow-up transcripts.
-	| "side_question_transcript";
+	| "side_question_transcript"
+	// The daemon honors transient on execute_bash (side-conversation bash that
+	// is never recorded into the session). Clients must check before sending.
+	| "transient_bash";
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
 
 export interface DaemonProtocolInfo {
@@ -114,6 +118,7 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	"heartbeat_management",
 	"model_catalog",
 	"side_question_transcript",
+	"transient_bash",
 ];
 
 export interface DaemonRuntimeIdentity {
@@ -464,6 +469,7 @@ export type DaemonCommand =
 			activeSessionId: string;
 			command: string;
 			excludeFromContext?: boolean;
+			transient?: boolean;
 	  }
 	| { id?: string; type: "abort_bash"; activeSessionId: string }
 	| { id?: string; type: "cancel_rlm_child"; activeSessionId: string; childId: string }

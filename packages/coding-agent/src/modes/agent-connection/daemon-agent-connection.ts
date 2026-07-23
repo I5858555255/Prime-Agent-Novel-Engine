@@ -833,12 +833,20 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async executeBash(command: string, options?: AgentConnectionExecuteBashOptions): Promise<void> {
+		if (options?.transient && !this.client.supportsServerCapability("transient_bash")) {
+			// An older daemon would record the run into the session, leaking the
+			// side conversation into the main transcript; fail loudly instead.
+			throw new Error(
+				"the daemon is running an older build without side-conversation bash; restart the daemon and try again",
+			);
+		}
 		try {
 			await this.requestOk({
 				type: "execute_bash",
 				activeSessionId: this.activeSessionId,
 				command,
 				excludeFromContext: options?.excludeFromContext,
+				transient: options?.transient,
 			});
 		} catch (error) {
 			if (isUnknownDaemonCommandError(error, "execute_bash")) {

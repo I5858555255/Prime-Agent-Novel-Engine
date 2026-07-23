@@ -7457,7 +7457,7 @@ export class AgentSession {
 	async executeBash(
 		command: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean; operations?: BashOperations },
+		options?: { excludeFromContext?: boolean; operations?: BashOperations; transient?: boolean },
 	): Promise<BashResult> {
 		this._bashAbortController = new AbortController();
 
@@ -7477,7 +7477,9 @@ export class AgentSession {
 				},
 			);
 
-			this.recordBashResult(command, result, options);
+			if (!options?.transient) {
+				this.recordBashResult(command, result, options);
+			}
 			return result;
 		} finally {
 			this._bashAbortController = undefined;
@@ -7493,7 +7495,7 @@ export class AgentSession {
 	 * @param command The bash command to execute
 	 * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
 	 */
-	async runUserBash(command: string, options?: { excludeFromContext?: boolean }): Promise<void> {
+	async runUserBash(command: string, options?: { excludeFromContext?: boolean; transient?: boolean }): Promise<void> {
 		if (this.isBashRunning) {
 			throw new Error("A bash command is already running");
 		}
@@ -7504,7 +7506,7 @@ export class AgentSession {
 		this._userBashAbortRequested = false;
 		let end: UserBashEndDetails;
 		try {
-			end = await this.runUserBashLocked(command, options?.excludeFromContext ?? false);
+			end = await this.runUserBashLocked(command, options?.excludeFromContext ?? false, options?.transient ?? false);
 		} finally {
 			this._userBashRunning = false;
 		}
@@ -7571,13 +7573,23 @@ export class AgentSession {
 		}
 	}
 
-	private async runUserBashLocked(command: string, excludeFromContext: boolean): Promise<UserBashEndDetails> {
+	private async runUserBashLocked(
+		command: string,
+		excludeFromContext: boolean,
+		transient: boolean,
+	): Promise<UserBashEndDetails> {
 		const eventResult = await this._extensionRunner.emitUserBash({
 			type: "user_bash",
 			command,
 			excludeFromContext,
 			cwd: this.sessionManager.getCwd(),
 		});
+
+		// Transient runs (side-conversation bash) live only in their pane: they
+		// are never recorded, so reloads and rebuilds cannot resurface them.
+		const record = transient
+			? () => {}
+			: (result: BashResult) => this.recordBashResult(command, result, { excludeFromContext });
 
 		this._emit({ type: "bash_start", command, excludeFromContext });
 		try {
@@ -7587,7 +7599,7 @@ export class AgentSession {
 				if (result.output) {
 					this._emit({ type: "bash_output", chunk: result.output });
 				}
-				this.recordBashResult(command, result, { excludeFromContext });
+				record(result);
 				return {
 					exitCode: result.exitCode,
 					cancelled: result.cancelled,
@@ -7599,17 +7611,14 @@ export class AgentSession {
 			// An abort that arrived before the process spawned (during extension
 			// dispatch) has no abort controller to act on; honor it here instead.
 			if (this._userBashAbortRequested) {
-				this.recordBashResult(
-					command,
-					{ output: "", exitCode: undefined, cancelled: true, truncated: false },
-					{ excludeFromContext },
-				);
+				record({ output: "", exitCode: undefined, cancelled: true, truncated: false });
 				return { exitCode: undefined, cancelled: true, truncated: false };
 			}
 
 			const result = await this.executeBash(command, (chunk) => this._emit({ type: "bash_output", chunk }), {
 				excludeFromContext,
 				operations: eventResult?.operations,
+				transient,
 			});
 			return {
 				exitCode: result.exitCode,
@@ -7621,11 +7630,7 @@ export class AgentSession {
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			// Persist the failure like every other outcome so replayed transcripts
 			// and the LLM context reflect that the command did not run.
-			this.recordBashResult(
-				command,
-				{ output: `bash failed: ${errorMessage}`, exitCode: undefined, cancelled: false, truncated: false },
-				{ excludeFromContext },
-			);
+			record({ output: `bash failed: ${errorMessage}`, exitCode: undefined, cancelled: false, truncated: false });
 			return {
 				exitCode: undefined,
 				cancelled: false,

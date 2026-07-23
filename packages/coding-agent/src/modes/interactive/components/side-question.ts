@@ -3,15 +3,23 @@ import type { AgentConnectionSideQuestionEvent } from "../../agent-connection/ty
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 interface SideQuestionTurnState {
+	kind: "turn";
 	event: AgentConnectionSideQuestionEvent;
 	/** Follow-up questions render as a standard user-message bubble; the first turn keeps the /btw header. */
 	questionBubble: Box | undefined;
 	answer: Markdown;
 }
 
+/** A ! / !! run inside the pane, rendered by the same component the main thread uses. */
+interface SideQuestionBashState {
+	kind: "bash";
+	component: Component;
+	running: boolean;
+}
+
 export class SideQuestionComponent implements Component {
 	private readonly paddingX: number;
-	private readonly turns: SideQuestionTurnState[] = [];
+	private readonly entries: (SideQuestionTurnState | SideQuestionBashState)[] = [];
 
 	constructor(event: AgentConnectionSideQuestionEvent, paddingX = 2) {
 		this.paddingX = Math.max(2, paddingX);
@@ -20,7 +28,7 @@ export class SideQuestionComponent implements Component {
 
 	addTurn(event: AgentConnectionSideQuestionEvent): void {
 		let questionBubble: Box | undefined;
-		if (this.turns.length > 0) {
+		if (this.entries.length > 0) {
 			questionBubble = new Box(this.paddingX, 1, (content: string) =>
 				theme.getUserMessageBackgroundColor()(content),
 			);
@@ -34,11 +42,26 @@ export class SideQuestionComponent implements Component {
 			color: (content: string) => theme.fg("userMessageText", content),
 		});
 		answer.setText(event.answer);
-		this.turns.push({ event, questionBubble, answer });
+		this.entries.push({ kind: "turn", event, questionBubble, answer });
+	}
+
+	addBash(component: Component): void {
+		this.entries.push({ kind: "bash", component, running: true });
+	}
+
+	finishBash(): void {
+		for (const entry of this.entries) {
+			if (entry.kind === "bash") {
+				entry.running = false;
+			}
+		}
 	}
 
 	update(event: AgentConnectionSideQuestionEvent): void {
-		const turn = this.turns.find((candidate) => candidate.event.id === event.id);
+		const turn = this.entries.find(
+			(candidate): candidate is SideQuestionTurnState =>
+				candidate.kind === "turn" && candidate.event.id === event.id,
+		);
 		if (!turn) {
 			return;
 		}
@@ -47,9 +70,13 @@ export class SideQuestionComponent implements Component {
 	}
 
 	invalidate(): void {
-		for (const turn of this.turns) {
-			turn.questionBubble?.invalidate();
-			turn.answer.invalidate();
+		for (const entry of this.entries) {
+			if (entry.kind === "bash") {
+				entry.component.invalidate();
+			} else {
+				entry.questionBubble?.invalidate();
+				entry.answer.invalidate();
+			}
 		}
 	}
 
@@ -63,19 +90,23 @@ export class SideQuestionComponent implements Component {
 		};
 
 		pushSurfaced([blank]);
-		for (const turn of this.turns) {
-			if (turn.questionBubble) {
+		for (const entry of this.entries) {
+			if (entry.kind === "bash") {
+				pushSurfaced([...entry.component.render(width), blank]);
+				continue;
+			}
+			if (entry.questionBubble) {
 				// Bubble lines are already fully painted with the user-message background.
-				lines.push(...turn.questionBubble.render(width));
+				lines.push(...entry.questionBubble.render(width));
 			} else {
 				const question = new Text(
-					`${theme.fg("accent", "/btw")}  ${theme.bold(theme.fg("userMessageText", turn.event.question))}`,
+					`${theme.fg("accent", "/btw")}  ${theme.bold(theme.fg("userMessageText", entry.event.question))}`,
 					this.paddingX,
 					0,
 				).render(width);
 				pushSurfaced(question);
 			}
-			pushSurfaced([blank, ...this.renderAnswer(turn, width), blank]);
+			pushSurfaced([blank, ...this.renderAnswer(entry, width), blank]);
 		}
 		pushSurfaced([...this.renderHint(width), blank]);
 		return lines;
@@ -103,7 +134,9 @@ export class SideQuestionComponent implements Component {
 	private renderHint(width: number): string[] {
 		// Any running turn blocks follow-ups (a completed notice can be the last
 		// turn while an earlier question still streams), so check them all.
-		const running = this.turns.some((turn) => turn.event.status === "running");
+		const running = this.entries.some((entry) =>
+			entry.kind === "bash" ? entry.running : entry.event.status === "running",
+		);
 		const hint = running ? "esc to cancel and return to session" : "reply to follow up · esc to return to session";
 		return new Text(theme.fg("dim", hint), this.paddingX, 0).render(width);
 	}
