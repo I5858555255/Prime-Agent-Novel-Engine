@@ -2901,8 +2901,8 @@ export class AgentSession {
 				// at the shouldStopAfterTurn boundary, not here at agent_end.
 				if (!this._serializedRefine) {
 					this._consumePendingRequestedRefine();
+					this._scheduleAutoRefineAfterAgentEnd();
 				}
-				this._scheduleAutoRefineAfterAgentEnd();
 			}
 		}
 	}

@@ -731,6 +731,55 @@ describe("Serialized refine review-fix regressions", () => {
 		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
 	});
 
+	it("serialized failure does not schedule interactive auto-refine at agent_end", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "test",
+			instructions: "test",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+
+		// Make background planning fail
+		vi.spyOn(internals, "_planRefine").mockRejectedValue(new Error("plan failed"));
+		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+		// Spy on _maybeAutoRefine — it should NEVER be called in serialized mode
+		const maybeAutoRefineSpy = vi.spyOn(internals, "_maybeAutoRefine").mockResolvedValue(undefined);
+
+		// Start background planning and let it fail
+		internals._assistantTurnsSinceAutoRefine = 1;
+		(
+			internals as unknown as { _maybeStartSerializedBackgroundPlan: () => void }
+		)._maybeStartSerializedBackgroundPlan();
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+		// At the boundary, the failure result should stamp cooldown and return.
+		await internals._runSerializedRefineCheckpoint();
+
+		// Reviewer was called exactly once (during background planning).
+		expect(reviewer).toHaveBeenCalledTimes(1);
+		// _applyRefine was NOT called (planning failed).
+		expect(internals._applyRefine).not.toHaveBeenCalled();
+		// Cooldown was stamped.
+		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
+		// _assistantTurnsSinceAutoRefine was NOT reset (failure path doesn't reset).
+		expect(internals._assistantTurnsSinceAutoRefine).toBe(1);
+
+		// Simulate the agent_end handler path: in serialized mode, _scheduleAutoRefineAfterAgentEnd
+		// is now guarded by !_this._serializedRefine, so _maybeAutoRefine should NOT fire.
+		// Flush any pending setTimeout(0) callbacks.
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+		// _maybeAutoRefine must NEVER be called in serialized mode from agent_end.
+		expect(maybeAutoRefineSpy).not.toHaveBeenCalled();
+	});
+
 	it("interval background plan derives instructions from review, not prepopulated", async () => {
 		const reviewer = vi.fn(async () => ({
 			shouldRefine: true,
