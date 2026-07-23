@@ -3174,6 +3174,10 @@ export class AgentSession {
 			} catch {
 				// Best-effort drain; refinement errors must not block disposal.
 			}
+			// Stamp cooldown and reset counter so the interval check below
+			// does not trigger a duplicate refine after the explicit drain.
+			this._lastAutoRefineReviewAt = Date.now();
+			this._assistantTurnsSinceAutoRefine = 0;
 		}
 		// If auto-refine is due but has not started yet, run it now so the
 		// refinement is persisted before disposal. Use the direct serialized
@@ -5848,7 +5852,7 @@ export class AgentSession {
 		const refineAbort = new AbortController();
 		this._refineAbortController = refineAbort;
 
-		// Background planning phase — does NOT block turn entry points.
+		// Background planning phase — does NOT block turn entry points
 		const planRun = this._planRefine(options, refineAbort.signal);
 		const planSettled = planRun.then(
 			() => undefined,

@@ -938,6 +938,47 @@ describe("Serialized refine review-fix regressions", () => {
 		expect(internals._pendingRequestedRefine).toBeUndefined();
 	});
 
+	it("disposal does not double-refine after explicit drain", async () => {
+		const reviewer = vi.fn(async () => ({
+			shouldRefine: true,
+			rationale: "test",
+			instructions: "test",
+		}));
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
+			autoRefineReviewer: reviewer,
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+
+		let planCalls = 0;
+		vi.spyOn(internals, "_planRefine").mockImplementation(async () => {
+			planCalls++;
+			return { id: `plan-${planCalls}`, proposal: { edits: [] } };
+		});
+		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+
+		// Set up: assistant turns met, explicit refine.run pending.
+		internals._assistantTurnsSinceAutoRefine = 1;
+		internals._pendingRequestedRefine = { instructions: "explicit" };
+
+		// Drive the disposal drain path.
+		(
+			internals as unknown as { _drainPendingRefinementForDisposal: () => Promise<void> }
+		)._drainPendingRefinementForDisposal();
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+		// The explicit drain should have planned + applied exactly once.
+		expect(planCalls).toBe(1);
+		expect(internals._applyRefine).toHaveBeenCalledTimes(1);
+		// Counter reset prevents the interval check from triggering a second refine.
+		expect(internals._assistantTurnsSinceAutoRefine).toBe(0);
+		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(0);
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
 	it("interval background plan derives instructions from review, not prepopulated", async () => {
 		const reviewer = vi.fn(async () => ({
 			shouldRefine: true,
