@@ -448,6 +448,12 @@ export interface AgentConnectionExecuteBashOptions {
 	excludeFromContext?: boolean;
 	/** Run without recording into the session (side-conversation bash). */
 	transient?: boolean;
+	/**
+	 * Caller-generated id echoed on the run's bash_start/bash_end events, so the
+	 * requesting client can tell its own run apart from other clients' runs
+	 * broadcast on the same session.
+	 */
+	runId?: string;
 }
 
 export interface AgentConnectionNewSessionOptions {
@@ -564,7 +570,7 @@ export type AgentConnectionSessionEvent =
 	| { type: "rlm_child_update"; child: AgentConnectionRlmChildAgentSnapshot }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
-	| { type: "bash_start"; command: string; excludeFromContext: boolean }
+	| { type: "bash_start"; command: string; excludeFromContext: boolean; transient?: boolean; runId?: string }
 	| { type: "bash_output"; chunk: string }
 	| {
 			type: "bash_end";
@@ -574,6 +580,10 @@ export type AgentConnectionSessionEvent =
 			fullOutputPath?: string;
 			/** Set when execution failed before producing a result (e.g. spawn failure) */
 			errorMessage?: string;
+			/** Set for transient (side-conversation) runs so other attached clients suppress them. */
+			transient?: boolean;
+			/** Echo of the caller-supplied run id, so clients correlate runs by identity. */
+			runId?: string;
 	  };
 
 export type AgentConnectionEvent =

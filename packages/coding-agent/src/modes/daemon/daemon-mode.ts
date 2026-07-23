@@ -3053,6 +3053,7 @@ export class AgentDaemon {
 					.runUserBash(command.command, {
 						excludeFromContext: command.excludeFromContext,
 						transient: command.transient,
+						runId: command.runId,
 					})
 					.catch((error) => {
 						this.broadcastToSession(

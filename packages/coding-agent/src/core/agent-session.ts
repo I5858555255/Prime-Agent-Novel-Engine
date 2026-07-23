@@ -306,7 +306,7 @@ export type AgentSessionEvent =
 	| { type: "rlm_child_update"; child: RlmChildAgentSnapshot }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
-	| { type: "bash_start"; command: string; excludeFromContext: boolean }
+	| { type: "bash_start"; command: string; excludeFromContext: boolean; transient?: boolean; runId?: string }
 	| { type: "bash_output"; chunk: string }
 	| {
 			type: "bash_end";
@@ -316,6 +316,10 @@ export type AgentSessionEvent =
 			fullOutputPath?: string;
 			/** Set when execution failed before producing a result (e.g. spawn failure) */
 			errorMessage?: string;
+			/** Set for transient (side-conversation) runs so other attached clients suppress them. */
+			transient?: boolean;
+			/** Echo of the caller-supplied run id, so clients correlate runs by identity. */
+			runId?: string;
 	  };
 
 /** Listener function for agent session events */
@@ -7495,7 +7499,10 @@ export class AgentSession {
 	 * @param command The bash command to execute
 	 * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
 	 */
-	async runUserBash(command: string, options?: { excludeFromContext?: boolean; transient?: boolean }): Promise<void> {
+	async runUserBash(
+		command: string,
+		options?: { excludeFromContext?: boolean; transient?: boolean; runId?: string },
+	): Promise<void> {
 		if (this.isBashRunning) {
 			throw new Error("A bash command is already running");
 		}
@@ -7504,15 +7511,26 @@ export class AgentSession {
 		// slip through during the user_bash extension dispatch below.
 		this._userBashRunning = true;
 		this._userBashAbortRequested = false;
+		// Echoed on bash_start/bash_end so the requesting client can tell its own
+		// run apart from other clients' runs broadcast on the same session.
+		const identity = {
+			...(options?.transient ? { transient: true } : {}),
+			...(options?.runId !== undefined ? { runId: options.runId } : {}),
+		};
 		let end: UserBashEndDetails;
 		try {
-			end = await this.runUserBashLocked(command, options?.excludeFromContext ?? false, options?.transient ?? false);
+			end = await this.runUserBashLocked(
+				command,
+				options?.excludeFromContext ?? false,
+				options?.transient ?? false,
+				identity,
+			);
 		} finally {
 			this._userBashRunning = false;
 		}
 		// Emitted after the slot is released so clients never observe a bash_end
 		// while the session still rejects new commands as already running.
-		this._emit({ type: "bash_end", ...end });
+		this._emit({ type: "bash_end", ...end, ...identity });
 		void this._drainQueuedMessagesAfterBash().catch(() => undefined);
 	}
 
@@ -7577,6 +7595,7 @@ export class AgentSession {
 		command: string,
 		excludeFromContext: boolean,
 		transient: boolean,
+		identity: { transient?: boolean; runId?: string },
 	): Promise<UserBashEndDetails> {
 		const eventResult = await this._extensionRunner.emitUserBash({
 			type: "user_bash",
@@ -7591,7 +7610,7 @@ export class AgentSession {
 			? () => {}
 			: (result: BashResult) => this.recordBashResult(command, result, { excludeFromContext });
 
-		this._emit({ type: "bash_start", command, excludeFromContext });
+		this._emit({ type: "bash_start", command, excludeFromContext, ...identity });
 		try {
 			// If an extension returned a full result, surface it without executing
 			if (eventResult?.result) {

@@ -50,13 +50,15 @@ import type { SessionSummary } from "./daemon-session-list.js";
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
 export const DAEMON_PROTOCOL_VERSION = 4;
 export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 2;
-// Revision 5: transient execute_bash + transient_bash capability.
+// Revision 5: transient + runId on execute_bash (echoed with a transient
+// marker on the run's bash_start/bash_end session events) + transient_bash
+// capability.
 // Revision 4: side_question_transcript capability. The digest only covers the
-// command/outbound type source, so capability-list changes must bump this
-// revision by hand — otherwise a retained older daemon passes the staleness
-// probe and clients gate features against it forever.
+// command/outbound type source, so capability-list and session-event changes
+// must bump this revision by hand — otherwise a retained older daemon passes
+// the staleness probe and clients gate features against it forever.
 export const DAEMON_SCHEMA_REVISION = 5;
-export const DAEMON_SCHEMA_ID = "protocol-4-schema-5-e41b546484da";
+export const DAEMON_SCHEMA_ID = "protocol-4-schema-5-4c17c4fb3f00";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -83,8 +85,10 @@ export type DaemonServerCapability =
 	// The daemon honors previousTurns on start_side_question (multi-turn side
 	// conversations). Clients must check before sending follow-up transcripts.
 	| "side_question_transcript"
-	// The daemon honors transient on execute_bash (side-conversation bash that
-	// is never recorded into the session). Clients must check before sending.
+	// The daemon honors transient and runId on execute_bash (side-conversation
+	// bash: never recorded into the session, and its bash_start/bash_end events
+	// carry the transient marker and echoed runId so clients correlate runs by
+	// identity). Clients must check before sending.
 	| "transient_bash";
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
 
@@ -470,6 +474,7 @@ export type DaemonCommand =
 			command: string;
 			excludeFromContext?: boolean;
 			transient?: boolean;
+			runId?: string;
 	  }
 	| { id?: string; type: "abort_bash"; activeSessionId: string }
 	| { id?: string; type: "cancel_rlm_child"; activeSessionId: string; childId: string }

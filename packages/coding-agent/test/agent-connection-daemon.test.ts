@@ -761,11 +761,11 @@ describe("DaemonAgentConnection", () => {
 		newDaemonClient.serverCapabilities.add("transient_bash");
 		const newConnection = new DaemonAgentConnection(asDaemonClient(newDaemonClient), "active-original");
 
-		await newConnection.executeBash("ls", { excludeFromContext: true, transient: true });
+		await newConnection.executeBash("ls", { excludeFromContext: true, transient: true, runId: "side-run-1" });
 		const sent = newDaemonClient.requests.find(
 			(command): command is Extract<DaemonCommand, { type: "execute_bash" }> => command.type === "execute_bash",
 		);
-		expect(sent).toMatchObject({ command: "ls", excludeFromContext: true, transient: true });
+		expect(sent).toMatchObject({ command: "ls", excludeFromContext: true, transient: true, runId: "side-run-1" });
 	});
 
 	it("degrades an unavailable heartbeat catalog without sending an unsupported command", async () => {

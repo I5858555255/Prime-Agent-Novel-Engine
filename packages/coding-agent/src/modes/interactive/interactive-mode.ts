@@ -874,11 +874,16 @@ export class InteractiveMode {
 	private activeSideQuestionId: string | undefined;
 	// Set while a ! bash command runs inside the side conversation: its
 	// BashExecutionComponent renders inside the pane instead of the main chat.
-	private sideQuestionBash: { input: string; seedTranscript: boolean } | undefined;
-	// Set when the pane closes with a side bash still in flight: its remaining
-	// bash_* events are swallowed (until bash_end) instead of leaking into the
-	// main transcript. Safe as a boolean — the session runs one bash at a time.
-	private sideQuestionBashDiscarded = false;
+	// bash_* events broadcast to every attached client, so runs correlate by
+	// runId — the runId we generate here is echoed on our run's events.
+	private sideQuestionBash: { runId: string; input: string; seedTranscript: boolean } | undefined;
+	// The pane-mounted component of our own side run; bash_end seeds the side
+	// transcript only when it ends this exact component.
+	private sideQuestionBashComponent: BashExecutionComponent | undefined;
+	// Holds the runId of a side bash abandoned at pane close: that run's
+	// remaining bash_* events are swallowed (until its bash_end) instead of
+	// leaking into the main transcript.
+	private sideQuestionBashDiscarded: string | undefined;
 
 	// User bash execution tracking (! / !! prefix), driven by bash_* session events
 	private activeBashComponent: BashExecutionComponent | undefined = undefined;
@@ -4197,12 +4202,14 @@ export class InteractiveMode {
 		event: Extract<AgentConnectionSessionEvent, { type: "bash_end" }>,
 		rawOutput: string,
 	): void {
+		// Release the pane's running state before any early return so the cancel
+		// hint cannot stay stuck if the pending state was already cleared.
+		this.sideQuestionComponent?.finishBash();
 		const bash = this.sideQuestionBash;
 		if (!bash) {
 			return;
 		}
 		this.sideQuestionBash = undefined;
-		this.sideQuestionComponent?.finishBash();
 		// The pane already rendered the run; this only seeds follow-up turns.
 		if (!bash.seedTranscript || event.cancelled || event.errorMessage) {
 			return;
@@ -4225,8 +4232,9 @@ export class InteractiveMode {
 		if (this.sideQuestionBash) {
 			// A side-conversation bash run dies with its pane. Its bash_* events may
 			// still be in flight (even bash_start), so swallow them until bash_end.
+			this.sideQuestionBashDiscarded = this.sideQuestionBash.runId;
 			this.sideQuestionBash = undefined;
-			this.sideQuestionBashDiscarded = true;
+			this.sideQuestionBashComponent = undefined;
 			void this.agentConnection.abortBash().catch(() => undefined);
 		}
 		this.sideQuestionEvent = undefined;
@@ -4552,7 +4560,9 @@ export class InteractiveMode {
 					// bash_start event mounts the usual BashExecutionComponent there),
 					// stays out of the main-session context, and (for !, not !!) seeds
 					// follow-up side questions.
-					const sideBash = this.sideQuestionComponent ? { input: text, seedTranscript: !isExcluded } : undefined;
+					const sideBash = this.sideQuestionComponent
+						? { runId: randomUUID(), input: text, seedTranscript: !isExcluded }
+						: undefined;
 					if (sideBash) {
 						this.sideQuestionBash = sideBash;
 					} else {
@@ -4566,7 +4576,7 @@ export class InteractiveMode {
 					try {
 						await this.agentConnection.executeBash(command, {
 							excludeFromContext: isExcluded || sideBash !== undefined,
-							...(sideBash ? { transient: true } : {}),
+							...(sideBash ? { transient: true, runId: sideBash.runId } : {}),
 						});
 					} catch (error) {
 						// Re-sync rather than assume idle: the rejection may mean another
@@ -4580,10 +4590,10 @@ export class InteractiveMode {
 						if (this.sideQuestionBash === sideBash) {
 							this.sideQuestionBash = undefined;
 						}
-						if (sideBash && this.sideQuestionBashDiscarded) {
+						if (sideBash && this.sideQuestionBashDiscarded === sideBash.runId) {
 							// The pane discarded this run, but it never started, so no
-							// bash_end will arrive to consume the flag.
-							this.sideQuestionBashDiscarded = false;
+							// bash_end will arrive to consume the marker.
+							this.sideQuestionBashDiscarded = undefined;
 						}
 						this.showError(error instanceof Error ? error.message : String(error));
 					}
@@ -4965,17 +4975,30 @@ export class InteractiveMode {
 				break;
 
 			case "bash_start": {
-				if (this.sideQuestionBashDiscarded) {
-					// The discarded side run only now claimed the bash slot, so the
-					// abort sent at pane close was a no-op; abort again so an escaped
-					// run cannot keep executing invisibly.
-					void this.agentConnection.abortBash().catch(() => undefined);
+				if (this.sideQuestionBashDiscarded !== undefined) {
+					if (event.runId === this.sideQuestionBashDiscarded) {
+						// The discarded side run only now claimed the bash slot, so the
+						// abort sent at pane close was a no-op; abort again so an escaped
+						// run cannot keep executing invisibly.
+						void this.agentConnection.abortBash().catch(() => undefined);
+						break;
+					}
+					// A different run claimed the slot, so the discarded run lost the
+					// race and can never start (its execute_bash will reject); render
+					// this run normally instead of swallowing it.
+					this.sideQuestionBashDiscarded = undefined;
+				}
+				const ownSideBash = this.sideQuestionBash !== undefined && event.runId === this.sideQuestionBash.runId;
+				if (event.transient && !ownSideBash) {
+					// Another client's side-conversation run: it renders only in that
+					// client's pane, never in this window's chat.
 					break;
 				}
 				const component = new BashExecutionComponent(event.command, this.ui, event.excludeFromContext);
-				if (this.sideQuestionBash && this.sideQuestionComponent) {
+				if (ownSideBash && this.sideQuestionComponent) {
 					// Same component as the main thread, mounted inside the pane.
 					this.sideQuestionComponent.addBash(component);
+					this.sideQuestionBashComponent = component;
 				} else if (this.isAgentStreaming()) {
 					this.pendingMessagesContainer.addChild(component);
 					this.pendingBashComponents.push(component);
@@ -4988,7 +5011,7 @@ export class InteractiveMode {
 			}
 
 			case "bash_output":
-				if (this.sideQuestionBashDiscarded) {
+				if (this.sideQuestionBashDiscarded !== undefined) {
 					break;
 				}
 				if (this.activeBashComponent) {
@@ -4998,8 +5021,10 @@ export class InteractiveMode {
 				break;
 
 			case "bash_end": {
-				if (this.sideQuestionBashDiscarded) {
-					this.sideQuestionBashDiscarded = false;
+				if (this.sideQuestionBashDiscarded !== undefined) {
+					// Only the discarded run's own end consumes the marker; bash_start
+					// already cleared it for any other run that claimed the slot.
+					this.sideQuestionBashDiscarded = undefined;
 					this.activeBashComponent = undefined;
 					this.ui.requestRender();
 					break;
@@ -5017,10 +5042,15 @@ export class InteractiveMode {
 						);
 					}
 					this.activeBashComponent = undefined;
-				} else if (event.errorMessage) {
+				} else if (event.errorMessage && !event.transient) {
+					// Transient failures surface in the owning client's pane, not here.
 					this.showError(`Bash command failed: ${event.errorMessage}`);
 				}
-				this.finishSideQuestionBash(event, component?.getOutput() ?? "");
+				// Seed the side transcript only when our own pane-mounted run ended.
+				if (component !== undefined && component === this.sideQuestionBashComponent) {
+					this.sideQuestionBashComponent = undefined;
+					this.finishSideQuestionBash(event, component.getOutput());
+				}
 				this.ui.requestRender();
 				break;
 			}

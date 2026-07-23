@@ -847,6 +847,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				command,
 				excludeFromContext: options?.excludeFromContext,
 				transient: options?.transient,
+				runId: options?.runId,
 			});
 		} catch (error) {
 			if (isUnknownDaemonCommandError(error, "execute_bash")) {

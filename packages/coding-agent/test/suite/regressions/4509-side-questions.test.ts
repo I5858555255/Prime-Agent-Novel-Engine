@@ -501,9 +501,17 @@ describe("ENG-4509 side questions", () => {
 
 		await defaultEditor.onSubmit?.("!ls");
 
-		expect(executeBash).toHaveBeenCalledWith("ls", { excludeFromContext: true, transient: true });
+		expect(executeBash).toHaveBeenCalledWith("ls", {
+			excludeFromContext: true,
+			transient: true,
+			runId: expect.any(String),
+		});
 		expect(clearSideQuestion).not.toHaveBeenCalled();
-		expect(fakeThis.sideQuestionBash).toMatchObject({ input: "!ls", seedTranscript: true });
+		expect(fakeThis.sideQuestionBash).toMatchObject({
+			runId: expect.any(String),
+			input: "!ls",
+			seedTranscript: true,
+		});
 
 		const finishSideQuestionBash = (
 			InteractiveMode.prototype as unknown as {
@@ -590,7 +598,7 @@ describe("ENG-4509 side questions", () => {
 			clearShortcutGuide: vi.fn(),
 			sideQuestionComponent: {},
 			sideQuestionTurns: [],
-			sideQuestionBash: { input: "!ls", seedTranscript: true },
+			sideQuestionBash: { runId: "side-run-1", input: "!ls", seedTranscript: true },
 			activeSideQuestionId: undefined,
 			connectionCommands: [],
 			handleSideQuestion,
@@ -650,8 +658,8 @@ describe("ENG-4509 side questions", () => {
 			sideQuestionTurns: [],
 			sideQuestionComponent: {},
 			sideQuestionContainer: new Container(),
-			sideQuestionBash: { input: "!sleep 5", seedTranscript: true },
-			sideQuestionBashDiscarded: false,
+			sideQuestionBash: { runId: "side-run-1", input: "!sleep 5", seedTranscript: true },
+			sideQuestionBashDiscarded: undefined,
 			activeSideQuestionId: undefined,
 			agentConnection: { abortBash },
 			isInitialized: false,
@@ -664,10 +672,10 @@ describe("ENG-4509 side questions", () => {
 
 		clearSideQuestion.call(fakeThis, { abort: true });
 
-		// bash_start may not have been observed yet: the flag must swallow the
+		// bash_start may not have been observed yet: the marker must swallow the
 		// run's remaining events so cancelled side output never reaches the chat.
 		expect(fakeThis.sideQuestionBash).toBeUndefined();
-		expect(fakeThis.sideQuestionBashDiscarded).toBe(true);
+		expect(fakeThis.sideQuestionBashDiscarded).toBe("side-run-1");
 		expect(abortBash).toHaveBeenCalled();
 	});
 
@@ -676,8 +684,10 @@ describe("ENG-4509 side questions", () => {
 		try {
 			const addBash = vi.fn();
 			const finishBash = vi.fn();
-			const executeBash = (command: string, options?: { excludeFromContext?: boolean; transient?: boolean }) =>
-				harness.session.runUserBash(command, options);
+			const executeBash = (
+				command: string,
+				options?: { excludeFromContext?: boolean; transient?: boolean; runId?: string },
+			) => harness.session.runUserBash(command, options);
 			const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
 			const chatContainer = new Container();
 			const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
@@ -715,12 +725,24 @@ describe("ENG-4509 side questions", () => {
 			).handleEvent;
 
 			// Route real session events through the real handler, like subscribeToAgent does.
+			const bashEvents: { type: string; transient?: boolean; runId?: string }[] = [];
 			harness.session.subscribe(async (event) => {
+				if (event.type === "bash_start" || event.type === "bash_end") {
+					bashEvents.push(event);
+				}
 				await handleEvent.call(fakeThis, event);
 			});
 
 			await defaultEditor.onSubmit?.("!echo hello from side");
 
+			// The wire events carry the transient marker and echoed runId, so other
+			// clients suppress the run and this client correlates it by identity.
+			const runId = bashEvents.at(0)?.runId;
+			expect(runId).toEqual(expect.any(String));
+			expect(bashEvents).toMatchObject([
+				{ type: "bash_start", transient: true, runId },
+				{ type: "bash_end", transient: true, runId },
+			]);
 			// The run mounted the main-thread bash component in the pane, not the chat.
 			const component = addBash.mock.calls.at(0)?.[0] as BashExecutionComponent;
 			expect(component).toBeInstanceOf(BashExecutionComponent);
@@ -747,7 +769,7 @@ describe("ENG-4509 side questions", () => {
 		const abortBash = vi.fn(async () => {});
 		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
 			sideQuestionBash: undefined,
-			sideQuestionBashDiscarded: true,
+			sideQuestionBashDiscarded: "side-run-1",
 			activeBashComponent: undefined,
 			agentConnection: { abortBash },
 			// handleEvent preamble stubs
@@ -768,7 +790,13 @@ describe("ENG-4509 side questions", () => {
 			}
 		).handleEvent;
 
-		await handleEvent.call(fakeThis, { type: "bash_start", command: "sleep 5", excludeFromContext: true });
+		await handleEvent.call(fakeThis, {
+			type: "bash_start",
+			command: "sleep 5",
+			excludeFromContext: true,
+			transient: true,
+			runId: "side-run-1",
+		});
 
 		// The abort sent at pane close predated the slot claim; abort again.
 		expect(abortBash).toHaveBeenCalled();
@@ -779,8 +807,116 @@ describe("ENG-4509 side questions", () => {
 			exitCode: undefined,
 			cancelled: true,
 			truncated: false,
+			transient: true,
+			runId: "side-run-1",
 		});
-		expect(fakeThis.sideQuestionBashDiscarded).toBe(false);
+		expect(fakeThis.sideQuestionBashDiscarded).toBeUndefined();
+	});
+
+	it("does not abort or swallow another client's run after a discard", async () => {
+		const abortBash = vi.fn(async () => {});
+		const chatContainer = new Container();
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			// Our side bash was discarded at pane close but never claimed the slot.
+			sideQuestionBash: undefined,
+			sideQuestionBashDiscarded: "side-run-1",
+			activeBashComponent: undefined,
+			agentConnection: { abortBash },
+			// handleEvent preamble stubs
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			updateConnectionStateFromEvent: vi.fn(),
+			activityTracker: { handleEvent: vi.fn(), getStatus: () => ({ tokens: 0 }) },
+			updateWorkingLoaderMessage: vi.fn(),
+			isAgentStreaming: () => false,
+			ui: { requestRender: vi.fn() },
+			chatContainer,
+			pendingMessagesContainer: new Container(),
+			pendingBashComponents: [],
+		});
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof fakeThis, event: unknown): Promise<void>;
+			}
+		).handleEvent;
+
+		// Another client won the bash slot; its run must render, not be aborted.
+		await handleEvent.call(fakeThis, { type: "bash_start", command: "make build", excludeFromContext: false });
+
+		expect(abortBash).not.toHaveBeenCalled();
+		expect(fakeThis.sideQuestionBashDiscarded).toBeUndefined();
+		expect(chatContainer.children.some((child) => child instanceof BashExecutionComponent)).toBe(true);
+
+		await handleEvent.call(fakeThis, { type: "bash_output", chunk: "compiling\n" });
+		expect((fakeThis.activeBashComponent as BashExecutionComponent).getOutput()).toContain("compiling");
+	});
+
+	it("keeps foreign runs out of the pane and suppresses foreign transient runs", async () => {
+		const addBash = vi.fn();
+		const finishBash = vi.fn();
+		const showError = vi.fn();
+		const chatContainer = new Container();
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			// Our side bash is pending; its runId has not appeared yet.
+			sideQuestionBash: { runId: "side-run-1", input: "!ls", seedTranscript: true },
+			sideQuestionBashComponent: undefined,
+			sideQuestionBashDiscarded: undefined,
+			sideQuestionComponent: { addBash, finishBash },
+			sideQuestionTurns: [],
+			activeBashComponent: undefined,
+			showError,
+			// handleEvent preamble stubs
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			updateConnectionStateFromEvent: vi.fn(),
+			activityTracker: { handleEvent: vi.fn(), getStatus: () => ({ tokens: 0 }) },
+			updateWorkingLoaderMessage: vi.fn(),
+			isAgentStreaming: () => false,
+			ui: { requestRender: vi.fn() },
+			chatContainer,
+			pendingMessagesContainer: new Container(),
+			pendingBashComponents: [],
+		});
+		const handleEvent = (
+			InteractiveMode.prototype as unknown as {
+				handleEvent(this: typeof fakeThis, event: unknown): Promise<void>;
+			}
+		).handleEvent;
+
+		// A foreign main-chat run — even with the identical command string —
+		// renders in the chat, never in the pane.
+		await handleEvent.call(fakeThis, { type: "bash_start", command: "ls", excludeFromContext: false });
+		expect(addBash).not.toHaveBeenCalled();
+		expect(chatContainer.children.some((child) => child instanceof BashExecutionComponent)).toBe(true);
+		await handleEvent.call(fakeThis, { type: "bash_end", exitCode: 0, cancelled: false, truncated: false });
+		// The foreign run neither seeds the side transcript nor consumes the
+		// still-pending side bash (the rejected executeBash call clears it).
+		expect(fakeThis.sideQuestionTurns).toEqual([]);
+		expect(fakeThis.sideQuestionBash).toMatchObject({ runId: "side-run-1" });
+
+		// A foreign transient run (another client's side conversation) is
+		// suppressed entirely: no chat mount, no output, no failure toast.
+		chatContainer.clear();
+		await handleEvent.call(fakeThis, {
+			type: "bash_start",
+			command: "ls secret-dir",
+			excludeFromContext: true,
+			transient: true,
+			runId: "other-client-run",
+		});
+		expect(chatContainer.children).toEqual([]);
+		expect(fakeThis.activeBashComponent).toBeUndefined();
+		await handleEvent.call(fakeThis, {
+			type: "bash_end",
+			exitCode: undefined,
+			cancelled: false,
+			truncated: false,
+			errorMessage: "spawn failed",
+			transient: true,
+			runId: "other-client-run",
+		});
+		expect(showError).not.toHaveBeenCalled();
+		expect(fakeThis.sideQuestionTurns).toEqual([]);
 	});
 
 	it("keeps !! side-conversation bash display-only", async () => {
@@ -788,7 +924,7 @@ describe("ENG-4509 side questions", () => {
 		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
 			sideQuestionComponent: { finishBash },
 			sideQuestionTurns: [],
-			sideQuestionBash: { input: "!!pwd", seedTranscript: false },
+			sideQuestionBash: { runId: "side-run-1", input: "!!pwd", seedTranscript: false },
 		});
 		const finishSideQuestionBash = (
 			InteractiveMode.prototype as unknown as {
