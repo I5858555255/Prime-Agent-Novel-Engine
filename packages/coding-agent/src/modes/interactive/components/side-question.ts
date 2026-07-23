@@ -1,9 +1,11 @@
-import { type Component, Markdown, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { Box, type Component, Markdown, Text, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentConnectionSideQuestionEvent } from "../../agent-connection/types.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 interface SideQuestionTurnState {
 	event: AgentConnectionSideQuestionEvent;
+	/** Follow-up questions render as a standard user-message bubble; the first turn keeps the /btw header. */
+	questionBubble: Box | undefined;
 	answer: Markdown;
 }
 
@@ -17,11 +19,22 @@ export class SideQuestionComponent implements Component {
 	}
 
 	addTurn(event: AgentConnectionSideQuestionEvent): void {
+		let questionBubble: Box | undefined;
+		if (this.turns.length > 0) {
+			questionBubble = new Box(this.paddingX, 1, (content: string) =>
+				theme.getUserMessageBackgroundColor()(content),
+			);
+			questionBubble.addChild(
+				new Markdown(event.question, 0, 0, getMarkdownTheme(), {
+					color: (content: string) => theme.fg("userMessageText", content),
+				}),
+			);
+		}
 		const answer = new Markdown("", this.paddingX, 0, getMarkdownTheme(), {
 			color: (content: string) => theme.fg("userMessageText", content),
 		});
 		answer.setText(event.answer);
-		this.turns.push({ event, answer });
+		this.turns.push({ event, questionBubble, answer });
 	}
 
 	update(event: AgentConnectionSideQuestionEvent): void {
@@ -35,24 +48,37 @@ export class SideQuestionComponent implements Component {
 
 	invalidate(): void {
 		for (const turn of this.turns) {
+			turn.questionBubble?.invalidate();
 			turn.answer.invalidate();
 		}
 	}
 
 	render(width: number): string[] {
 		const blank = " ".repeat(Math.max(1, width));
-		const lines = [blank];
-		for (const [index, turn] of this.turns.entries()) {
-			const prefix = index === 0 ? "/btw" : "   ↳";
-			const question = new Text(
-				`${theme.fg("accent", prefix)}  ${theme.bold(theme.fg("userMessageText", turn.event.question))}`,
-				this.paddingX,
-				0,
-			).render(width);
-			lines.push(...question, blank, ...this.renderAnswer(turn, width), blank);
+		const lines: string[] = [];
+		const pushSurfaced = (raw: string[]) => {
+			for (const line of raw) {
+				lines.push(this.applySurface(line, width));
+			}
+		};
+
+		pushSurfaced([blank]);
+		for (const turn of this.turns) {
+			if (turn.questionBubble) {
+				// Bubble lines are already fully painted with the user-message background.
+				lines.push(...turn.questionBubble.render(width));
+			} else {
+				const question = new Text(
+					`${theme.fg("accent", "/btw")}  ${theme.bold(theme.fg("userMessageText", turn.event.question))}`,
+					this.paddingX,
+					0,
+				).render(width);
+				pushSurfaced(question);
+			}
+			pushSurfaced([blank, ...this.renderAnswer(turn, width), blank]);
 		}
-		lines.push(...this.renderHint(width), blank);
-		return lines.map((line) => this.applySurface(line, width));
+		pushSurfaced([...this.renderHint(width), blank]);
+		return lines;
 	}
 
 	private renderAnswer(turn: SideQuestionTurnState, width: number): string[] {

@@ -277,7 +277,7 @@ describe("ENG-4509 side questions", () => {
 		expect(rendered).not.toContain("…");
 	});
 
-	it("renders follow-up turns with a visible escape hint", () => {
+	it("renders follow-up turns as standard user bubbles with a visible escape hint", () => {
 		const component = new SideQuestionComponent({
 			id: "turn-1",
 			question: "First?",
@@ -286,13 +286,20 @@ describe("ENG-4509 side questions", () => {
 		});
 		component.addTurn({ id: "turn-2", question: "Second?", answer: "", status: "running" });
 		component.update({ id: "turn-2", question: "Second?", answer: "Second answer", status: "complete" });
-		const rendered = stripAnsi(component.render(60).join("\n"));
+		const lines = component.render(60);
+		const rendered = stripAnsi(lines.join("\n"));
 
 		expect(rendered).toContain("/btw  First?");
 		expect(rendered).toContain("First answer");
-		expect(rendered).toContain("↳  Second?");
+		expect(rendered).toContain("Second?");
+		expect(rendered).not.toContain("↳");
 		expect(rendered).toContain("Second answer");
 		expect(rendered).toContain("reply to follow up · esc to return to session");
+		// The follow-up question is a user-message bubble: its padding rows carry
+		// the user-message background rather than the popup surface.
+		expect(lines).toContain(theme.getUserMessageBackgroundColor()(" ".repeat(60)));
+		const questionLine = lines.find((line) => stripAnsi(line).includes("Second?"));
+		expect(questionLine).not.toContain("/btw");
 	});
 
 	it("shows a cancel hint while a turn is running", () => {
