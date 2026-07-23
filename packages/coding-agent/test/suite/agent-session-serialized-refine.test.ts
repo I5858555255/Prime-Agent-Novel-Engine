@@ -988,10 +988,15 @@ describe("Serialized refine review-fix regressions", () => {
 			rationale: "test",
 			instructions: "test",
 		}));
-		// Tool that blocks until released.
+		// Tool that blocks until released. Signals from execute so we know the
+		// real agent turn is active (isStreaming is true) before we proceed.
 		let resolveGate: () => void = () => {};
 		const gateReady = new Promise<void>((resolve) => {
 			resolveGate = resolve;
+		});
+		let gateStarted: () => void = () => {};
+		const gateStartedSignal = new Promise<void>((resolve) => {
+			gateStarted = resolve;
 		});
 		const gateTool: AgentTool = {
 			name: "gate",
@@ -999,6 +1004,7 @@ describe("Serialized refine review-fix regressions", () => {
 			description: "Blocking gate",
 			parameters: Type.Object({}),
 			execute: async () => {
+				gateStarted();
 				await gateReady;
 				return { content: [{ type: "text" as const, text: "gate done" }] };
 			},
@@ -1022,7 +1028,8 @@ describe("Serialized refine review-fix regressions", () => {
 		const bgPlanReady = new Promise<void>((resolve) => {
 			resolveBgPlan = resolve;
 		});
-		vi.spyOn(internals, "_planRefine").mockImplementation(async () => {
+		const applyCalls: { plan: unknown; options: unknown }[] = [];
+		vi.spyOn(internals, "_planRefine").mockImplementation(async (opts) => {
 			activePlans++;
 			maxConcurrentPlans = Math.max(maxConcurrentPlans, activePlans);
 			planCalls++;
@@ -1033,7 +1040,10 @@ describe("Serialized refine review-fix regressions", () => {
 			activePlans--;
 			return { id: `plan-${planCalls}`, proposal: { edits: [] } };
 		});
-		const applySpy = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+		vi.spyOn(internals, "_applyRefine").mockImplementation(async (plan, options) => {
+			applyCalls.push({ plan, options });
+			return emptyRefinementResult();
+		});
 
 		// Set up faux responses: first turn calls the gate tool (turn stays active),
 		// second response is plain text (turn ends after tool).
@@ -1044,13 +1054,13 @@ describe("Serialized refine review-fix regressions", () => {
 
 		// Start the real prompt — the gate tool will block, keeping the turn active.
 		const promptPromise = harness.session.prompt("test");
-		// Wait for the tool to start executing (message_end has fired).
-		await new Promise<void>((resolve) => setTimeout(resolve, 100));
+		// Wait for the gate tool to enter execute (real active turn, isStreaming is true).
+		await gateStartedSignal;
+		expect(harness.session.isStreaming).toBe(true);
 
-		// Queue an explicit refine.run — this starts background planning at message_end.
-		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
+		// Queue an explicit refine.run — starts background planning at message_end.
+		// Do NOT manually falsify isStreaming; the real turn owns it.
 		harness.session.handleRefineHostRequest("refine.run", { instructions: "bg" });
-		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
 		await new Promise<void>((resolve) => setTimeout(resolve, 50));
 		expect(planCalls).toBe(1);
 		expect(internals._serializedPlanInFlight).toBeDefined();
@@ -1067,13 +1077,25 @@ describe("Serialized refine review-fix regressions", () => {
 		await new Promise<void>((resolve) => setTimeout(resolve, 50));
 		// Bg plan applied; public refine should now proceed after the checkpoint.
 		resolveGate();
-		await Promise.allSettled([promptPromise, publicRefinePromise]);
+		const timeout = new Promise<never>((_, reject) =>
+			setTimeout(() => reject(new Error("Test timed out")), 10000),
+		);
+		await Promise.race([Promise.all([promptPromise, publicRefinePromise]), timeout]);
 
 		// Max concurrency was 1 throughout.
 		expect(maxConcurrentPlans).toBe(1);
-		// Bg plan was applied once, public plan was applied once.
-		expect(applySpy).toHaveBeenCalledTimes(2);
+		// Exactly two applies: background once, then public once.
+		expect(applyCalls).toHaveLength(2);
 		expect(planCalls).toBe(2);
+		// Verify apply order/identity: first apply is the bg plan, second is public.
+		const firstPlan = applyCalls[0].plan as { id: string };
+		const secondPlan = applyCalls[1].plan as { id: string };
+		expect(firstPlan.id).toBe("plan-1");
+		expect(secondPlan.id).toBe("plan-2");
+		const firstOptions = applyCalls[0].options as { instructions?: string };
+		const secondOptions = applyCalls[1].options as { instructions?: string };
+		expect(firstOptions.instructions).toBe("bg");
+		expect(secondOptions.instructions).toBe("public");
 	});
 
 	it("interval background plan derives instructions from review, not prepopulated", async () => {
