@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Removed the bundled orchestration heartbeat skill from the model system prompt.
+- Fixed feature hints crowding queued messages and side questions by placing them below the recap and hiding them while messages are queued ([ENG-4741](https://linear.app/primeintellect/issue/ENG-4741/recap-queuefollow-upmessage-hint-looks-cluttered)).
 - Fixed `/btw` truncating long answers by rendering side questions in the scrollable transcript.
 - Changed selection cursors from `→` to `›` across model selectors, scoped-models, and the theme default for consistency with tree and user-message selectors.
 - Changed the queued follow-up hint connector from `↳` to `╰─` to match the tool-execution continuation connector.
@@ -10,7 +12,10 @@
 - Changed slash-command autocomplete to separate argument hints and resource provenance, show only the selected command description, and summarize hidden results directionally.
 - Fixed cancelled extension commands remaining alive when spawned processes ignored SIGTERM ([#458](https://github.com/PrimeIntellect-ai/prime-agent/pull/458) by [@snimu](https://github.com/snimu)).
 - Fixed OAuth browser launch URLs being interpreted by the system shell.
+- Added agent-callable `refine` skill so the model can schedule continual harness refinement from IPython via `await refine.run()` without blocking the current turn ([#504](https://github.com/PrimeIntellect-ai/prime-agent/pull/504) by [@sethkarten](https://github.com/sethkarten)).
 - Changed long live session opens to render a bounded recent transcript tail while preserving full prompt history ([#343](https://github.com/PrimeIntellect-ai/prime-agent/pull/343) by [@sethkarten](https://github.com/sethkarten)).
+- Changed `/refine` to run planning in the background so the conversation is not blocked during the LLM pass ([#497](https://github.com/PrimeIntellect-ai/prime-agent/pull/497) by [@sethkarten](https://github.com/sethkarten)).
+- Added serialized headless refinement and `--goal` / `--goal-token-budget` for seeding durable session goals ([#514](https://github.com/PrimeIntellect-ai/prime-agent/pull/514) by [@sethkarten](https://github.com/sethkarten)).
 
 
 ## [0.3.2] - 2026-07-20

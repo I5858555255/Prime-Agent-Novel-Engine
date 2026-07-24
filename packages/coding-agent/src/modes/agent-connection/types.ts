@@ -584,7 +584,9 @@ export type AgentConnectionSessionEvent =
 			transient?: boolean;
 			/** Echo of the caller-supplied run id, so clients correlate runs by identity. */
 			runId?: string;
-	  };
+	  }
+	| { type: "refine_complete"; result: RefinementResult }
+	| { type: "refine_failed"; error: string };
 
 export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }

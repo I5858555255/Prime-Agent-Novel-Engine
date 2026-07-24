@@ -1358,7 +1358,9 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.observeDaemonEventSequence(message);
 
 		if (message.type === "session_event") {
-			this.observeStreamingMessage(message.event);
+			if (message.event.type !== "refine_complete" && message.event.type !== "refine_failed") {
+				this.observeStreamingMessage(message.event);
+			}
 			this.latestSnapshotIsFresh = false;
 			await this.emit({ type: "session_event", event: message.event });
 			return;
