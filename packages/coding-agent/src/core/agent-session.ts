@@ -2461,6 +2461,7 @@ export class AgentSession {
 				// for the shouldStopAfterTurn boundary.
 				if (this._serializedRefine) {
 					if (this._serializedPlanInFlight) {
+						this._autoRefineBranchVersion++;
 						if (this._refineAbortController) {
 							this._refineAbortController.abort();
 						} else {
@@ -3338,17 +3339,15 @@ export class AgentSession {
 				const nowMs = Date.now();
 				const underCooldown =
 					this._lastAutoRefineReviewAt > 0 && nowMs - this._lastAutoRefineReviewAt < compactSettings.cooldownMs;
-				if (underCooldown) {
-					this._compactAutoRefinePending = false;
+				this._compactAutoRefinePending = false;
+				if (!underCooldown) {
+					try {
+						await this._runSerializedAutoRefineReview("compact", this._autoRefineBranchVersion);
+					} catch {
+						// Best-effort drain; refinement errors must not block disposal.
+					}
 					return;
 				}
-				this._compactAutoRefinePending = false;
-				try {
-					await this._runSerializedAutoRefineReview("compact", this._autoRefineBranchVersion);
-				} catch {
-					// Best-effort drain; refinement errors must not block disposal.
-				}
-				return;
 			}
 		}
 

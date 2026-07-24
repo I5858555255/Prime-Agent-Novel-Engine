@@ -523,7 +523,7 @@ describe("Serialized background planning during tools", () => {
 		expect(internals._assistantTurnsSinceAutoRefine).toBe(0);
 	});
 
-	it("services refine.run at the same boundary when an interval plan is already in flight", async () => {
+	it("lets refine.run supersede an interval plan that ignores abort", async () => {
 		const reviewer = vi.fn(async () => ({
 			shouldRefine: true,
 			rationale: "interval review",
@@ -550,7 +550,7 @@ describe("Serialized background planning during tools", () => {
 			}
 			return { id: `plan-${planCalls}`, proposal: { edits: [] } };
 		});
-		vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+		const apply = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
 
 		internals._assistantTurnsSinceAutoRefine = 1;
 		(
@@ -571,7 +571,8 @@ describe("Serialized background planning during tools", () => {
 
 		expect(reviewer).toHaveBeenCalledTimes(1);
 		expect(internals._planRefine).toHaveBeenCalledTimes(2);
-		expect(internals._applyRefine).toHaveBeenCalledTimes(2);
+		expect(apply).toHaveBeenCalledTimes(1);
+		expect(apply.mock.calls[0]?.[0]).toMatchObject({ id: "plan-2" });
 		expect(internals._pendingRequestedRefine).toBeUndefined();
 	});
 
@@ -720,51 +721,6 @@ describe("Serialized refine review-fix regressions", () => {
 		await internals._runSerializedRefineCheckpoint();
 		expect(internals._applyRefine).toHaveBeenCalledTimes(1);
 		expect(internals._assistantTurnsSinceAutoRefine).toBe(0);
-	});
-
-	it("explicit refine.run supersedes an in-flight interval plan", async () => {
-		const reviewer = vi.fn(async () => ({
-			shouldRefine: true,
-			rationale: "interval rationale",
-			instructions: "interval instructions",
-		}));
-		const harness = await createHarness({
-			persistSession: true,
-			serializedRefine: true,
-			settings: { autoRefine: { enabled: true, turnInterval: 1, cooldownMs: 0 } },
-			autoRefineReviewer: reviewer,
-		});
-		harnesses.push(harness);
-		const internals = harness.session as unknown as SerializedInternals;
-		let intervalSignal: AbortSignal | undefined;
-		vi.spyOn(internals, "_planRefine").mockImplementation(
-			(options: { instructions?: string }, signal: AbortSignal) => {
-				if (options.instructions?.includes("interval rationale")) {
-					intervalSignal = signal;
-					return new Promise((_, reject) => {
-						signal.addEventListener("abort", () => reject(new Error("superseded")), { once: true });
-					});
-				}
-				return Promise.resolve({ id: "explicit-plan", proposal: { edits: [] } });
-			},
-		);
-		const apply = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
-
-		internals._assistantTurnsSinceAutoRefine = 1;
-		internals._maybeStartSerializedBackgroundPlan();
-		await vi.waitFor(() => expect(intervalSignal).toBeDefined());
-
-		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = true;
-		harness.session.handleRefineHostRequest("refine.run", { instructions: "explicit instructions" });
-		(harness.session.agent.state as { isStreaming: boolean }).isStreaming = false;
-
-		expect(intervalSignal?.aborted).toBe(true);
-		await internals._runSerializedRefineCheckpoint();
-
-		expect(apply).toHaveBeenCalledTimes(1);
-		expect(apply.mock.calls[0]?.[0]).toMatchObject({ id: "explicit-plan" });
-		expect(apply.mock.calls[0]?.[1]).toEqual({ instructions: "explicit instructions", global: undefined });
-		expect(internals._pendingRequestedRefine).toBeUndefined();
 	});
 
 	it("failure result stamps cooldown and does NOT retry synchronously", async () => {
@@ -1513,6 +1469,29 @@ describe("Serialized refine review-fix regressions", () => {
 
 		expect(reviewer).not.toHaveBeenCalled();
 		expect(internals._compactAutoRefinePending).toBe(false);
+	});
+
+	it("continues to the interval drain after a compact trigger hits cooldown", async () => {
+		const harness = await createHarness({
+			persistSession: true,
+			serializedRefine: true,
+			settings: { autoRefine: { enabled: true, compact: true, turnInterval: 1, cooldownMs: 60_000 } },
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const settings = { enabled: true, compact: true, turnInterval: 1, cooldownMs: 60_000 };
+		vi.spyOn(harness.session.settingsManager, "getAutoRefineSettings")
+			.mockReturnValueOnce(settings)
+			.mockReturnValue({ ...settings, cooldownMs: 0 });
+		const checkpoint = vi.spyOn(internals, "_runSerializedRefineCheckpoint").mockResolvedValue();
+		internals._lastAutoRefineReviewAt = Date.now();
+		internals._assistantTurnsSinceAutoRefine = 1;
+		internals._compactAutoRefinePending = true;
+
+		await internals._drainPendingRefinementForDisposal();
+
+		expect(internals._compactAutoRefinePending).toBe(false);
+		expect(checkpoint).toHaveBeenCalledOnce();
 	});
 
 	it("falls back to an interval review when compact-triggered refinement is disabled", async () => {
