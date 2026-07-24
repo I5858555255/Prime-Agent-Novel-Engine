@@ -535,6 +535,72 @@ describe("ENG-4509 side questions", () => {
 		expect(fakeThis.sideQuestionBash).toBeUndefined();
 	});
 
+	it("bounds side-bash output before seeding follow-up context", () => {
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			sideQuestionComponent: { finishBash: vi.fn() },
+			sideQuestionTurns: [],
+			sideQuestionBash: { runId: "side-run-1", input: "!generate-output", seedTranscript: true },
+		});
+		const finishSideQuestionBash = (
+			InteractiveMode.prototype as unknown as {
+				finishSideQuestionBash(
+					this: typeof fakeThis,
+					event: {
+						exitCode?: number;
+						cancelled: boolean;
+						truncated: boolean;
+						fullOutputPath?: string;
+						errorMessage?: string;
+					},
+					rawOutput: string,
+				): void;
+			}
+		).finishSideQuestionBash;
+		const rawOutput = Array.from({ length: 2101 }, (_, index) => `line-${index}`).join("\n");
+
+		finishSideQuestionBash.call(
+			fakeThis,
+			{
+				exitCode: 0,
+				cancelled: false,
+				truncated: true,
+				fullOutputPath: "/tmp/full-output.log",
+			},
+			rawOutput,
+		);
+
+		const answer = fakeThis.sideQuestionTurns[0].answer;
+		expect(answer).not.toContain("line-0\n");
+		expect(answer).toContain("line-2100");
+		expect(answer).toContain("[Output truncated. Full output: /tmp/full-output.log]");
+		expect(Buffer.byteLength(answer)).toBeLessThan(50 * 1024);
+	});
+
+	it("uses a safe markdown fence for side-bash output containing backticks", () => {
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			sideQuestionComponent: { finishBash: vi.fn() },
+			sideQuestionTurns: [],
+			sideQuestionBash: { runId: "side-run-1", input: "!show-fence", seedTranscript: true },
+		});
+		const finishSideQuestionBash = (
+			InteractiveMode.prototype as unknown as {
+				finishSideQuestionBash(
+					this: typeof fakeThis,
+					event: { exitCode?: number; cancelled: boolean; truncated: boolean; errorMessage?: string },
+					rawOutput: string,
+				): void;
+			}
+		).finishSideQuestionBash;
+
+		finishSideQuestionBash.call(
+			fakeThis,
+			{ exitCode: 0, cancelled: false, truncated: false },
+			"before\n```\nafter\n",
+		);
+
+		expect(fakeThis.sideQuestionTurns[0].answer).toBe("````\nbefore\n```\nafter\n````");
+	});
+
 	it("keeps the cancel hint while an earlier turn streams behind a notice", () => {
 		const component = new SideQuestionComponent({
 			id: "turn-1",
@@ -615,7 +681,7 @@ describe("ENG-4509 side questions", () => {
 		expect(handleSideQuestion).not.toHaveBeenCalled();
 	});
 
-	it("rejects image follow-ups with an in-pane notice and keeps the draft", async () => {
+	it("rejects image follow-ups on text-only models with an in-pane notice and keeps the draft", async () => {
 		const handleSideQuestion = vi.fn(async () => {});
 		const addTurn = vi.fn();
 		const setText = vi.fn();
@@ -629,7 +695,8 @@ describe("ENG-4509 side questions", () => {
 			sideQuestionTurns: [],
 			activeSideQuestionId: undefined,
 			connectionCommands: [],
-			collectImagesFor: () => [{ type: "image", data: "abc", mimeType: "image/png" }],
+			pastedImages: new Map([[1, { type: "image", data: "abc", mimeType: "image/png" }]]),
+			getCurrentModel: () => ({ input: ["text"] }),
 			handleSideQuestion,
 			ui: { requestRender: vi.fn() },
 		});
@@ -651,7 +718,7 @@ describe("ENG-4509 side questions", () => {
 		expect(handleSideQuestion).not.toHaveBeenCalled();
 	});
 
-	it("swallows discarded side-bash events after the pane closes", () => {
+	it("waits for a pending side bash to claim the slot before aborting it", () => {
 		const abortBash = vi.fn(async () => {});
 		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
 			sideQuestionEvent: { id: "turn-1", question: "First?", answer: "done", status: "complete" },
@@ -676,7 +743,34 @@ describe("ENG-4509 side questions", () => {
 		// run's remaining events so cancelled side output never reaches the chat.
 		expect(fakeThis.sideQuestionBash).toBeUndefined();
 		expect(fakeThis.sideQuestionBashDiscarded).toBe("side-run-1");
-		expect(abortBash).toHaveBeenCalled();
+		expect(abortBash).not.toHaveBeenCalled();
+	});
+
+	it("aborts a side bash immediately after observing its matching start", () => {
+		const abortBash = vi.fn(async () => {});
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			sideQuestionEvent: { id: "turn-1", question: "First?", answer: "done", status: "complete" },
+			sideQuestionTurns: [],
+			sideQuestionComponent: {},
+			sideQuestionContainer: new Container(),
+			sideQuestionBash: { runId: "side-run-1", input: "!sleep 5", seedTranscript: true },
+			sideQuestionBashComponent: {},
+			sideQuestionBashDiscarded: undefined,
+			activeSideQuestionId: undefined,
+			agentConnection: { abortBash },
+			isInitialized: false,
+		});
+		const clearSideQuestion = (
+			InteractiveMode.prototype as unknown as {
+				clearSideQuestion(this: typeof fakeThis, options?: { abort?: boolean }): void;
+			}
+		).clearSideQuestion;
+
+		clearSideQuestion.call(fakeThis, { abort: true });
+
+		expect(fakeThis.sideQuestionBashDiscarded).toBe("side-run-1");
+		expect(fakeThis.sideQuestionBashComponent).toBeUndefined();
+		expect(abortBash).toHaveBeenCalledOnce();
 	});
 
 	it("runs side bash through the real pipeline without recording into the session", async () => {
@@ -798,7 +892,7 @@ describe("ENG-4509 side questions", () => {
 			runId: "side-run-1",
 		});
 
-		// The abort sent at pane close predated the slot claim; abort again.
+		// No session-scoped abort is sent until this matching run claims the slot.
 		expect(abortBash).toHaveBeenCalled();
 		expect(fakeThis.activeBashComponent).toBeUndefined();
 

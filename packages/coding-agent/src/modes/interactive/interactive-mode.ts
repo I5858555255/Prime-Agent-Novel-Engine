@@ -98,6 +98,7 @@ import { emptyGoalState, formatGoalUsage, GOAL_CONTEXT_PREVIEW_LABEL, type GoalS
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import {
+	bashOutputToText,
 	createCompactionSummaryMessage,
 	createHeartbeatPromptMessage,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
@@ -117,7 +118,7 @@ import {
 	parseSlashCommand,
 	resolveBuiltinSlashCommandName,
 } from "../../core/slash-commands.js";
-import type { TruncationResult } from "../../core/tools/truncate.js";
+import { type TruncationResult, truncateTail } from "../../core/tools/truncate.js";
 import { PRIME_BUTTERFLY_LOGO } from "../../themes/prime-logo.js";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
@@ -4145,6 +4146,10 @@ export class InteractiveMode {
 		return images.length > 0 ? images : undefined;
 	}
 
+	private hasPastedImagesFor(text: string): boolean {
+		return imageMarkerIds(text).some((id) => this.pastedImages.has(id));
+	}
+
 	private async handleSideQuestion(question: string): Promise<void> {
 		if (!question) {
 			this.showWarning("Usage: /btw <question>");
@@ -4224,12 +4229,18 @@ export class InteractiveMode {
 		if (!bash.seedTranscript || event.cancelled || event.errorMessage) {
 			return;
 		}
-		const output = rawOutput.replace(/\n+$/, "");
-		const exitSuffix = event.exitCode !== undefined && event.exitCode !== 0 ? `\nexit code ${event.exitCode}` : "";
+		const truncation = truncateTail(rawOutput);
+		const output = truncation.content.replace(/\n+$/, "");
 		this.sideQuestionTurns.push({
 			id: `side-bash-${randomUUID()}`,
 			question: bash.input,
-			answer: output ? `\`\`\`\n${output}\n\`\`\`${exitSuffix}` : `(no output)${exitSuffix}`,
+			answer: bashOutputToText({
+				output,
+				exitCode: event.exitCode,
+				cancelled: false,
+				truncated: event.truncated || truncation.truncated,
+				fullOutputPath: event.fullOutputPath,
+			}),
 			status: "complete",
 		});
 	}
@@ -4242,10 +4253,15 @@ export class InteractiveMode {
 		if (this.sideQuestionBash) {
 			// A side-conversation bash run dies with its pane. Its bash_* events may
 			// still be in flight (even bash_start), so swallow them until bash_end.
+			const ownsRunningBash = this.sideQuestionBashComponent !== undefined;
 			this.sideQuestionBashDiscarded = this.sideQuestionBash.runId;
 			this.sideQuestionBash = undefined;
 			this.sideQuestionBashComponent = undefined;
-			void this.agentConnection.abortBash().catch(() => undefined);
+			// abort_bash is session-scoped. Before our matching bash_start arrives,
+			// another client may own the slot, so only abort a run we have observed.
+			if (ownsRunningBash) {
+				void this.agentConnection.abortBash().catch(() => undefined);
+			}
 		}
 		this.sideQuestionEvent = undefined;
 		this.sideQuestionTurns = [];
@@ -4630,7 +4646,7 @@ export class InteractiveMode {
 					}
 					// Side questions are text-only end to end; a reply with pasted
 					// images gets an in-pane notice instead of silently dropping them.
-					if (this.collectImagesFor(text)?.length) {
+					if (this.hasPastedImagesFor(text)) {
 						this.editor.setText(text);
 						this.sideQuestionComponent.addTurn({
 							id: `side-notice-${randomUUID()}`,
@@ -4987,9 +5003,8 @@ export class InteractiveMode {
 			case "bash_start": {
 				if (this.sideQuestionBashDiscarded !== undefined) {
 					if (event.runId === this.sideQuestionBashDiscarded) {
-						// The discarded side run only now claimed the bash slot, so the
-						// abort sent at pane close was a no-op; abort again so an escaped
-						// run cannot keep executing invisibly.
+						// The discarded side run now owns the bash slot. Abort only
+						// after matching its identity so a foreign run is never killed.
 						void this.agentConnection.abortBash().catch(() => undefined);
 						break;
 					}
