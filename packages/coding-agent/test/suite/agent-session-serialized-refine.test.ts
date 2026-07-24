@@ -13,6 +13,7 @@ type SerializedInternals = {
 	}): Promise<boolean>;
 	_runSerializedRefineCheckpoint(): Promise<void>;
 	_runSerializedRefine(options: { instructions?: string; global?: boolean }): Promise<void>;
+	_consumeSerializedBackgroundPlan(consume: (result: unknown) => Promise<boolean>): Promise<string>;
 	_runSerializedAutoRefineReview(reason: "turn_interval" | "compact", branchVersion: number): Promise<void>;
 	_consumePendingRequestedRefine(): boolean;
 	_maybeAutoRefine(reason: string): Promise<void>;
@@ -2418,21 +2419,81 @@ describe("P0 concurrency regressions", () => {
 	it("consumes a serialized background plan only once across concurrent drains", async () => {
 		const harness = await createHarness({ persistSession: true, serializedRefine: true });
 		harnesses.push(harness);
-		const internals = harness.session as unknown as SerializedInternals & {
-			_awaitSerializedBackgroundPlan(): Promise<unknown>;
-		};
+		const internals = harness.session as unknown as SerializedInternals;
 		let resolvePlan: (value: unknown) => void = () => {};
 		internals._serializedPlanInFlight = new Promise((resolve) => {
 			resolvePlan = resolve;
 		});
+		let releaseProcessing: () => void = () => {};
+		const processing = new Promise<void>((resolve) => {
+			releaseProcessing = resolve;
+		});
+		const firstConsumer = vi.fn(async (result: unknown) => {
+			expect(result).toEqual({ status: "skip" });
+			await processing;
+			return false;
+		});
+		const secondConsumer = vi.fn(async () => false);
 
-		const first = internals._awaitSerializedBackgroundPlan();
-		const second = internals._awaitSerializedBackgroundPlan();
+		const first = internals._consumeSerializedBackgroundPlan(firstConsumer);
+		const second = internals._consumeSerializedBackgroundPlan(secondConsumer);
 		expect(internals._serializedPlanInFlight).toBeDefined();
 		resolvePlan({ status: "skip" });
+		await vi.waitFor(() => expect(firstConsumer).toHaveBeenCalledOnce());
 
-		await expect(first).resolves.toEqual({ status: "skip" });
-		await expect(second).resolves.toBeUndefined();
+		let secondSettled = false;
+		void second.then(() => {
+			secondSettled = true;
+		});
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(secondSettled).toBe(false);
+
+		releaseProcessing();
+		await expect(first).resolves.toBe("continue");
+		await expect(second).resolves.toBe("waited");
+		expect(secondConsumer).not.toHaveBeenCalled();
+	});
+
+	it("disposal waits for the checkpoint owner to finish applying a claimed plan", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		let resolvePlan: (value: unknown) => void = () => {};
+		internals._serializedPlanInFlight = new Promise((resolve) => {
+			resolvePlan = resolve;
+		});
+		internals._assistantTurnsSinceAutoRefine = 1;
+		let releaseApply: () => void = () => {};
+		const applyBlocked = new Promise<void>((resolve) => {
+			releaseApply = resolve;
+		});
+		const apply = vi.spyOn(internals, "_applyRefine").mockImplementation(async () => {
+			await applyBlocked;
+			return emptyRefinementResult();
+		});
+
+		const checkpoint = internals._runSerializedRefineCheckpoint();
+		const drain = internals._drainPendingRefinementForDisposal();
+		resolvePlan({
+			status: "plan",
+			plan: { id: "claimed-plan", proposal: { edits: [] } },
+			options: {},
+			abort: new AbortController(),
+			branchVersion: internals._autoRefineBranchVersion,
+		});
+		await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+
+		let drainSettled = false;
+		void drain.then(() => {
+			drainSettled = true;
+		});
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(drainSettled).toBe(false);
+
+		releaseApply();
+		await Promise.all([checkpoint, drain]);
+		expect(apply).toHaveBeenCalledOnce();
+		expect(internals._assistantTurnsSinceAutoRefine).toBe(0);
 	});
 
 	it("drains a due interactive auto-refine without waiting for agent idle", async () => {

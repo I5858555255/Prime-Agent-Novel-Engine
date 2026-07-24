@@ -432,6 +432,13 @@ describe("parseArgs", () => {
 			});
 		});
 
+		test("accepts a gate command that starts with an unknown short flag", () => {
+			const result = parseArgs(["--autonomous-gate", "-x npm test"]);
+
+			expect(result.autonomousGates).toEqual(["-x npm test"]);
+			expect(result.diagnostics).toEqual([]);
+		});
+
 		test.each([
 			"--autonomous-gate",
 			"--autonomous-gate-retries",
@@ -638,11 +645,12 @@ describe("parseArgs", () => {
 			expect(result.diagnostics).toEqual([{ type: "error", message: "--goal requires a value" }]);
 		});
 
-		test("--goal followed by a short flag produces an error for --goal", () => {
+		test("--goal accepts a dash-prefixed objective", () => {
 			const result = parseArgs(["--goal", "-p"]);
-			expect(result.goal).toBeUndefined();
-			expect(result.print).toBe(true);
-			expect(result.diagnostics).toEqual([{ type: "error", message: "--goal requires a value" }]);
+
+			expect(result.goal).toBe("-p");
+			expect(result.print).toBeUndefined();
+			expect(result.diagnostics).toEqual([]);
 		});
 
 		test("--goal-token-budget without --goal produces an error", () => {

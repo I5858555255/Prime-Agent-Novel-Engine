@@ -329,7 +329,7 @@ export function parseArgs(args: string[]): Args {
 
 function hasRequiredOptionValue(args: string[], index: number, flag: string, result: Args): boolean {
 	const next = args[index + 1];
-	if (next === undefined || next.startsWith("-")) {
+	if (next === undefined || next.startsWith("--")) {
 		result.diagnostics.push({ type: "error", message: `${flag} requires a value` });
 		return false;
 	}

@@ -1004,7 +1004,7 @@ export class AgentSession {
 	 * and is awaited at shouldStopAfterTurn before applying.
 	 */
 	private _serializedPlanInFlight?: Promise<SerializedBackgroundPlanResult | undefined>;
-	private _serializedPlanClaim?: Promise<SerializedBackgroundPlanResult | undefined>;
+	private _serializedPlanClaim?: Promise<void>;
 	private _serializedExplicitRefineOptions?: { instructions?: string; global?: boolean };
 
 	constructor(config: AgentSessionConfig) {
@@ -1787,77 +1787,85 @@ export class AgentSession {
 		//    interval checks because background planning may have consumed
 		//    the pending request at message_end.
 		const branchVersion = this._autoRefineBranchVersion;
-		const bgResult = await this._awaitSerializedBackgroundPlan();
-		if (this._disposed || this._disposing) {
-			return;
-		}
+		const bgConsumption = await this._consumeSerializedBackgroundPlan(async (bgResult) => {
+			if (this._disposed || this._disposing) {
+				return true;
+			}
 
-		if (bgResult?.status === "plan") {
-			// Fix 4: Validate branchVersion before applying the plan.
-			if (bgResult.branchVersion !== this._autoRefineBranchVersion) {
-				if (!this._pendingRequestedRefine) {
+			if (bgResult?.status === "plan") {
+				// Fix 4: Validate branchVersion before applying the plan.
+				if (bgResult.branchVersion !== this._autoRefineBranchVersion) {
+					if (!this._pendingRequestedRefine) {
+						this._lastAutoRefineReviewAt = Date.now();
+						this._assistantTurnsSinceAutoRefine = 0;
+						return true;
+					}
+				} else {
+					// Apply the EXACT background plan directly via _applyRefine
+					// (no second _planRefine call).
+					try {
+						await this._applySerializedPlan(bgResult);
+					} catch (error) {
+						this._emitRefineFailed(error);
+					}
 					this._lastAutoRefineReviewAt = Date.now();
 					this._assistantTurnsSinceAutoRefine = 0;
-					return;
+					if (!this._pendingRequestedRefine) {
+						return true;
+					}
 				}
-			} else {
-				// Apply the EXACT background plan directly via _applyRefine
-				// (no second _planRefine call).
-				try {
-					await this._applySerializedPlan(bgResult);
-				} catch (error) {
-					this._emitRefineFailed(error);
-				}
+			}
+
+			if (bgResult?.status === "skip") {
+				// Reviewer declined during background planning.
+				// Reset exactly once. Never retry the interval review; only fall through for a separate pending refine.run.
 				this._lastAutoRefineReviewAt = Date.now();
 				this._assistantTurnsSinceAutoRefine = 0;
 				if (!this._pendingRequestedRefine) {
-					return;
+					return true;
 				}
 			}
-		}
 
-		if (bgResult?.status === "skip") {
-			// Reviewer declined during background planning.
-			// Reset exactly once. Never retry the interval review; only fall through for a separate pending refine.run.
-			this._lastAutoRefineReviewAt = Date.now();
-			this._assistantTurnsSinceAutoRefine = 0;
-			if (!this._pendingRequestedRefine) {
-				return;
+			if (bgResult?.status === "failure") {
+				// Fix 3: Background review or planning failed. Stamp cooldown
+				// without a synchronous retry (the discriminated contract says no duplicate boundary
+				// model call). A separately queued refine.run may still be serviced below.
+				if (branchVersion === this._autoRefineBranchVersion) {
+					this._lastAutoRefineReviewAt = Date.now();
+				}
+				// Re-queue an explicit refine.run whose background plan failed,
+				// but only when branchVersion is still current and no newer
+				// pending request has arrived since the background plan consumed
+				// the original one. A newer request retains priority; interval
+				// failures keep existing no-retry cooldown semantics.
+				if (
+					bgResult.explicit &&
+					bgResult.branchVersion === this._autoRefineBranchVersion &&
+					!this._pendingRequestedRefine
+				) {
+					this._pendingRequestedRefine = bgResult.options;
+				}
+				if (!this._pendingRequestedRefine) {
+					return true;
+				}
 			}
-		}
 
-		if (bgResult?.status === "failure") {
-			// Fix 3: Background review or planning failed. Stamp cooldown
-			// without a synchronous retry (the discriminated contract says no duplicate boundary
-			// model call). A separately queued refine.run may still be serviced below.
-			if (branchVersion === this._autoRefineBranchVersion) {
-				this._lastAutoRefineReviewAt = Date.now();
-			}
-			// Re-queue an explicit refine.run whose background plan failed,
-			// but only when branchVersion is still current and no newer
-			// pending request has arrived since the background plan consumed
-			// the original one. A newer request retains priority; interval
-			// failures keep existing no-retry cooldown semantics.
-			if (
-				bgResult.explicit &&
-				bgResult.branchVersion === this._autoRefineBranchVersion &&
-				!this._pendingRequestedRefine
-			) {
-				this._pendingRequestedRefine = bgResult.options;
-			}
-			if (!this._pendingRequestedRefine) {
-				return;
-			}
-		}
-
-		if (bgResult?.status === "invalidated") {
-			if (!this._pendingRequestedRefine) {
+			if (bgResult?.status === "invalidated" && !this._pendingRequestedRefine) {
 				this._lastAutoRefineReviewAt = Date.now();
 				this._assistantTurnsSinceAutoRefine = 0;
-				return;
+				return true;
 			}
-		}
 
+			await this._runSerializedRefineCheckpointAfterBackground(branchVersion);
+			return true;
+		});
+		if (this._disposed || this._disposing || bgConsumption !== "none") {
+			return;
+		}
+		await this._runSerializedRefineCheckpointAfterBackground(branchVersion);
+	}
+
+	private async _runSerializedRefineCheckpointAfterBackground(branchVersion: number): Promise<void> {
 		// No background result, or a refine.run arrived while the background result was
 		// in flight. Fall through so an explicit pending request is serviced at this boundary.
 
@@ -1963,27 +1971,36 @@ export class AgentSession {
 	}
 
 	/**
-	 * Await and clear the serialized background plan if in flight.
-	 * Returns the discriminated result or undefined if no plan was started.
+	 * Claim and process the serialized background plan if one is in flight.
+	 * A concurrent caller waits for the claim holder's full processing callback
+	 * instead of resuming as soon as planning settles.
 	 */
-	private async _awaitSerializedBackgroundPlan(): Promise<SerializedBackgroundPlanResult | undefined> {
+	private async _consumeSerializedBackgroundPlan(
+		consume: (result: SerializedBackgroundPlanResult | undefined) => Promise<boolean>,
+	): Promise<"none" | "waited" | "continue" | "stop"> {
 		if (this._serializedPlanClaim) {
 			await this._serializedPlanClaim.catch(() => undefined);
-			return undefined;
+			return "waited";
 		}
 		const planInFlight = this._serializedPlanInFlight;
 		if (!planInFlight) {
-			return undefined;
+			return "none";
 		}
-		const claim = planInFlight.catch(() => undefined);
+
+		let releaseClaim: () => void = () => {};
+		const claim = new Promise<void>((resolve) => {
+			releaseClaim = resolve;
+		});
 		this._serializedPlanClaim = claim;
 		try {
-			return await claim;
-		} finally {
+			const result = await planInFlight.catch(() => undefined);
 			if (this._serializedPlanInFlight === planInFlight) {
 				this._serializedPlanInFlight = undefined;
 				this._serializedExplicitRefineOptions = undefined;
 			}
+			return (await consume(result)) ? "stop" : "continue";
+		} finally {
+			releaseClaim();
 			if (this._serializedPlanClaim === claim) {
 				this._serializedPlanClaim = undefined;
 			}
@@ -2143,7 +2160,7 @@ export class AgentSession {
 		// plan+apply cycle.
 		while (this._serializedPlanInFlight || this._refineInFlight || this._refinePlanInFlight) {
 			if (this._serializedPlanInFlight) {
-				await this._awaitSerializedBackgroundPlan();
+				await this._consumeSerializedBackgroundPlan(async () => false);
 			} else if (this._refineInFlight) {
 				await this._refineInFlight;
 			} else {
@@ -3255,36 +3272,42 @@ export class AgentSession {
 				// Fix 5: Await the background plan and apply a ready "plan"
 				// result before teardown so the refinement is persisted.
 				// Do NOT discard a ready plan.
-				const bgResult = await this._awaitSerializedBackgroundPlan();
-				if (bgResult?.status === "plan" && bgResult.branchVersion === this._autoRefineBranchVersion) {
-					try {
-						await this._applySerializedPlan(bgResult);
-					} catch (error) {
-						this._emitRefineFailed(error);
+				await this._consumeSerializedBackgroundPlan(async (bgResult) => {
+					if (bgResult?.status === "plan" && bgResult.branchVersion === this._autoRefineBranchVersion) {
+						try {
+							await this._applySerializedPlan(bgResult);
+						} catch (error) {
+							this._emitRefineFailed(error);
+						}
+						// Stamp cooldown and reset counter so the interval
+						// check below does not trigger a duplicate refine.
+						this._lastAutoRefineReviewAt = Date.now();
+						this._assistantTurnsSinceAutoRefine = 0;
 					}
-					// Stamp cooldown and reset counter so the interval
-					// check below does not trigger a duplicate refine.
-					this._lastAutoRefineReviewAt = Date.now();
-					this._assistantTurnsSinceAutoRefine = 0;
-				}
-				// Preserve a consumed explicit request when its background plan failed,
-				// matching the turn-boundary recovery path. The pending drain below
-				// retries it once before disposal.
-				if (
-					bgResult?.status === "failure" &&
-					bgResult.explicit &&
-					bgResult.branchVersion === this._autoRefineBranchVersion &&
-					!this._pendingRequestedRefine
-				) {
-					this._pendingRequestedRefine = bgResult.options;
-				}
-				// For "skip" or "failure", stamp cooldown and reset counter
-				// so the interval check below does not trigger a duplicate
-				// terminal retry.
-				if (bgResult?.status === "skip" || bgResult?.status === "failure" || bgResult?.status === "invalidated") {
-					this._lastAutoRefineReviewAt = Date.now();
-					this._assistantTurnsSinceAutoRefine = 0;
-				}
+					// Preserve a consumed explicit request when its background plan failed,
+					// matching the turn-boundary recovery path. The pending drain below
+					// retries it once before disposal.
+					if (
+						bgResult?.status === "failure" &&
+						bgResult.explicit &&
+						bgResult.branchVersion === this._autoRefineBranchVersion &&
+						!this._pendingRequestedRefine
+					) {
+						this._pendingRequestedRefine = bgResult.options;
+					}
+					// For "skip" or "failure", stamp cooldown and reset counter
+					// so the interval check below does not trigger a duplicate
+					// terminal retry.
+					if (
+						bgResult?.status === "skip" ||
+						bgResult?.status === "failure" ||
+						bgResult?.status === "invalidated"
+					) {
+						this._lastAutoRefineReviewAt = Date.now();
+						this._assistantTurnsSinceAutoRefine = 0;
+					}
+					return false;
+				});
 			} else {
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			}
@@ -5704,7 +5727,7 @@ export class AgentSession {
 		this._refineAbortController?.abort();
 		// Await and clear serialized background plan if in flight.
 		if (this._serializedPlanInFlight) {
-			await this._awaitSerializedBackgroundPlan();
+			await this._consumeSerializedBackgroundPlan(async () => false);
 		}
 		while (this._refinePlanInFlight) {
 			await this._refinePlanInFlight;
