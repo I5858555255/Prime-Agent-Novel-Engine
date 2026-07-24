@@ -38,6 +38,7 @@ function createFeatureHintMode() {
 		featureHintAnimationTimer: undefined,
 		featureHintComponent: undefined,
 		featureHintRunPending: false,
+		featureHintSuppressedByQueue: false,
 		childAgentPanelMode: undefined,
 		options: { returnToAgentsView: true },
 		getAppKeyDisplay: () => "Ctrl+Q",
@@ -155,5 +156,9 @@ describe("ENG-4741 hint placement", () => {
 		mode.connectionQueue.followUp = [];
 		callPrivate(mode, "updatePendingMessagesDisplay");
 		expect(featureHintContainer.children).toHaveLength(1);
+
+		const restoredHint = featureHintContainer.children[0];
+		callPrivate(mode, "updatePendingMessagesDisplay");
+		expect(featureHintContainer.children).toEqual([restoredHint]);
 	});
 });

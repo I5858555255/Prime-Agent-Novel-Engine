@@ -842,6 +842,7 @@ export class InteractiveMode {
 	private featureHintAnimationTimer: NodeJS.Timeout | undefined;
 	private featureHintComponent: FeatureHintComponent | undefined;
 	private featureHintRunPending = false;
+	private featureHintSuppressedByQueue = false;
 	private pulseTimer: NodeJS.Timeout | undefined = undefined;
 	private pulseFrame = 0;
 	private readonly activityTracker = new AgentActivityTracker();
@@ -2685,6 +2686,7 @@ export class InteractiveMode {
 		this.queuedMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
 		this.connectionQueue = { steering: [], followUp: [] };
+		this.featureHintSuppressedByQueue = false;
 		if (options?.clearPromptStash) {
 			this.promptStash = undefined;
 		}
@@ -6844,7 +6846,8 @@ export class InteractiveMode {
 		// their own container below the execution indicator and recap.
 		this.queuedMessagesContainer.clear();
 		const { steering: steeringMessages, followUp: followUpMessages } = this.getAllQueuedMessages();
-		if (steeringMessages.length > 0 || followUpMessages.length > 0) {
+		const hasQueuedMessages = steeringMessages.length > 0 || followUpMessages.length > 0;
+		if (hasQueuedMessages) {
 			this.queuedMessagesContainer.addChild(new Spacer(1));
 			for (const message of steeringMessages) {
 				const text = theme.fg("dim", formatQueuedMessagePreview(message, "Steering"));
@@ -6858,9 +6861,11 @@ export class InteractiveMode {
 			const hintText = theme.fg("dim", `╰─ ${dequeueHint} to edit all queued messages`);
 			this.queuedMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
-		if (this.shouldSuppressFeatureHint()) {
+		if (hasQueuedMessages && !this.featureHintSuppressedByQueue) {
+			this.featureHintSuppressedByQueue = true;
 			this.clearFeatureHintPresentation();
-		} else {
+		} else if (!hasQueuedMessages && this.featureHintSuppressedByQueue) {
+			this.featureHintSuppressedByQueue = false;
 			this.resumeFeatureHintPresentation();
 		}
 	}
