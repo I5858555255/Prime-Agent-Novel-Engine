@@ -2336,6 +2336,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		shouldRunOnboarding(): boolean;
 		markOnboardingShown(): void;
 		runStartupOnboarding(): Promise<boolean>;
+		runOnboardingImportFlow(): Promise<void>;
 		runOnboardingFlow(showPrimeCliSplash?: boolean): Promise<void>;
 		applySelectedModel(model: AgentConnectionModel): Promise<void>;
 		prepareForModelSelectionAfterLogin(authResult: AuthenticationResult): Promise<boolean>;
@@ -2460,6 +2461,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 			},
 		};
 		fakeThis.getModelCandidates = vi.fn(async () => [primeModel]);
+		fakeThis.runOnboardingImportFlow = vi.fn(async () => {});
 		return fakeThis;
 	}
 
@@ -2484,7 +2486,7 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		expect(fakeThis.uiServices.settingsManager.setOnboardingShown).toHaveBeenCalledWith(true);
 	});
 
-	test("persists onboarding before opening the one-shot flow", async () => {
+	test("persists onboarding after import completes and before opening the one-shot flow", async () => {
 		let shown = false;
 		let flushed = false;
 		const fakeThis = createPrimeCliHarness(false);
@@ -2494,6 +2496,10 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 		});
 		fakeThis.uiServices.settingsManager.flush = vi.fn(async () => {
 			flushed = true;
+		});
+		fakeThis.runOnboardingImportFlow = vi.fn(async () => {
+			expect(shown).toBe(false);
+			expect(flushed).toBe(false);
 		});
 		fakeThis.runOnboardingFlow = vi.fn(async (showPrimeCliSplash?: boolean) => {
 			expect(showPrimeCliSplash).toBe(true);
@@ -2505,7 +2511,32 @@ describe("InteractiveMode Prime CLI onboarding", () => {
 
 		expect(fakeThis.uiServices.settingsManager.setOnboardingShown).toHaveBeenCalledWith(true);
 		expect(fakeThis.uiServices.settingsManager.flush).toHaveBeenCalledTimes(1);
+		expect(fakeThis.runOnboardingImportFlow).toHaveBeenCalledTimes(1);
 		expect(fakeThis.runOnboardingFlow).toHaveBeenCalledWith(true);
+	});
+
+	test("does not suppress onboarding when import is interrupted", async () => {
+		const fakeThis = createPrimeCliHarness(false);
+		fakeThis.runOnboardingImportFlow = vi.fn(async () => {
+			throw new Error("interrupted");
+		});
+
+		await expect(runStartupOnboarding.call(fakeThis)).rejects.toThrow("interrupted");
+
+		expect(fakeThis.uiServices.settingsManager.setOnboardingShown).not.toHaveBeenCalled();
+		expect(fakeThis.uiServices.settingsManager.flush).not.toHaveBeenCalled();
+	});
+
+	test("imports first-launch data without reopening model setup for a ready model", async () => {
+		const fakeThis = createPrimeCliHarness(false);
+		const readyModel = { ...primeModel, provider: "anthropic" };
+		fakeThis.connectionState = createConnectionState({ model: readyModel });
+		fakeThis.runOnboardingFlow = vi.fn(async () => {});
+
+		await expect(runStartupOnboarding.call(fakeThis)).resolves.toBe(true);
+
+		expect(fakeThis.runOnboardingImportFlow).toHaveBeenCalledTimes(1);
+		expect(fakeThis.runOnboardingFlow).not.toHaveBeenCalled();
 	});
 
 	test("cancelled Prime CLI splash exits onboarding before opening configuration", async () => {

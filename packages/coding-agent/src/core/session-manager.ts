@@ -56,6 +56,11 @@ export interface SessionHeader {
 	cwd: string;
 	parentSession?: string;
 	git?: GitContext;
+	importedFrom?: {
+		source: string;
+		id: string;
+		contentHash: string;
+	};
 }
 
 export interface NewSessionOptions {
@@ -1684,7 +1689,9 @@ export class SessionManager {
 		// the header), so the entries argument is only a fallback for an undefined
 		// leaf — never hit here since leafId is always set or null. Avoids an O(n)
 		// array copy on every call (attach, get_session_context, agent init, ...).
-		return buildSessionContext(this.fileEntries as SessionEntry[], this.leafId, this.byId);
+		const context = buildSessionContext(this.fileEntries as SessionEntry[], this.leafId, this.byId);
+		const header = this.fileEntries[0];
+		return header?.type === "session" && header.importedFrom ? { ...context, model: null } : context;
 	}
 
 	/**

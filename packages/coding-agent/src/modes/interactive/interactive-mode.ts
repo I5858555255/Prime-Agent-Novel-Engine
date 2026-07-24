@@ -108,6 +108,16 @@ import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.
 import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-inference-model-selection.js";
 import { parseCommandArgs } from "../../core/prompt-templates.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
+import {
+	detectSessionImportFileKind,
+	discoverSessionImports,
+	type ExternalSessionImportFileKind,
+	formatSessionImportResult,
+	importExternalSessionFile,
+	importSessionsAndSkills,
+	type SessionImportInventory,
+	type SessionImportSource,
+} from "../../core/session-import/index.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
 import {
@@ -122,6 +132,7 @@ import { PRIME_BUTTERFLY_LOGO } from "../../themes/prime-logo.js";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { readClipboardImage } from "../../utils/clipboard-image.js";
+import { readFirstLineSync } from "../../utils/file-lines.js";
 import { parseGitUrl } from "../../utils/git.js";
 import { resizeImage } from "../../utils/image-resize.js";
 import { getCwdRelativePath } from "../../utils/paths.js";
@@ -193,6 +204,7 @@ import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybin
 import type { AuthSelectorProvider } from "./components/oauth-selector.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
+import { SessionImportSelectorComponent } from "./components/session-import-selector.js";
 import { SessionPickerScreen } from "./components/session-picker-screen.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
@@ -214,7 +226,12 @@ import type {
 	InteractiveModeLocalToolRendererDefinition,
 	InteractiveModeUiServices,
 } from "./interactive-mode-services.js";
-import { type OnboardingStartupState, shouldRunOnboarding, shouldRunPrimeCliOnboardingSplash } from "./onboarding.js";
+import {
+	isOnboardingModelReady,
+	type OnboardingStartupState,
+	shouldRunOnboarding,
+	shouldRunPrimeCliOnboardingSplash,
+} from "./onboarding.js";
 import type { ClientPromptStashStore, PromptStash, PromptStashState } from "./prompt-stash-state.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
@@ -612,6 +629,22 @@ function omitOrphanToolResults(messages: AgentMessage[]): AgentMessage[] {
 	return renderableMessages;
 }
 
+function isImportedSessionFile(sessionFile: string | undefined): boolean {
+	if (!sessionFile) {
+		return false;
+	}
+	try {
+		const firstLine = readFirstLineSync(sessionFile);
+		if (!firstLine) {
+			return false;
+		}
+		const header = JSON.parse(firstLine) as { type?: unknown; importedFrom?: unknown };
+		return header.type === "session" && header.importedFrom !== undefined;
+	} catch {
+		return false;
+	}
+}
+
 function isDeadTerminalError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) {
 		return false;
@@ -909,6 +942,7 @@ export class InteractiveMode {
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
+	private compactImportedToolHistory = false;
 
 	// Thinking block visibility state
 	private hideThinkingBlock = false;
@@ -1617,11 +1651,89 @@ export class InteractiveMode {
 			return false;
 		}
 
+		const modelReady = isOnboardingModelReady(this.getOnboardingState());
 		const showPrimeCliSplash = this.shouldRunPrimeCliOnboardingSplash();
+		await this.runOnboardingImportFlow();
 		this.markOnboardingShown();
 		await this.settingsManager.flush();
-		await this.runOnboardingFlow(showPrimeCliSplash);
+		if (showPrimeCliSplash || !modelReady) {
+			await this.runOnboardingFlow(showPrimeCliSplash);
+		}
 		return true;
+	}
+
+	private async runOnboardingImportFlow(): Promise<void> {
+		await this.runSessionImportFlow("onboarding");
+	}
+
+	private async runSessionImportFlow(trigger: "onboarding" | "command"): Promise<void> {
+		try {
+			const inventories = discoverSessionImports({ agentDir: getAgentDir() });
+			if (inventories.length === 0) {
+				if (trigger === "command") {
+					this.showStatus("No recent harness sessions or skills found");
+				}
+				return;
+			}
+			const selectedSources = await this.showSessionImportSelector(inventories);
+			if (!selectedSources || selectedSources.length === 0) {
+				if (trigger === "command") {
+					this.showStatus("Import cancelled");
+				}
+				return;
+			}
+			const result = await importSessionsAndSkills(inventories, selectedSources, {
+				agentDir: getAgentDir(),
+				onProgress: (message) => {
+					this.showStatus(message);
+					this.ui.requestRender();
+				},
+			});
+			this.showStatus(formatSessionImportResult(result));
+			if (result.skillsImported > 0) {
+				try {
+					await this.agentConnection.reload();
+				} catch {
+					this.showWarning("Skills were imported, but will become available after the next reload.");
+				}
+			}
+		} catch {
+			this.showWarning(
+				trigger === "onboarding"
+					? "Local session import failed safely; onboarding will continue."
+					: "Local session import failed safely.",
+			);
+		}
+	}
+
+	private async handleHarnessImportCommand(): Promise<void> {
+		await this.runSessionImportFlow("command");
+	}
+
+	private showSessionImportSelector(
+		inventories: SessionImportInventory[],
+	): Promise<SessionImportSource[] | undefined> {
+		return new Promise((resolve) => {
+			let settled = false;
+			let handle: OverlayHandle | undefined;
+			const settle = (result: SessionImportSource[] | undefined) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				handle?.hide();
+				this.ui.requestRender();
+				resolve(result);
+			};
+			const selector = new SessionImportSelectorComponent(
+				inventories,
+				(sources) => settle(sources),
+				() => settle(undefined),
+			);
+			handle = this.showFullPaneOverlay(selector, 80);
+			handle.focus();
+			this.ui.requestRender();
+		});
 	}
 
 	private async showOnboardingModelSelection(splash: OnboardingSplashHandle): Promise<void> {
@@ -2740,6 +2852,7 @@ export class InteractiveMode {
 		const compactionFinished = this.isAgentCompacting() && !snapshot.state.isCompacting;
 		const bashFinished = this.isBashRunning() && !snapshot.state.isBashRunning;
 		this.applyConnectionStateSnapshot(snapshot.state);
+		this.compactImportedToolHistory = isImportedSessionFile(snapshot.state.sessionFile);
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.replaceChildAgentInspector(snapshot.children);
@@ -4269,7 +4382,11 @@ export class InteractiveMode {
 					return;
 				}
 				if (commandName === "import") {
-					await this.handleImportCommand(canonicalCommandText);
+					if (commandArgs) {
+						await this.handleAutoImportCommand(canonicalCommandText);
+					} else {
+						await this.handleHarnessImportCommand();
+					}
 					this.editor.setText("");
 					return;
 				}
@@ -6111,6 +6228,7 @@ export class InteractiveMode {
 							{
 								showImages: this.settingsManager.getShowImages(),
 								includeImageDimensions: false,
+								compactCompleted: this.compactImportedToolHistory,
 							},
 							this.getCachedToolDefinition(content.name),
 							this.ui,
@@ -6165,6 +6283,7 @@ export class InteractiveMode {
 		const context = this.getSessionContextFromConnectionSnapshot(snapshot);
 		const state = snapshot.state;
 		const streamingMessage = snapshot.streamingMessage;
+		this.compactImportedToolHistory = isImportedSessionFile(state.sessionFile);
 		this.seedChildAgentInspector(snapshot.children);
 		this.setSessionHasMessages(context.messages.length > 0);
 		this.applyConnectionStateSnapshot(state);
@@ -8473,6 +8592,61 @@ export class InteractiveMode {
 			return;
 		}
 
+		await this.importAndResumeSession(inputPath, `Session imported from: ${inputPath}`);
+	}
+
+	private async handleAutoImportCommand(text: string): Promise<void> {
+		const inputPath = this.getPathCommandArgument(text, "/import");
+		if (!inputPath) {
+			this.showError("Usage: /import <path.jsonl>");
+			return;
+		}
+
+		try {
+			const kind = await detectSessionImportFileKind(inputPath);
+			if (kind === "native") {
+				await this.handleImportCommand(text);
+				return;
+			}
+			if (kind === "claude" || kind === "codex" || kind === "opencode") {
+				await this.handleExternalSessionImport(inputPath, kind);
+				return;
+			}
+			this.showError(
+				"Unsupported session file. Expected a Prime Agent, Pi Mono, Claude Code, Codex, or OpenCode export.",
+			);
+		} catch (error) {
+			if (error instanceof SessionImportFileNotFoundError) {
+				this.showError(`Failed to import session: ${error.message}`);
+				return;
+			}
+			this.showError(`Failed to inspect session: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async handleExternalSessionImport(inputPath: string, source: ExternalSessionImportFileKind): Promise<void> {
+		const label = source === "claude" ? "Claude Code" : source === "codex" ? "Codex" : "OpenCode";
+		const confirmed = await this.showExtensionConfirm(
+			"Import session",
+			`Import and resume ${label} session from ${inputPath}?`,
+		);
+		if (!confirmed) {
+			this.showStatus("Import cancelled");
+			return;
+		}
+
+		let imported: Awaited<ReturnType<typeof importExternalSessionFile>>;
+		try {
+			imported = await importExternalSessionFile(inputPath, source, { agentDir: getAgentDir() });
+		} catch (error) {
+			this.showError(`Failed to import ${label} session: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		const action = imported.status === "imported" ? "imported and resumed" : "already imported; resumed";
+		await this.importAndResumeSession(imported.sessionFile, `${label} session ${action} from: ${inputPath}`);
+	}
+
+	private async importAndResumeSession(inputPath: string, successMessage: string): Promise<void> {
 		try {
 			this.stopWorkingLoader();
 			const result = await this.agentConnection.importFromJsonl(inputPath);
@@ -8481,7 +8655,7 @@ export class InteractiveMode {
 				return;
 			}
 			await this.renderCurrentSessionState();
-			this.showStatus(`Session imported from: ${inputPath}`);
+			this.showStatus(successMessage);
 		} catch (error: unknown) {
 			if (error instanceof MissingSessionCwdError) {
 				const selectedCwd = await this.promptForMissingSessionCwd(error);
@@ -8495,7 +8669,7 @@ export class InteractiveMode {
 					return;
 				}
 				await this.renderCurrentSessionState();
-				this.showStatus(`Session imported from: ${inputPath}`);
+				this.showStatus(successMessage);
 				return;
 			}
 			if (error instanceof SessionImportFileNotFoundError) {
