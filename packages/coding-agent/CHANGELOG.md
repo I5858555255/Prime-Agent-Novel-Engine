@@ -2,7 +2,6 @@
 
 ## [Unreleased]
 
-- Added a built-in Prime Agent release skill for preparing version-only release PRs and verifying GitHub and R2 publishing.
 - Fixed daemon startup failing when an interrupted supervisor left an empty ownership directory.
 
 ## [0.3.3] - 2026-07-23
