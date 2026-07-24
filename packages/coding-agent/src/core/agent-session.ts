@@ -2443,7 +2443,7 @@ export class AgentSession {
 				// This lets planning overlap tool execution rather than waiting
 				// for the shouldStopAfterTurn boundary.
 				if (this._serializedRefine) {
-					if (this._serializedPlanInFlight && this._serializedExplicitRefineOptions) {
+					if (this._serializedPlanInFlight) {
 						if (this._refineAbortController) {
 							this._refineAbortController.abort();
 						} else {
