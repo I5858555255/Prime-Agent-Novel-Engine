@@ -1796,6 +1796,8 @@ export class AgentSession {
 			// Fix 4: Validate branchVersion before applying the plan.
 			if (bgResult.branchVersion !== this._autoRefineBranchVersion) {
 				if (!this._pendingRequestedRefine) {
+					this._lastAutoRefineReviewAt = Date.now();
+					this._assistantTurnsSinceAutoRefine = 0;
 					return;
 				}
 			} else {

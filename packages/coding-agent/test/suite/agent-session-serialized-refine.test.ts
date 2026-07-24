@@ -2233,6 +2233,28 @@ describe("P0 concurrency regressions", () => {
 		expect(internals._pendingRequestedRefine).toBeUndefined();
 	});
 
+	it("records cooldown after dropping a stale ready background plan", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		const internals = harness.session as unknown as SerializedInternals;
+		const apply = vi.spyOn(internals, "_applyRefine").mockResolvedValue(emptyRefinementResult());
+		const reviewAtBeforeCheckpoint = internals._lastAutoRefineReviewAt;
+		internals._assistantTurnsSinceAutoRefine = 1;
+		internals._serializedPlanInFlight = Promise.resolve({
+			status: "plan",
+			plan: { id: "stale-plan", proposal: { edits: [] } },
+			options: {},
+			abort: new AbortController(),
+			branchVersion: internals._autoRefineBranchVersion - 1,
+		});
+
+		await internals._runSerializedRefineCheckpoint();
+
+		expect(apply).not.toHaveBeenCalled();
+		expect(internals._assistantTurnsSinceAutoRefine).toBe(0);
+		expect(internals._lastAutoRefineReviewAt).toBeGreaterThan(reviewAtBeforeCheckpoint);
+	});
+
 	it("aborted serialized turn clears _pendingRequestedRefine so it does not leak to next checkpoint", async () => {
 		const harness = await createHarness({
 			persistSession: true,
