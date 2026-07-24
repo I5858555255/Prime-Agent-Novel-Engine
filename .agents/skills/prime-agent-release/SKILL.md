@@ -7,7 +7,7 @@ description: Update or publish a Prime Agent release version. Use when Codex is 
 
 ## Guardrails
 
-- Use this with the `prime-agent-worktree` skill when working in `/Users/kevin/pi/prime-agent`.
+- Use this with the `prime-agent-worktree` skill when working in `<prime-agent-repo>`.
 - Do release work only in a dedicated clean worktree. The release script stages every changed/untracked/deleted file it sees.
 - Do not commit, tag, push, publish, or run `npm run release:*` unless the user explicitly asks for a release, because that script commits, tags, publishes, and pushes.
 - Never merge a release PR yourself. Prepare the release PR and stop; a human will review and merge it.
@@ -39,10 +39,10 @@ node -p "require('./package.json').version"
 2. Create or reuse a release worktree:
 
 ```bash
-git worktree add -b release/<version-or-purpose> /Users/kevin/pi/prime-agent/.worktrees/release-<version-or-purpose> main
+git worktree add -b release/<version-or-purpose> <prime-agent-repo>/.worktrees/release-<version-or-purpose> main
 ```
 
-3. Work from that release worktree, not `/Users/kevin/pi/prime-agent`.
+3. Work from that release worktree, not `<prime-agent-repo>`.
 
 4. Read the relevant `[Unreleased]` sections before editing changelogs. Keep entries under the allowed subsections:
 
@@ -73,7 +73,7 @@ Keep the draft concise, informal, and shaped like prior Prime Agent release post
 - Start with a Slack emoji and version, usually `:pikachu:` or `:pikachu-spinnyhat: vX.Y.Z`.
 - Prefer short plain lines or bullets over a formal changelog structure.
 - Group related low-level changes into one theme instead of listing every implementation detail.
-- Preserve shout-outs, `cc` mentions, and user-provided tone such as `:hattip: @name`.
+- Preserve user-provided acknowledgements and tone.
 - Mention the biggest user-facing behavior changes first, then reliability/debuggability notes.
 - Do not include PR links unless the user asks for a more formal announcement.
 
@@ -95,12 +95,12 @@ agents view shows only live sessions instead of every old one
 :pikachu-spinnyhat: v0.2.5
 
 /fullscreen opt-in mode with a scrollable transcript, pinned prompt bar, mouse selection/copy, and follow controls
-orchestration push: (:hattip: @Seth Karten)
+orchestration push
 agent-to-agent messages and read-only active-session observation
 orchestration heartbeat for compact progress/blocker/action summaries
 /refine can now run automatically after turn intervals or compaction checkpoints
-better subagent guidance (:hattip: @alex z), plus asyncio pre-imported so parallel/background rlm examples work out of the box
-fixes for herdr extension pane env scoping (cc @Sami Jaghouar @Daniel Auras), also added claude fable 5 in prime inference
+better subagent guidance, plus asyncio pre-imported so parallel/background rlm examples work out of the box
+fixes for herdr extension pane env scoping; also added claude fable 5 in prime inference
 provider failures should be much more debuggable
 ```
 
