@@ -2766,12 +2766,23 @@ export class InteractiveMode {
 		if (compactionFinished) {
 			await this.flushCompactionQueue({ willRetry: false });
 		}
-		if (bashFinished && this.activeBashComponent) {
-			this.activeBashComponent.setComplete(undefined, false);
-			this.activeBashComponent = undefined;
-			if (!snapshot.state.isStreaming) {
-				this.flushPendingBashComponents();
+		if (bashFinished) {
+			if (this.activeBashComponent) {
+				this.activeBashComponent.setComplete(undefined, false);
+				this.activeBashComponent = undefined;
+				if (!snapshot.state.isStreaming) {
+					this.flushPendingBashComponents();
+				}
 			}
+			// A transient side bash is not persisted in the session snapshot, so a
+			// reconnect cannot replay its missed bash_end event. Release the pane's
+			// local running state when the authoritative snapshot says bash ended.
+			if (this.sideQuestionBash) {
+				this.sideQuestionComponent?.finishBash();
+				this.sideQuestionBash = undefined;
+				this.sideQuestionBashComponent = undefined;
+			}
+			this.sideQuestionBashDiscarded = undefined;
 		}
 		this.updateTerminalTitle();
 		this.setGoalAnnouncementBaseline(this.getGoalState());

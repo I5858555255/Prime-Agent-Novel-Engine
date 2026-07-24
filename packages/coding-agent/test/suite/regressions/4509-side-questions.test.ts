@@ -859,6 +859,59 @@ describe("ENG-4509 side questions", () => {
 		}
 	});
 
+	it("releases side-bash state when a resync proves the run ended", async () => {
+		const bashComponent = { setComplete: vi.fn() };
+		const finishBash = vi.fn();
+		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
+			sideQuestionBash: { runId: "side-run-1", input: "!sleep 5", seedTranscript: true },
+			sideQuestionBashComponent: bashComponent,
+			sideQuestionBashDiscarded: undefined,
+			sideQuestionComponent: { finishBash },
+			activeBashComponent: bashComponent,
+			isAgentCompacting: () => false,
+			isBashRunning: () => true,
+			applyConnectionStateSnapshot: vi.fn(),
+			replaceChildAgentInspector: vi.fn(),
+			getSessionContextFromConnectionSnapshot: vi.fn(() => ({
+				messages: [],
+				thinkingLevel: "medium",
+				model: null,
+			})),
+			renderSessionContext: vi.fn(async () => {}),
+			restoreStreamingMessageFromSnapshot: vi.fn(async () => {}),
+			refreshConnectionQueue: vi.fn(async () => {}),
+			flushCompactionQueue: vi.fn(async () => {}),
+			flushPendingBashComponents: vi.fn(),
+			updateTerminalTitle: vi.fn(),
+			setGoalAnnouncementBaseline: vi.fn(),
+			syncGoalTray: vi.fn(),
+			syncWorkingLoader: vi.fn(),
+			getGoalState: () => ({ status: "none" }),
+		});
+		const renderResyncedSession = (
+			InteractiveMode.prototype as unknown as {
+				renderResyncedSession(
+					this: typeof fakeThis,
+					snapshot: {
+						state: { isCompacting: boolean; isBashRunning: boolean; isStreaming: boolean };
+						messages: [];
+					},
+				): Promise<void>;
+			}
+		).renderResyncedSession;
+
+		await renderResyncedSession.call(fakeThis, {
+			state: { isCompacting: false, isBashRunning: false, isStreaming: false },
+			messages: [],
+		});
+
+		expect(bashComponent.setComplete).toHaveBeenCalledWith(undefined, false);
+		expect(finishBash).toHaveBeenCalledOnce();
+		expect(fakeThis.activeBashComponent).toBeUndefined();
+		expect(fakeThis.sideQuestionBash).toBeUndefined();
+		expect(fakeThis.sideQuestionBashComponent).toBeUndefined();
+	});
+
 	it("re-aborts a discarded side bash when its bash_start arrives late", async () => {
 		const abortBash = vi.fn(async () => {});
 		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
