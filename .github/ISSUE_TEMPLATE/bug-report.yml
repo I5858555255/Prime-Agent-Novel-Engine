@@ -3,10 +3,19 @@ name: Bug report
 description: Report something that isn't working as expected
 labels: ["bug"]
 body:
-  - type: markdown
+  - type: dropdown
+    id: package
     attributes:
-      value: |
-        Thanks for taking the time to file a bug report!
+      label: Package
+      description: Which package is affected? A maintainer will apply the matching `pkg:*` label.
+      options:
+        - agent
+        - ai
+        - coding-agent
+        - tui
+        - Not sure
+    validations:
+      required: true
   - type: textarea
     id: description
     attributes:
@@ -36,7 +45,7 @@ body:
     id: actual
     attributes:
       label: Actual behavior
-      description: What actually happened. Include error messages, logs, or screenshots if possible.
+      description: What actually happened. Include error messages, logs, or screenshots if possible. Redact API keys, tokens, and other secrets before pasting.
     validations:
       required: true
   - type: input
@@ -62,6 +71,6 @@ body:
     id: context
     attributes:
       label: Additional context
-      description: Any other context, configuration, or environment details.
+      description: Any other context, configuration, or environment details. Redact secrets before sharing.
     validations:
       required: false

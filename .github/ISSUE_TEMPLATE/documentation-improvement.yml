@@ -3,10 +3,19 @@ name: Documentation improvement
 description: Report missing, incorrect, or unclear documentation
 labels: ["documentation"]
 body:
-  - type: markdown
+  - type: dropdown
+    id: package
     attributes:
-      value: |
-        Thanks for helping improve the docs!
+      label: Package
+      description: Which package's docs are affected? A maintainer will apply the matching `pkg:*` label.
+      options:
+        - agent
+        - ai
+        - coding-agent
+        - tui
+        - Not sure / general
+    validations:
+      required: true
   - type: textarea
     id: summary
     attributes:

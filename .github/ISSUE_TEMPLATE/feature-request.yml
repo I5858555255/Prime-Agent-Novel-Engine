@@ -3,10 +3,19 @@ name: Feature request
 description: Suggest a new feature or enhancement
 labels: ["enhancement"]
 body:
-  - type: markdown
+  - type: dropdown
+    id: package
     attributes:
-      value: |
-        Thanks for suggesting a feature!
+      label: Package
+      description: Which package would this feature affect? A maintainer will apply the matching `pkg:*` label.
+      options:
+        - agent
+        - ai
+        - coding-agent
+        - tui
+        - Not sure
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:
