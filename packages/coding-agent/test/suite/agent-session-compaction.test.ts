@@ -152,6 +152,38 @@ describe("AgentSession compaction characterization", () => {
 		});
 	});
 
+	it("emits compaction lifecycle events when /compact was queued behind a running turn", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			persistSession: true,
+		});
+		harnesses.push(harness);
+		let releaseTurn: () => void = () => {};
+		const turnGate = new Promise<void>((resolve) => {
+			releaseTurn = resolve;
+		});
+		harness.setResponses([
+			async () => {
+				await turnGate;
+				return fauxAssistantMessage("slow response");
+			},
+			fauxAssistantMessage("model-generated summary"),
+			fauxAssistantMessage("model-generated turn summary"),
+		]);
+		const running = harness.session.prompt("one");
+		// Queue the command while the turn streams, then let the turn finish.
+		const queued = harness.session.prompt("/compact", { streamingBehavior: "steer" });
+		releaseTurn();
+		await Promise.all([running, queued]);
+
+		const order = harness.events.map((event) => event.type);
+		expect(order.indexOf("compaction_start")).toBeGreaterThan(order.indexOf("agent_end"));
+		expect(harness.eventsOfType("compaction_start")).toEqual([expect.objectContaining({ reason: "manual" })]);
+		expect(harness.eventsOfType("compaction_end")).toEqual([
+			expect.objectContaining({ reason: "manual", aborted: false }),
+		]);
+	});
+
 	it("reschedules a pending post-compaction continuation after successful manual compaction", async () => {
 		vi.useFakeTimers();
 		const harness = await createHarness({

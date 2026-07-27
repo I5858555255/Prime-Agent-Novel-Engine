@@ -10,6 +10,12 @@ const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 	event: Record<string, unknown>,
 ) => Promise<void>;
 
+const startCompactionLoader = Reflect.get(InteractiveMode.prototype, "startCompactionLoader") as (
+	this: unknown,
+	reason: string,
+	customInstructions?: string,
+) => void;
+
 function createFakeThis(overrides: Record<string, unknown> = {}) {
 	return {
 		isInitialized: true,
@@ -19,6 +25,9 @@ function createFakeThis(overrides: Record<string, unknown> = {}) {
 		updateWorkingLoaderMessage: vi.fn(),
 		autoCompactionLoader: undefined,
 		retryLoader: undefined,
+		startCompactionLoader(this: Record<string, unknown>, reason: string, customInstructions?: string) {
+			startCompactionLoader.call(this, reason, customInstructions);
+		},
 		workingVisible: true,
 		stopWorkingLoader: vi.fn(),
 		syncWorkingLoader: vi.fn(),
@@ -107,5 +116,25 @@ describe("InteractiveMode compaction events", () => {
 
 		expect(fakeThis.showWarning).toHaveBeenCalledWith("Session is too short to compact");
 		expect(fakeThis.showError).not.toHaveBeenCalled();
+	});
+
+	test("restores the compaction loader from state when no start event was seen", () => {
+		const statusContainer = new Container();
+		const fakeThis = createFakeThis({
+			statusContainer,
+			connectionState: { isCompacting: true },
+			isAgentCompacting() {
+				return true;
+			},
+			loadingAnimation: undefined,
+			workingVisible: true,
+			isAgentStreaming: () => false,
+			stopWorkingLoader: vi.fn(),
+			startWorkingLoader: vi.fn(),
+		});
+
+		(Reflect.get(InteractiveMode.prototype, "syncWorkingLoader") as (this: unknown) => void).call(fakeThis);
+
+		expect(stripAnsi(statusContainer.render(80).join("\n"))).toContain("Compacting context");
 	});
 });

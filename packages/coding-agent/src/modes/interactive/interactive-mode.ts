@@ -3381,7 +3381,42 @@ export class InteractiveMode {
 
 	// Reconcile the loader with current state for transitions that fire no live
 	// agent_start edge (returning from agents view, resuming mid-stream).
+	private startCompactionLoader(
+		reason: "manual" | "requested" | "overflow" | "threshold",
+		customInstructions?: string,
+	): void {
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(true);
+		}
+		// Keep editor active; submissions are queued during compaction.
+		// Fully stop the working loader (not just detach) so it isn't orphaned.
+		this.stopWorkingLoader();
+		this.statusContainer.clear();
+		const cancelHint = `(${keyText("app.clear")} to cancel)`;
+		const focus = customInstructions ? ` (focus: ${truncateToWidth(customInstructions, 60, "…")})` : "";
+		const label =
+			reason === "manual"
+				? `Compacting context${focus}... ${cancelHint}`
+				: reason === "requested"
+					? `Agent requested compaction, compacting context${focus}... ${cancelHint}`
+					: `${reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
+		this.autoCompactionLoader = new Loader(
+			this.ui,
+			(spinner) => theme.fg("muted", spinner),
+			(text) => theme.fg("muted", text),
+			label,
+		);
+		this.statusContainer.addChild(this.autoCompactionLoader);
+		this.ui.requestRender();
+	}
+
 	private syncWorkingLoader(): void {
+		// A compaction that started before this client attached (or while another
+		// view was open) has no start-event edge; restore its loader from state.
+		if (!this.autoCompactionLoader && this.isAgentCompacting()) {
+			this.startCompactionLoader("manual");
+			return;
+		}
 		// Compaction/retry own the status container while active; don't fight them.
 		if (this.autoCompactionLoader || this.retryLoader) {
 			return;
@@ -5554,31 +5589,7 @@ export class InteractiveMode {
 				break;
 
 			case "compaction_start": {
-				if (this.settingsManager.getShowTerminalProgress()) {
-					this.ui.terminal.setProgress(true);
-				}
-				// Keep editor active; submissions are queued during compaction.
-				// Fully stop the working loader (not just detach) so it isn't orphaned.
-				this.stopWorkingLoader();
-				this.statusContainer.clear();
-				const cancelHint = `(${keyText("app.clear")} to cancel)`;
-				const focus = event.customInstructions
-					? ` (focus: ${truncateToWidth(event.customInstructions, 60, "…")})`
-					: "";
-				const label =
-					event.reason === "manual"
-						? `Compacting context${focus}... ${cancelHint}`
-						: event.reason === "requested"
-							? `Agent requested compaction, compacting context${focus}... ${cancelHint}`
-							: `${event.reason === "overflow" ? "Context overflow detected, " : ""}Auto-compacting... ${cancelHint}`;
-				this.autoCompactionLoader = new Loader(
-					this.ui,
-					(spinner) => theme.fg("muted", spinner),
-					(text) => theme.fg("muted", text),
-					label,
-				);
-				this.statusContainer.addChild(this.autoCompactionLoader);
-				this.ui.requestRender();
+				this.startCompactionLoader(event.reason, event.customInstructions);
 				break;
 			}
 
