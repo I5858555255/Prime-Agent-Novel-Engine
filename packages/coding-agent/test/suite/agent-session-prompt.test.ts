@@ -1407,6 +1407,109 @@ stale post-hook extension instructions`,
 		await prompt;
 		unsubscribe();
 	});
+	it("promptUntilAccepted returns at ownership commit without draining queued work", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const commandStarted = createDeferred();
+		const commandGate = createDeferred();
+		vi.spyOn(harness.session, "refine").mockImplementation(async () => {
+			commandStarted.resolve();
+			await commandGate.promise;
+			return {
+				id: "refine_accepted",
+				summary: "s",
+				rationale: "r",
+				expectedOutcome: "o",
+				appliedEdits: [],
+				harnessStatePath: "/tmp/harness_state.json",
+			};
+		});
+
+		// On an idle session the command is enqueued at admission; acceptance must
+		// resolve while the pump is still executing it, not after completion.
+		await harness.session.promptUntilAccepted("/refine --local");
+		await commandStarted.promise;
+		expect(harness.session.isStreaming).toBe(false);
+
+		commandGate.resolve();
+		await harness.session.waitForSessionInputIdle();
+	});
+
+	it("keeps the restart checkpoint waiting while a queued session command executes", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const commandStarted = createDeferred();
+		const commandGate = createDeferred();
+		vi.spyOn(harness.session, "refine").mockImplementation(async () => {
+			commandStarted.resolve();
+			await commandGate.promise;
+			return {
+				id: "refine_checkpoint",
+				summary: "s",
+				rationale: "r",
+				expectedOutcome: "o",
+				appliedEdits: [],
+				harnessStatePath: "/tmp/harness_state.json",
+			};
+		});
+		const pause = harness.session.acquireQueuedWorkPause();
+		const completion = harness.session.promptAndWait("/refine --local");
+		pause.release();
+		await commandStarted.promise;
+
+		let checkpointReleased = false;
+		const checkpoint = harness.session.waitForSessionInputCheckpoint().then(() => {
+			checkpointReleased = true;
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(checkpointReleased).toBe(false);
+
+		commandGate.resolve();
+		await completion;
+		await checkpoint;
+		expect(checkpointReleased).toBe(true);
+	});
+
+	it("keeps the restart checkpoint fenced between queued handoff and message dispatch", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("queued done")]);
+		// Gate agent.prompt itself: the pump flips the input to handedOff and
+		// notifies checkpoint waiters before dispatch, and this gate keeps the
+		// window between those two steps open without touching the event queue.
+		const dispatchGate = createDeferred();
+		const originalPrompt = harness.session.agent.prompt.bind(harness.session.agent);
+		const promptSpy = vi
+			.spyOn(harness.session.agent, "prompt")
+			.mockImplementation(async (messages: Parameters<typeof originalPrompt>[0]) => {
+				promptSpy.mockRestore();
+				await dispatchGate.promise;
+				return originalPrompt(messages);
+			});
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.followUp("handed off", undefined, { resumeIfIdle: true });
+		pause.release();
+		await vi.waitFor(() => {
+			const active = (harness.session as unknown as { _activeSessionInput?: { kind: string; phase?: string } })
+				._activeSessionInput;
+			expect(active?.kind).toBe("prompt");
+			expect(active?.phase).toBe("handedOff");
+		});
+
+		let checkpointReleased = false;
+		const checkpoint = harness.session.waitForSessionInputCheckpoint().then(() => {
+			checkpointReleased = true;
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		// The handoff has not dispatched yet; a released checkpoint here would
+		// snapshot without the accepted message in queue state or transcript.
+		expect(checkpointReleased).toBe(false);
+
+		dispatchGate.resolve();
+		await checkpoint;
+		await harness.session.waitForIdle();
+		expect(getUserTexts(harness)).toEqual(["handed off"]);
+	});
 
 	it("keeps an injected direct prompt fenced until the injected message starts", async () => {
 		const harness = await createHarness();

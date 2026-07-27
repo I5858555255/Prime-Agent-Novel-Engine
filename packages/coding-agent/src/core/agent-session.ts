@@ -964,6 +964,8 @@ function waitForPromiseOrAbort<T>(
 		};
 		const cleanup = () => signal.removeEventListener("abort", onAbort);
 		signal.addEventListener("abort", onAbort, { once: true });
+		// Close the listener-registration race before observing the awaited work.
+		if (signal.aborted) return onAbort();
 		promise.then(
 			(value) => {
 				cleanup();
@@ -4318,7 +4320,9 @@ export class AgentSession {
 		}
 		if (admission) {
 			this._scheduleSessionInputPump();
-			await this._sessionInputPump;
+			// promptUntilAccepted resolves at ownership commit; only full prompt()
+			// calls wait for the queued work the pump is about to execute.
+			if (!options?.returnAfterAccepted) await this._sessionInputPump;
 		}
 	}
 
@@ -5270,8 +5274,22 @@ export class AgentSession {
 				this._syncSteeringStopPending();
 				this._notifySessionInputCheckpointChange();
 			}
+			// The phase flips before agent.prompt() runs, so hold a checkpoint
+			// section until dispatch is observed: otherwise a restart checkpoint
+			// could drain a stale event-queue snapshot and flush before the
+			// handed-off messages reach agent state and the transcript.
+			const endHandoffSection = this._enterDirectPromptSection();
+			const dispatchObserver = this._observeDirectDispatch(prompts[prompts.length - 1]!.message);
+			const settleHandoffSection = () => {
+				dispatchObserver.stop();
+				endHandoffSection();
+			};
 			const promptPromise = this.agent.prompt(messages);
 			releaseAdmission();
+			void Promise.race([promptPromise.catch(() => undefined), dispatchObserver.observed]).then(
+				settleHandoffSection,
+				settleHandoffSection,
+			);
 			await promptPromise;
 			await this.waitForRetry();
 			await this._agentEventQueue;
@@ -5633,8 +5651,12 @@ export class AgentSession {
 	}
 
 	async waitForSessionInputCheckpoint(signal?: AbortSignal): Promise<void> {
+		// An executing queued command was already shifted off the queue, so the
+		// snapshot must wait for it to finish or it would vanish from durable
+		// queued input while still running.
 		while (
 			(this._activeSessionInput?.kind === "prompt" && this._activeSessionInput.phase === "preparing") ||
+			this._activeSessionInput?.kind === "command" ||
 			this._directPromptSectionCount > 0
 		) {
 			if (signal?.aborted) throw new Error("Update restart preparation cancelled");
