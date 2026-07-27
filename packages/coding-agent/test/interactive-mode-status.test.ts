@@ -1587,14 +1587,13 @@ describe("InteractiveMode connection events", () => {
 		expect(flushPendingBashComponents).toHaveBeenCalledOnce();
 	});
 
-	test("rejects /resume arguments instead of opening the agents view", async () => {
+	test("sends /resume as plain prompt text now that the command is retired", async () => {
 		const fakeThis = createSubmitHandlerHarness();
 
 		await fakeThis.defaultEditor.onSubmit?.("/resume unexpected");
 
-		expect(fakeThis.showError).toHaveBeenCalledWith("Usage: /resume");
+		expect(fakeThis.showError).not.toHaveBeenCalled();
 		expect(fakeThis.requestAgentsView).not.toHaveBeenCalled();
-		expect(fakeThis.agentConnection.prompt).not.toHaveBeenCalled();
 	});
 
 	test("renderCurrentSessionState waits for replacement handling before rendering", async () => {

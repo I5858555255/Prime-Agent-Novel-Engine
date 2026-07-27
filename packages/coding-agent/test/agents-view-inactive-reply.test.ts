@@ -5,7 +5,6 @@ import { KeybindingsManager } from "../src/core/keybindings.js";
 import {
 	AgentsViewMode,
 	createReplyComposerAutocompleteProvider,
-	createSearchViewAutocompleteProvider,
 	getReplyComposerCommandRejection,
 	parseAgentsViewCommand,
 } from "../src/modes/agents-view/agents-view-mode.js";
@@ -567,156 +566,42 @@ describe("reply composer slash commands", () => {
 
 describe("agents view slash commands", () => {
 	it("parses whitelisted view commands, which the composer never rejects", () => {
-		expect(parseAgentsViewCommand("/new")).toEqual({ name: "new", args: "" });
 		expect(parseAgentsViewCommand("/name My Agent")).toEqual({ name: "name", args: "My Agent" });
 		expect(parseAgentsViewCommand("/rename My Agent")).toEqual({ name: "name", args: "My Agent" });
 		expect(parseAgentsViewCommand("/kill")).toEqual({ name: "kill", args: "" });
 		expect(parseAgentsViewCommand("/compact")).toBeUndefined();
 		expect(parseAgentsViewCommand("plain search text")).toBeUndefined();
 		expect(getReplyComposerCommandRejection("/kill")).toBeUndefined();
+		// /new and /fork are builtins but not composer commands; rejected with guidance.
+		expect(getReplyComposerCommandRejection("/new")).toContain("not available here");
 		expect(getReplyComposerCommandRejection("/fork")).toContain("not available here");
 	});
 
-	it("suggests view commands in both composers and session commands only when armed", async () => {
+	it("suggests session and view commands in the armed composer", async () => {
 		const composer = createReplyComposerAutocompleteProvider(process.cwd());
-		const search = createSearchViewAutocompleteProvider(process.cwd());
 		const signal = new AbortController().signal;
-		const composerNames = (await composer.getSuggestions(["/"], 0, 1, { signal }))?.items.map((i) => i.value) ?? [];
-		const searchNames = (await search.getSuggestions(["/"], 0, 1, { signal }))?.items.map((i) => i.value) ?? [];
+		const composerNames =
+			(await composer.getSuggestions(["/"], 0, 1, { signal }))?.items.map((item) => item.value) ?? [];
 		expect(composerNames).toEqual(
-			expect.arrayContaining(["compact", "refine", "goal", "autonomous", "new", "name", "kill"]),
+			expect.arrayContaining(["compact", "refine", "goal", "autonomous", "name", "kill"]),
 		);
-		expect(searchNames).toEqual(expect.arrayContaining(["new", "name", "kill"]));
-		expect(searchNames).not.toContain("fork");
-		expect(searchNames).not.toContain("compact");
-		expect(searchNames).not.toContain("settings");
+		expect(composerNames).not.toContain("new");
+		expect(composerNames).not.toContain("model");
+		expect(composerNames).not.toContain("settings");
 	});
 
-	it("routes a search-editor command to the selected row and drops it from the persisted query", async () => {
-		const live = summary({ activeSessionId: "active-1", lifecycle: "live" });
-		const persistentState: Record<string, unknown> = { query: "/kill" };
-		const runAgentsViewCommand = vi.fn(async () => true);
-		const self: Record<string, unknown> = {
-			replyTarget: undefined,
-			renameTarget: undefined,
-			options: {},
-			persistentState,
-			rows: [{ kind: "agent", selectable: true, summary: live }],
-			selectedIndex: 0,
-			editor: editorWithText(""),
-			runAgentsViewCommand,
-			openSelected: vi.fn(),
-		};
-
-		await invoke("submit", self, "/kill");
-
-		expect(runAgentsViewCommand).toHaveBeenCalledWith({ name: "kill", args: "" }, live);
-		expect(self.openSelected).not.toHaveBeenCalled();
-		// A remount must not restore and re-run the command from the persisted query.
-		expect(persistentState.query).toBe("");
-	});
-
-	it("restores the search-editor command when it fails", async () => {
-		const editor = editorWithText("");
-		const persistentState: Record<string, unknown> = { query: "/kill" };
-		const self: Record<string, unknown> = {
-			replyTarget: undefined,
-			renameTarget: undefined,
-			options: {},
-			persistentState,
-			rows: [],
-			selectedIndex: 0,
-			editor,
-			setSearchQuery(query: string) {
-				editor.setText(query);
-				persistentState.query = query;
-			},
-			runAgentsViewCommand: vi.fn(async () => false),
-			openSelected: vi.fn(),
-		};
-
-		await invoke("submit", self, "/kill");
-
-		expect(editor.getText()).toBe("/kill");
-		expect(persistentState.query).toBe("/kill");
-	});
-
-	it("rejects view commands under the local adapter in both editors", async () => {
-		// Search editor: warn instead of opening the selected row; keep the draft.
-		const openSelected = vi.fn();
-		const searchEditor = editorWithText("");
-		const searchSelf: Record<string, unknown> = {
-			replyTarget: undefined,
-			renameTarget: undefined,
-			options: { adapter: { kind: "local" } },
-			rows: [],
-			selectedIndex: 0,
-			editor: searchEditor,
-			setSearchQuery(query: string) {
-				searchEditor.setText(query);
-			},
-			setStatusMessage: vi.fn(),
-			runAgentsViewCommand: vi.fn(),
-			openSelected,
-		};
-		await invoke("submit", searchSelf, "/new");
-		expect(searchSelf.runAgentsViewCommand).not.toHaveBeenCalled();
-		expect(openSelected).not.toHaveBeenCalled();
-		expect(searchSelf.setStatusMessage).toHaveBeenCalledWith("/new is not available here", { tone: "warning" });
-		expect(searchEditor.getText()).toBe("/new");
-
-		// Armed composer: must warn instead of sending the command as a prompt.
-		const sendReply = vi.fn(async () => true);
-		const composerSelf: Record<string, unknown> = {
-			replyTarget: { key: "active-1", summary: summary({ activeSessionId: "active-1", lifecycle: "live" }) },
-			options: { adapter: { kind: "local" } },
-			editor: editorWithText(""),
-			setStatusMessage: vi.fn(),
-			runAgentsViewCommand: vi.fn(),
-			sendReply,
-		};
-		await invoke("submit", composerSelf, "/kill");
-		expect(composerSelf.runAgentsViewCommand).not.toHaveBeenCalled();
-		expect(sendReply).not.toHaveBeenCalled();
-		expect(composerSelf.setStatusMessage).toHaveBeenCalledWith("/kill is not available here", { tone: "warning" });
-	});
-
-	it("keeps plain search text opening the selection", async () => {
+	it("search submit always opens the selection, even for slash-prefixed text", async () => {
 		const openSelected = vi.fn();
 		const self: Record<string, unknown> = {
 			replyTarget: undefined,
 			renameTarget: undefined,
-			options: {},
-			rows: [],
-			selectedIndex: 0,
-			runAgentsViewCommand: vi.fn(),
 			openSelected,
 		};
 
 		await invoke("submit", self, "release planner");
+		await invoke("submit", self, "/kill");
 
-		expect(openSelected).toHaveBeenCalledOnce();
-		expect(self.runAgentsViewCommand).not.toHaveBeenCalled();
-	});
-
-	it("runs /new without a target row and propagates the outcome", async () => {
-		const self: Record<string, unknown> = { createNewSession: vi.fn(async () => true), replyTarget: undefined };
-		await expect(invoke("runAgentsViewCommand", self, { name: "new", args: "" }, undefined)).resolves.toBe(true);
-		expect(self.createNewSession).toHaveBeenCalledOnce();
-
-		const failing: Record<string, unknown> = { createNewSession: vi.fn(async () => false), replyTarget: undefined };
-		await expect(invoke("runAgentsViewCommand", failing, { name: "new", args: "" }, undefined)).resolves.toBe(false);
-	});
-
-	it("requires a selected row for row-targeted commands", async () => {
-		const setStatusMessage = vi.fn();
-		const self: Record<string, unknown> = { setStatusMessage, createNewSession: vi.fn() };
-
-		await invoke("runAgentsViewCommand", self, { name: "kill", args: "" }, undefined);
-
-		expect(setStatusMessage).toHaveBeenCalledWith(expect.stringContaining("Select an agent row"), {
-			tone: "warning",
-		});
+		expect(openSelected).toHaveBeenCalledTimes(2);
 	});
 
 	it("renames a live target via the rename RPC and refreshes both catalogs", async () => {
@@ -816,36 +701,6 @@ describe("agents view slash commands", () => {
 		await invoke("submit", self, "/name");
 
 		expect(editor.getText()).toBe("/name");
-	});
-
-	it("freezes the filter for command input but not for unknown slash terms", () => {
-		const editor = editorWithText("/kill");
-		const self: Record<string, unknown> = {
-			replyTarget: undefined,
-			renameTarget: undefined,
-			options: {},
-			unifiedRecords: [
-				{
-					daemon: summary({ activeSessionId: "active-1", sessionName: "kilroy" }),
-					identity: "active:active-1",
-					identityAliases: ["active:active-1"],
-					section: "idle",
-					searchableText: "kilroy",
-				},
-			],
-			editor,
-		};
-		const filtered = () => (invoke("getFilteredRecords", self) as unknown[]).length;
-
-		// "/kill" and mid-typing "/ki" must not filter; unknown "/foo" and path
-		// queries like "/tmp/x" still do.
-		expect(filtered()).toBe(1);
-		editor.setText("/ki");
-		expect(filtered()).toBe(1);
-		editor.setText("/foo");
-		expect(filtered()).toBe(0);
-		editor.setText("/tmp/x");
-		expect(filtered()).toBe(0);
 	});
 
 	it("re-resolves the armed target before dispatching a view command", async () => {

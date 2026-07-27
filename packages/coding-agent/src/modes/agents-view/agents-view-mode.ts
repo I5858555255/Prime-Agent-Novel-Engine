@@ -100,20 +100,8 @@ const SELECTED_ROW_MARKER = "\0agents-view-selected-row\0";
 // background, visually segmenting the program from the agent rows.
 const CODE_ROW_MARKER = "\0agents-view-code-row\0";
 
-export interface SessionViewAdapter {
-	readonly kind: "local";
-	loadSavedSessions(callbacks?: {
-		onSession?: (session: AgentConnectionSavedSessionInfo) => void;
-	}): Promise<AgentConnectionSavedSessionInfo[]>;
-	getCurrentSession(): Promise<SessionSummary | undefined>;
-	open(summary: SessionSummary): Promise<{ cancelled: boolean }>;
-	rename(summary: SessionSummary, name: string): Promise<void>;
-	delete(summary: SessionSummary): Promise<{ ok: boolean; method?: "trash" | "unlink"; error?: string }>;
-}
-
 export interface AgentsViewModeOptions {
 	socketPath?: string;
-	adapter?: SessionViewAdapter;
 	config: AgentSessionRuntimeConfig;
 	uiServices: InteractiveModeUiServices;
 	createUiServicesForSession?: (summary: SessionSummary) => Promise<InteractiveModeUiServices>;
@@ -194,7 +182,7 @@ export function createAgentsViewResumeConfig(
 
 export function createAgentsViewListCommand(): Extract<DaemonCommand, { type: "list" }> {
 	// Omitting `all` returns daemon-resident sessions only; on-disk ones come back
-	// via /resume.
+	// through the view's saved-session catalog.
 	return { type: "list" };
 }
 
@@ -340,14 +328,7 @@ function isUnknownActiveSessionError(error: unknown): boolean {
 	return error instanceof Error && error.message.startsWith("Unknown active session:");
 }
 
-export async function runLocalSessionView(
-	options: Omit<AgentsViewModeOptions, "socketPath" | "adapter">,
-	adapter: SessionViewAdapter,
-): Promise<AgentsViewRunResult> {
-	return new AgentsViewMode({ ...options, adapter }, {}).run();
-}
-
-export async function runAgentsViewMode(options: Omit<AgentsViewModeOptions, "adapter">): Promise<void> {
+export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise<void> {
 	const initialSession = options.initialSession;
 	const persistentState: AgentsViewPersistentState = initialSession
 		? {
@@ -445,7 +426,7 @@ export async function runAgentsViewMode(options: Omit<AgentsViewModeOptions, "ad
 	}
 }
 
-const AGENTS_VIEW_COMMAND_NAMES = ["new", "name", "kill"] as const;
+const AGENTS_VIEW_COMMAND_NAMES = ["name", "kill"] as const;
 export type AgentsViewCommandName = (typeof AGENTS_VIEW_COMMAND_NAMES)[number];
 const AGENTS_VIEW_COMMAND_NAME_SET: ReadonlySet<string> = new Set(AGENTS_VIEW_COMMAND_NAMES);
 
@@ -454,27 +435,13 @@ export interface AgentsViewCommand {
 	args: string;
 }
 
-/** Row-targeted commands the view maps onto existing RPCs; /new needs no row. */
+/** Row-targeted commands the armed composer maps onto existing RPCs. */
 export function parseAgentsViewCommand(text: string): AgentsViewCommand | undefined {
 	const parsed = parseSlashCommand(text);
 	if (!parsed) return undefined;
 	const name = resolveBuiltinSlashCommandName(parsed.name);
 	if (!AGENTS_VIEW_COMMAND_NAME_SET.has(name)) return undefined;
 	return { name: name as AgentsViewCommandName, args: parsed.args };
-}
-
-const AGENTS_VIEW_COMMAND_TYPING_TARGETS: readonly string[] = AGENTS_VIEW_COMMAND_NAMES.flatMap((name) => {
-	const builtin = BUILTIN_SLASH_COMMANDS.find((command) => command.name === name);
-	return [name, ...(builtin?.aliases ?? [])];
-});
-
-/** True while input is a view command or a prefix that may extend into one ("/ki"); "/foo" is not. */
-export function isAgentsViewCommandInput(text: string): boolean {
-	const trimmed = text.trim();
-	if (!trimmed.startsWith("/")) return false;
-	if (parseAgentsViewCommand(trimmed)) return true;
-	const token = trimmed.slice(1).toLowerCase();
-	return !/\s/.test(token) && AGENTS_VIEW_COMMAND_TYPING_TARGETS.some((name) => name.startsWith(token));
 }
 
 /**
@@ -493,7 +460,6 @@ export function getReplyComposerCommandRejection(text: string): string | undefin
 
 const AGENTS_VIEW_COMMAND_DESCRIPTIONS: Record<AgentsViewCommandName, { description: string; argumentHint?: string }> =
 	{
-		new: { description: "Start a new session" },
 		name: { description: "Set session display name", argumentHint: "<name>" },
 		kill: { description: "Stop this agent's runtime (session stays resumable)" },
 	};
@@ -530,11 +496,6 @@ export function createReplyComposerAutocompleteProvider(cwd: string, fdPath?: st
 		}),
 	);
 	return new CombinedAutocompleteProvider([...sessionCommands, ...agentsViewSlashCommands()], cwd, fdPath ?? null);
-}
-
-/** Autocomplete for the search editor: view commands only, once "/" is typed. */
-export function createSearchViewAutocompleteProvider(cwd: string): AutocompleteProvider {
-	return new CombinedAutocompleteProvider(agentsViewSlashCommands(), cwd);
 }
 
 export function resolveCurrentReplyTargetSummary(
@@ -645,7 +606,6 @@ export class AgentsViewMode implements Component, Focusable {
 			placeholder: SEARCH_PROMPT_PLACEHOLDER,
 			placeholderColor: (text) => theme.fg("dim", text),
 		});
-		const searchAutocomplete = createSearchViewAutocompleteProvider(options.uiServices.getInitialCwd());
 		void ensureTool("fd").then((fdPath) => {
 			this.fdPath = fdPath;
 			// Rebind an already-armed provider so @-completion picks up fd.
@@ -653,24 +613,18 @@ export class AgentsViewMode implements Component, Focusable {
 				this.replyAutocomplete = createReplyComposerAutocompleteProvider(this.replyTarget.summary.cwd, fdPath);
 			}
 		});
+		// Search input never autocompletes; only the armed composer's provider answers.
 		this.editor.setAutocompleteProvider({
 			getSuggestions: async (lines, cursorLine, cursorCol, suggestOptions) => {
-				if (this.replyTarget) {
-					return this.replyAutocomplete?.getSuggestions(lines, cursorLine, cursorCol, suggestOptions) ?? null;
-				}
-				if (this.options.adapter || this.renameTarget || !isAgentsViewCommandInput(this.editor.getText())) {
-					return null;
-				}
-				return searchAutocomplete.getSuggestions(lines, cursorLine, cursorCol, suggestOptions);
+				if (!this.replyTarget) return null;
+				return this.replyAutocomplete?.getSuggestions(lines, cursorLine, cursorCol, suggestOptions) ?? null;
 			},
 			applyCompletion: (lines, cursorLine, cursorCol, item, prefix) =>
-				(this.replyTarget && this.replyAutocomplete ? this.replyAutocomplete : searchAutocomplete).applyCompletion(
+				this.replyAutocomplete?.applyCompletion(lines, cursorLine, cursorCol, item, prefix) ?? {
 					lines,
 					cursorLine,
 					cursorCol,
-					item,
-					prefix,
-				),
+				},
 		});
 		this.editor.focused = true;
 		this.editor.getHeaderLine = () => this.renderReplyHeaderLine();
@@ -720,14 +674,12 @@ export class AgentsViewMode implements Component, Focusable {
 	}
 
 	async run(): Promise<AgentsViewRunResult> {
-		if (!this.options.adapter) {
-			this.client = new DaemonClient(this.requireSocketPath());
-			await this.client.connect();
-			this.subscribeToClientClose(this.client);
-			this.unsubscribeClientMessage = this.client.onMessage((message) => {
-				if (message.type === "heartbeats_changed") void this.refreshHeartbeats();
-			});
-		}
+		this.client = new DaemonClient(this.requireSocketPath());
+		await this.client.connect();
+		this.subscribeToClientClose(this.client);
+		this.unsubscribeClientMessage = this.client.onMessage((message) => {
+			if (message.type === "heartbeats_changed") void this.refreshHeartbeats();
+		});
 
 		this.ui.addChild(this);
 		this.ui.setFocus(this);
@@ -756,12 +708,10 @@ export class AgentsViewMode implements Component, Focusable {
 		void this.refreshSavedSessions();
 		void this.refreshHeartbeats();
 		this.loadStartupNotices();
-		if (!this.options.adapter) {
-			this.pollTimer = setInterval(() => this.pollSessions(), POLL_INTERVAL_MS);
-			this.pollTimer.unref?.();
-			this.heartbeatPollTimer = setInterval(() => void this.refreshHeartbeats(), HEARTBEAT_POLL_INTERVAL_MS);
-			this.heartbeatPollTimer.unref?.();
-		}
+		this.pollTimer = setInterval(() => this.pollSessions(), POLL_INTERVAL_MS);
+		this.pollTimer.unref?.();
+		this.heartbeatPollTimer = setInterval(() => void this.refreshHeartbeats(), HEARTBEAT_POLL_INTERVAL_MS);
+		this.heartbeatPollTimer.unref?.();
 		this.animationTimer = setInterval(() => {
 			if (!this.rows.some((row) => row.section === "running")) return;
 			this.workingIconFrame += 1;
@@ -802,15 +752,11 @@ export class AgentsViewMode implements Component, Focusable {
 		}
 		this.clearCtrlCExitHint({ render: false });
 		this.clearDeleteConfirmation({ render: false });
-		if (
-			!this.options.adapter &&
-			this.keybindings.matches(data, "app.agents.reply") &&
-			this.editor.getText().length === 0
-		) {
+		if (this.keybindings.matches(data, "app.agents.reply") && this.editor.getText().length === 0) {
 			void this.toggleReplyTarget();
 			return;
 		}
-		if (!this.options.adapter && !this.replyTarget && this.keybindings.matches(data, "app.agents.new")) {
+		if (!this.replyTarget && this.keybindings.matches(data, "app.agents.new")) {
 			void this.createNewSession();
 			return;
 		}
@@ -1170,11 +1116,7 @@ export class AgentsViewMode implements Component, Focusable {
 	}
 
 	private getFilteredRecords(): UnifiedSessionRecord[] {
-		let query = this.replyTarget || this.renameTarget ? (this.actionModeSearchQuery ?? "") : this.editor.getText();
-		// Filtering on command input would reshuffle the list under the selected row.
-		if (!this.replyTarget && !this.renameTarget && !this.options.adapter && isAgentsViewCommandInput(query)) {
-			query = "";
-		}
+		const query = this.replyTarget || this.renameTarget ? (this.actionModeSearchQuery ?? "") : this.editor.getText();
 		return filterUnifiedSessions(this.unifiedRecords, (text) => matchesSearchText(text, query));
 	}
 
@@ -1204,11 +1146,6 @@ export class AgentsViewMode implements Component, Focusable {
 			const target = this.replyTarget;
 			const text = value.trim();
 			const viewCommand = parseAgentsViewCommand(text);
-			if (viewCommand && this.options.adapter) {
-				this.setStatusMessage(`/${viewCommand.name} is not available here`, { tone: "warning" });
-				if (this.editor.getText().length === 0) this.editor.setText(value);
-				return;
-			}
 			if (viewCommand) {
 				// Stale summaries mis-route the RPCs after a runtime replacement.
 				const currentSummary = resolveCurrentReplyTargetSummary(
@@ -1244,24 +1181,7 @@ export class AgentsViewMode implements Component, Focusable {
 			}
 			return;
 		}
-		// Search text is never a prompt: commands act on the selected row, anything else opens it.
-		const viewCommand = parseAgentsViewCommand(value.trim());
-		if (viewCommand) {
-			if (this.options.adapter) {
-				this.setStatusMessage(`/${viewCommand.name} is not available here`, { tone: "warning" });
-				if (this.editor.getText().length === 0) this.setSearchQuery(value);
-				return;
-			}
-			// submitValue bypassed queryChanged; a remount must not restore and re-run the command.
-			this.persistentState.query = "";
-			const row = this.rows[this.selectedIndex];
-			const target = row?.kind === "agent" && row.selectable ? row.summary : undefined;
-			const succeeded = await this.runAgentsViewCommand(viewCommand, target);
-			if (!succeeded && !this.replyTarget && this.editor.getText().length === 0) {
-				this.setSearchQuery(value);
-			}
-			return;
-		}
+		// Search text is never a prompt or a command; Enter opens the selection.
 		this.openSelected();
 	}
 
@@ -1550,9 +1470,7 @@ export class AgentsViewMode implements Component, Focusable {
 	private async renameSession(summary: SessionSummary, name: string): Promise<boolean> {
 		this.setStatusMessage("Renaming agent...");
 		try {
-			if (this.options.adapter) {
-				await this.options.adapter.rename(summary, name);
-			} else if (summary.activeSessionId) {
+			if (summary.activeSessionId) {
 				requireDaemonData(
 					await this.requireClient().request({ type: "rename", activeSessionId: summary.activeSessionId, name }),
 				);
@@ -1700,25 +1618,15 @@ export class AgentsViewMode implements Component, Focusable {
 	}
 
 	/**
-	 * Run a view command against a target row (none for /new). Returns whether
+	 * Run a view command against the armed composer's target. Returns whether
 	 * it completed so callers can restore the draft; disarms are guarded
 	 * against a composer re-armed during the awaited RPCs.
 	 */
-	private async runAgentsViewCommand(
-		command: AgentsViewCommand,
-		target: SessionSummary | undefined,
-	): Promise<boolean> {
+	private async runAgentsViewCommand(command: AgentsViewCommand, target: SessionSummary): Promise<boolean> {
 		const armedAtStart = this.replyTarget;
 		const disarmIfUnchanged = () => {
 			if (armedAtStart && this.replyTarget === armedAtStart) this.setReplyTarget(undefined);
 		};
-		if (command.name === "new") {
-			return await this.createNewSession();
-		}
-		if (!target) {
-			this.setStatusMessage(`Select an agent row to use /${command.name}`, { tone: "warning" });
-			return false;
-		}
 		try {
 			switch (command.name) {
 				case "name": {
@@ -1786,36 +1694,11 @@ export class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 		this.pendingKillSubagent = undefined;
-		if (this.options.adapter && row.summary.activeSessionId) {
-			this.setStatusMessage("The current session cannot be deleted; switch away first", { tone: "warning" });
-			return;
-		}
 		const identity = getSummaryIdentity(row.summary);
 		if (!row.summary.activeSessionId && row.summary.sessionFile) {
 			if (this.pendingDeleteAgent?.identity === identity && this.isDeleteConfirmationVisible()) {
 				this.clearDeleteConfirmation({ render: false });
 				try {
-					if (this.options.adapter) {
-						const current = await this.options.adapter.getCurrentSession();
-						if (current && resolveAgentsViewActiveSummaryForPath(row.summary.sessionFile, [current])) {
-							this.pendingDeleteAgent = undefined;
-							this.setStatusMessage("Session became active; switch away before deleting", { tone: "warning" });
-							await this.refreshSessions();
-							return;
-						}
-						const result = await this.options.adapter.delete(row.summary);
-						if (!result.ok) {
-							this.setStatusMessage(`Failed to delete session: ${result.error ?? "Unknown error"}`, {
-								tone: "error",
-							});
-							return;
-						}
-						this.pendingDeleteAgent = undefined;
-						const refreshed = await this.refreshSavedSessions({ preserveStatusOnError: true });
-						const success = result.method === "trash" ? "Session moved to trash" : "Session deleted";
-						this.setStatusMessage(refreshed ? success : `${success}; refresh failed`);
-						return;
-					}
 					const latest = expectSessionList(
 						requireDaemonData(await this.requireClient().request(createAgentsViewListCommand())),
 					);
@@ -2028,12 +1911,6 @@ export class AgentsViewMode implements Component, Focusable {
 		const generation = ++this.liveCatalogGeneration;
 		this.liveCatalogRefreshPending = true;
 		try {
-			if (this.options.adapter) {
-				const current = await this.options.adapter.getCurrentSession();
-				if (generation !== this.liveCatalogGeneration) return false;
-				this.applySessionList(current ? [current] : []);
-				return true;
-			}
 			const client = this.requireClient();
 			try {
 				const response = await client.request(createAgentsViewListCommand());
@@ -2109,11 +1986,14 @@ export class AgentsViewMode implements Component, Focusable {
 				this.persistentState.savedSessions = this.savedSessions;
 				this.reconcileCatalogs();
 			};
-			const sessions = this.options.adapter
-				? await this.options.adapter.loadSavedSessions({ onSession })
-				: await listDaemonSavedSessions(this.requireClient(), this.getSavedSessionCatalogContext(), "all", {
-						onSession,
-					});
+			const sessions = await listDaemonSavedSessions(
+				this.requireClient(),
+				this.getSavedSessionCatalogContext(),
+				"all",
+				{
+					onSession,
+				},
+			);
 			if (generation !== this.savedCatalogGeneration) return false;
 			this.savedSessions = sessions;
 			this.lastSuccessfulSavedSessions = sessions;
@@ -2142,10 +2022,6 @@ export class AgentsViewMode implements Component, Focusable {
 	private async refreshHeartbeats(options: { duringReconnect?: boolean } = {}): Promise<boolean> {
 		if ((!options.duringReconnect && this.reconnectPromise) || this.daemonShutdownReceived) return false;
 		const generation = ++this.heartbeatCatalogGeneration;
-		if (this.options.adapter) {
-			this.heartbeats = [];
-			return true;
-		}
 		try {
 			const heartbeats = await listDaemonHeartbeats(this.requireClient());
 			if (generation !== this.heartbeatCatalogGeneration) return false;
@@ -2556,13 +2432,12 @@ export class AgentsViewMode implements Component, Focusable {
 			`${keyText("tui.select.up")}/${keyText("tui.select.down")} move`,
 			`${keyText("tui.select.confirm")} open`,
 			`${keyText("app.agents.open")} open`,
-			!this.options.adapter ? "/ commands" : undefined,
-			selectedAgent && !this.options.adapter
+			selectedAgent
 				? `${keyText("app.agents.reply")} ${selectedRow?.section === "inactive" ? "resume" : "reply"}`
 				: undefined,
-			!this.options.adapter ? `${keyText("app.agents.new")} new` : undefined,
+			`${keyText("app.agents.new")} new`,
 			selectedAgent ? `${keyText("app.agents.rename")} rename` : undefined,
-			selectedAgent && (!this.options.adapter || selectedRow?.section === "inactive")
+			selectedAgent
 				? `${keyText("app.agents.delete")} ${selectedRow?.section === "inactive" ? "delete" : "stop/deactivate"}`
 				: undefined,
 			selectedSubagent ? `${keyText("app.agents.delete")} stop` : undefined,

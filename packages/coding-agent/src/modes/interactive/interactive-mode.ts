@@ -157,8 +157,6 @@ import type {
 	AgentConnectionToolDefinition,
 } from "../agent-connection/index.js";
 import { AgentConnectionPromptAdmissionError } from "../agent-connection/index.js";
-import { runLocalSessionView, type SessionViewAdapter } from "../agents-view/agents-view-mode.js";
-import type { SessionSummary } from "../daemon/daemon-session-list.js";
 import { getModelArgumentCompletions } from "../model-autocomplete.js";
 import {
 	checkForPackageUpdates,
@@ -822,63 +820,12 @@ export interface InteractiveModeOptions {
 	/** Initial stable session id used to scope prompt stash state. */
 	promptStashSessionId?: string;
 	/** Open the shared saved-session view before accepting prompts (process-local bare --resume). */
-	openSessionViewOnStartup?: boolean;
-}
-
-export function createLocalSessionViewAdapter(
-	connection: AgentConnection,
-	open: (sessionPath: string) => Promise<{ cancelled: boolean }>,
-): SessionViewAdapter {
-	const toSummary = (state: AgentConnectionState): SessionSummary => ({
-		id: state.activeSessionId ?? state.sessionId,
-		activeSessionId: state.activeSessionId ?? `local:${state.sessionId}`,
-		sessionId: state.sessionId,
-		sessionFile: state.sessionFile,
-		sessionName: state.sessionName,
-		cwd: state.cwd,
-		lifecycle: state.sessionFile ? "live" : "draft",
-		activity:
-			state.isStreaming || state.isCompacting || state.isBashRunning || state.pendingMessageCount > 0
-				? "working"
-				: "idle",
-		isStreaming: state.isStreaming,
-		isCompacting: state.isCompacting,
-		isBashRunning: state.isBashRunning,
-		attachedClients: 1,
-		messageCount: state.messageCount,
-		pendingMessageCount: state.pendingMessageCount,
-		summary: state.recap,
-	});
-	return {
-		kind: "local",
-		loadSavedSessions: (callbacks) => connection.listSavedSessions("all", callbacks),
-		getCurrentSession: async () => toSummary(await connection.getState()),
-		open: async (summary) => {
-			if (!summary.sessionFile) {
-				const current = await connection.getState();
-				if (summary.sessionId === current.sessionId) return { cancelled: false };
-				throw new Error("Cannot resume a session without a saved session file");
-			}
-			return open(summary.sessionFile);
-		},
-		rename: async (summary, name) => {
-			const current = await connection.getState();
-			if (summary.sessionId === current.sessionId) await connection.setSessionName(name);
-			else if (summary.sessionFile) await connection.renameSavedSession(summary.sessionFile, name);
-		},
-		delete: async (summary) => {
-			if (!summary.sessionFile) return { ok: false, error: "Session has no saved file" };
-			return connection.deleteSavedSession(summary.sessionFile);
-		},
-	};
 }
 
 export interface InteractiveModeRunResult {
 	type: "agents_view";
 	source: Pick<AgentConnectionState, "activeSessionId" | "sessionFile" | "sessionId" | "sessionName" | "cwd">;
 }
-
-type LocalSessionViewResult = { type: "exit" } | { type: "opened" };
 
 export class InteractiveMode {
 	private static readonly EXIT_HINT_DURATION_MS = 2000;
@@ -1753,9 +1700,6 @@ export class InteractiveMode {
 		};
 
 		await this.runStartupOnboarding();
-		if (this.options.openSessionViewOnStartup) {
-			await this.openLocalSessionViewOnStartup();
-		}
 		showDeferredStartupNotifications();
 		showModelFallbackWarning();
 		void this.maybeWarnAboutAnthropicSubscriptionAuth();
@@ -4877,15 +4821,6 @@ export class InteractiveMode {
 					this.editor.setText("");
 					return;
 				}
-				if (commandName === "resume") {
-					this.editor.setText("");
-					if (commandArgs) {
-						this.showError("Usage: /resume");
-						return;
-					}
-					await this.requestAgentsView();
-					return;
-				}
 				if (text === "/quit") {
 					this.editor.setText("");
 					await this.shutdown();
@@ -6106,7 +6041,7 @@ export class InteractiveMode {
 		if (!this.options.returnToAgentsView) {
 			return undefined;
 		}
-		return keyHint("app.agents.back", "agents");
+		return keyHint("app.agents.back", "agents/resume");
 	}
 
 	private getTrayContextLabel(): string | undefined {
@@ -7078,8 +7013,7 @@ export class InteractiveMode {
 			return;
 		}
 		if (!this.options.returnToAgentsView) {
-			const result = await this.showLocalSessionView();
-			if (result.type === "exit") await this.shutdown();
+			this.showStatus("The agents view needs the daemon; start without --no-daemon to browse sessions");
 			return;
 		}
 		await this.returnToAgentsView();
@@ -8480,45 +8414,6 @@ export class InteractiveMode {
 			);
 			return { component: selector, focus: selector };
 		});
-	}
-
-	private async openLocalSessionViewOnStartup(): Promise<void> {
-		const result = await this.showLocalSessionView();
-		if (result.type === "exit") await this.shutdown();
-	}
-
-	private async showLocalSessionView(): Promise<LocalSessionViewResult> {
-		const adapter = createLocalSessionViewAdapter(this.agentConnection, (sessionPath) =>
-			this.handleResumeSession(sessionPath),
-		);
-		this.ui.stop({ preserveAltScreen: true, flushFullscreen: false });
-		let result: Awaited<ReturnType<typeof runLocalSessionView>>;
-		try {
-			result = await runLocalSessionView(
-				{
-					config: { cwd: this.getCurrentCwd(), sessionDir: this.connectionState?.sessionDir },
-					uiServices: this.uiServices,
-					verbose: this.options.verbose,
-				},
-				adapter,
-			);
-		} finally {
-			setKeybindings(this.keybindings);
-			initTheme(this.settingsManager.getTheme(), true);
-			onThemeChange(() => {
-				this.ui.invalidate();
-				this.updateEditorBorderColor();
-				this.ui.requestRender();
-			});
-			this.ui.start();
-			if (this.fullscreenEnabled) this.applyFullscreen(true);
-			this.ui.requestRender(true);
-		}
-		if (result.type === "exit") return { type: "exit" };
-		const opened = await adapter.open(result.summary);
-		// A cancelled open (e.g. dismissing the missing-cwd prompt) returns to the
-		// view instead of falling through into whatever chat happens to be current.
-		return opened.cancelled ? this.showLocalSessionView() : { type: "opened" };
 	}
 
 	private async handleResumeSession(

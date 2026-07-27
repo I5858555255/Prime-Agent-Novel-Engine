@@ -68,7 +68,7 @@ Other useful commands:
 
 ```bash
 prime-agent agents                   # Search running, idle, and inactive sessions
-prime-agent --resume [path|id]       # Search sessions, or resume a specific one
+prime-agent --resume <path|id>       # Resume a specific session
 prime-agent doctor [--fix]           # Inspect or repair background services
 prime-agent update [--force]         # Update Prime Agent
 prime-agent shutdown [--force]       # Stop every agent, worker, and background service

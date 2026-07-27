@@ -161,7 +161,7 @@ export const REMOVED_COMMAND_NAMES = new Set(["app", "daemon", "install", "manag
 const TOP_LEVEL_OPTIONS = [
 	["-p, --print", "Print a response and exit"],
 	["-c, --continue", "Continue the previous session"],
-	["-r, --resume [path|id]", "Resume a session, or browse when omitted"],
+	["-r, --resume <path|id>", "Resume a session"],
 	["--model <pattern>", "Choose a model"],
 	["--thinking <level>", "Set the reasoning level"],
 	["--offline", "Disable startup network operations"],

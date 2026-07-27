@@ -12,7 +12,7 @@ import type { ActiveSessionState } from "./active-session-state.js";
 
 // Durable lifecycle; decides agents-view visibility. Only "live" is shown.
 // "draft" = no message sent yet (discarded on close); "archived" = ctrl+x'd,
-// reachable only via /resume.
+// reachable only via --resume <selector>.
 export type SessionLifecycle = "draft" | "live" | "archived";
 
 // Heuristic activity of a live session. Classification-in-flight counts as

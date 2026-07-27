@@ -161,8 +161,8 @@ export function shouldRejectNonInteractiveAttach(attachAgent: string | undefined
 	return attachAgent !== undefined && appMode !== "interactive";
 }
 
-export function shouldRejectNonInteractiveBareResume(resume: true | string | undefined, appMode: AppMode): boolean {
-	return resume === true && appMode !== "interactive";
+export function shouldRejectBareResume(resume: true | string | undefined): boolean {
+	return resume === true;
 }
 
 function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
@@ -245,16 +245,13 @@ export interface AgentsViewStartupDecision {
 }
 
 export function shouldOpenAgentsViewForDaemonInteractive(options: AgentsViewStartupDecision): boolean {
-	const bareResume = options.resume === true;
-	const requestsAgentsView = bareResume || (options.explicitAgentsView && !options.needsOnboarding);
 	return (
 		options.useDaemonInteractive &&
 		// `prime-agent` opens a new chat by default; the unified agents view is reached via
-		// left-arrow from a session, requested explicitly (`agents`), or opened by bare `--resume`.
-		!!requestsAgentsView &&
-		// Onboarding still owns a normal/`agents` first run. Bare `--resume` is an explicit
-		// request for the unified session view and must not fall through to a new chat.
-		// A selector still resolves and opens its target directly.
+		// left-arrow from a session or requested explicitly (`agents`).
+		!!options.explicitAgentsView &&
+		!options.needsOnboarding &&
+		// A resume selector resolves and opens its target directly.
 		typeof options.resume !== "string" &&
 		!options.continue &&
 		!options.fork
@@ -268,32 +265,10 @@ export interface DaemonInteractiveSessionManagerDecision {
 	hasActiveDaemonSession?: boolean;
 }
 
-export function shouldOpenProcessLocalSessionViewOnStartup(options: {
-	appMode: AppMode;
-	useDaemonInteractive: boolean;
-	explicitAgentsView?: boolean;
-	resume?: true | string;
-	noSession?: boolean;
-	startupBenchmark?: boolean;
-}): boolean {
-	return (
-		options.appMode === "interactive" &&
-		!options.useDaemonInteractive &&
-		!options.noSession &&
-		!options.startupBenchmark &&
-		(options.explicitAgentsView || options.resume === true)
-	);
-}
-
 export function shouldUseEphemeralSessionManagerForDaemonInteractive(
 	options: DaemonInteractiveSessionManagerDecision,
 ): boolean {
-	return (
-		!options.hasActiveDaemonSession &&
-		(options.resume === undefined || options.resume === true) &&
-		!options.continue &&
-		!options.fork
-	);
+	return !options.hasActiveDaemonSession && options.resume === undefined && !options.continue && !options.fork;
 }
 
 export interface DaemonActiveSessionLookupDecision {
@@ -1088,8 +1063,10 @@ export async function main(args: string[], options?: MainOptions) {
 		console.error(chalk.red("Error: attach requires an interactive terminal"));
 		process.exit(1);
 	}
-	if (shouldRejectNonInteractiveBareResume(parsed.resume, appMode)) {
-		console.error(chalk.red("Error: --resume without a session selector requires an interactive terminal"));
+	if (shouldRejectBareResume(parsed.resume)) {
+		console.error(
+			chalk.red("Error: --resume requires a session id or path; browse sessions with left-arrow from a chat"),
+		);
 		process.exit(1);
 	}
 	setLogContext({ mode: appMode });
@@ -1208,18 +1185,8 @@ export async function main(args: string[], options?: MainOptions) {
 		console.error(chalk.red(`Error: No active agent found matching '${publicCommand.attachAgent}'`));
 		process.exit(1);
 	}
-	const openProcessLocalSessionView = shouldOpenProcessLocalSessionViewOnStartup({
-		appMode,
-		useDaemonInteractive,
-		explicitAgentsView,
-		resume: parsed.resume,
-		noSession: parsed.noSession,
-		startupBenchmark,
-	});
 	let sessionManager: SessionManager;
-	if (openProcessLocalSessionView) {
-		sessionManager = SessionManager.inMemory(cwd, sessionDir);
-	} else if (activeDaemonSessionSummary) {
+	if (activeDaemonSessionSummary) {
 		sessionManager = createSessionManagerForActiveDaemonSummary(activeDaemonSessionSummary, cwd);
 	} else if (
 		useDaemonInteractive &&
@@ -1242,7 +1209,7 @@ export async function main(args: string[], options?: MainOptions) {
 					? ` Did you mean '${error.suggestion}'?`
 					: "";
 			console.error(chalk.red(`Error: ${error.message}.${suggestion}`));
-			console.error(chalk.dim(`Run "${APP_NAME} --resume" to browse sessions.`));
+			console.error(chalk.dim(`Open ${APP_NAME} and press left-arrow to browse sessions.`));
 			process.exit(1);
 		}
 	}
@@ -1629,6 +1596,9 @@ export async function main(args: string[], options?: MainOptions) {
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {
+		if (explicitAgentsView) {
+			console.error(chalk.yellow("Warning: the agents view needs the daemon; opening a normal chat instead"));
+		}
 		if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
 			const modelList = scopedModels
 				.map((sm) => {
@@ -1645,7 +1615,6 @@ export async function main(args: string[], options?: MainOptions) {
 			promptStashStore: new ClientPromptStashStore(),
 			promptStashSessionId: session.sessionId,
 			bindLocalSessionExtensions: true,
-			openSessionViewOnStartup: openProcessLocalSessionView,
 			migratedProviders,
 			modelFallbackMessage,
 			initialMessage,

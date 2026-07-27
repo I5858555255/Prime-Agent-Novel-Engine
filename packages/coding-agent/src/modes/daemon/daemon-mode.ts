@@ -547,7 +547,7 @@ export class AgentDaemon {
 		this.registerSignalHandlers();
 		this.summarizer.start();
 		this.log(`Prime Agent daemon listening on ${this.socketPath}`);
-		// No startup restore: on-disk sessions return only via /resume or --resume.
+		// No startup restore: on-disk sessions return only via --resume or the agents view.
 		if (!this.shuttingDown) {
 			this.cronScheduler.start();
 		}
