@@ -20,6 +20,22 @@ function summary(id: string): SessionSummary {
 	};
 }
 
+function rawSavedSession(id: string) {
+	return {
+		path: `/tmp/${id}.jsonl`,
+		id,
+		cwd: "/tmp/project",
+		state: "idle",
+		created: new Date(0).toISOString(),
+		modified: new Date(0).toISOString(),
+		messageCount: 1,
+	};
+}
+
+function savedSession(id: string) {
+	return { path: `/tmp/${id}.jsonl`, id };
+}
+
 function refreshHarness() {
 	const applySessionList = vi.fn();
 	const reconcileCatalogs = vi.fn();
@@ -94,32 +110,37 @@ describe("#502 unified session view regressions", () => {
 	);
 
 	test("overlapping saved scans retain the last complete catalog after the newest scan fails", async () => {
-		const previous = [{ path: "/tmp/previous.jsonl", id: "previous" }];
-		const older = deferred<typeof previous>();
-		const streamed = { path: "/tmp/streamed.jsonl", id: "streamed" };
+		const previous = [savedSession("previous")];
+		const older = deferred<{ success: true; data: { sessions: unknown[] } }>();
+		const client = {
+			request: vi
+				.fn()
+				.mockReturnValueOnce(older.promise)
+				.mockImplementationOnce(
+					async (
+						_command: unknown,
+						_timeout: unknown,
+						options: { onProgress: (update: { type: string; session: unknown }) => void },
+					) => {
+						options.onProgress({ type: "session_list_session", session: rawSavedSession("streamed") });
+						throw new Error("scan failed");
+					},
+				),
+		};
 		const harness = {
 			...refreshHarness(),
 			savedSessions: previous,
 			lastSuccessfulSavedSessions: previous,
+			requireClient: () => client,
+			getSavedSessionCatalogContext: () => ({ cwd: "/tmp/project" }),
 		};
 		harness.persistentState.savedSessions = previous;
-		harness.options = {
-			adapter: {
-				loadSavedSessions: vi
-					.fn()
-					.mockReturnValueOnce(older.promise)
-					.mockImplementationOnce(async ({ onSession }: { onSession: (session: typeof streamed) => void }) => {
-						onSession(streamed);
-						throw new Error("scan failed");
-					}),
-			},
-		};
 		const refresh = privateMethod<(this: typeof harness) => Promise<boolean>>("refreshSavedSessions");
 
 		const oldScan = refresh.call(harness);
 		await Promise.resolve();
 		expect(await refresh.call(harness)).toBe(false);
-		older.resolve([{ path: "/tmp/stale.jsonl", id: "stale" }]);
+		older.resolve({ success: true, data: { sessions: [rawSavedSession("stale")] } });
 		expect(await oldScan).toBe(false);
 
 		expect([harness.savedSessions, harness.persistentState.savedSessions]).toEqual([previous, previous]);
@@ -127,22 +148,22 @@ describe("#502 unified session view regressions", () => {
 	});
 
 	test("reconnect retries the saved catalog and fences a stale startup scan", async () => {
-		const previous = [{ path: "/tmp/previous.jsonl", id: "previous" }];
-		const startup = deferred<typeof previous>();
-		const retried = deferred<typeof previous>();
-		const replacement = [{ path: "/tmp/retried.jsonl", id: "retried" }];
+		const previous = [savedSession("previous")];
+		const startup = deferred<{ success: true; data: { sessions: unknown[] } }>();
+		const retried = deferred<{ success: true; data: { sessions: unknown[] } }>();
+		const replacement = savedSession("retried");
+		const client = {
+			request: vi.fn().mockReturnValueOnce(startup.promise).mockReturnValueOnce(retried.promise),
+		};
 		const harness = {
 			...refreshHarness(),
 			reconnectPromise: undefined as Promise<void> | undefined,
 			savedSessions: previous,
 			lastSuccessfulSavedSessions: previous,
+			requireClient: () => client,
+			getSavedSessionCatalogContext: () => ({ cwd: "/tmp/project" }),
 		};
 		harness.persistentState.savedSessions = previous;
-		harness.options = {
-			adapter: {
-				loadSavedSessions: vi.fn().mockReturnValueOnce(startup.promise).mockReturnValueOnce(retried.promise),
-			},
-		};
 		const refresh =
 			privateMethod<
 				(
@@ -158,31 +179,34 @@ describe("#502 unified session view regressions", () => {
 		expect(harness.savedCatalogGeneration).toBe(2);
 		expect(harness.persistentState.savedCatalogGeneration).toBe(2);
 
-		retried.resolve(replacement);
+		retried.resolve({ success: true, data: { sessions: [rawSavedSession("retried")] } });
 		expect(await retry).toBe(true);
-		startup.resolve([{ path: "/tmp/stale.jsonl", id: "stale" }]);
+		startup.resolve({ success: true, data: { sessions: [rawSavedSession("stale")] } });
 		expect(await startupScan).toBe(false);
-		expect(harness.savedSessions).toEqual(replacement);
+		expect(harness.savedSessions).toEqual([expect.objectContaining({ path: replacement.path })]);
 	});
 
 	test("failed saved retry during reconnect preserves status and complete catalog", async () => {
-		const previous = [{ path: "/tmp/previous.jsonl", id: "previous" }];
-		const streamed = { path: "/tmp/partial.jsonl", id: "partial" };
+		const previous = [savedSession("previous")];
+		const client = {
+			request: async (
+				_command: unknown,
+				_timeout: unknown,
+				options: { onProgress: (update: { type: string; session: unknown }) => void },
+			) => {
+				options.onProgress({ type: "session_list_session", session: rawSavedSession("partial") });
+				throw new Error("retry failed");
+			},
+		};
 		const harness = {
 			...refreshHarness(),
 			reconnectPromise: Promise.resolve(),
 			savedSessions: previous,
 			lastSuccessfulSavedSessions: previous,
+			requireClient: () => client,
+			getSavedSessionCatalogContext: () => ({ cwd: "/tmp/project" }),
 		};
 		harness.persistentState.savedSessions = previous;
-		harness.options = {
-			adapter: {
-				loadSavedSessions: async ({ onSession }: { onSession: (session: typeof streamed) => void }) => {
-					onSession(streamed);
-					throw new Error("retry failed");
-				},
-			},
-		};
 
 		const refreshed = await privateMethod<
 			(
@@ -265,18 +289,18 @@ describe("#502 unified session view regressions", () => {
 
 	test("a pending saved scan cannot overwrite daemon shutdown status", async () => {
 		const scan = deferred<void>();
+		const client = {
+			request: async () => {
+				await scan.promise;
+				throw new Error("scan failed");
+			},
+		};
 		const harness = {
 			...refreshHarness(),
 			savedSessions: [],
 			lastSuccessfulSavedSessions: [],
-			options: {
-				adapter: {
-					loadSavedSessions: async () => {
-						await scan.promise;
-						throw new Error("scan failed");
-					},
-				},
-			},
+			requireClient: () => client,
+			getSavedSessionCatalogContext: () => ({ cwd: "/tmp/project" }),
 		};
 
 		const pending = privateMethod<(this: typeof harness) => Promise<boolean>>("refreshSavedSessions").call(harness);
@@ -314,21 +338,17 @@ describe("#502 unified session view regressions", () => {
 		// ...but the restored anchor identity survives so a late poll can still re-anchor.
 		expect(harness.selectedRowIdentity).toBe("identity-intended");
 	});
-	test("adapter rename uses the captured row after refresh removes it", async () => {
+	test("rename uses the captured row after refresh removes it", async () => {
 		const captured = summary("captured");
-		const rename = vi.fn(async () => {});
-		const requireClient = vi.fn(() => {
-			throw new Error("daemon client must not be used");
-		});
+		const request = vi.fn(async () => ({ success: true, data: {} }));
 		const harness = {
 			renameTarget: { activeSessionId: captured.activeSessionId, summary: captured },
 			rows: [],
-			options: { adapter: { rename } },
 			exitRenameMode: vi.fn(),
 			setStatusMessage: vi.fn(),
-			refreshSessions: vi.fn(async () => true),
-			refreshSavedSessions: vi.fn(async () => true),
-			requireClient,
+			refreshBothCatalogs: vi.fn(async () => true),
+			requireClient: () => ({ request }),
+			renameSession: Reflect.get(AgentsViewMode.prototype, "renameSession"),
 		};
 
 		await privateMethod<(this: typeof harness, value: string) => Promise<void>>("confirmRename").call(
@@ -336,8 +356,11 @@ describe("#502 unified session view regressions", () => {
 			"Renamed",
 		);
 
-		expect(rename).toHaveBeenCalledWith(captured, "Renamed");
-		expect(requireClient).not.toHaveBeenCalled();
+		expect(request).toHaveBeenCalledWith({
+			type: "rename",
+			activeSessionId: captured.activeSessionId,
+			name: "Renamed",
+		});
 	});
 
 	test("saved-only delete confirmation remains in the inactive catalog", () => {
