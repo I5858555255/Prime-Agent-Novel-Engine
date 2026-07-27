@@ -4320,8 +4320,7 @@ export class AgentSession {
 		}
 		if (admission) {
 			this._scheduleSessionInputPump();
-			// promptUntilAccepted resolves at ownership commit; only full prompt()
-			// calls wait for the queued work the pump is about to execute.
+			// promptUntilAccepted resolves at ownership commit, before queued work runs.
 			if (!options?.returnAfterAccepted) await this._sessionInputPump;
 		}
 	}
@@ -5274,10 +5273,8 @@ export class AgentSession {
 				this._syncSteeringStopPending();
 				this._notifySessionInputCheckpointChange();
 			}
-			// The phase flips before agent.prompt() runs, so hold a checkpoint
-			// section until dispatch is observed: otherwise a restart checkpoint
-			// could drain a stale event-queue snapshot and flush before the
-			// handed-off messages reach agent state and the transcript.
+			// The phase flipped to handedOff before dispatch; hold a checkpoint section
+			// until dispatch so a restart snapshot cannot miss the accepted messages.
 			const endHandoffSection = this._enterDirectPromptSection();
 			const dispatchObserver = this._observeDirectDispatch(prompts[prompts.length - 1]!.message);
 			const settleHandoffSection = () => {
@@ -5651,9 +5648,8 @@ export class AgentSession {
 	}
 
 	async waitForSessionInputCheckpoint(signal?: AbortSignal): Promise<void> {
-		// An executing queued command was already shifted off the queue, so the
-		// snapshot must wait for it to finish or it would vanish from durable
-		// queued input while still running.
+		// An executing command was already shifted off the queue; the snapshot
+		// must wait for it or it vanishes from durable queued input.
 		while (
 			(this._activeSessionInput?.kind === "prompt" && this._activeSessionInput.phase === "preparing") ||
 			this._activeSessionInput?.kind === "command" ||

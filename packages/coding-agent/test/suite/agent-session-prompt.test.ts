@@ -1425,8 +1425,6 @@ stale post-hook extension instructions`,
 			};
 		});
 
-		// On an idle session the command is enqueued at admission; acceptance must
-		// resolve while the pump is still executing it, not after completion.
 		await harness.session.promptUntilAccepted("/refine --local");
 		await commandStarted.promise;
 		expect(harness.session.isStreaming).toBe(false);
@@ -1474,9 +1472,8 @@ stale post-hook extension instructions`,
 		const harness = await createHarness();
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("queued done")]);
-		// Gate agent.prompt itself: the pump flips the input to handedOff and
-		// notifies checkpoint waiters before dispatch, and this gate keeps the
-		// window between those two steps open without touching the event queue.
+		// Gate agent.prompt itself to hold the window between the handedOff
+		// phase flip and dispatch open.
 		const dispatchGate = createDeferred();
 		const originalPrompt = harness.session.agent.prompt.bind(harness.session.agent);
 		const promptSpy = vi
@@ -1501,8 +1498,6 @@ stale post-hook extension instructions`,
 			checkpointReleased = true;
 		});
 		await new Promise<void>((resolve) => setImmediate(resolve));
-		// The handoff has not dispatched yet; a released checkpoint here would
-		// snapshot without the accepted message in queue state or transcript.
 		expect(checkpointReleased).toBe(false);
 
 		dispatchGate.resolve();
@@ -1735,7 +1730,7 @@ stale post-hook extension instructions`,
 		const busyPrompt = (id: string, body: string) =>
 			`Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: ${id}\n\n${body}`;
 
-		// Phase 1: accept while a real run is streaming -> the message queues instead of interrupting.
+		// Phase 1: accept while streaming -> queues instead of interrupting.
 		const busyGate = createDeferred();
 		harness.setResponses([
 			async () => {
@@ -1758,8 +1753,7 @@ stale post-hook extension instructions`,
 		await harness.session.waitForIdle();
 		expect(getUserTexts(harness)).toEqual(["keep busy", queuedAgentPrompt]);
 
-		// Phase 2: accept while idle returns after delivery starts, before the response completes,
-		// and the delivered message can no longer be cleared.
+		// Phase 2: accept while idle returns after delivery, before completion; delivered is uncleareable.
 		const responseGate = createDeferred();
 		harness.setResponses([
 			async () => {
@@ -1780,15 +1774,14 @@ stale post-hook extension instructions`,
 		expect(getAssistantTexts(harness)).toContain("delivered");
 		expect(getUserTexts(harness)).toContain(directAgentPrompt);
 
-		// Phase 3: built-in slash commands stay literal for accepted agent messages.
+		// Phase 3: built-in slash commands stay literal.
 		harness.setResponses([fauxAssistantMessage("literal")]);
 		await harness.session.acceptAgentMessagePrompt("/autonomous on", { expandPromptTemplates: false });
 		await harness.session.agent.waitForIdle();
 		expect(harness.session.getAutonomousStatus().enabled).toBe(false);
 		expect(getUserTexts(harness)).toContain("/autonomous on");
 
-		// Phase 4: clearing an accepted message during admission rejects both waiters and the aborted
-		// run's late events must not re-persist the cleared message or leave accepted state behind.
+		// Phase 4: clear during admission rejects both waiters; late events must not re-persist.
 		const persistedBefore = harness.sessionManager.getEntries().filter((entry) => entry.type === "message").length;
 		harness.setResponses([fauxAssistantMessage("never delivered")]);
 		const clearedAgentPrompt = busyPrompt("agentmsg_s7_cleared", "cleared during admission");
@@ -1815,7 +1808,6 @@ stale post-hook extension instructions`,
 			(harness.session as unknown as { _acceptedAgentMessagePrompt?: unknown })._acceptedAgentMessagePrompt,
 		).toBeUndefined();
 
-		// Phase 5: the session still takes a clean normal prompt afterwards.
 		harness.setResponses([fauxAssistantMessage("clean after")]);
 		await harness.session.prompt("normal prompt");
 		expect(getAssistantTexts(harness)).toContain("clean after");
