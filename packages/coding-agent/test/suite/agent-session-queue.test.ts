@@ -2164,7 +2164,7 @@ describe("AgentSession scheduler scenarios", () => {
 			},
 		]);
 
-		// Phase 1: queue steering, follow-up, command, and custom inputs while the run is gated.
+		// Phase 1: queue all input kinds while the run is gated.
 		await waitForToolStart;
 		await harness.session.steer("s1");
 		await harness.session.sendCustomMessage(
@@ -2189,20 +2189,18 @@ describe("AgentSession scheduler scenarios", () => {
 			{ deliverAs: "followUp" },
 		);
 
-		// Phase 2: queued work stays in session queues, not Agent queues, until delivery.
+		// Phase 2: queued work stays in session queues, not Agent queues.
 		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
 		const pendingAfterQueueing = harness.session.pendingMessageCount;
 		expect(pendingAfterQueueing).toBeGreaterThan(0);
 		expect(harness.session.getFollowUpMessages()).toContain("f1");
 		expect(harness.session.getFollowUpMessages()).toContain("f2");
 
-		// Phase 3: release the gated tool and let the whole journey drain.
 		releaseToolExecution();
 		await promptPromise;
 		await harness.session.waitForIdle();
 
-		// Phase 4: steering delivered one-at-a-time inside the original run, in queue order;
-		// follow-ups run after it, split by the command boundary, with f2 + custom batched (all mode).
+		// Phase 3: steering inside the run, follow-ups after it, f2 + custom batched (all mode).
 		expect(getAssistantTexts(harness)).toEqual([
 			"",
 			"handled s1",
@@ -2216,7 +2214,7 @@ describe("AgentSession scheduler scenarios", () => {
 		expect(batchedUsers).toContain("follow-up custom");
 		expect(batchSawImage).toBe(true);
 
-		// Phase 5: the queued command executed as a hard boundary between f1 and f2, durably.
+		// Phase 4: the command is a durable hard boundary between f1 and f2.
 		const rows = harness.session.messages.map((message) =>
 			message.role === "custom" ? `custom:${message.customType}` : `${message.role}`,
 		);
@@ -2232,7 +2230,7 @@ describe("AgentSession scheduler scenarios", () => {
 		expect(rows).toContain("custom:queue-test");
 		expect(rows).toContain("custom:queue-test-follow-up");
 
-		// Phase 6: every queued input left the pending count before its message_start.
+		// Phase 5: every queued input left the pending count before its message_start.
 		expect(harness.session.pendingMessageCount).toBe(0);
 		const queuedStarts = countsAtUserMessageStart.filter((entry) => entry.text !== "start");
 		expect(queuedStarts.length).toBeGreaterThan(0);
@@ -2265,7 +2263,7 @@ describe("AgentSession scheduler scenarios", () => {
 		]);
 		await waitForToolStart;
 
-		// Phase 1: keyed follow-ups coalesce per key (same text under another key is kept).
+		// Phase 1: keyed follow-ups coalesce per key.
 		const preflights: boolean[] = [];
 		await harness.session.prompt("same heartbeat", { streamingBehavior: "followUp", followUpQueueKey: "hb:one" });
 		await harness.session.prompt("same heartbeat", { streamingBehavior: "followUp", followUpQueueKey: "hb:two" });
@@ -2278,7 +2276,7 @@ describe("AgentSession scheduler scenarios", () => {
 		expect(harness.session.getFollowUpMessages()).toEqual(["same heartbeat", "same heartbeat"]);
 		await harness.session.followUp("keep me", undefined, { queueKey: "hb:keep" });
 
-		// Phase 2: steering inputs never coalesce, even when they share a queue key.
+		// Phase 2: steering never coalesces.
 		await harness.session.steer("first", undefined, { queueKey: "same-steer" });
 		await harness.session.steer("second", undefined, { queueKey: "same-steer" });
 		expect(harness.session.getSteeringMessages()).toEqual(["first", "second"]);
@@ -2287,7 +2285,7 @@ describe("AgentSession scheduler scenarios", () => {
 		const delivery = harness.session.waitForAgentMessagePromptDelivery("agentmsg_s2_clear");
 		await harness.session.queueAgentMessagePrompt(agentPrompt, "steer");
 
-		// Phase 3: a keyed duplicate rejects both agent-message outcome legs and restore reports false.
+		// Phase 3: keyed duplicates reject both agent-message outcome legs.
 		const dupDelivery = expect(harness.session.waitForAgentMessagePromptDelivery("agentmsg_s2_dup")).rejects.toThrow(
 			"equivalent follow-up is already pending",
 		);
@@ -2306,7 +2304,7 @@ describe("AgentSession scheduler scenarios", () => {
 			}),
 		).resolves.toBe(false);
 
-		// Phase 4: removal APIs edit the queues; agent-message clears reject their delivery waiters.
+		// Phase 4: removal APIs.
 		expect(harness.session.removeQueuedFollowUp("hb:one")).toBe(true);
 		expect(harness.session.removeQueuedFollowUp("hb:one")).toBe(false);
 		expect(harness.session.getFollowUpMessages()).toEqual(["same heartbeat", "keep me"]);
@@ -2320,7 +2318,7 @@ describe("AgentSession scheduler scenarios", () => {
 		});
 		await expect(delivery).rejects.toThrow("cleared before delivery");
 
-		// Phase 5: steering stop stays pending while steering remains, reconciles once it is all removed.
+		// Phase 5: steering-stop reconciliation.
 		expect(harness.session.getSteeringMessages()).toEqual(["first", "second"]);
 		expect(internals._steeringStopPending).toBe(true);
 		expect(harness.session.removeQueuedFollowUp("same-steer")).toBe(true);
@@ -2334,7 +2332,7 @@ describe("AgentSession scheduler scenarios", () => {
 		});
 		expect(harness.session.getFollowUpMessages()).toEqual(["keep me", spoofedPlain]);
 
-		// Phase 6: the released run continues without any removed input, then only the survivor runs.
+		// Phase 6: the run continues without any removed input.
 		releaseToolExecution();
 		await promptPromise;
 		await harness.session.waitForIdle();
@@ -2375,7 +2373,7 @@ describe("AgentSession scheduler scenarios", () => {
 			fauxAssistantMessage("late queued done"),
 		]);
 
-		// Phase 1: a pause lease holds queued work; nothing prepares or delivers while held.
+		// Phase 1: a pause lease holds queued work.
 		const removedAgentMessage = agentPromptText("agentmsg_remove", "remove");
 		const keptAgentMessage = agentPromptText("agentmsg_keep", "keep");
 		const pause = harness.session.acquireQueuedWorkPause();
@@ -2386,11 +2384,11 @@ describe("AgentSession scheduler scenarios", () => {
 		expect(prepared).toEqual([]);
 		expect(getUserTexts(harness)).toEqual([]);
 
-		// Phase 2: releasing the lease starts preparation with the last message as batch anchor.
+		// Phase 2: release starts preparation with the last message as batch anchor.
 		pause.release();
 		await vi.waitFor(() => expect(prepared).toEqual(["last anchor"]));
 
-		// Phase 3: removing queued inputs during preparation re-prepares around the new anchor.
+		// Phase 3: removals during preparation re-prepare around the new anchor.
 		expect(harness.session.clearQueuedUserMessagesMatching((text) => text === removedAgentMessage)).toEqual({
 			steering: [],
 			followUp: [removedAgentMessage],
@@ -2406,7 +2404,7 @@ describe("AgentSession scheduler scenarios", () => {
 		await harness.session.waitForIdle();
 		expect(getUserTexts(harness)).toEqual(["ordinary", keptAgentMessage]);
 
-		// Phase 4: a direct prompt's preparation blocks queued work admitted behind it.
+		// Phase 4: a direct prompt blocks queued work admitted behind it.
 		const direct = harness.session.prompt("direct");
 		await directGate.reached;
 		await harness.session.followUp("late queued", undefined, { resumeIfIdle: true });
@@ -2467,7 +2465,7 @@ describe("AgentSession scheduler scenarios", () => {
 		]);
 		expect(deliverySettled).toBe(false);
 
-		// Phase 3: while suspended, triggerTurn rejects promptly without starting the agent.
+		// Phase 3: while suspended, triggerTurn rejects promptly.
 		const agentPromptSpy = vi.spyOn(harness.session.agent, "prompt");
 		await expect(
 			harness.session.sendCustomMessage(
@@ -2477,7 +2475,7 @@ describe("AgentSession scheduler scenarios", () => {
 		).rejects.toThrow("queued session input is suspended");
 		expect(agentPromptSpy).not.toHaveBeenCalled();
 
-		// Phase 4: "restart" — restore an envelope command and a literal slash message, then resume.
+		// Phase 4: restore an envelope command and a literal slash message, then resume.
 		const command = parseSessionSlashCommand("/autonomous status");
 		expect(command).toBeDefined();
 		await harness.session.restoreFollowUpMessage(command!.text, undefined, {
@@ -2506,8 +2504,7 @@ describe("AgentSession scheduler scenarios", () => {
 		expect(harness.session.resumeQueuedWork()).toBe(true);
 		await harness.session.waitForIdle();
 
-		// Phase 5: the envelope executed as a command (autonomous stays off, durable row appended),
-		// the literal stayed literal, and the surviving agent-message finally delivered.
+		// Phase 5: envelope ran as a command, the literal stayed literal, delivery settled.
 		expect(harness.session.getAutonomousStatus().enabled).toBe(false);
 		expect(
 			harness.session.messages.filter(
@@ -2532,7 +2529,7 @@ describe("AgentSession scheduler scenarios", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
-		// Phase 1: delivery settles after the durable invocation append, completion stays gated.
+		// Phase 1: delivery settles at the durable append, completion stays gated.
 		const started = createDeferred<void>();
 		const release = createDeferred<void>();
 		vi.spyOn(harness.session, "refine")
@@ -2556,7 +2553,7 @@ describe("AgentSession scheduler scenarios", () => {
 		release.resolve();
 		await expect(completion).resolves.toBeUndefined();
 
-		// Phase 2: execution failure still counts as delivered, but rejects completion.
+		// Phase 2: execution failure is delivered but rejects completion.
 		const failedPause = harness.session.acquireQueuedWorkPause();
 		const failedId = "agentmsg_failed_command";
 		const failedDelivery = harness.session.waitForAgentMessagePromptDelivery(failedId);
@@ -2613,13 +2610,13 @@ describe("AgentSession scheduler scenarios", () => {
 				fauxAssistantMessage("fourth done"),
 			]);
 
-			// Phase 1: a real turn hits the interval; the review approves and the refine applies durably.
+			// Phase 1: interval review approves and the refine applies durably.
 			await harness.session.prompt("first");
 			await vi.waitFor(() => expect(memoryIds()).toContain("auto_one"));
 			expect(reviewer).toHaveBeenCalledTimes(1);
 			expect(reviewer.mock.calls[0]![0]).toEqual({ reason: "turn_interval", turnsSinceLastReview: 1 });
 
-			// Phase 2: the next review resolves while the agent is genuinely busy -> the refine defers.
+			// Phase 2: review resolves while busy -> refine defers.
 			await harness.session.prompt("second");
 			await vi.waitFor(() => expect(reviewer).toHaveBeenCalledTimes(2));
 			const busyPrompt = harness.session.prompt("busy");
@@ -2628,13 +2625,13 @@ describe("AgentSession scheduler scenarios", () => {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			expect(memoryIds()).not.toContain("auto_two");
 
-			// Phase 3: once the busy turn ends, the pending review executes without a second review call.
+			// Phase 3: the pending review executes at idle without a second review.
 			busyGate.resolve();
 			await busyPrompt;
 			await vi.waitFor(() => expect(memoryIds()).toContain("auto_two"));
 			expect(reviewer).toHaveBeenCalledTimes(2);
 
-			// Phase 4: branch navigation during a review discards it; no third refine runs.
+			// Phase 4: branch navigation discards the in-flight review.
 			await harness.session.prompt("fourth");
 			await vi.waitFor(() => expect(reviewer).toHaveBeenCalledTimes(3));
 			const target = harness.sessionManager
