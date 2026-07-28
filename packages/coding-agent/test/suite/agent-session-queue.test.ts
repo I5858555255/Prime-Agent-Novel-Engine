@@ -1361,6 +1361,26 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toEqual(["owned prompt"]);
 	});
 
+	it("stops counting cleared preparing inputs as pending", async () => {
+		const hook = gatedHook({ prompt: "cleared prompt" });
+		const harness = await createHarness({ extensionFactories: [hook.factory] });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("never delivered")]);
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.followUp("cleared prompt", undefined, { resumeIfIdle: true });
+		pause.release();
+		await hook.reached;
+		expect(harness.session.pendingMessageCount).toBe(1);
+
+		expect(harness.session.clearQueue()).toEqual({ steering: [], followUp: ["cleared prompt"] });
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.getFollowUpMessagePreviews()).toEqual([]);
+
+		hook.release();
+		await harness.session.waitForSessionInputIdle();
+		expect(getUserTexts(harness)).toEqual([]);
+	});
+
 	it("keeps cleared prompts out of the handoff snapshot during the refine wait", async () => {
 		let sessionInternals: { _refineInFlight?: Promise<void> };
 		let clearDuringRefineWait: (() => void) | undefined;
@@ -1728,6 +1748,21 @@ describe("AgentSession queue characterization", () => {
 		pause.release();
 		await expect(delivery).rejects.toThrow("durable invocation append failed");
 		await expect(completion).rejects.toThrow("durable invocation append failed");
+
+		// The failed append must roll back fully: no live-only command message and
+		// no unsaved leaf, so later durable entries persist cleanly.
+		expect(
+			harness.session.messages.some(
+				(message) => message.role === "custom" && message.customType.startsWith("session_slash_command"),
+			),
+		).toBe(false);
+		expect(
+			harness.sessionManager
+				.getBranch()
+				.some((entry) => entry.type === "custom" && entry.customType === "session_slash_command"),
+		).toBe(false);
+		const followUpEntryId = harness.sessionManager.appendCustomMessageEntry("post-failure", "still writable", false);
+		expect(harness.sessionManager.getBranch().at(-1)?.id).toBe(followUpEntryId);
 	});
 
 	it("does not record a benign compaction skip as a command failure", async () => {
