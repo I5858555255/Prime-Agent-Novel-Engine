@@ -129,7 +129,12 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		argumentHint: "[list|login <name>|logout <name>]",
 		takesArgument: true,
 	},
-	{ name: "new", description: "Start a new session" },
+	{
+		name: "new",
+		description: "Start a new session, optionally named and/or with an initial prompt",
+		argumentHint: '[--name "session name" --] [prompt]',
+		takesArgument: true,
+	},
 	{
 		name: "compact",
 		description: "Compact the session context; optional instructions focus the summary",
@@ -207,15 +212,10 @@ const BUILTIN_SLASH_COMMAND_ALIAS_TO_NAME = new Map(
 );
 
 export function parseSlashCommand(text: string): ParsedSlashCommand | undefined {
-	if (!text.startsWith("/")) {
-		return undefined;
-	}
-	const whitespaceIndex = text.search(/[\t\p{Zs}]/u);
-	const name = whitespaceIndex === -1 ? text.slice(1) : text.slice(1, whitespaceIndex);
-	if (!name) {
-		return undefined;
-	}
-	return { name, args: whitespaceIndex === -1 ? "" : text.slice(whitespaceIndex).trim() };
+	if (!text.startsWith("/")) return undefined;
+	const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+	if (!match) return undefined;
+	return { name: match[1], args: (match[2] ?? "").trim() };
 }
 
 export function resolveBuiltinSlashCommandName(name: string): string {
@@ -227,6 +227,8 @@ export function isBuiltinSlashCommandName(name: string): boolean {
 }
 
 export function builtinSlashCommandTakesArgument(name: string): boolean {
+	// /clear remains the no-argument compatibility alias even though /new accepts arguments.
+	if (name === "clear") return false;
 	return BUILTIN_SLASH_COMMAND_BY_NAME.get(resolveBuiltinSlashCommandName(name))?.takesArgument === true;
 }
 

@@ -6,6 +6,7 @@
 - Added queueing a reply as a follow-up with `alt+enter` in the agents-view reply composer; plain Enter now steers a streaming agent.
 - Added session-owned slash commands (`/compact`, `/refine`, `/goal`, `/autonomous`) with autocomplete to the agents-view reply composer; other built-in commands are rejected with guidance instead of being sent as prompt text.
 - Added `/name` and `/kill` view commands to the agents view reply composer, acting on its armed target; the search bar stays pure search.
+- Added `/new` support for an optional stable session name and initial prompt.
 - Removed the `/resume` command and bare `--resume`; browse sessions with left-arrow from a chat (daemon view), and use `--resume <session-id|path>` for direct resumes.
 - Fixed `prime-agent agents` opening a new chat when running with a process-local session.
 - Changed collapsed edit and IPython tool calls to show compact per-file line-change summaries while keeping full diffs available when expanded.
