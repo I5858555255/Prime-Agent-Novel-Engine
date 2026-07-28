@@ -1381,6 +1381,37 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toEqual([]);
 	});
 
+	it("queues a same-key follow-up once the prior owner has handed off", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first done"), fauxAssistantMessage("second done")]);
+		const dispatchGate = createDeferred();
+		const promptCalled = createDeferred();
+		const originalPrompt = harness.session.agent.prompt.bind(harness.session.agent);
+		const promptSpy = vi
+			.spyOn(harness.session.agent, "prompt")
+			.mockImplementation(async (messages: Parameters<typeof originalPrompt>[0]) => {
+				promptSpy.mockRestore();
+				promptCalled.resolve();
+				await dispatchGate.promise;
+				return originalPrompt(messages);
+			});
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.followUp("first heartbeat", undefined, { queueKey: "heartbeat", resumeIfIdle: true });
+		pause.release();
+		await promptCalled.promise;
+
+		// The first prompt handed off to the turn; a same-key follow-up must queue
+		// for the next turn instead of coalescing into the committed one.
+		expect(await harness.session.followUp("second heartbeat", undefined, { queueKey: "heartbeat" })).toBe(true);
+		expect(harness.session.getFollowUpMessages()).toEqual(["second heartbeat"]);
+
+		dispatchGate.resolve();
+		await harness.session.waitForSessionInputIdle();
+		await harness.session.waitForIdle();
+		expect(getUserTexts(harness)).toEqual(["first heartbeat", "second heartbeat"]);
+	});
+
 	it("keeps cleared prompts out of the handoff snapshot during the refine wait", async () => {
 		let sessionInternals: { _refineInFlight?: Promise<void> };
 		let clearDuringRefineWait: (() => void) | undefined;
