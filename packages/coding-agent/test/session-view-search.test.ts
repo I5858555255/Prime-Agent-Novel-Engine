@@ -9,4 +9,10 @@ describe("session view search", () => {
 		expect(matchesSearchText(text, "re:/WORK/\\w+")).toBe(true);
 		expect(matchesSearchText(text, "re:(")).toBe(false);
 	});
+
+	it("rejects noisy fuzzy matches that only scatter across the corpus", () => {
+		const text = createSessionSearchText(["Release Planner", "/work/widget", "fixed the node\n  CVE"]);
+		expect(matchesSearchText(text, "planner")).toBe(true);
+		expect(matchesSearchText(text, "rwfxce")).toBe(false);
+	});
 });

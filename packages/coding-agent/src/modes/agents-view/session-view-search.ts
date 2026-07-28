@@ -99,6 +99,8 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 	return { mode: "tokens", tokens, regex: null };
 }
 
+const STRICT_FUZZY_MAX_TOKEN_SCORE = 25;
+
 /** Match any precomputed search corpus using the resume picker's query language. */
 export function matchSearchText(text: string, parsed: ParsedSearchQuery): MatchResult {
 	if (parsed.mode === "regex") {
@@ -115,23 +117,19 @@ export function matchSearchText(text: string, parsed: ParsedSearchQuery): MatchR
 	}
 
 	let totalScore = 0;
-	let normalizedText: string | null = null;
+	const normalizedText = normalizeWhitespaceLower(text);
 
 	for (const token of parsed.tokens) {
-		if (token.kind === "phrase") {
-			if (normalizedText === null) {
-				normalizedText = normalizeWhitespaceLower(text);
-			}
-			const phrase = normalizeWhitespaceLower(token.value);
-			if (!phrase) continue;
-			const idx = normalizedText.indexOf(phrase);
-			if (idx < 0) return { matches: false, score: 0 };
+		const needle = normalizeWhitespaceLower(token.value);
+		if (!needle) continue;
+		const idx = normalizedText.indexOf(needle);
+		if (idx >= 0) {
 			totalScore += idx * 0.1;
 			continue;
 		}
-
+		if (token.kind === "phrase") return { matches: false, score: 0 };
 		const m = fuzzyMatch(token.value, text);
-		if (!m.matches) return { matches: false, score: 0 };
+		if (!m.matches || m.score > STRICT_FUZZY_MAX_TOKEN_SCORE) return { matches: false, score: 0 };
 		totalScore += m.score;
 	}
 

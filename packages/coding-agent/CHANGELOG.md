@@ -8,6 +8,8 @@
 - Added `/name` and `/kill` view commands to the agents view reply composer, acting on its armed target; the search bar stays pure search.
 - Removed the `/resume` command and bare `--resume`; browse sessions with left-arrow from a chat (daemon view), and use `--resume <session-id|path>` for direct resumes.
 - Fixed `prime-agent agents` opening a new chat when running with a process-local session.
+- Changed collapsed edit and IPython tool calls to show compact per-file line-change summaries while keeping full diffs available when expanded.
+- Changed session search to rank exact name and first-message matches before prefix, substring, and stricter transcript fuzzy matches.
 - Fixed daemon startup failing when an interrupted supervisor left an empty ownership directory.
 
 ## [0.3.3] - 2026-07-23
