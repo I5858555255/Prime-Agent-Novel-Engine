@@ -1318,7 +1318,8 @@ describe("AgentSession queue characterization", () => {
 		pause.release();
 		await hook.reached;
 
-		expect(harness.session.getSteeringMessages()).toEqual([]);
+		// The pump owns the prompt during preparation, but it stays visible as pending.
+		expect(harness.session.getSteeringMessages()).toEqual(["active steering"]);
 		expect(internals._steeringStopPending).toBe(true);
 		expect(harness.session.clearQueue()).toEqual({ steering: ["active steering"], followUp: [] });
 		expect(harness.session.clearQueue()).toEqual({ steering: [], followUp: [] });
@@ -1328,6 +1329,36 @@ describe("AgentSession queue characterization", () => {
 		await harness.session.waitForIdle();
 		expect(internals._steeringStopPending).toBe(false);
 		expect(getUserTexts(harness)).toEqual([]);
+	});
+
+	it("keeps owned inputs visible in counts, previews, and queue updates until delivery", async () => {
+		const hook = gatedHook({ prompt: "owned prompt" });
+		const harness = await createHarness({ extensionFactories: [hook.factory] });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("delivered")]);
+		const queueUpdates: { steering: readonly string[]; followUp: readonly string[] }[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "queue_update") {
+				queueUpdates.push({ steering: [...event.steering], followUp: [...event.followUp] });
+			}
+		});
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.followUp("owned prompt", undefined, { resumeIfIdle: true });
+		pause.release();
+		await hook.reached;
+
+		// The pump moved the prompt into _activeSessionInput (preparing); it must
+		// still count as pending and appear in previews and snapshots.
+		expect(harness.session.pendingMessageCount).toBe(1);
+		expect(harness.session.getFollowUpMessagePreviews()).toEqual(["owned prompt"]);
+		expect(harness.session.getFollowUpQueueSnapshots().map((snapshot) => snapshot.text)).toEqual(["owned prompt"]);
+		expect(queueUpdates.at(-1)).toEqual({ steering: [], followUp: ["owned prompt"] });
+
+		hook.release();
+		await harness.session.waitForIdle();
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(queueUpdates.at(-1)).toEqual({ steering: [], followUp: [] });
+		expect(getUserTexts(harness)).toEqual(["owned prompt"]);
 	});
 
 	it("keeps cleared prompts out of the handoff snapshot during the refine wait", async () => {
@@ -1858,7 +1889,8 @@ describe("AgentSession queue characterization", () => {
 			} else {
 				withStreaming(harness, false);
 				await prepared.promise;
-				await vi.waitFor(() => expect(harness.session.getFollowUpMessages()).toEqual([]));
+				// Owned by the pump during preparation, still reported as pending.
+				expect(harness.session.getFollowUpMessages()).toEqual(["accepted"]);
 			}
 			await expect(
 				harness.session.restoreFollowUpMessage("duplicate", undefined, { queueKey: "same", agentMessageId: id }),
