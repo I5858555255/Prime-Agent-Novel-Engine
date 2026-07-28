@@ -820,7 +820,6 @@ export interface InteractiveModeOptions {
 	promptStashStore?: ClientPromptStashStore;
 	/** Initial stable session id used to scope prompt stash state. */
 	promptStashSessionId?: string;
-	/** Open the shared saved-session view before accepting prompts (process-local bare --resume). */
 }
 
 export interface InteractiveModeRunResult {
