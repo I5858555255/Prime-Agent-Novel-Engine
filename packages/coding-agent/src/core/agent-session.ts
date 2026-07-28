@@ -5334,7 +5334,16 @@ export class AgentSession {
 			// A skipped compaction is benign and already surfaced by compaction_end.
 			if (error instanceof CompactionSkippedError) return;
 			const commandError = error instanceof Error ? error : new Error(String(error));
-			this._appendDurableSessionCommandMessage(`Command failed: ${commandError.message}`, input.command, true, true);
+			try {
+				this._appendDurableSessionCommandMessage(
+					`Command failed: ${commandError.message}`,
+					input.command,
+					true,
+					true,
+				);
+			} catch {
+				// Surfacing the command failure matters more than persisting its row.
+			}
 			throw commandError;
 		}
 	}
@@ -5353,13 +5362,15 @@ export class AgentSession {
 					...(isError ? { error: content.replace(/^Command failed:\s*/, "") } : {}),
 				})
 			: createSessionSlashCommandMessage(command);
-		this.agent.state.messages.push(message);
-		this.sessionManager.appendCustomMessageEntry(
+		// Persist before touching live state so a failed write cannot leave an
+		// unsaved leaf that the next entry would silently parent onto.
+		this.sessionManager.appendCustomMessageEntryWithRollback(
 			message.customType,
 			message.content,
 			message.display,
 			message.details,
 		);
+		this.agent.state.messages.push(message);
 		this._emit({ type: "message_start", message });
 		this._emit({ type: "message_end", message });
 	}
@@ -5621,7 +5632,7 @@ export class AgentSession {
 		const active = this._activeSessionInput;
 		if (!active || active.lane !== lane) return [];
 		if (active.kind === "command") return [active.item];
-		return active.phase === "preparing" ? active.items : [];
+		return active.phase === "preparing" && !active.cancelled ? active.items : [];
 	}
 
 	private _pendingSessionInputs(lane: SessionInputSchedule): readonly QueuedSessionInput[] {
