@@ -1354,8 +1354,8 @@ export class AgentSession {
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
-			steering: this._steeringMessages.map(queuedAgentMessagePreview),
-			followUp: this._followUpMessages.map(queuedAgentMessagePreview),
+			steering: this._pendingSessionInputs("steer").map(queuedAgentMessagePreview),
+			followUp: this._pendingSessionInputs("followUp").map(queuedAgentMessagePreview),
 		});
 	}
 
@@ -5042,6 +5042,7 @@ export class AgentSession {
 						} finally {
 							this._activeSessionInput = undefined;
 							this._notifySessionInputCheckpointChange();
+							this._emitQueueUpdate();
 						}
 						continue;
 					}
@@ -5077,6 +5078,9 @@ export class AgentSession {
 						if (this._isDeferredSessionInputError(error, epoch)) {
 							if (!this._activeSessionInput?.cancelled && undelivered.length > 0) {
 								queue.unshift(...undelivered);
+								// Clear ownership before emitting so the requeued items are not
+								// double-counted as both owned and queued.
+								this._activeSessionInput = undefined;
 								this._emitQueueUpdate();
 							}
 							blocked = true;
@@ -5242,6 +5246,7 @@ export class AgentSession {
 			if (this._activeSessionInput?.kind === "prompt") {
 				this._activeSessionInput.phase = "handedOff";
 				this._notifySessionInputCheckpointChange();
+				this._emitQueueUpdate();
 			}
 			// The phase flipped to handedOff before dispatch; hold a checkpoint section
 			// until dispatch so a restart snapshot cannot miss the accepted messages.
@@ -5574,35 +5579,53 @@ export class AgentSession {
 		return { steering: removedSteering, followUp: removedFollowUp };
 	}
 
+	/**
+	 * Items the pump moved out of the typed queues but has not yet delivered:
+	 * prompts still preparing and commands still executing. Once a prompt hands
+	 * off it reaches the transcript, so it stops counting as pending.
+	 */
+	private _undeliveredActiveSessionInputs(lane: SessionInputSchedule): readonly QueuedSessionInput[] {
+		const active = this._activeSessionInput;
+		if (!active || active.lane !== lane) return [];
+		if (active.kind === "command") return [active.item];
+		return active.phase === "preparing" ? active.items : [];
+	}
+
+	private _pendingSessionInputs(lane: SessionInputSchedule): readonly QueuedSessionInput[] {
+		const queue = lane === "steer" ? this._steeringMessages : this._followUpMessages;
+		const owned = this._undeliveredActiveSessionInputs(lane);
+		return owned.length === 0 ? queue : [...owned, ...queue];
+	}
+
 	/** Number of pending messages (includes both steering and follow-up) */
 	get pendingMessageCount(): number {
-		return this._steeringMessages.length + this._followUpMessages.length;
+		return this._pendingSessionInputs("steer").length + this._pendingSessionInputs("followUp").length;
 	}
 
 	/** Get pending steering messages (read-only) */
 	getSteeringMessages(): readonly string[] {
-		return this._steeringMessages.map((message) => message.text);
+		return this._pendingSessionInputs("steer").map((message) => message.text);
 	}
 
 	getSteeringMessagePreviews(): readonly string[] {
-		return this._steeringMessages.map(queuedAgentMessagePreview);
+		return this._pendingSessionInputs("steer").map(queuedAgentMessagePreview);
 	}
 
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
-		return this._followUpMessages.map((message) => message.text);
+		return this._pendingSessionInputs("followUp").map((message) => message.text);
 	}
 
 	getFollowUpMessagePreviews(): readonly string[] {
-		return this._followUpMessages.map(queuedAgentMessagePreview);
+		return this._pendingSessionInputs("followUp").map(queuedAgentMessagePreview);
 	}
 
 	getSteeringQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
-		return this._steeringMessages.map((message) => createQueuedAgentInputSnapshot(message));
+		return this._pendingSessionInputs("steer").map((message) => createQueuedAgentInputSnapshot(message));
 	}
 
 	getFollowUpQueueSnapshots(): readonly QueuedAgentInputSnapshot[] {
-		return this._followUpMessages.map((message) => createQueuedAgentInputSnapshot(message));
+		return this._pendingSessionInputs("followUp").map((message) => createQueuedAgentInputSnapshot(message));
 	}
 
 	private _notifySessionInputCheckpointChange(): void {
