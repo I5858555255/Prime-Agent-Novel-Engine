@@ -4944,9 +4944,7 @@ export class AgentSession {
 		const coalescedOwner =
 			schedule === "followUp" && input.kind === "prompt" && input.queueKey
 				? (queue.find((item) => item.queueKey === input.queueKey) ??
-					(this._activeSessionInput?.kind === "prompt"
-						? this._activeSessionInput.items.find((item) => item.queueKey === input.queueKey)
-						: undefined))
+					this._activePendingPromptWithQueueKey(input.queueKey))
 				: undefined;
 		if (coalescedOwner) {
 			if (input.agentMessageId !== coalescedOwner.agentMessageId) {
@@ -5879,9 +5877,19 @@ export class AgentSession {
 	hasQueuedFollowUp(queueKey: string): boolean {
 		return (
 			this._followUpMessages.some((message) => message.queueKey === queueKey) ||
-			(this._activeSessionInput?.kind === "prompt" &&
-				this._activeSessionInput.items.some((message) => message.queueKey === queueKey))
+			this._activePendingPromptWithQueueKey(queueKey) !== undefined
 		);
+	}
+
+	/**
+	 * The active-input prompt owning `queueKey` while it still counts as
+	 * pending. Once handed off it belongs to the running turn, so a same-key
+	 * follow-up must queue for the next turn instead of coalescing away.
+	 */
+	private _activePendingPromptWithQueueKey(queueKey: string): PreparedPromptInput | undefined {
+		const active = this._activeSessionInput;
+		if (active?.kind !== "prompt" || active.phase !== "preparing" || active.cancelled) return undefined;
+		return active.items.find((item) => item.queueKey === queueKey);
 	}
 
 	removeQueuedFollowUp(queueKey: string): boolean {
