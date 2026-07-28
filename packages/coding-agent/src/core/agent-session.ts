@@ -5384,13 +5384,26 @@ export class AgentSession {
 			}
 		} else if (options?.triggerTurn) {
 			const admission = await this._acquireDirectTurnAdmission();
+			// Hold a checkpoint section from admission until the turn dispatches so
+			// an update-restart snapshot cannot miss the admitted custom turn.
+			const endDirectPromptSection = this._enterDirectPromptSection();
+			const dispatchObserver = this._observeDirectDispatch(appMessage);
+			const settleSection = () => {
+				dispatchObserver.stop();
+				endDirectPromptSection();
+			};
 			try {
 				if (this.isStreaming) await this.agent.waitForIdle();
 				await this._waitForRefineIdle();
 				const promptPromise = this.agent.prompt(appMessage);
 				admission.release();
+				void Promise.race([promptPromise.catch(() => undefined), dispatchObserver.observed]).then(
+					settleSection,
+					settleSection,
+				);
 				await promptPromise;
 			} finally {
+				settleSection();
 				admission.release();
 				this._scheduleSessionInputPump();
 			}

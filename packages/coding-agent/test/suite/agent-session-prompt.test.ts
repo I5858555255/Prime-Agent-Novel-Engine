@@ -1545,6 +1545,48 @@ stale post-hook extension instructions`,
 		unsubscribe();
 	});
 
+	it("keeps a triggerTurn custom message fenced until its turn starts", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("done")]);
+		const customStarted = createDeferred();
+		const dispatchGate = createDeferred();
+		const originalPrompt = harness.session.agent.prompt.bind(harness.session.agent);
+		const promptCalled = createDeferred();
+		const promptSpy = vi
+			.spyOn(harness.session.agent, "prompt")
+			.mockImplementation(async (messages: Parameters<typeof originalPrompt>[0]) => {
+				promptSpy.mockRestore();
+				promptCalled.resolve();
+				await dispatchGate.promise;
+				return originalPrompt(messages);
+			});
+		const unsubscribe = harness.session.agent.subscribe((event) => {
+			if (event.type !== "message_start") return;
+			if (event.message.role === "custom" && event.message.customType === "trigger-turn-test") {
+				customStarted.resolve();
+			}
+		});
+
+		const send = harness.session.sendCustomMessage(
+			{ customType: "trigger-turn-test", content: "run a turn", display: true, details: {} },
+			{ triggerTurn: true },
+		);
+		await promptCalled.promise;
+		let checkpointReleased = false;
+		const checkpoint = harness.session.waitForSessionInputCheckpoint().then(() => {
+			checkpointReleased = true;
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(checkpointReleased).toBe(false);
+
+		dispatchGate.resolve();
+		await customStarted.promise;
+		await checkpoint;
+		await send;
+		unsubscribe();
+	});
+
 	it("releases a queued prompt checkpoint after handoff while its turn remains active", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
