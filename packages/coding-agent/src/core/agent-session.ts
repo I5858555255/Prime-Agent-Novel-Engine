@@ -6466,7 +6466,11 @@ export class AgentSession {
 				if (hadPostCompactionContinue) {
 					this._schedulePostCompactionContinue();
 				}
-				this._scheduleAutoRefineAfterCompaction(hadPostCompactionContinue);
+				// Queued agent or session-owned inputs resume the loop; defer refine
+				// behind them instead of interleaving it before their turns.
+				this._scheduleAutoRefineAfterCompaction(
+					hadPostCompactionContinue || this.agent.hasQueuedMessages() || this.pendingMessageCount > 0,
+				);
 			}
 		}
 	}
@@ -7476,7 +7480,10 @@ export class AgentSession {
 
 		// A requested compaction stopped the loop on purpose; don't stall if it fails.
 		const resumeAfterFailure = () => {
-			if (reason === "requested" && (shouldContinueAfterCompaction || this.agent.hasQueuedMessages())) {
+			if (
+				reason === "requested" &&
+				(shouldContinueAfterCompaction || this.agent.hasQueuedMessages() || this.pendingMessageCount > 0)
+			) {
 				this._schedulePostCompactionContinue();
 			}
 		};
@@ -7511,7 +7518,8 @@ export class AgentSession {
 			});
 
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry, customInstructions });
-			const hasQueuedMessages = this.agent.hasQueuedMessages();
+			// Queued work lives in both the agent queues and the session-owned queues.
+			const hasQueuedMessages = this.agent.hasQueuedMessages() || this.pendingMessageCount > 0;
 			const willContinueAfterCompaction = willRetry || shouldContinueAfterCompaction || hasQueuedMessages;
 
 			if (willRetry) {

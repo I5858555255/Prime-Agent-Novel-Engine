@@ -220,6 +220,49 @@ describe("AgentSession compaction characterization", () => {
 		}
 	});
 
+	it("treats session-owned queued inputs as queued work after compaction", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "summary from extension",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: { source: "extension" },
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		const internals = harness.session as unknown as {
+			_cancelPostCompactionContinue(): void;
+			_scheduleAutoRefineAfterCompaction(willContinueAfterCompaction: boolean): void;
+		};
+		const scheduleAutoRefineSpy = vi.spyOn(internals, "_scheduleAutoRefineAfterCompaction");
+		try {
+			await harness.session.prompt("one");
+			await harness.session.prompt("two");
+			// Hold the input in the session-owned follow-up queue across compaction.
+			const pause = harness.session.acquireQueuedWorkPause();
+			await harness.session.followUp("queued across compaction", undefined, { resumeIfIdle: true });
+			expect(harness.session.pendingMessageCount).toBe(1);
+
+			await harness.session.compact();
+
+			// Session-owned queued work counts as queued: refine defers to the next
+			// turn boundary instead of running before the queued input's turn.
+			expect(scheduleAutoRefineSpy).toHaveBeenCalledWith(true);
+
+			pause.release();
+		} finally {
+			harness.session.clearQueue();
+			internals._cancelPostCompactionContinue();
+		}
+	});
+
 	it("throws when compacting without a model", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
