@@ -70,6 +70,7 @@ import type {
 	AgentConnectionSessionContext,
 	AgentConnectionSessionHeader,
 	AgentConnectionSessionListCallbacks,
+	AgentConnectionSessionTreeFlatNode,
 	AgentConnectionSessionTreeNode,
 	AgentConnectionSessionWatcher,
 	AgentConnectionSideQuestionEvent,
@@ -176,6 +177,24 @@ export interface DaemonAgentConnectionOptions {
  * InteractiveMode depends only on AgentConnection; local socket ownership and
  * daemon command details stay inside this adapter.
  */
+export function buildSessionTreeFromFlatNodes(
+	flatNodes: readonly AgentConnectionSessionTreeFlatNode[],
+): AgentConnectionSessionTreeNode[] {
+	const byId = new Map<string, AgentConnectionSessionTreeNode>();
+	const roots: AgentConnectionSessionTreeNode[] = [];
+	for (const flatNode of flatNodes) {
+		byId.set(flatNode.entry.id, { ...flatNode, children: [] });
+	}
+	for (const flatNode of flatNodes) {
+		const entry = flatNode.entry;
+		const node = byId.get(entry.id)!;
+		const parent = entry.parentId === null || entry.parentId === entry.id ? undefined : byId.get(entry.parentId);
+		if (parent) parent.children.push(node);
+		else roots.push(node);
+	}
+	return roots;
+}
+
 export class DaemonAgentConnection implements AgentConnection {
 	private readonly listeners = new Set<AgentConnectionEventListener>();
 	private readonly unsubscribeDaemonMessages: () => void;
@@ -477,10 +496,14 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (this.latestSnapshotIsFresh && this.latestSnapshot?.sessionTree) {
 			return this.latestSnapshot.sessionTree;
 		}
-		return this.requestData<{ tree: AgentConnectionSessionTreeNode[]; leafId: string | null }>({
+		const data = await this.requestData<{
+			flatNodes: AgentConnectionSessionTreeFlatNode[];
+			leafId: string | null;
+		}>({
 			type: "get_session_tree",
 			activeSessionId: this.activeSessionId,
 		});
+		return { tree: buildSessionTreeFromFlatNodes(data.flatNodes), leafId: data.leafId };
 	}
 
 	async listSavedSessions(

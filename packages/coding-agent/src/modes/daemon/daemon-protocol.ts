@@ -48,11 +48,12 @@ import type { SessionSummary } from "./daemon-session-list.js";
  */
 
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
-export const DAEMON_PROTOCOL_VERSION = 5;
+export const DAEMON_PROTOCOL_VERSION = 6;
 export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 2;
 // Revision 6 combines prompt-admission cancellation with side-question transcripts and transient bash.
-export const DAEMON_SCHEMA_REVISION = 6;
-export const DAEMON_SCHEMA_ID = "protocol-5-schema-6-48a562b9bffe";
+// Revision 7 makes get_session_tree return flatNodes instead of a recursively nested tree.
+export const DAEMON_SCHEMA_REVISION = 7;
+export const DAEMON_SCHEMA_ID = "protocol-6-schema-7-48a562b9bffe";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -616,13 +617,14 @@ const SESSION_INPUT_ADMISSION_COMMAND = {
 	capability: "session_input_admission",
 } as const;
 const PROMPT_ADMISSION_CANCELLATION_COMMAND = {
-	minProtocol: DAEMON_PROTOCOL_VERSION,
+	minProtocol: 5,
 	capability: "prompt_admission_cancellation",
 } as const;
 const CLIENT_OWNED_DAEMON_COMMAND = {
 	minProtocol: 4,
 	capability: "client_owned_sessions",
 } as const;
+const FLAT_SESSION_TREE_COMMAND = { minProtocol: DAEMON_PROTOCOL_VERSION } as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
 	ack_result: LEGACY_DAEMON_COMMAND,
@@ -707,7 +709,7 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	rename_saved_session: LEGACY_DAEMON_COMMAND,
 	delete_saved_session: LEGACY_DAEMON_COMMAND,
 	get_session_context: LEGACY_DAEMON_COMMAND,
-	get_session_tree: LEGACY_DAEMON_COMMAND,
+	get_session_tree: FLAT_SESSION_TREE_COMMAND,
 	get_user_messages_for_forking: LEGACY_DAEMON_COMMAND,
 	get_last_assistant_text: LEGACY_DAEMON_COMMAND,
 	get_system_prompt: LEGACY_DAEMON_COMMAND,

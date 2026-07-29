@@ -36,7 +36,7 @@ describe("daemon protocol helpers", () => {
 	});
 
 	it("requires compatibility metadata for the heartbeat protocol surface", () => {
-		expect(DAEMON_PROTOCOL_VERSION).toBe(5);
+		expect(DAEMON_PROTOCOL_VERSION).toBe(6);
 		expect(DAEMON_SCHEMA_ID).toContain(`protocol-${DAEMON_PROTOCOL_VERSION}`);
 		expect(DAEMON_COMMAND_COMPATIBILITY.heartbeats_list).toEqual({
 			minProtocol: 3,
@@ -57,6 +57,10 @@ describe("daemon protocol helpers", () => {
 		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toEqual(
 			expect.arrayContaining(["heartbeat_catalog", "heartbeat_management"]),
 		);
+	});
+
+	it("requires protocol 6 for the flat session-tree response", () => {
+		expect(DAEMON_COMMAND_COMPATIBILITY.get_session_tree).toEqual({ minProtocol: 6 });
 	});
 
 	it("capability-gates the optional model catalog surface", () => {

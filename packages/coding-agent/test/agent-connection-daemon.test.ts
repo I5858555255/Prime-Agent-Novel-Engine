@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MissingSessionCwdError } from "../src/core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../src/core/session-import-errors.js";
 import {
+	buildSessionTreeFromFlatNodes,
 	DAEMON_REFINE_REQUEST_TIMEOUT_MS,
 	DaemonAgentConnection,
 } from "../src/modes/agent-connection/daemon-agent-connection.js";
@@ -216,7 +217,7 @@ class FakeDaemonClient {
 					command: command.type,
 					success: true,
 					data: {
-						tree: [
+						flatNodes: [
 							{
 								entry: {
 									type: "message",
@@ -225,7 +226,6 @@ class FakeDaemonClient {
 									timestamp: "2026-01-01T00:00:00.000Z",
 									message: { role: "user", content: "hello", timestamp: 1 },
 								},
-								children: [],
 							},
 						],
 						leafId: "user-1",
@@ -2436,6 +2436,27 @@ describe("DaemonAgentConnection", () => {
 			type: "get_session_context",
 			activeSessionId: "active-1",
 		});
+	});
+
+	it("rebuilds very deep flat session trees without recursive construction", () => {
+		const flatNodes = Array.from({ length: 10_000 }, (_, index) => ({
+			entry: {
+				type: "message" as const,
+				id: `node-${index}`,
+				parentId: index === 0 ? null : `node-${index - 1}`,
+				timestamp: "2026-01-01T00:00:00.000Z",
+				message: { role: "user" as const, content: String(index), timestamp: index },
+			},
+		}));
+		expect(() => JSON.stringify({ flatNodes, leafId: "node-9999" })).not.toThrow();
+		const roots = buildSessionTreeFromFlatNodes(flatNodes);
+		let node = roots[0];
+		let depth = 0;
+		while (node) {
+			depth++;
+			node = node.children[0];
+		}
+		expect(depth).toBe(10_000);
 	});
 
 	it("loads session trees through the daemon protocol", async () => {
