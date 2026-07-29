@@ -74,6 +74,7 @@ describe("daemon protocol helpers", () => {
 	it("version- and capability-gates prompt admission cancellation", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.cancel_prompt_admission).toEqual({
 			minProtocol: 5,
+			minSchemaRevision: 6,
 			capability: "prompt_admission_cancellation",
 		});
 		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toContain("prompt_admission_cancellation");

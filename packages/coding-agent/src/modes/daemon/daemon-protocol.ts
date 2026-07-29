@@ -607,6 +607,7 @@ type DaemonCommandName = DaemonCommand["type"];
 
 export interface DaemonCommandCompatibility {
 	minProtocol: number;
+	minSchemaRevision?: number;
 	capability?: DaemonServerCapability;
 }
 
@@ -618,6 +619,7 @@ const SESSION_INPUT_ADMISSION_COMMAND = {
 } as const;
 const PROMPT_ADMISSION_CANCELLATION_COMMAND = {
 	minProtocol: 5,
+	minSchemaRevision: 6,
 	capability: "prompt_admission_cancellation",
 } as const;
 const CLIENT_OWNED_DAEMON_COMMAND = {
@@ -721,6 +723,13 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	restart: LEGACY_DAEMON_COMMAND,
 	shutdown: LEGACY_DAEMON_COMMAND,
 } as const satisfies Record<DaemonCommandName, DaemonCommandCompatibility>;
+
+export function getDaemonCommandFieldCompatibility(command: DaemonCommand): DaemonCommandCompatibility | undefined {
+	if ((command.type === "prompt" || command.type === "prompt_and_wait") && command.admissionId !== undefined) {
+		return PROMPT_ADMISSION_CANCELLATION_COMMAND;
+	}
+	return undefined;
+}
 
 export type DaemonResponse =
 	| { id?: string; type: "response"; command: string; success: true; data?: unknown }

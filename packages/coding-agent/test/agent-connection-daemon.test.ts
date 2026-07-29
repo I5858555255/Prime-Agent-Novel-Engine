@@ -15,6 +15,7 @@ import type {
 } from "../src/modes/agent-connection/types.js";
 
 import {
+	DaemonCapabilityUnavailableError,
 	type DaemonClient,
 	type DaemonClientCloseListener,
 	type DaemonClientMessageListener,
@@ -722,7 +723,6 @@ describe("DaemonAgentConnection", () => {
 
 	it("forwards signal-backed prompts with a unique cancellable admission id", async () => {
 		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilities.add("prompt_admission_cancellation");
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
 		const abort = new AbortController();
 
@@ -739,7 +739,6 @@ describe("DaemonAgentConnection", () => {
 
 	it("cancels rejected signal-backed admission and removes its abort listener", async () => {
 		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilities.add("prompt_admission_cancellation");
 		fakeClient.promptError = new Error("transport failed");
 		fakeClient.cancelPromptAdmissionStatus = "cancelled";
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
@@ -759,7 +758,6 @@ describe("DaemonAgentConnection", () => {
 
 	it("preserves a definitive prompt rejection when the signal remains live", async () => {
 		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilities.add("prompt_admission_cancellation");
 		fakeClient.promptResponseError = "session rejected prompt";
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
 
@@ -783,7 +781,6 @@ describe("DaemonAgentConnection", () => {
 
 	it("accepts a successful prompt response when cancellation reports unknown", async () => {
 		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilities.add("prompt_admission_cancellation");
 		let releasePrompt = () => {};
 		fakeClient.promptGate = new Promise<void>((resolve) => {
 			releasePrompt = resolve;
@@ -804,7 +801,6 @@ describe("DaemonAgentConnection", () => {
 
 	it("preserves a definitive prompt rejection when cancellation reports owned", async () => {
 		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilities.add("prompt_admission_cancellation");
 		let releasePrompt = () => {};
 		fakeClient.promptGate = new Promise<void>((resolve) => {
 			releasePrompt = resolve;
@@ -826,7 +822,6 @@ describe("DaemonAgentConnection", () => {
 
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilities.add("prompt_admission_cancellation");
 		fakeClient.promptError = new Error("lost response");
 		fakeClient.cancelPromptAdmissionStatus = "unknown";
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
@@ -838,9 +833,19 @@ describe("DaemonAgentConnection", () => {
 		});
 	});
 
+	it("translates unsupported admission cancellation into an admission error", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.promptError = new DaemonCapabilityUnavailableError("prompt", "prompt_admission_cancellation");
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+
+		await expect(connection.prompt("startup", { signal: new AbortController().signal })).rejects.toMatchObject({
+			status: "unsupported",
+		});
+		expect(fakeClient.requests.map((request) => request.type)).toEqual(["prompt"]);
+	});
+
 	it("uses cancellable admission for promptAndWait", async () => {
 		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilities.add("prompt_admission_cancellation");
 		fakeClient.promptError = new Error("lost response");
 		fakeClient.cancelPromptAdmissionStatus = "cancelled";
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
@@ -852,27 +857,6 @@ describe("DaemonAgentConnection", () => {
 			"prompt_and_wait",
 			"cancel_prompt_admission",
 		]);
-	});
-
-	it("rejects an old daemon before sending a signal-backed prompt", async () => {
-		const fakeClient = new FakeDaemonClient();
-		fakeClient.hello = { ...fakeClient.hello!, protocol: { ...DAEMON_PROTOCOL_INFO, version: 4 } };
-		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
-
-		await expect(connection.prompt("startup", { signal: new AbortController().signal })).rejects.toMatchObject({
-			status: "unsupported",
-		});
-		expect(fakeClient.requests).toEqual([]);
-	});
-
-	it("accepts a newer daemon schema revision for a signal-backed prompt", async () => {
-		const fakeClient = new FakeDaemonClient();
-		fakeClient.serverCapabilities.add("prompt_admission_cancellation");
-		fakeClient.hello = { ...fakeClient.hello!, schemaRevision: DAEMON_SCHEMA_REVISION + 1 };
-		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
-
-		await connection.prompt("startup", { signal: new AbortController().signal });
-		expect(fakeClient.requests.map((request) => request.type)).toEqual(["prompt"]);
 	});
 
 	it("uses fleet heartbeat scope for residents and session scope for owned workers", async () => {
