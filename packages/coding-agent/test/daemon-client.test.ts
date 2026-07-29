@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DaemonClient, getDaemonSocketCloseReason } from "../src/modes/daemon/daemon-client.js";
-import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_REVISION } from "../src/modes/daemon/daemon-protocol.js";
+import {
+	DAEMON_COMMAND_COMPATIBILITY,
+	DAEMON_PROTOCOL_VERSION,
+	DAEMON_SCHEMA_REVISION,
+} from "../src/modes/daemon/daemon-protocol.js";
 
 const netMock = vi.hoisted(() => {
 	type Listener = (...args: unknown[]) => void;
@@ -241,17 +245,18 @@ describe("DaemonClient", () => {
 		client.close();
 	});
 
-	it("accepts a newer daemon schema revision for admission-gated prompts", async () => {
+	it("accepts a newer compatible daemon schema for admission-gated prompts", async () => {
 		const client = new DaemonClient("/tmp/prime-agent.sock");
 		const connect = client.connect();
 		const socket = netMock.sockets[0]!;
 		socket.emit("connect");
 		await connect;
+		const compatibility = DAEMON_COMMAND_COMPATIBILITY.cancel_prompt_admission;
 		emitHello(
 			socket,
-			DAEMON_PROTOCOL_VERSION,
+			compatibility.minProtocol,
 			["session_input_admission", "prompt_admission_cancellation"],
-			DAEMON_SCHEMA_REVISION + 1,
+			compatibility.minSchemaRevision + 1,
 		);
 
 		const request = client.request({

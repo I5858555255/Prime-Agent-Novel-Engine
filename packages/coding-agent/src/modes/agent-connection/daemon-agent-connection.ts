@@ -22,13 +22,15 @@ import type { RefinementResult } from "../../core/refinement/index.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import { SessionAlreadyActiveError } from "../../core/session-lease.js";
 import type { SessionStats } from "../../core/session-stats.js";
-import { type DaemonClient, getDaemonSocketCloseReason } from "../daemon/daemon-client.js";
+import {
+	DaemonCapabilityUnavailableError,
+	type DaemonClient,
+	getDaemonSocketCloseReason,
+} from "../daemon/daemon-client.js";
 import { deserializeDaemonError } from "../daemon/daemon-errors.js";
 import {
 	collectDaemonClientEnv,
 	collectDaemonLaunchEnv,
-	DAEMON_PROTOCOL_VERSION,
-	DAEMON_SCHEMA_REVISION,
 	type DaemonAttachResult,
 	type DaemonCommand,
 	type DaemonEventCursor,
@@ -758,18 +760,6 @@ export class DaemonAgentConnection implements AgentConnection {
 			);
 			return;
 		}
-		const hello = this.client.hello ?? (await this.client.waitForHello());
-		if (
-			hello.protocol.version < DAEMON_PROTOCOL_VERSION ||
-			(hello.schemaRevision ?? 0) < DAEMON_SCHEMA_REVISION ||
-			!this.client.supportsServerCapability("prompt_admission_cancellation")
-		) {
-			throw new AgentConnectionPromptAdmissionError(
-				`Startup prompt cancellation requires daemon protocol ${DAEMON_PROTOCOL_VERSION}, schema ${DAEMON_SCHEMA_REVISION}, and prompt_admission_cancellation.`,
-				"unsupported",
-			);
-		}
-
 		const admissionId = `prompt-admission:${randomUUID()}`;
 		let resolveAbort = () => {};
 		const aborted = new Promise<"abort">((resolve) => {
@@ -793,19 +783,19 @@ export class DaemonAgentConnection implements AgentConnection {
 			admissionId,
 		} as Extract<DaemonCommandBody, { type: typeof type }>;
 		let promptError: unknown;
-		const promptRequest = this.requestData<unknown>(command, DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS, {
-			requiredSchema: {
-				protocol: DAEMON_PROTOCOL_VERSION,
-				revision: DAEMON_SCHEMA_REVISION,
-				capability: "prompt_admission_cancellation",
+		const promptRequest = this.requestData<unknown>(command, DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS).catch(
+			(error: unknown) => {
+				promptError =
+					error instanceof DaemonCapabilityUnavailableError && !error.afterReconnect
+						? new AgentConnectionPromptAdmissionError(error.message, "unsupported", { cause: error })
+						: error;
+				return "failed" as const;
 			},
-		}).catch((error: unknown) => {
-			promptError = error;
-			return "failed" as const;
-		});
+		);
 		try {
 			const first = await Promise.race([promptRequest.then(() => "settled" as const), aborted]);
 			if (first === "settled" && promptError === undefined) return;
+			if (first === "settled" && promptError instanceof AgentConnectionPromptAdmissionError) throw promptError;
 			if (
 				first === "settled" &&
 				!signal.aborted &&
@@ -826,6 +816,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				// Timeout/transport is indistinguishable from accepted ownership.
 			}
 			await promptRequest;
+			if (promptError instanceof AgentConnectionPromptAdmissionError) throw promptError;
 			const definitiveFailure = promptError instanceof Error && this.definitiveRequestErrors.has(promptError);
 			if (promptError === undefined || (status === "owned" && type === "prompt" && !definitiveFailure)) return;
 			throw new AgentConnectionPromptAdmissionError(
