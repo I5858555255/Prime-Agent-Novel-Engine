@@ -192,6 +192,13 @@ export function buildSessionTreeFromFlatNodes(
 		if (parent) parent.children.push(node);
 		else roots.push(node);
 	}
+	// Match SessionManager.getTree() ordering without recursively walking deep
+	// chains: every node is already indexed, so sort each sibling array directly.
+	for (const node of byId.values()) {
+		node.children.sort(
+			(left, right) => new Date(left.entry.timestamp).getTime() - new Date(right.entry.timestamp).getTime(),
+		);
+	}
 	return roots;
 }
 

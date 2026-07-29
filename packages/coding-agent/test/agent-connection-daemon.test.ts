@@ -2438,6 +2438,24 @@ describe("DaemonAgentConnection", () => {
 		});
 	});
 
+	it("sorts rebuilt siblings by timestamp regardless of flat-array order", () => {
+		const entry = (id: string, parentId: string | null, timestamp: string) => ({
+			entry: {
+				type: "message" as const,
+				id,
+				parentId,
+				timestamp,
+				message: { role: "user" as const, content: id, timestamp: Date.parse(timestamp) },
+			},
+		});
+		const roots = buildSessionTreeFromFlatNodes([
+			entry("root", null, "2026-01-01T00:00:00.000Z"),
+			entry("newer", "root", "2026-01-03T00:00:00.000Z"),
+			entry("older", "root", "2026-01-02T00:00:00.000Z"),
+		]);
+		expect(roots[0]?.children.map((child) => child.entry.id)).toEqual(["older", "newer"]);
+	});
+
 	it("rebuilds very deep flat session trees without recursive construction", () => {
 		const flatNodes = Array.from({ length: 10_000 }, (_, index) => ({
 			entry: {
