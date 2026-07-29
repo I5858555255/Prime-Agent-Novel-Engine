@@ -771,7 +771,7 @@ describe("DaemonClient", () => {
 				socketPath: "/tmp/prime-agent.sock",
 				protocol: { name: "prime-agent.daemon", version: DAEMON_PROTOCOL_VERSION },
 				clientId: "server-client-2",
-				serverCapabilities: [],
+				serverCapabilities: ["session_input_admission"],
 			})}\n`,
 		);
 		expect(secondSocket.writes).toEqual([firstWireData]);
