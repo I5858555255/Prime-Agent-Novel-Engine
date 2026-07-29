@@ -179,19 +179,6 @@ describe("SessionManager append and tree traversal", () => {
 		});
 	});
 
-	describe("getFlatTree", () => {
-		it("serializes a 10000-entry linear session without recursive nesting", () => {
-			const session = SessionManager.inMemory();
-			for (let index = 0; index < 10_000; index++) {
-				session.appendMessage(userMsg(String(index)));
-			}
-			const flatNodes = session.getFlatTree();
-			expect(flatNodes).toHaveLength(10_000);
-			expect(flatNodes.at(-1)?.entry.parentId).toBe(flatNodes.at(-2)?.entry.id);
-			expect(() => JSON.stringify({ flatNodes, leafId: session.getLeafId() })).not.toThrow();
-		});
-	});
-
 	describe("getTree", () => {
 		it("returns empty array for empty session", () => {
 			const session = SessionManager.inMemory();

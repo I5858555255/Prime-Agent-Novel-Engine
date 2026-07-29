@@ -59,10 +59,6 @@ describe("daemon protocol helpers", () => {
 		);
 	});
 
-	it("requires protocol 6 for the flat session-tree response", () => {
-		expect(DAEMON_COMMAND_COMPATIBILITY.get_session_tree).toEqual({ minProtocol: 6 });
-	});
-
 	it("capability-gates the optional model catalog surface", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.get_model_catalog).toEqual({
 			minProtocol: 4,

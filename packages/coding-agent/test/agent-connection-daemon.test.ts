@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from "vitest";
 import { MissingSessionCwdError } from "../src/core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../src/core/session-import-errors.js";
 import {
-	buildSessionTreeFromFlatNodes,
 	DAEMON_REFINE_REQUEST_TIMEOUT_MS,
 	DaemonAgentConnection,
 } from "../src/modes/agent-connection/daemon-agent-connection.js";
@@ -2420,45 +2419,6 @@ describe("DaemonAgentConnection", () => {
 			type: "get_session_context",
 			activeSessionId: "active-1",
 		});
-	});
-
-	it("sorts rebuilt siblings by timestamp regardless of flat-array order", () => {
-		const entry = (id: string, parentId: string | null, timestamp: string) => ({
-			entry: {
-				type: "message" as const,
-				id,
-				parentId,
-				timestamp,
-				message: { role: "user" as const, content: id, timestamp: Date.parse(timestamp) },
-			},
-		});
-		const roots = buildSessionTreeFromFlatNodes([
-			entry("root", null, "2026-01-01T00:00:00.000Z"),
-			entry("newer", "root", "2026-01-03T00:00:00.000Z"),
-			entry("older", "root", "2026-01-02T00:00:00.000Z"),
-		]);
-		expect(roots[0]?.children.map((child) => child.entry.id)).toEqual(["older", "newer"]);
-	});
-
-	it("rebuilds very deep flat session trees without recursive construction", () => {
-		const flatNodes = Array.from({ length: 10_000 }, (_, index) => ({
-			entry: {
-				type: "message" as const,
-				id: `node-${index}`,
-				parentId: index === 0 ? null : `node-${index - 1}`,
-				timestamp: "2026-01-01T00:00:00.000Z",
-				message: { role: "user" as const, content: String(index), timestamp: index },
-			},
-		}));
-		expect(() => JSON.stringify({ flatNodes, leafId: "node-9999" })).not.toThrow();
-		const roots = buildSessionTreeFromFlatNodes(flatNodes);
-		let node = roots[0];
-		let depth = 0;
-		while (node) {
-			depth++;
-			node = node.children[0];
-		}
-		expect(depth).toBe(10_000);
 	});
 
 	it("loads session trees through the daemon protocol", async () => {
