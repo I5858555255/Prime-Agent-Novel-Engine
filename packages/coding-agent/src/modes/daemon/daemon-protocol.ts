@@ -724,11 +724,12 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	shutdown: LEGACY_DAEMON_COMMAND,
 } as const satisfies Record<DaemonCommandName, DaemonCommandCompatibility>;
 
-export function getDaemonCommandFieldCompatibility(command: DaemonCommand): DaemonCommandCompatibility | undefined {
+export function getDaemonCommandCompatibilities(command: DaemonCommand): readonly DaemonCommandCompatibility[] {
+	const compatibility = DAEMON_COMMAND_COMPATIBILITY[command.type];
 	if ((command.type === "prompt" || command.type === "prompt_and_wait") && command.admissionId !== undefined) {
-		return PROMPT_ADMISSION_CANCELLATION_COMMAND;
+		return [PROMPT_ADMISSION_CANCELLATION_COMMAND, compatibility];
 	}
-	return undefined;
+	return [compatibility];
 }
 
 export type DaemonResponse =

@@ -4,7 +4,6 @@ import { getDaemonLogPath } from "../../config.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import {
 	createDaemonCommandEnvelope,
-	DAEMON_COMMAND_COMPATIBILITY,
 	DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION,
 	DAEMON_PROTOCOL_VERSION,
 	type DaemonClosingReason,
@@ -17,7 +16,7 @@ import {
 	type DaemonResponse,
 	type DaemonSavedSessionInfo,
 	type DaemonServerCapability,
-	getDaemonCommandFieldCompatibility,
+	getDaemonCommandCompatibilities,
 	isDaemonMutatingCommand,
 } from "./daemon-protocol.js";
 import type { DaemonWorkerCommand, DaemonWorkerCommandBody } from "./daemon-worker-protocol.js";
@@ -48,7 +47,7 @@ interface PendingDaemonRequest {
 	awaitingReconnect: boolean;
 	acknowledgeResult: boolean;
 	/** Re-checked against the new hello before a reconnect replay. */
-	compatibility?: DaemonCommandCompatibility;
+	compatibilities: readonly DaemonCommandCompatibility[];
 }
 
 function daemonEndpointDetails(socketPath: string): string {
@@ -302,16 +301,12 @@ export class DaemonClient {
 			);
 		}
 		const hello = this.helloMessage ?? (await this.waitForHello());
-		const compatibility = DAEMON_COMMAND_COMPATIBILITY[command.type];
-		const fieldCompatibility = getDaemonCommandFieldCompatibility(command);
-		if (
-			!this.meetsCommandCompatibility(hello, compatibility) ||
-			(fieldCompatibility !== undefined && !this.meetsCommandCompatibility(hello, fieldCompatibility))
-		) {
-			throw new DaemonCapabilityUnavailableError(
-				command.type,
-				fieldCompatibility?.capability ?? ("capability" in compatibility ? compatibility.capability : undefined),
-			);
+		const compatibilities = getDaemonCommandCompatibilities(command);
+		const missingCompatibility = compatibilities.find(
+			(compatibility) => !this.meetsCommandCompatibility(hello, compatibility),
+		);
+		if (missingCompatibility) {
+			throw new DaemonCapabilityUnavailableError(command.type, missingCompatibility.capability);
 		}
 		const envelopeProtocolVersion = Math.min(hello.protocol.version, DAEMON_PROTOCOL_VERSION);
 		return this.requestWire(
@@ -319,7 +314,7 @@ export class DaemonClient {
 			timeoutMs,
 			options,
 			envelopeProtocolVersion >= DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION ? envelopeProtocolVersion : undefined,
-			fieldCompatibility,
+			compatibilities,
 		);
 	}
 
@@ -359,7 +354,7 @@ export class DaemonClient {
 		timeoutMs: number,
 		options: DaemonClientRequestOptions = {},
 		publicEnvelopeProtocolVersion?: DaemonProtocolVersion,
-		compatibility?: DaemonCommandCompatibility,
+		compatibilities: readonly DaemonCommandCompatibility[] = [],
 	): Promise<DaemonResponse> {
 		if (!this.socket || this.socket.destroyed) {
 			throw new Error(
@@ -391,7 +386,7 @@ export class DaemonClient {
 				wireData,
 				awaitingReconnect: false,
 				acknowledgeResult,
-				compatibility,
+				compatibilities,
 			};
 			this.pendingRequests.set(id, pending);
 			this.armPendingRequestTimeout(id, pending);
@@ -455,14 +450,15 @@ export class DaemonClient {
 						continue;
 					}
 					pending.awaitingReconnect = false;
-					// A replaced daemon may no longer satisfy a field-gated request;
-					// replaying it would silently drop the gated field (e.g. admissionId).
-					if (pending.compatibility && !this.meetsCommandCompatibility(message, pending.compatibility)) {
+					const missingCompatibility = pending.compatibilities.find(
+						(compatibility) => !this.meetsCommandCompatibility(message, compatibility),
+					);
+					if (missingCompatibility) {
 						this.pendingRequests.delete(id);
 						pending.reject(
 							new DaemonCapabilityUnavailableError(
 								pending.commandType as DaemonCommand["type"],
-								pending.compatibility.capability,
+								missingCompatibility.capability,
 								true,
 							),
 						);
