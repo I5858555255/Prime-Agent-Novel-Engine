@@ -41,6 +41,7 @@ interface ModelsDevModel {
 	};
 	modalities?: {
 		input?: string[];
+		output?: string[];
 	};
 	provider?: {
 		npm?: string;
@@ -310,6 +311,7 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		model.id.includes("opus-4.7") ||
 		model.id.includes("opus-4-8") ||
 		model.id.includes("opus-4.8") ||
+		model.id.includes("opus-5") ||
 		model.id.includes("sonnet-5")
 	) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh", max: "max" });
@@ -357,9 +359,10 @@ function getAnthropicMessagesCompat(provider: string, modelId: string): Anthropi
 }
 
 function getBedrockBaseUrl(modelId: string): string {
-	return modelId.startsWith("eu.")
-		? "https://bedrock-runtime.eu-central-1.amazonaws.com"
-		: "https://bedrock-runtime.us-east-1.amazonaws.com";
+	if (modelId.startsWith("eu.")) return "https://bedrock-runtime.eu-central-1.amazonaws.com";
+	if (modelId.startsWith("au.")) return "https://bedrock-runtime.ap-southeast-2.amazonaws.com";
+	if (modelId.startsWith("jp.")) return "https://bedrock-runtime.ap-northeast-1.amazonaws.com";
+	return "https://bedrock-runtime.us-east-1.amazonaws.com";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -732,6 +735,8 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 		for (const model of await fetchOpenRouterCatalog()) {
 			// Only include models that support tools
 			if (!model.supported_parameters?.includes("tools")) continue;
+			// :batch routes are asynchronous batch variants, not streaming models
+			if (model.id.endsWith(":batch")) continue;
 
 			// Parse provider from model ID
 			let provider: KnownProvider = "openrouter";
@@ -816,7 +821,8 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 				api: "anthropic-messages",
 				baseUrl: AI_GATEWAY_BASE_URL,
 				provider: "vercel-ai-gateway",
-				reasoning: tags.includes("reasoning"),
+				// DeepSeek's *-thinking routes always think; the gateway omits the tag.
+				reasoning: tags.includes("reasoning") || model.id.includes("-thinking"),
 				input,
 				cost: {
 					input: inputCost,
@@ -918,6 +924,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 				if (googleUnsupportedApiModelPattern.test(modelId)) continue;
+				// Image-generation variants return inlineData parts the provider drops.
+				if (m.modalities?.output?.includes("image")) continue;
 
 				models.push({
 					id: modelId,
@@ -1331,12 +1339,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
 
-				// Claude 4.x models route to Anthropic Messages API
-				const isCopilotClaude4 = /^claude-(haiku|sonnet|opus)-4([.\-]|$)/.test(modelId);
+				// Copilot proxies Claude via the Anthropic Messages API
+				const isCopilotClaude = modelId.startsWith("claude-");
 				// gpt-5 models require responses API, others use completions
 				const needsResponsesApi = modelId.startsWith("gpt-5") || modelId.startsWith("oswe");
 
-				const api: Api = isCopilotClaude4
+				const api: Api = isCopilotClaude
 					? "anthropic-messages"
 					: needsResponsesApi
 						? "openai-responses"
