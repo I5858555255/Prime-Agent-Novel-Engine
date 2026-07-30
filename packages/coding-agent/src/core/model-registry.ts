@@ -854,17 +854,12 @@ export class ModelRegistry {
 		)
 			.then((authorizedIds) => {
 				// Ignore the result if the team changed while the fetch was in flight.
-				const currentTeamId = this.authStorage.getProviderHeaders(PRIME_INFERENCE_PROVIDER_ID)?.["X-Prime-Team-ID"];
-				if (currentTeamId !== teamId) {
+				if (this.authStorage.getProviderHeaders(PRIME_INFERENCE_PROVIDER_ID)?.["X-Prime-Team-ID"] !== teamId) {
 					return;
 				}
 				this.authorizedPrivatePrimeInferenceModelIds = authorizedIds;
 				this.authorizedPrivatePrimeInferenceTeamId = teamId;
-				this.writePrivatePrimeAuthorizationCache({
-					fingerprint,
-					modelIds: authorizedIds,
-					refreshedAt: Date.now(),
-				});
+				this.writePrivatePrimeAuthorizationCache({ fingerprint, modelIds: authorizedIds, refreshedAt: Date.now() });
 			})
 			.catch(() => {})
 			.finally(() => {
@@ -885,20 +880,19 @@ export class ModelRegistry {
 			return undefined;
 		}
 		try {
-			const raw = JSON.parse(readFileSync(cachePath, "utf8")) as unknown;
+			const parsed = JSON.parse(readFileSync(cachePath, "utf8")) as Partial<
+				Omit<PrivatePrimeAuthorizationCache, "modelIds"> & { modelIds: string[] }
+			>;
 			if (
-				!raw ||
-				typeof raw !== "object" ||
-				typeof (raw as { fingerprint?: unknown }).fingerprint !== "string" ||
-				!Array.isArray((raw as { modelIds?: unknown }).modelIds) ||
-				typeof (raw as { refreshedAt?: unknown }).refreshedAt !== "number"
+				typeof parsed.fingerprint !== "string" ||
+				!Array.isArray(parsed.modelIds) ||
+				typeof parsed.refreshedAt !== "number"
 			) {
 				return undefined;
 			}
-			const parsed = raw as { fingerprint: string; modelIds: unknown[]; refreshedAt: number };
 			return {
 				fingerprint: parsed.fingerprint,
-				modelIds: new Set(parsed.modelIds.filter((id): id is string => typeof id === "string")),
+				modelIds: new Set(parsed.modelIds),
 				refreshedAt: parsed.refreshedAt,
 			};
 		} catch {
