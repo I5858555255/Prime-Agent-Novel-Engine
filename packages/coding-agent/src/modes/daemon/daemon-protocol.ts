@@ -626,7 +626,7 @@ const CLIENT_OWNED_DAEMON_COMMAND = {
 	minProtocol: 4,
 	capability: "client_owned_sessions",
 } as const;
-const FLAT_SESSION_TREE_COMMAND = { minProtocol: DAEMON_PROTOCOL_VERSION } as const;
+const FLAT_SESSION_TREE_COMMAND = { minProtocol: 6 } as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
 	ack_result: LEGACY_DAEMON_COMMAND,
