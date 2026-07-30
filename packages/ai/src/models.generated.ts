@@ -4339,6 +4339,7 @@ export const MODELS = {
 			provider: "fireworks",
 			baseUrl: "https://api.fireworks.ai/inference",
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 4.5,
@@ -6279,6 +6280,7 @@ export const MODELS = {
 			baseUrl: "https://router.huggingface.co/v1",
 			compat: {"supportsDeveloperRole":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 3,
@@ -6552,6 +6554,7 @@ export const MODELS = {
 			baseUrl: "https://api.kimi.com/coding",
 			headers: {"User-Agent":"KimiCLI/1.5"},
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 0,
@@ -12966,8 +12969,8 @@ export const MODELS = {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
-				input: -1000000,
-				output: -1000000,
+				input: 0,
+				output: 0,
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
@@ -12983,8 +12986,8 @@ export const MODELS = {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
-				input: -1000000,
-				output: -1000000,
+				input: 0,
+				output: 0,
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
@@ -14326,9 +14329,9 @@ export const MODELS = {
 			reasoning: true,
 			input: ["text"],
 			cost: {
-				input: 0.6181,
-				output: 1.9425999999999999,
-				cacheRead: 0.11479,
+				input: 0.6096999999999999,
+				output: 1.9162,
+				cacheRead: 0.11323,
 				cacheWrite: 0,
 			},
 			contextWindow: 1048576,
@@ -16247,6 +16250,24 @@ export const MODELS = {
 			},
 			contextWindow: 262144,
 			maxTokens: 262144,
+		} satisfies Model<"openai-completions">,
+		"qwen/qwen3.7-flash": {
+			id: "qwen/qwen3.7-flash",
+			name: "QWEN3.7 Flash",
+			api: "openai-completions",
+			provider: "prime-inference",
+			baseUrl: "https://api.pinference.ai/api/v1",
+			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0.03,
+				output: 0.13,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 1000000,
+			maxTokens: 65536,
 		} satisfies Model<"openai-completions">,
 		"x-ai/grok-4.20": {
 			id: "x-ai/grok-4.20",
@@ -18392,6 +18413,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":"max"},
 			input: ["text", "image"],
 			cost: {
 				input: 4.5,

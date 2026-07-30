@@ -325,7 +325,8 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
 		mergeThinkingLevelMap(model, DEEPSEEK_V4_THINKING_LEVEL_MAP);
 	}
-	if (model.id === "k3" || model.id.endsWith("/kimi-k3") || model.id === "kimi-k3") {
+	const kimiK3Id = model.id.toLowerCase();
+	if (/^k3(-|$)/.test(kimiK3Id) || /(^|\/)kimi-k3(-|$)/.test(kimiK3Id)) {
 		mergeThinkingLevelMap(model, KIMI_K3_THINKING_LEVEL_MAP);
 	}
 	if (isGoogleThinkingApi(model) && isGemini3ProModel(model.id)) {
@@ -750,11 +751,12 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 				input.push("image");
 			}
 
-			// Convert pricing from $/token to $/million tokens
-			const inputCost = parseFloat(model.pricing?.prompt || "0") * 1_000_000;
-			const outputCost = parseFloat(model.pricing?.completion || "0") * 1_000_000;
-			const cacheReadCost = parseFloat(model.pricing?.input_cache_read || "0") * 1_000_000;
-			const cacheWriteCost = parseFloat(model.pricing?.input_cache_write || "0") * 1_000_000;
+			// Convert pricing from $/token to $/million tokens. OpenRouter uses
+			// negative values as a placeholder for unknown pricing (e.g. auto-beta).
+			const inputCost = Math.max(0, parseFloat(model.pricing?.prompt || "0")) * 1_000_000;
+			const outputCost = Math.max(0, parseFloat(model.pricing?.completion || "0")) * 1_000_000;
+			const cacheReadCost = Math.max(0, parseFloat(model.pricing?.input_cache_read || "0")) * 1_000_000;
+			const cacheWriteCost = Math.max(0, parseFloat(model.pricing?.input_cache_write || "0")) * 1_000_000;
 
 			const normalizedModel: Model<any> = {
 				id: modelKey,
