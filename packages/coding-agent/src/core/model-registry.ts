@@ -22,8 +22,8 @@ import {
 } from "@earendil-works/pi-ai";
 import { registerBuiltinMcpOAuthProviders } from "@earendil-works/pi-ai/mcp";
 import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { type Static, type TProperties, Type } from "typebox";
 import type { Validator } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
@@ -401,6 +401,26 @@ function readOpenAICodexModelIds(value: unknown): Set<string> {
 	);
 }
 
+const PRIVATE_PRIME_AUTHORIZATION_CACHE_FILE = "prime-inference-private-models.json";
+const PRIVATE_PRIME_AUTHORIZATION_CACHE_TTL_MS = 5 * 60_000;
+const PRIVATE_PRIME_BACKGROUND_REFRESH_TIMEOUT_MS = 3_000;
+
+interface PrivatePrimeAuthorizationCache {
+	fingerprint: string;
+	modelIds: Set<string>;
+	refreshedAt: number;
+}
+
+function privatePrimeAuthorizationFingerprint(apiKey: string, teamId: string): string {
+	return createHash("sha256").update(apiKey).update("\0").update(teamId).digest("hex");
+}
+
+function isOfflineModeEnabled(): boolean {
+	const value = process.env.PI_OFFLINE;
+	if (!value) return false;
+	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
 /**
  * Model registry - loads and manages models, resolves API keys via AuthStorage.
  */
@@ -415,6 +435,7 @@ export class ModelRegistry {
 	private authorizedPrivatePrimeInferenceTeamId: string | undefined;
 	private explicitPrivatePrimeInferenceModelIds = new Set<string>();
 	private openAICodexModelsCache: { authFingerprint: string; modelIds: Set<string>; refreshedAt: number } | undefined;
+	private backgroundPrivatePrimeAuthorizationRefresh: Promise<void> | undefined;
 	private loadError: string | undefined = undefined;
 
 	/** Re-register dynamic OAuth providers (e.g. user MCP servers) after refresh() resets the registry. */
@@ -778,12 +799,32 @@ export class ModelRegistry {
 			return;
 		}
 
-		try {
-			this.authorizedPrivatePrimeInferenceModelIds = await fetchAuthorizedPrivatePrimeInferenceModelIds(
-				apiKey,
-				teamHeaders,
-			);
+		const fingerprint = privatePrimeAuthorizationFingerprint(apiKey, teamId);
+		const cached = this.readPrivatePrimeAuthorizationCache();
+		if (cached?.fingerprint === fingerprint) {
+			// Serve the persisted authorization decision so startup and model lists
+			// don't block on the network. A stale cache refreshes in the background
+			// and the updated ids apply to subsequent lookups in this process.
+			this.authorizedPrivatePrimeInferenceModelIds = new Set(cached.modelIds);
 			this.authorizedPrivatePrimeInferenceTeamId = teamId;
+			const cacheIsFresh = Date.now() - cached.refreshedAt < PRIVATE_PRIME_AUTHORIZATION_CACHE_TTL_MS;
+			if (cacheIsFresh || isOfflineModeEnabled()) {
+				return;
+			}
+			this.startBackgroundPrivatePrimeAuthorizationRefresh(apiKey, teamHeaders, teamId, fingerprint);
+			return;
+		}
+		if (isOfflineModeEnabled()) {
+			this.authorizedPrivatePrimeInferenceModelIds.clear();
+			this.authorizedPrivatePrimeInferenceTeamId = undefined;
+			return;
+		}
+
+		try {
+			const authorizedIds = await fetchAuthorizedPrivatePrimeInferenceModelIds(apiKey, teamHeaders);
+			this.authorizedPrivatePrimeInferenceModelIds = authorizedIds;
+			this.authorizedPrivatePrimeInferenceTeamId = teamId;
+			this.writePrivatePrimeAuthorizationCache({ fingerprint, modelIds: authorizedIds, refreshedAt: Date.now() });
 		} catch {
 			if (teamId === previousTeamId) {
 				this.authorizedPrivatePrimeInferenceModelIds = previousPrivateModelIds;
@@ -792,6 +833,90 @@ export class ModelRegistry {
 				this.authorizedPrivatePrimeInferenceModelIds.clear();
 				this.authorizedPrivatePrimeInferenceTeamId = undefined;
 			}
+		}
+	}
+
+	/** Best-effort cache update after a stale cache hit; failures keep the cached ids. */
+	private startBackgroundPrivatePrimeAuthorizationRefresh(
+		apiKey: string,
+		teamHeaders: Record<string, string>,
+		teamId: string,
+		fingerprint: string,
+	): void {
+		if (this.backgroundPrivatePrimeAuthorizationRefresh) {
+			return;
+		}
+		this.backgroundPrivatePrimeAuthorizationRefresh = fetchAuthorizedPrivatePrimeInferenceModelIds(
+			apiKey,
+			teamHeaders,
+			undefined,
+			PRIVATE_PRIME_BACKGROUND_REFRESH_TIMEOUT_MS,
+		)
+			.then((authorizedIds) => {
+				// Ignore the result if the team changed while the fetch was in flight.
+				const currentTeamId = this.authStorage.getProviderHeaders(PRIME_INFERENCE_PROVIDER_ID)?.["X-Prime-Team-ID"];
+				if (currentTeamId !== teamId) {
+					return;
+				}
+				this.authorizedPrivatePrimeInferenceModelIds = authorizedIds;
+				this.authorizedPrivatePrimeInferenceTeamId = teamId;
+				this.writePrivatePrimeAuthorizationCache({
+					fingerprint,
+					modelIds: authorizedIds,
+					refreshedAt: Date.now(),
+				});
+			})
+			.catch(() => {})
+			.finally(() => {
+				this.backgroundPrivatePrimeAuthorizationRefresh = undefined;
+			});
+	}
+
+	private privatePrimeAuthorizationCachePath(): string | undefined {
+		if (!this.modelsJsonPath) {
+			return undefined;
+		}
+		return join(dirname(this.modelsJsonPath), PRIVATE_PRIME_AUTHORIZATION_CACHE_FILE);
+	}
+
+	private readPrivatePrimeAuthorizationCache(): PrivatePrimeAuthorizationCache | undefined {
+		const cachePath = this.privatePrimeAuthorizationCachePath();
+		if (!cachePath) {
+			return undefined;
+		}
+		try {
+			const raw = JSON.parse(readFileSync(cachePath, "utf8")) as unknown;
+			if (
+				!raw ||
+				typeof raw !== "object" ||
+				typeof (raw as { fingerprint?: unknown }).fingerprint !== "string" ||
+				!Array.isArray((raw as { modelIds?: unknown }).modelIds) ||
+				typeof (raw as { refreshedAt?: unknown }).refreshedAt !== "number"
+			) {
+				return undefined;
+			}
+			const parsed = raw as { fingerprint: string; modelIds: unknown[]; refreshedAt: number };
+			return {
+				fingerprint: parsed.fingerprint,
+				modelIds: new Set(parsed.modelIds.filter((id): id is string => typeof id === "string")),
+				refreshedAt: parsed.refreshedAt,
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	private writePrivatePrimeAuthorizationCache(cache: PrivatePrimeAuthorizationCache): void {
+		const cachePath = this.privatePrimeAuthorizationCachePath();
+		if (!cachePath) {
+			return;
+		}
+		try {
+			const tmpPath = `${cachePath}.${process.pid}.tmp`;
+			writeFileSync(tmpPath, JSON.stringify({ ...cache, modelIds: [...cache.modelIds] }), { mode: 0o600 });
+			renameSync(tmpPath, cachePath);
+		} catch {
+			// Caching is best effort; a failed write just means the next startup refetches.
 		}
 	}
 
