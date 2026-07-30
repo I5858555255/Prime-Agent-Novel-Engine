@@ -435,7 +435,7 @@ export class ModelRegistry {
 	private authorizedPrivatePrimeInferenceTeamId: string | undefined;
 	private explicitPrivatePrimeInferenceModelIds = new Set<string>();
 	private openAICodexModelsCache: { authFingerprint: string; modelIds: Set<string>; refreshedAt: number } | undefined;
-	private backgroundPrivatePrimeAuthorizationRefresh: Promise<void> | undefined;
+	private backgroundPrivatePrimeAuthorization: { fingerprint: string; promise: Promise<void> } | undefined;
 	private loadError: string | undefined = undefined;
 
 	/** Re-register dynamic OAuth providers (e.g. user MCP servers) after refresh() resets the registry. */
@@ -836,35 +836,53 @@ export class ModelRegistry {
 		}
 	}
 
-	/** Best-effort cache update after a stale cache hit; failures keep the cached ids. */
+	/**
+	 * Stale cache hits refresh in the background; failures keep the cached ids.
+	 * Refreshes for the same credentials are deduped, a changed-credentials
+	 * refresh is queued after the in-flight one, and a result is only applied
+	 * if the credentials it was fetched with are still current.
+	 */
 	private startBackgroundPrivatePrimeAuthorizationRefresh(
 		apiKey: string,
 		teamHeaders: Record<string, string>,
 		teamId: string,
 		fingerprint: string,
 	): void {
-		if (this.backgroundPrivatePrimeAuthorizationRefresh) {
+		if (this.backgroundPrivatePrimeAuthorization?.fingerprint === fingerprint) {
 			return;
 		}
-		this.backgroundPrivatePrimeAuthorizationRefresh = fetchAuthorizedPrivatePrimeInferenceModelIds(
-			apiKey,
-			teamHeaders,
-			undefined,
-			PRIVATE_PRIME_BACKGROUND_REFRESH_TIMEOUT_MS,
-		)
-			.then((authorizedIds) => {
-				// Ignore the result if the team changed while the fetch was in flight.
-				if (this.authStorage.getProviderHeaders(PRIME_INFERENCE_PROVIDER_ID)?.["X-Prime-Team-ID"] !== teamId) {
+		const run = async () => {
+			try {
+				const authorizedIds = await fetchAuthorizedPrivatePrimeInferenceModelIds(
+					apiKey,
+					teamHeaders,
+					undefined,
+					PRIVATE_PRIME_BACKGROUND_REFRESH_TIMEOUT_MS,
+				);
+				if ((await this.currentPrivatePrimeAuthorizationFingerprint()) !== fingerprint) {
 					return;
 				}
 				this.authorizedPrivatePrimeInferenceModelIds = authorizedIds;
 				this.authorizedPrivatePrimeInferenceTeamId = teamId;
 				this.writePrivatePrimeAuthorizationCache({ fingerprint, modelIds: authorizedIds, refreshedAt: Date.now() });
-			})
-			.catch(() => {})
-			.finally(() => {
-				this.backgroundPrivatePrimeAuthorizationRefresh = undefined;
-			});
+			} catch {
+				// Keep the cached ids.
+			}
+		};
+		const pending = this.backgroundPrivatePrimeAuthorization?.promise;
+		const promise = (pending ?? Promise.resolve()).then(run);
+		this.backgroundPrivatePrimeAuthorization = { fingerprint, promise };
+		void promise.finally(() => {
+			if (this.backgroundPrivatePrimeAuthorization?.promise === promise) {
+				this.backgroundPrivatePrimeAuthorization = undefined;
+			}
+		});
+	}
+
+	private async currentPrivatePrimeAuthorizationFingerprint(): Promise<string | undefined> {
+		const apiKey = await this.authStorage.getApiKey(PRIME_INFERENCE_PROVIDER_ID);
+		const teamId = this.authStorage.getProviderHeaders(PRIME_INFERENCE_PROVIDER_ID)?.["X-Prime-Team-ID"];
+		return apiKey && teamId ? privatePrimeAuthorizationFingerprint(apiKey, teamId) : undefined;
 	}
 
 	private privatePrimeAuthorizationCachePath(): string | undefined {
