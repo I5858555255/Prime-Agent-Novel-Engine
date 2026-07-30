@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Updated the generated model catalog snapshot.
+- Changed the model catalog snapshot to the current upstream catalogs: added Claude Opus 5 (Anthropic direct, Bedrock, OpenRouter, Vercel AI Gateway, Copilot, Prime Inference), Gemini 3.5/3.6 flash models, Kimi K3 variants, and refreshed Prime Inference to 105 models.
 
 ## [0.3.3] - 2026-07-23
 

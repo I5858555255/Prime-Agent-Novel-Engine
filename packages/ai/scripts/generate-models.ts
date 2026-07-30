@@ -909,11 +909,14 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		// Process Google models
+		// Process Google models. Live API models (bidirectional streaming sessions)
+		// are not usable through the GenerateContent API, so they are excluded.
+		const googleLiveModelPattern = /(^|[-_.])live($|[-_.])/i;
 		if (data.google?.models) {
 			for (const [modelId, model] of Object.entries(data.google.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
+				if (googleLiveModelPattern.test(modelId)) continue;
 
 				models.push({
 					id: modelId,
