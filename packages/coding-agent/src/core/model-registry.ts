@@ -820,19 +820,26 @@ export class ModelRegistry {
 			return;
 		}
 
+		let authorizedIds: Set<string> | undefined;
 		try {
-			const authorizedIds = await fetchAuthorizedPrivatePrimeInferenceModelIds(apiKey, teamHeaders);
+			authorizedIds = await fetchAuthorizedPrivatePrimeInferenceModelIds(apiKey, teamHeaders);
+		} catch {
+			// Fall back to the previous authorization below.
+		}
+		// Leave newer state untouched if the credentials changed while fetching.
+		if ((await this.currentPrivatePrimeAuthorizationFingerprint()) !== fingerprint) {
+			return;
+		}
+		if (authorizedIds) {
 			this.authorizedPrivatePrimeInferenceModelIds = authorizedIds;
 			this.authorizedPrivatePrimeInferenceTeamId = teamId;
 			this.writePrivatePrimeAuthorizationCache({ fingerprint, modelIds: authorizedIds, refreshedAt: Date.now() });
-		} catch {
-			if (teamId === previousTeamId) {
-				this.authorizedPrivatePrimeInferenceModelIds = previousPrivateModelIds;
-				this.authorizedPrivatePrimeInferenceTeamId = teamId;
-			} else {
-				this.authorizedPrivatePrimeInferenceModelIds.clear();
-				this.authorizedPrivatePrimeInferenceTeamId = undefined;
-			}
+		} else if (teamId === previousTeamId) {
+			this.authorizedPrivatePrimeInferenceModelIds = previousPrivateModelIds;
+			this.authorizedPrivatePrimeInferenceTeamId = teamId;
+		} else {
+			this.authorizedPrivatePrimeInferenceModelIds.clear();
+			this.authorizedPrivatePrimeInferenceTeamId = undefined;
 		}
 	}
 
