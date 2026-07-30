@@ -12,8 +12,11 @@
 - Removed the `/resume` command and bare `--resume`; browse sessions with left-arrow from a chat (daemon view), and use `--resume <session-id|path>` for direct resumes.
 - Fixed `prime-agent agents` opening a new chat when running with a process-local session.
 - Changed collapsed edit and IPython tool calls to show compact per-file line-change summaries while keeping full diffs available when expanded.
+- Changed bare `/effort` to open a selector for the current model's supported reasoning levels.
 - Changed session search to rank exact name and first-message matches before prefix, substring, and stricter transcript fuzzy matches.
 - Fixed daemon startup failing when an interrupted supervisor left an empty ownership directory.
+- Fixed `/effort xhigh` and `/effort max` being rejected as unknown levels when no model was active yet.
+- Fixed startup blocking on a private Prime Inference model authorization request; the authorization is now cached next to `models.json` and stale entries refresh in the background.
 
 ## [0.3.3] - 2026-07-23
 
