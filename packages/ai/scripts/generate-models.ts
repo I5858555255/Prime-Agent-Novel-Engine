@@ -909,14 +909,15 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		// Process Google models. Live API models (bidirectional streaming sessions)
-		// are not usable through the GenerateContent API, so they are excluded.
-		const googleLiveModelPattern = /(^|[-_.])live($|[-_.])/i;
+		// Process Google models. Live API models (bidirectional streaming sessions) and
+		// Deep Research models (Interactions API) are not usable through the
+		// GenerateContent API, so they are excluded.
+		const googleUnsupportedApiModelPattern = /(^|[-_.])(live|deep-research)($|[-_.])/i;
 		if (data.google?.models) {
 			for (const [modelId, model] of Object.entries(data.google.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
-				if (googleLiveModelPattern.test(modelId)) continue;
+				if (googleUnsupportedApiModelPattern.test(modelId)) continue;
 
 				models.push({
 					id: modelId,
