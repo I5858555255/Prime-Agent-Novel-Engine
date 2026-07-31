@@ -917,10 +917,11 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		// Process Google models. Live API models (bidirectional streaming sessions) and
-		// Deep Research models (Interactions API) are not usable through the
-		// GenerateContent API, so they are excluded.
-		const googleUnsupportedApiModelPattern = /(^|[-_.])(live|deep-research)($|[-_.])/i;
+		// Process Google models. Live API models (bidirectional streaming sessions), Deep
+		// Research models (Interactions API), and Computer Use models (require the
+		// computer_use tool) are not usable through the GenerateContent API as plain
+		// chat models, so they are excluded.
+		const googleUnsupportedApiModelPattern = /(^|[-_.])(live|deep-research|computer-use)($|[-_.])/i;
 		if (data.google?.models) {
 			for (const [modelId, model] of Object.entries(data.google.models)) {
 				const m = model as ModelsDevModel;
