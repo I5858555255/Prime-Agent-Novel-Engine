@@ -5034,7 +5034,7 @@ export class AgentSession {
 	private _coalescedFollowUpOwner(action: QueuedSessionAction): QueuedSessionAction | undefined {
 		if (action.delivery !== "when_run_idle" || action.payload.kind !== "turn" || !action.queueKey) return undefined;
 		return this._actionStore
-			.unfinishedActions("when_run_idle")
+			.unfinishedActions()
 			.find(
 				(candidate) =>
 					candidate.queueKey === action.queueKey &&
@@ -7712,9 +7712,7 @@ export class AgentSession {
 		const resumeAfterFailure = () => {
 			if (
 				reason === "requested" &&
-				(shouldContinueAfterCompaction ||
-					this.agent.hasQueuedMessages() ||
-					this._actionStore.queuedActions().length > 0)
+				(shouldContinueAfterCompaction || this.agent.hasQueuedMessages() || this.unfinishedActionCount > 0)
 			) {
 				this._schedulePostCompactionContinue();
 			}
@@ -7751,7 +7749,7 @@ export class AgentSession {
 
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry, customInstructions });
 			// Queued work lives in both the agent queues and the session-owned queues.
-			const hasQueuedMessages = this.agent.hasQueuedMessages() || this._actionStore.queuedActions().length > 0;
+			const hasQueuedMessages = this.agent.hasQueuedMessages() || this.unfinishedActionCount > 0;
 			const willContinueAfterCompaction = willRetry || shouldContinueAfterCompaction || hasQueuedMessages;
 
 			if (willRetry) {

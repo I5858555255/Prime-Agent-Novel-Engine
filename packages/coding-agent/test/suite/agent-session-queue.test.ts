@@ -1539,6 +1539,24 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toEqual([]);
 	});
 
+	it("coalesces a same-key follow-up while a steering owner is preparing", async () => {
+		const hook = gatedHook({ prompt: "steering heartbeat" });
+		const harness = await createHarness({ extensionFactories: [hook.factory] });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("done")]);
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.steer("steering heartbeat", undefined, { queueKey: "heartbeat", resumeIfIdle: true });
+		pause.release();
+		await hook.reached;
+
+		expect(await harness.session.followUp("duplicate heartbeat", undefined, { queueKey: "heartbeat" })).toBe(false);
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+
+		hook.release();
+		await harness.session.waitForIdle();
+		expect(getUserTexts(harness)).toEqual(["steering heartbeat"]);
+	});
+
 	it("queues a same-key follow-up once the prior owner has handed off", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
