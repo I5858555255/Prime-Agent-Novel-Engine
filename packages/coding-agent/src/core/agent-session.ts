@@ -5455,7 +5455,11 @@ export class AgentSession {
 			let promptPromise: Promise<void>;
 			try {
 				promptPromise = this._sessionActionCommitContext.run(commitFence.owner, () => {
-					if (this._isSessionInputHandoffDeferred(epoch) || this.isStreaming) {
+					if (
+						this._isSessionInputHandoffDeferred(epoch) ||
+						this.isStreaming ||
+						turns.some((action) => action.lifecycle.state !== "preparing")
+					) {
 						throw new DeferredSessionInputError("Agent became active before session input handoff");
 					}
 					if (executionPolicy.nextTurnContextTiming === "commit") {

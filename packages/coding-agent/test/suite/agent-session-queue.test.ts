@@ -1474,6 +1474,53 @@ describe("AgentSession queue characterization", () => {
 		await harness.session.waitForSessionInputIdle();
 	});
 
+	it("revalidates turn batches after acquiring the commit fence", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.session.setFollowUpMode("all");
+		harness.setResponses([fauxAssistantMessage("survivor delivered")]);
+		const pause = harness.session.acquireQueuedWorkPause();
+		withStreaming(harness, true);
+		const removed = harness.session.promptAndWait("remove after preparation", {
+			streamingBehavior: "followUp",
+			followUpQueueKey: "remove",
+		});
+		const removedOutcome = removed.then(
+			() => ({ error: undefined }),
+			(error: unknown) => ({ error }),
+		);
+		const survivor = harness.session.promptAndWait("survive re-selection", {
+			streamingBehavior: "followUp",
+			followUpQueueKey: "survivor",
+		});
+		const survivorOutcome = survivor.then(
+			() => ({ error: undefined }),
+			(error: unknown) => ({ error }),
+		);
+		withStreaming(harness, false);
+		const internals = harness.session as unknown as {
+			_acquireSessionActionCommitFence(): Promise<{ release(): void }>;
+		};
+		const fence = await internals._acquireSessionActionCommitFence();
+
+		pause.release();
+		try {
+			await vi.waitFor(() => expect(harness.session.getSessionActionSnapshot().active?.phase).toBe("preparing"));
+			expect(harness.session.removeQueuedFollowUp("remove")).toBe(true);
+		} finally {
+			fence.release();
+		}
+		await harness.session.waitForSessionInputIdle();
+		expect(harness.session.getFollowUpMessages()).toEqual(["survive re-selection"]);
+		expect(harness.session.resumeQueuedWork()).toBe(true);
+
+		expect((await removedOutcome).error).toEqual(
+			expect.objectContaining({ message: "Queued agent message was cleared before delivery." }),
+		);
+		expect((await survivorOutcome).error).toBeUndefined();
+		expect(getUserTexts(harness)).toEqual(["survive re-selection"]);
+	});
+
 	it("stops counting cleared preparing inputs as pending", async () => {
 		const hook = gatedHook({ prompt: "cleared prompt" });
 		const harness = await createHarness({ extensionFactories: [hook.factory] });
