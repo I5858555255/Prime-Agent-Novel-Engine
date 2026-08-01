@@ -11,15 +11,12 @@
 
 ### Added
 
-- Added a unified searchable Agents View for running, idle, and inactive sessions, including live heartbeat badges and session resume.
 - Added `ctrl+n` to start a session from Agents View, and `alt+enter` to queue a reply as a follow-up while Enter steers a streaming session.
 - Added session-owned `/compact`, `/refine`, `/goal`, and `/autonomous` commands with autocomplete to the Agents View reply composer, plus target-scoped `/name` and `/kill` commands.
 - Added optional stable session names and initial prompts to `/new`.
-- Added multi-turn `/btw` side conversations, including transient in-pane bash commands.
 
 ### Changed
 
-- Unified prompt, steering, follow-up, and session-command scheduling under durable session-owned admission, preserving queued work through coordinated update and restart checkpoints.
 - Changed collapsed edit and IPython calls to show compact per-file line-change summaries while retaining full expanded diffs.
 - Changed bare `/effort` to open a selector of the current model's supported reasoning levels, and removed token estimates from reasoning-effort displays.
 - Improved session search ranking to prefer exact session-name and first-message matches before prefix, substring, and transcript fuzzy matches.
