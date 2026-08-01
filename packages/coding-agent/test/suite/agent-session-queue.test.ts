@@ -1459,6 +1459,49 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toEqual(["kept"]);
 	});
 
+	it("delivers next-turn context when the first preparing turn is cancelled", async () => {
+		const firstPrompt = agentPromptText("agentmsg_cancel_first", "cancelled");
+		let cancelFirst: (() => void) | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", () => {
+						cancelFirst?.();
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.session.setFollowUpMode("all");
+		let cleared: { steering: string[]; followUp: string[] } | undefined;
+		cancelFirst = () => {
+			cleared = harness.session.clearQueuedUserMessagesMatching((text) => text === firstPrompt);
+		};
+		let sawNextTurnContext = false;
+		harness.setResponses([
+			(context) => {
+				sawNextTurnContext = context.messages.some(
+					(message) => message.role === "user" && getMessageText(message) === "carry this",
+				);
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "carry this", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		await harness.session.queueAgentMessagePrompt(firstPrompt, "followUp");
+		await harness.session.followUp("surviving");
+		pause.release();
+		await harness.session.waitForIdle();
+
+		expect(cleared).toEqual({ steering: [], followUp: [firstPrompt] });
+		expect(sawNextTurnContext).toBe(true);
+		expect(getUserTexts(harness)).toEqual(["surviving"]);
+	});
+
 	it("injects nextTurn custom messages into the next prompt", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -1541,10 +1584,12 @@ describe("AgentSession queue characterization", () => {
 			preparationStarted = resolve;
 		});
 		let pause: { release(): void } | undefined;
+		let gatePreparation = true;
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
 					pi.on("before_agent_start", async () => {
+						if (!gatePreparation) return;
 						preparationStarted?.();
 						pause = harness.session.acquireQueuedWorkPause();
 					});
@@ -1568,6 +1613,7 @@ describe("AgentSession queue characterization", () => {
 		const completionRejection = expect(completion).rejects.toThrow("cleared before delivery");
 		withStreaming(harness, false);
 		await waitForPreparation;
+		gatePreparation = false;
 		expect(pause).toBeDefined();
 
 		expect(harness.session.clearQueue()).toEqual({
@@ -1862,7 +1908,7 @@ describe("AgentSession queue characterization", () => {
 		expect(getAssistantTexts(harness)).toEqual(["custom done", "follow-up done"]);
 	});
 
-	it("rechecks queued-work pauses acquired at the direct-admission boundary", async () => {
+	it("rechecks queued-work pauses acquired at the action-admission boundary", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("direct done")]);
@@ -1888,7 +1934,7 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toEqual(["direct"]);
 	});
 
-	it("rejects disposal while direct admission waits behind a pause", async () => {
+	it("rejects disposal while action admission waits behind a pause", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const pause = harness.session.acquireQueuedWorkPause();
@@ -1907,7 +1953,7 @@ describe("AgentSession queue characterization", () => {
 		expect(release).not.toHaveBeenCalled();
 	});
 
-	it("rejects a post-disposal direct call without prompting the agent", async () => {
+	it("rejects a post-disposal action call without prompting the agent", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const prompt = vi.spyOn(harness.session.agent, "prompt");
@@ -2046,33 +2092,6 @@ describe("AgentSession queue characterization", () => {
 		withStreaming(harness, true);
 
 		await expect(run(harness)).rejects.toThrow(`Cannot ${action} without aborting while the agent is running.`);
-	});
-
-	it("defers work queued after direct admission until the direct handoff", async () => {
-		const harness = await createHarness();
-		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("direct done"), fauxAssistantMessage("queued done")]);
-		const internals = harness.session as unknown as {
-			_acquireDirectTurnAdmission(options?: { allowStreaming?: boolean }): Promise<{
-				owner: symbol;
-				release(): void;
-			}>;
-		};
-		const acquireDirectTurnAdmission = internals._acquireDirectTurnAdmission.bind(internals);
-		let queuedAtBoundary = false;
-		internals._acquireDirectTurnAdmission = async (options = {}) => {
-			const admission = await acquireDirectTurnAdmission(options);
-			if (!queuedAtBoundary) {
-				queuedAtBoundary = true;
-				await harness.session.followUp("queued", undefined, { resumeIfIdle: true });
-			}
-			return admission;
-		};
-
-		await harness.session.prompt("direct");
-		await harness.session.waitForIdle();
-
-		expect(getUserTexts(harness)).toEqual(["direct", "queued"]);
 	});
 
 	it("serializes an extension command behind an unrelated navigation owner", async () => {

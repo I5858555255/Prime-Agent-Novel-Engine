@@ -62,6 +62,11 @@ const TERMINAL_STATES = new Set<ActionLifecycle["state"]>(["completed", "failed"
 const ACTIVE_STATES = new Set<ActionLifecycle["state"]>(["selected", "preparing", "committing", "running"]);
 const CLEARABLE_STATES = new Set<ActionLifecycle["state"]>(["queued", "selected", "preparing"]);
 
+function isClearable(action: SessionAction): boolean {
+	if (CLEARABLE_STATES.has(action.lifecycle.state)) return true;
+	return action.lifecycle.state === "committing" && primaryRecords(action).every((record) => !record.started);
+}
+
 const LEGAL_TRANSITIONS: Readonly<Record<ActionLifecycle["state"], ReadonlySet<ActionLifecycle["state"]>>> = {
 	queued: new Set(["selected", "failed", "cancelled"]),
 	selected: new Set(["queued", "preparing", "running", "failed", "cancelled"]),
@@ -169,6 +174,10 @@ export class ActionTicketController {
 		return this.delivered.settle(outcome);
 	}
 
+	rejectDelivered(error: Error): boolean {
+		return this.delivered.reject(error);
+	}
+
 	settleCompleted(error?: Error): boolean {
 		return error ? this.completed.reject(error) : this.completed.settle();
 	}
@@ -216,7 +225,7 @@ export class ActionStore<TAction extends SessionAction = SessionAction> {
 	}
 
 	clearableActions(policy?: DeliveryPolicy): readonly TAction[] {
-		return this.actions(policy).filter((action) => CLEARABLE_STATES.has(action.lifecycle.state));
+		return this.actions(policy).filter(isClearable);
 	}
 
 	snapshotActions(): readonly TAction[] {
@@ -243,8 +252,12 @@ export class ActionStore<TAction extends SessionAction = SessionAction> {
 		return ticket;
 	}
 
-	activeActionsForMessage(message: UserMessage | CustomMessage): readonly TAction[] {
-		return this.activeActions().filter(
+	ownedActions(): readonly TAction[] {
+		return this.actions();
+	}
+
+	actionsForMessage(message: UserMessage | CustomMessage): readonly TAction[] {
+		return this.actions().filter(
 			(action) =>
 				action.payload.kind === "turn" && action.payload.records.some((record) => record.message === message),
 		);
