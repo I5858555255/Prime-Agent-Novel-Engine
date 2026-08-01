@@ -335,7 +335,7 @@ describe("Context overflow error handling", () => {
 
 	describe.skipIf(!process.env.ZAI_API_KEY)("z.ai", () => {
 		it("should detect overflow via isContextOverflow when z.ai reports it", async () => {
-			const model = getZaiTestModel();
+			const model = getZaiTestModel({ smallestContextWindow: true });
 			const result = await testContextOverflow(model, process.env.ZAI_API_KEY!);
 			logResult(result);
 
