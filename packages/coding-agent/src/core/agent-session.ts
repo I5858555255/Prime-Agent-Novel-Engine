@@ -183,7 +183,7 @@ import {
 	isSessionSlashCommandMessage,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
-import { throwIfPromptAdmissionCancelled, waitForPromptAdmission } from "./prompt-admission.js";
+import { throwIfPromptAdmissionCancelled } from "./prompt-admission.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
 	type AutoRefineReason,
@@ -1052,16 +1052,21 @@ export class AgentSession {
 	/** Session-owned actions. Items are never fed into Agent.steer/followUp. */
 	private readonly _actionStore = new ActionStore<QueuedSessionAction>();
 	private _sessionInputPump: Promise<void> = Promise.resolve();
+	// Coalesces wakes so overlapping submissions cannot start competing pumps.
 	private _sessionInputPumpRequested = false;
+	// Invalidates preparation when a branch pause starts and finishes before its next await resumes.
 	private _sessionInputPumpEpoch = 0;
 	private _sessionInputArrivalEpoch = 0;
+	// Persists abort/restart suspension after the initiating call returns.
 	private _sessionInputPumpSuspended = false;
+	// Branch mutation pause leases can overlap and must all release before dispatch resumes.
 	private readonly _queuedWorkPauses = new Set<symbol>();
-	private readonly _queuedWorkAdmissionWaiters = new Set<() => void>();
-	private _turnAdmissionTail: Promise<void> = Promise.resolve();
-	private _turnAdmissionOwner: symbol | undefined;
-	private readonly _turnAdmissionContext = new AsyncLocalStorage<symbol>();
+	private _sessionActionCommitTail: Promise<void> = Promise.resolve();
+	private _sessionActionCommitOwner: symbol | undefined;
+	private readonly _sessionActionCommitContext = new AsyncLocalStorage<symbol>();
+	// Reentrant goal-context submission must enqueue instead of recursively dispatching.
 	private _pumpingSessionInput = false;
+	// Checkpoint and handoff waiters share lifecycle-edge notifications to avoid polling.
 	private readonly _sessionInputCheckpointWaiters = new Set<() => void>();
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
@@ -3631,7 +3636,6 @@ export class AgentSession {
 				return;
 			}
 			this._disposing = true;
-			this._wakeQueuedWorkAdmissionWaiters();
 			await this._disposeAsyncOnce();
 		})();
 		return this._disposeAsyncPromise;
@@ -3799,7 +3803,6 @@ export class AgentSession {
 			return;
 		}
 		this._disposed = true;
-		this._wakeQueuedWorkAdmissionWaiters();
 		try {
 			// Invalidate scheduled timers and abort any in-flight review so a late
 			// resolution cannot write harness state or re-subscribe handlers.
@@ -4328,10 +4331,10 @@ export class AgentSession {
 		message: CustomMessage,
 		options?: InternalPromptOptions & { executionPolicy?: TurnExecutionPolicy },
 	): Promise<void> {
-		if (!this.isStreaming && options?.resumeIfIdle) this._sessionInputPumpSuspended = false;
-		const admission = this.isStreaming
-			? undefined
-			: await this._acquireSessionActionAdmission({ signal: options?.signal });
+		if (!this.isStreaming) {
+			if (options?.resumeIfIdle) this._sessionInputPumpSuspended = false;
+			this._assertSessionActionAdmissionAvailable();
+		}
 		const reportPreflight = oncePreflight(options?.preflightResult);
 		try {
 			throwIfPromptAdmissionCancelled(options?.signal);
@@ -4377,7 +4380,6 @@ export class AgentSession {
 					() => reportPreflight(false),
 				);
 			}
-			admission?.release();
 			if (options?.returnAfterAccepted) {
 				if (result.disposition === "starts_when_admitted") await result.ticket.delivered;
 				return;
@@ -4387,16 +4389,15 @@ export class AgentSession {
 		} catch (error) {
 			reportPreflight(false);
 			throw error;
-		} finally {
-			admission?.release();
 		}
 	}
 
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
-		if (!this.isStreaming) this._sessionInputPumpSuspended = false;
-		const admission = this.isStreaming
-			? undefined
-			: await this._acquireSessionActionAdmission({ signal: options?.signal });
+		if (!this.isStreaming) {
+			this._sessionInputPumpSuspended = false;
+			this._assertSessionActionAdmissionAvailable();
+		}
+		const commitFence = this.isStreaming ? undefined : await this._acquireSessionActionCommitFence();
 		const reportPreflight = oncePreflight(options?.preflightResult);
 		const run = async () => {
 			try {
@@ -4414,6 +4415,7 @@ export class AgentSession {
 				});
 				const normalized = normalizationResult instanceof Promise ? await normalizationResult : normalizationResult;
 				if (normalized.kind === "extensionCommand") {
+					commitFence?.release();
 					reportPreflight(true);
 					void normalized.completion.then(
 						() => this._settleAgentMessage(options?.agentMessageId, "completion"),
@@ -4424,6 +4426,7 @@ export class AgentSession {
 					return;
 				}
 				if (normalized.kind === "handled") {
+					commitFence?.release();
 					reportPreflight(true);
 					this._settleAgentMessage(options?.agentMessageId, "completion");
 					return;
@@ -4447,9 +4450,9 @@ export class AgentSession {
 					const result = this._admitSessionInput(action, {
 						immediatelyEligible: !wasBusy && this._canStartSessionActionImmediately(),
 					});
+					commitFence?.release();
 					reportPreflight(result.accepted, result.disposition === "queued");
 					if (!result.accepted || !result.ticket) return;
-					admission?.release();
 					if (options?.returnAfterAccepted) {
 						if (result.disposition === "starts_when_admitted") await result.ticket.delivered;
 						return;
@@ -4509,7 +4512,10 @@ export class AgentSession {
 				if (action.suppressAutonomousContinuation) {
 					this._markAutonomousContinuationSuppressed(primaryDeliveryRecord(action).message);
 				}
-				const result = this._admitSessionInput(action, { immediatelyEligible: !visibleQueued });
+				const result = this._admitSessionInput(action, {
+					immediatelyEligible: !visibleQueued && this._canStartSessionActionImmediately(),
+				});
+				commitFence?.release();
 				if (!result.accepted || !result.ticket) {
 					if (prefixMessages) this._pendingNextTurnMessages.unshift(...prefixMessages);
 					reportPreflight(false, false);
@@ -4523,20 +4529,22 @@ export class AgentSession {
 						() => reportPreflight(false),
 					);
 				}
-				const rollbackObserver =
-					acceptedAgentMessage && options?.queueIfBusy === true && result.disposition === "starts_when_admitted"
-						? this._observeSessionActionRollback(action)
+				const deferralObserver =
+					acceptedAgentMessage &&
+					options?.queueIfBusy === true &&
+					!options.streamingBehavior &&
+					result.disposition === "starts_when_admitted"
+						? this._observeSessionActionDeferral(action)
 						: undefined;
-				admission?.release();
-				if (acceptedAgentMessage && !queueForStreaming && !queueForBusy) {
+				if (acceptedAgentMessage && !queueForStreaming && !queueForBusy && !options?.streamingBehavior) {
 					try {
-						const outcome = rollbackObserver
+						const outcome = deferralObserver
 							? await Promise.race([
 									result.ticket.delivered.then(() => "delivered" as const),
-									rollbackObserver.rolledBack.then(() => "rolled_back" as const),
+									deferralObserver.deferred.then(() => "deferred" as const),
 								])
 							: await result.ticket.delivered.then(() => "delivered" as const);
-						if (outcome === "rolled_back" && !options?.streamingBehavior) {
+						if (outcome === "deferred" && !options?.streamingBehavior) {
 							const error = new Error(
 								"Agent became busy before prompt delivery. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 							);
@@ -4547,11 +4555,13 @@ export class AgentSession {
 						}
 						return;
 					} finally {
-						rollbackObserver?.stop();
+						deferralObserver?.stop();
 					}
 				}
 				if (options?.returnAfterAccepted) {
-					if (result.disposition === "starts_when_admitted") await result.ticket.delivered;
+					if (result.disposition === "starts_when_admitted" || (acceptedAgentMessage && !visibleQueued)) {
+						await result.ticket.delivered;
+					}
 					return;
 				}
 				if (visibleQueued) return;
@@ -4561,10 +4571,10 @@ export class AgentSession {
 				reportPreflight(false);
 				throw error;
 			} finally {
-				admission?.release();
+				commitFence?.release();
 			}
 		};
-		return admission ? this._turnAdmissionContext.run(admission.owner, run) : run();
+		return commitFence ? this._sessionActionCommitContext.run(commitFence.owner, run) : run();
 	}
 
 	private _executeExtensionCommand(text: string): Promise<void> | undefined {
@@ -5034,10 +5044,22 @@ export class AgentSession {
 			);
 	}
 
+	private _assertSessionActionAdmissionAvailable(): void {
+		if (this._disposed || this._disposing) {
+			throw new Error("Cannot admit a session action because the session is disposing or disposed.");
+		}
+		if (this.unfinishedActionCount > 0 && this._sessionInputPumpSuspended) {
+			throw new Error("Cannot admit a session action while queued session input is suspended.");
+		}
+	}
+
 	private _admitSessionInput(
 		action: QueuedSessionAction,
 		options: { restore?: boolean; front?: boolean; wake?: boolean; immediatelyEligible?: boolean } = {},
 	): { accepted: boolean; disposition: "starts_when_admitted" | "queued"; ticket?: ActionTicket } {
+		if (this._disposed || this._disposing) {
+			throw new Error("Cannot admit a session action because the session is disposing or disposed.");
+		}
 		const coalescedOwner = options.restore ? undefined : this._coalescedFollowUpOwner(action);
 		if (coalescedOwner) {
 			if (action.agentMessageId !== coalescedOwner.agentMessageId) {
@@ -5138,141 +5160,134 @@ export class AgentSession {
 		try {
 			while (!this._disposed && !this._disposing && this._hasSelectableSessionInput()) {
 				await this.agent.waitForIdle();
-				const admission = await this._acquireTurnAdmission();
-				try {
-					await this._turnAdmissionContext.run(admission.owner, async () => {
-						const preselected = this._actionStore
-							.activeActions()
-							.find((action) => action.lifecycle.state === "selected");
-						if (epoch !== this._sessionInputPumpEpoch) {
-							if (preselected) {
-								this._actionStore.rollback(preselected);
-								this._notifySessionInputCheckpointChange();
-								this._emitQueueUpdate();
-							}
-							return;
-						}
-						if (!this._hasCancelledDispatchCapture()) await this._agentEventQueue;
-						if (!preselected || preselected.payload.kind === "session_command") await this._waitForRefineIdle();
-						const activity = this._runtimeActivity();
-						const canSelectPreselectedTurn =
-							preselected?.payload.kind === "turn" &&
-							canSelectSessionAction({ ...activity, refinementApply: false });
-						if (
-							this._isSessionInputHandoffDeferred(epoch) ||
-							(!canSelectPreselectedTurn && !canSelectSessionAction(activity))
-						) {
-							blocked = true;
-							return;
-						}
-						const first = preselected ?? this._actionStore.selectFirst();
-						if (!first) return;
-						if (first.payload.kind === "session_command") {
-							await this._executeSelectedSessionCommand(first);
-							return;
-						}
-
-						const mode = first.delivery === "next_turn_boundary" ? this.steeringMode : this.followUpMode;
-						const actions: QueuedSessionAction[] = [first];
-						while (!preselected && mode === "all") {
-							const next = this._actionStore.queuedActions(first.delivery)[0];
-							if (
-								!next ||
-								next.payload.kind !== "turn" ||
-								!turnExecutionPoliciesEqual(first.payload.executionPolicy, next.payload.executionPolicy)
-							) {
-								break;
-							}
-							this._actionStore.selectFirst();
-							actions.push(next);
-						}
-						if (epoch !== this._sessionInputPumpEpoch) {
-							for (const action of actions) this._actionStore.rollback(action);
-							return;
-						}
-						for (const action of actions) transitionSessionAction(action, { state: "preparing" });
+				const preselected = this._actionStore
+					.activeActions()
+					.find((action) => action.lifecycle.state === "selected");
+				if (epoch !== this._sessionInputPumpEpoch) {
+					if (preselected) {
+						this._actionStore.rollback(preselected);
 						this._notifySessionInputCheckpointChange();
 						this._emitQueueUpdate();
-						try {
-							await this._startPreparedTurnActions(actions, epoch, admission.release);
-							for (const action of actions) {
-								if (action.lifecycle.state === "committing") {
-									const primary = primaryDeliveryRecord(action);
-									if (this.agent.state.messages.includes(primary.message)) {
-										primary.durable = true;
-										transitionSessionAction(action, { state: "running", execution: "agent_turn" });
-									}
-								}
-								if (action.lifecycle.state === "running") {
-									transitionSessionAction(action, { state: "completed" });
-									this._actionStore.ticketFor(action).settleCompleted();
-									this._settleAgentMessage(action.agentMessageId, "completion");
-								}
+					}
+					return;
+				}
+				if (!this._hasCancelledDispatchCapture()) await this._agentEventQueue;
+				if (!preselected || preselected.payload.kind === "session_command") await this._waitForRefineIdle();
+				const activity = this._runtimeActivity();
+				const canSelectPreselectedTurn =
+					preselected?.payload.kind === "turn" && canSelectSessionAction({ ...activity, refinementApply: false });
+				if (
+					this._isSessionInputHandoffDeferred(epoch) ||
+					(!canSelectPreselectedTurn && !canSelectSessionAction(activity))
+				) {
+					blocked = true;
+					this._notifySessionInputCheckpointChange();
+					return;
+				}
+				const first = preselected ?? this._actionStore.selectFirst();
+				if (!first) return;
+				if (first.payload.kind === "session_command") {
+					await this._executeSelectedSessionCommand(first, epoch);
+					return;
+				}
+
+				const mode = first.delivery === "next_turn_boundary" ? this.steeringMode : this.followUpMode;
+				const actions: QueuedSessionAction[] = [first];
+				while (!preselected && mode === "all") {
+					const next = this._actionStore.queuedActions(first.delivery)[0];
+					if (
+						!next ||
+						next.payload.kind !== "turn" ||
+						!turnExecutionPoliciesEqual(first.payload.executionPolicy, next.payload.executionPolicy)
+					) {
+						break;
+					}
+					this._actionStore.selectFirst();
+					actions.push(next);
+				}
+				if (epoch !== this._sessionInputPumpEpoch) {
+					for (const action of actions) this._actionStore.rollback(action);
+					return;
+				}
+				for (const action of actions) transitionSessionAction(action, { state: "preparing" });
+				this._notifySessionInputCheckpointChange();
+				this._emitQueueUpdate();
+				try {
+					await this._startPreparedTurnActions(actions, epoch);
+					for (const action of actions) {
+						if (action.lifecycle.state === "committing") {
+							const primary = primaryDeliveryRecord(action);
+							if (this.agent.state.messages.includes(primary.message)) {
+								primary.durable = true;
+								transitionSessionAction(action, { state: "running", execution: "agent_turn" });
 							}
-						} catch (error) {
-							const transcript = this.agent.state.messages;
-							const delivered = new Set(transcript);
-							const undelivered: QueuedSessionAction[] = [];
-							for (const action of actions) {
-								if (action.payload.kind !== "turn" || action.lifecycle.state === "cancelled") continue;
-								for (const record of action.payload.records) record.durable ||= delivered.has(record.message);
-								action.payload.records = action.payload.records.filter((record) => {
-									if (record.role === "prefix") return !record.durable;
-									if (record.role === "next_turn") return record.durable;
-									return true;
-								});
-								if (!primaryDeliveryRecord(action).durable) undelivered.push(action);
-							}
-							if (this._isDeferredSessionInputError(error, epoch)) {
-								for (const action of undelivered) {
-									if (action.lifecycle.state === "committing") {
-										this._actionStore.rollback(action, { dispatchSettled: true, transcript });
-									} else if (action.lifecycle.state === "preparing" || action.lifecycle.state === "selected") {
-										this._actionStore.rollback(action);
-									}
-								}
-								if (undelivered.length > 0) this._emitQueueUpdate();
-								blocked = true;
-								return;
-							}
-							const terminalError = this._asError(error);
-							for (const action of actions) {
-								if (action.lifecycle.state === "cancelled") continue;
-								if (action.lifecycle.state !== "completed" && action.lifecycle.state !== "failed") {
-									transitionSessionAction(action, { state: "failed", error: terminalError });
-								}
-								const ticket = this._actionStore.ticketFor(action);
-								if (undelivered.includes(action)) {
-									ticket.rejectDelivered(terminalError);
-									this._settleAgentMessage(action.agentMessageId, "delivery", terminalError);
-								}
-								this._settleAgentMessage(action.agentMessageId, "completion", terminalError);
-								ticket.settleCompleted(terminalError);
-							}
-							if (actions.some((action) => action.payload.kind !== "turn" || action.payload.queueVisible)) {
-								this._surfaceSessionInputError(error);
-							}
-						} finally {
-							for (const action of actions) {
-								const retainedCancelledDispatch =
-									action.lifecycle.state === "cancelled" &&
-									action.payload.kind === "turn" &&
-									action.payload.captureRunMessages !== undefined;
-								if (
-									!retainedCancelledDispatch &&
-									(action.lifecycle.state === "completed" ||
-										action.lifecycle.state === "failed" ||
-										action.lifecycle.state === "cancelled")
-								) {
-									this._actionStore.releaseTerminal(action);
-								}
-							}
-							this._notifySessionInputCheckpointChange();
-							this._emitQueueUpdate();
 						}
-					});
+						if (action.lifecycle.state === "running") {
+							transitionSessionAction(action, { state: "completed" });
+							this._actionStore.ticketFor(action).settleCompleted();
+							this._settleAgentMessage(action.agentMessageId, "completion");
+						}
+					}
+				} catch (error) {
+					const transcript = this.agent.state.messages;
+					const delivered = new Set(transcript);
+					const undelivered: QueuedSessionAction[] = [];
+					for (const action of actions) {
+						if (action.payload.kind !== "turn" || action.lifecycle.state === "cancelled") continue;
+						for (const record of action.payload.records) record.durable ||= delivered.has(record.message);
+						action.payload.records = action.payload.records.filter((record) => {
+							if (record.role === "prefix") return !record.durable;
+							if (record.role === "next_turn") return record.durable;
+							return true;
+						});
+						if (!primaryDeliveryRecord(action).durable) undelivered.push(action);
+					}
+					if (this._isDeferredSessionInputError(error, epoch)) {
+						for (const action of undelivered) {
+							if (action.lifecycle.state === "committing") {
+								this._actionStore.rollback(action, { dispatchSettled: true, transcript });
+							} else if (action.lifecycle.state === "preparing" || action.lifecycle.state === "selected") {
+								this._actionStore.rollback(action);
+							}
+						}
+						if (undelivered.length > 0) this._emitQueueUpdate();
+						blocked = true;
+						return;
+					}
+					const terminalError = this._asError(error);
+					for (const action of actions) {
+						if (action.lifecycle.state === "cancelled") continue;
+						if (action.lifecycle.state !== "completed" && action.lifecycle.state !== "failed") {
+							transitionSessionAction(action, { state: "failed", error: terminalError });
+						}
+						const ticket = this._actionStore.ticketFor(action);
+						if (undelivered.includes(action)) {
+							ticket.rejectDelivered(terminalError);
+							this._settleAgentMessage(action.agentMessageId, "delivery", terminalError);
+						}
+						this._settleAgentMessage(action.agentMessageId, "completion", terminalError);
+						ticket.settleCompleted(terminalError);
+					}
+					if (actions.some((action) => action.payload.kind !== "turn" || action.payload.queueVisible)) {
+						this._surfaceSessionInputError(error);
+					}
 				} finally {
-					admission.release();
+					for (const action of actions) {
+						const retainedCancelledDispatch =
+							action.lifecycle.state === "cancelled" &&
+							action.payload.kind === "turn" &&
+							action.payload.captureRunMessages !== undefined;
+						if (
+							!retainedCancelledDispatch &&
+							(action.lifecycle.state === "completed" ||
+								action.lifecycle.state === "failed" ||
+								action.lifecycle.state === "cancelled")
+						) {
+							this._actionStore.releaseTerminal(action);
+						}
+					}
+					this._notifySessionInputCheckpointChange();
+					this._emitQueueUpdate();
 				}
 				if (epoch !== this._sessionInputPumpEpoch || blocked) return;
 			}
@@ -5284,32 +5299,49 @@ export class AgentSession {
 		}
 	}
 
-	private async _executeSelectedSessionCommand(action: QueuedSessionAction): Promise<void> {
+	private async _executeSelectedSessionCommand(action: QueuedSessionAction, epoch: number): Promise<void> {
 		if (action.payload.kind !== "session_command") throw new Error("Expected a selected session command");
-		transitionSessionAction(action, { state: "running", execution: "session_command" });
-		this._notifySessionInputCheckpointChange();
-		this._emitQueueUpdate();
+		const input = action.payload;
+		const commitFence = await this._acquireSessionActionCommitFence();
 		try {
-			await this._executeQueuedSessionCommand(action);
-			transitionSessionAction(action, { state: "completed" });
-			this._actionStore.ticketFor(action).settleDelivered({ status: "not_applicable" });
-			this._actionStore.ticketFor(action).settleCompleted();
-			this._settleAgentMessage(action.agentMessageId, "completion");
-		} catch (error) {
-			const commandError = this._asError(error);
-			transitionSessionAction(action, { state: "failed", error: commandError });
-			const ticket = this._actionStore.ticketFor(action);
-			ticket.rejectDelivered(commandError);
-			ticket.settleCompleted(commandError);
-			this._rejectAgentMessage(action.agentMessageId, commandError);
+			await this._sessionActionCommitContext.run(commitFence.owner, async () => {
+				if (action.lifecycle.state === "cancelled") return;
+				if (this._isSessionInputHandoffDeferred(epoch)) {
+					this._actionStore.rollback(action);
+					this._notifySessionInputCheckpointChange();
+					this._emitQueueUpdate();
+					return;
+				}
+				transitionSessionAction(action, { state: "running", execution: "session_command" });
+				this._notifySessionInputCheckpointChange();
+				this._emitQueueUpdate();
+				try {
+					this._appendDurableSessionCommandMessage(input.text, input.command, false);
+					this._actionStore.ticketFor(action).settleDelivered({ status: "not_applicable" });
+					this._settleAgentMessage(action.agentMessageId, "delivery");
+					await this._executeQueuedSessionCommand(action);
+					transitionSessionAction(action, { state: "completed" });
+					this._actionStore.ticketFor(action).settleCompleted();
+					this._settleAgentMessage(action.agentMessageId, "completion");
+				} catch (error) {
+					const commandError = this._asError(error);
+					transitionSessionAction(action, { state: "failed", error: commandError });
+					const ticket = this._actionStore.ticketFor(action);
+					ticket.rejectDelivered(commandError);
+					ticket.settleCompleted(commandError);
+					this._rejectAgentMessage(action.agentMessageId, commandError);
+				} finally {
+					this._actionStore.releaseTerminal(action);
+					this._notifySessionInputCheckpointChange();
+					this._emitQueueUpdate();
+				}
+			});
 		} finally {
-			this._actionStore.releaseTerminal(action);
-			this._notifySessionInputCheckpointChange();
-			this._emitQueueUpdate();
+			commitFence.release();
 		}
 	}
 
-	private _isBusyForSessionInput(point: "preflight" | "handoff" | "pump"): boolean {
+	private _isBusyForSessionInput(point: "preflight" | "pump"): boolean {
 		const externalBusy = this.isCompacting || this.isRetrying || this.isBashRunning;
 		if (point === "pump") {
 			return (
@@ -5321,9 +5353,7 @@ export class AgentSession {
 				this._branchSummaryOperation !== undefined
 			);
 		}
-		return (
-			externalBusy || this._actionStore.unfinishedActions().length > 0 || (point === "handoff" && this.isStreaming)
-		);
+		return externalBusy || this._actionStore.unfinishedActions().length > 0;
 	}
 
 	private _isSessionInputHandoffDeferred(epoch: number): boolean {
@@ -5358,11 +5388,7 @@ export class AgentSession {
 		}
 	}
 
-	private async _startPreparedTurnActions(
-		actions: QueuedSessionAction[],
-		epoch: number,
-		releaseAdmission: () => void,
-	): Promise<void> {
+	private async _startPreparedTurnActions(actions: QueuedSessionAction[], epoch: number): Promise<void> {
 		let nextTurnMessages: CustomMessage[] = [];
 		const activeTurns = () =>
 			actions.filter(
@@ -5424,38 +5450,44 @@ export class AgentSession {
 				restoreNextTurnContext();
 				return;
 			}
-			if (this._isSessionInputHandoffDeferred(epoch)) {
-				throw new DeferredSessionInputError("Session input paused before handoff");
-			}
-			if (this.isStreaming) throw new DeferredSessionInputError("Agent became active before session input handoff");
 			const { prepared, turns } = preparedTurn;
-			if (executionPolicy.nextTurnContextTiming === "commit") {
-				nextTurnMessages = this._takePendingNextTurnMessages();
+			const commitFence = await this._acquireSessionActionCommitFence();
+			let promptPromise: Promise<void>;
+			try {
+				promptPromise = this._sessionActionCommitContext.run(commitFence.owner, () => {
+					if (this._isSessionInputHandoffDeferred(epoch) || this.isStreaming) {
+						throw new DeferredSessionInputError("Agent became active before session input handoff");
+					}
+					if (executionPolicy.nextTurnContextTiming === "commit") {
+						nextTurnMessages = this._takePendingNextTurnMessages();
+					}
+					const contextRecords = nextTurnMessages.map((message) =>
+						this._createDeliveryRecord(turns[0].id, "next_turn", message),
+					);
+					turns[0].payload.records.unshift(...contextRecords);
+					const preparedMessages: AgentMessage[] = [...nextTurnMessages];
+					for (const action of turns) {
+						preparedMessages.push(...actionPrefixMessages(action), primaryDeliveryRecord(action).message);
+						if (action.suppressAutonomousContinuation) {
+							this._markAutonomousContinuationSuppressed(primaryDeliveryRecord(action).message);
+						}
+					}
+					if (executionPolicy.runBeforeAgentStart) {
+						this._appendBeforeAgentStartMessages(preparedMessages, prepared?.result);
+						this._applyPreparedSystemPrompt(prepared, executionPolicy.preserveEmptyExtensionPrompt);
+					} else if (executionPolicy.nextTurnContextTiming !== "skip") {
+						this.agent.state.systemPrompt = this._baseSystemPrompt;
+					}
+					for (const action of turns) transitionSessionAction(action, { state: "committing" });
+					this._notifySessionInputCheckpointChange();
+					this._emitQueueUpdate();
+					return turns.some((action) => action.suppressAutonomousContinuation)
+						? this._runWithAutonomousContinuationSuppressed(() => this.agent.prompt(preparedMessages))
+						: this.agent.prompt(preparedMessages);
+				});
+			} finally {
+				commitFence.release();
 			}
-			const contextRecords = nextTurnMessages.map((message) =>
-				this._createDeliveryRecord(turns[0].id, "next_turn", message),
-			);
-			turns[0].payload.records.unshift(...contextRecords);
-			const preparedMessages: AgentMessage[] = [...nextTurnMessages];
-			for (const action of turns) {
-				preparedMessages.push(...actionPrefixMessages(action), primaryDeliveryRecord(action).message);
-				if (action.suppressAutonomousContinuation) {
-					this._markAutonomousContinuationSuppressed(primaryDeliveryRecord(action).message);
-				}
-			}
-			if (executionPolicy.runBeforeAgentStart) {
-				this._appendBeforeAgentStartMessages(preparedMessages, prepared?.result);
-				this._applyPreparedSystemPrompt(prepared, executionPolicy.preserveEmptyExtensionPrompt);
-			} else if (executionPolicy.nextTurnContextTiming !== "skip") {
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
-			}
-			for (const action of turns) transitionSessionAction(action, { state: "committing" });
-			this._notifySessionInputCheckpointChange();
-			this._emitQueueUpdate();
-			const promptPromise = turns.some((action) => action.suppressAutonomousContinuation)
-				? this._runWithAutonomousContinuationSuppressed(() => this.agent.prompt(preparedMessages))
-				: this.agent.prompt(preparedMessages);
-			releaseAdmission();
 			await promptPromise;
 			if (executionPolicy.completionIncludesRetryChain) await this.waitForRetry();
 			if (!this._hasCancelledDispatchCapture()) await this._agentEventQueue;
@@ -5485,9 +5517,6 @@ export class AgentSession {
 	private async _executeQueuedSessionCommand(action: QueuedSessionAction): Promise<void> {
 		if (action.payload.kind !== "session_command") throw new Error("Expected a session command action");
 		const input = action.payload;
-		this._appendDurableSessionCommandMessage(input.text, input.command, false);
-		this._actionStore.ticketFor(action).settleDelivered({ status: "not_applicable" });
-		this._settleAgentMessage(action.agentMessageId, "delivery");
 		try {
 			let resultText: string | undefined;
 			switch (input.command.name) {
@@ -5511,7 +5540,9 @@ export class AgentSession {
 					await this._handleAutonomousSlashCommand(input.text);
 					break;
 			}
-			if (resultText) this._appendDurableSessionCommandMessage(resultText, input.command, true, false);
+			if (resultText) {
+				this._appendDurableSessionCommandMessage(resultText, input.command, true, false);
+			}
 		} catch (error) {
 			if (error instanceof CompactionSkippedError) return;
 			const commandError = error instanceof Error ? error : new Error(String(error));
@@ -5610,24 +5641,18 @@ export class AgentSession {
 				});
 			}
 		} else if (options?.triggerTurn) {
-			const admission = await this._acquireSessionActionAdmission();
-			try {
-				const normalized = normalizeMessageContent(message.content);
-				const immediatelyEligible = this._canStartSessionActionImmediately();
-				const action = this._createPreparedTurnAction("followUp", normalized.text, normalized.images, {
-					message: appMessage,
-					resumeIfIdle: true,
-					executionPolicy: this._turnExecutionPolicy("customTrigger"),
-					queueVisible: false,
-				});
-				const result = this._admitSessionInput(action, { immediatelyEligible });
-				if (!result.ticket) return;
-				admission.release();
-				await result.ticket.completed;
-			} finally {
-				admission.release();
-				this._scheduleSessionInputPump();
-			}
+			this._assertSessionActionAdmissionAvailable();
+			const normalized = normalizeMessageContent(message.content);
+			const immediatelyEligible = this._canStartSessionActionImmediately();
+			const action = this._createPreparedTurnAction("followUp", normalized.text, normalized.images, {
+				message: appMessage,
+				resumeIfIdle: true,
+				executionPolicy: this._turnExecutionPolicy("customTrigger"),
+				queueVisible: false,
+			});
+			const result = this._admitSessionInput(action, { immediatelyEligible });
+			if (!result.ticket) return;
+			await result.ticket.completed;
 		} else {
 			this.agent.state.messages.push(appMessage);
 			this.sessionManager.appendCustomMessageEntry(
@@ -5907,26 +5932,24 @@ export class AgentSession {
 		for (const resolve of waiters) resolve();
 	}
 
-	private _observeSessionActionRollback(action: QueuedSessionAction): { rolledBack: Promise<void>; stop(): void } {
-		let resolveRollback = () => {};
-		const rolledBack = new Promise<void>((resolve) => {
-			resolveRollback = resolve;
+	private _observeSessionActionDeferral(action: QueuedSessionAction): { deferred: Promise<void>; stop(): void } {
+		let resolveDeferral = () => {};
+		const deferred = new Promise<void>((resolve) => {
+			resolveDeferral = resolve;
 		});
 		const check = () => {
-			if (action.lifecycle.state === "queued") resolveRollback();
+			if (action.lifecycle.state === "queued") resolveDeferral();
 			else this._sessionInputCheckpointWaiters.add(check);
 		};
 		this._sessionInputCheckpointWaiters.add(check);
 		return {
-			rolledBack,
+			deferred,
 			stop: () => this._sessionInputCheckpointWaiters.delete(check),
 		};
 	}
 
 	async waitForSessionInputCheckpoint(signal?: AbortSignal): Promise<void> {
-		// An executing command was already shifted off the queue; the snapshot
-		// must wait for it or it vanishes from durable queued input.
-		while (
+		const blocksCheckpoint = () =>
 			this._actionStore.activeActions().some((action) => {
 				if (action.payload.kind === "session_command") {
 					return action.lifecycle.state === "selected" || action.lifecycle.state === "running";
@@ -5936,32 +5959,40 @@ export class AgentSession {
 					action.lifecycle.state === "preparing" ||
 					(action.lifecycle.state === "committing" && !primaryDeliveryRecord(action).durable)
 				);
-			})
-		) {
-			if (signal?.aborted) throw new Error("Update restart preparation cancelled");
-			await new Promise<void>((resolve, reject) => {
-				const onChange = () => {
-					cleanup();
-					resolve();
-				};
-				const onAbort = () => {
-					cleanup();
-					reject(new Error("Update restart preparation cancelled"));
-				};
-				const cleanup = () => {
-					this._sessionInputCheckpointWaiters.delete(onChange);
-					signal?.removeEventListener("abort", onAbort);
-				};
-				this._sessionInputCheckpointWaiters.add(onChange);
-				signal?.addEventListener("abort", onAbort, { once: true });
 			});
+		while (true) {
+			while (blocksCheckpoint()) {
+				if (signal?.aborted) throw new Error("Update restart preparation cancelled");
+				await new Promise<void>((resolve, reject) => {
+					const onChange = () => {
+						cleanup();
+						resolve();
+					};
+					const onAbort = () => {
+						cleanup();
+						reject(new Error("Update restart preparation cancelled"));
+					};
+					const cleanup = () => {
+						this._sessionInputCheckpointWaiters.delete(onChange);
+						signal?.removeEventListener("abort", onAbort);
+					};
+					this._sessionInputCheckpointWaiters.add(onChange);
+					signal?.addEventListener("abort", onAbort, { once: true });
+					if (signal?.aborted) onAbort();
+				});
+			}
+			const commitFence = await this._acquireSessionActionCommitFence(signal);
+			try {
+				if (blocksCheckpoint()) continue;
+				if (signal?.aborted) throw new Error("Update restart preparation cancelled");
+				await waitForPromiseOrAbort(this._agentEventQueue, signal, "Update restart preparation cancelled");
+				if (signal?.aborted) throw new Error("Update restart preparation cancelled");
+				this.sessionManager.flushNow();
+				return;
+			} finally {
+				commitFence.release();
+			}
 		}
-		if (signal?.aborted) throw new Error("Update restart preparation cancelled");
-		// Handed-off inputs reach the transcript through the event queue; drain the
-		// current snapshot so the flush below persists them before the snapshot is taken.
-		await waitForPromiseOrAbort(this._agentEventQueue, signal, "Update restart preparation cancelled");
-		if (signal?.aborted) throw new Error("Update restart preparation cancelled");
-		this.sessionManager.flushNow();
 	}
 
 	acquireQueuedWorkPause(): { release(): void } {
@@ -5975,98 +6006,41 @@ export class AgentSession {
 				if (released) return;
 				released = true;
 				this._queuedWorkPauses.delete(token);
-				if (this._queuedWorkPauses.size === 0) this._wakeQueuedWorkAdmissionWaiters();
 				this._notifySessionInputCheckpointChange();
 				this._scheduleSessionInputPump();
 			},
 		};
 	}
 
-	private _wakeQueuedWorkAdmissionWaiters(): void {
-		for (const resolve of this._queuedWorkAdmissionWaiters) resolve();
-		this._queuedWorkAdmissionWaiters.clear();
-	}
-
-	private _assertSessionActionAdmissionAvailable(): void {
-		if (this._disposed || this._disposing) {
-			throw new Error("Cannot admit a session action because the session is disposing or disposed.");
-		}
-		if (this.unfinishedActionCount > 0 && this._sessionInputPumpSuspended) {
-			throw new Error("Cannot admit a session action while queued session input is suspended.");
-		}
-	}
-
-	/** PR 5 deletion target: preparation still shares this lease with branch mutation. */
-	private async _acquireTurnAdmission(signal?: AbortSignal): Promise<{ owner: symbol; release(): void }> {
-		const inheritedOwner = this._turnAdmissionContext.getStore();
-		if (inheritedOwner !== undefined && inheritedOwner === this._turnAdmissionOwner) {
+	private async _acquireSessionActionCommitFence(signal?: AbortSignal): Promise<{ owner: symbol; release(): void }> {
+		const inheritedOwner = this._sessionActionCommitContext.getStore();
+		if (inheritedOwner !== undefined && inheritedOwner === this._sessionActionCommitOwner) {
 			return { owner: inheritedOwner, release: () => {} };
 		}
-		const previous = this._turnAdmissionTail;
+		const previous = this._sessionActionCommitTail;
 		let resolve = () => {};
-		this._turnAdmissionTail = new Promise<void>((release) => {
+		this._sessionActionCommitTail = new Promise<void>((release) => {
 			resolve = release;
 		});
 		try {
-			await waitForPromptAdmission(previous, signal);
+			await waitForPromiseOrAbort(previous, signal, "Update restart preparation cancelled");
 		} catch (error) {
-			// Keep this cancelled waiter in the FIFO chain until its predecessor
-			// releases; resolving immediately would let a later caller bypass the
-			// current admission owner.
+			// A cancelled waiter remains in the FIFO chain until its predecessor releases.
 			void previous.then(resolve, resolve);
 			throw error;
 		}
-		const owner = Symbol("turn-admission");
-		this._turnAdmissionOwner = owner;
+		const owner = Symbol("session-action-commit");
+		this._sessionActionCommitOwner = owner;
 		let released = false;
 		return {
 			owner,
 			release: () => {
 				if (released) return;
 				released = true;
-				if (this._turnAdmissionOwner === owner) this._turnAdmissionOwner = undefined;
+				if (this._sessionActionCommitOwner === owner) this._sessionActionCommitOwner = undefined;
 				resolve();
 			},
 		};
-	}
-
-	private async _acquireSessionActionAdmission(
-		options: { signal?: AbortSignal } = {},
-	): Promise<{ owner: symbol; release(): void }> {
-		while (true) {
-			this._assertSessionActionAdmissionAvailable();
-			await this._waitForQueuedWorkAdmission(options.signal);
-			const admission = await this._acquireTurnAdmission(options.signal);
-			try {
-				this._assertSessionActionAdmissionAvailable();
-				if (this._queuedWorkPauses.size > 0) {
-					admission.release();
-					continue;
-				}
-				throwIfPromptAdmissionCancelled(options.signal);
-				return admission;
-			} catch (error) {
-				admission.release();
-				throw error;
-			}
-		}
-	}
-
-	private async _waitForQueuedWorkAdmission(signal?: AbortSignal): Promise<void> {
-		while (this._queuedWorkPauses.size > 0) {
-			this._assertSessionActionAdmissionAvailable();
-			let wake = () => {};
-			const wait = new Promise<void>((resolve) => {
-				wake = resolve;
-				this._queuedWorkAdmissionWaiters.add(resolve);
-			});
-			try {
-				await waitForPromptAdmission(wait, signal);
-			} finally {
-				this._queuedWorkAdmissionWaiters.delete(wake);
-			}
-			this._assertSessionActionAdmissionAvailable();
-		}
 	}
 
 	/** Resume the scheduler after requestAbort/abortForUpdateRestart suspended it; owned pause leases are unaffected. */
@@ -10024,17 +9998,18 @@ export class AgentSession {
 		}
 
 		const queuedWorkPause = this.acquireQueuedWorkPause();
-		let admission: { owner: symbol; release(): void } | undefined;
+		let commitFence: { owner: symbol; release(): void } | undefined;
 		try {
-			admission = await this._acquireTurnAdmission();
-			return await this._turnAdmissionContext.run(admission.owner, async () => {
+			// Branch navigation and turn dispatch mutate the same transcript leaf.
+			commitFence = await this._acquireSessionActionCommitFence();
+			return await this._sessionActionCommitContext.run(commitFence.owner, async () => {
 				await this.agent.waitForIdle();
 				await this._agentEventQueue;
 				return this._navigateTreeUnderPause(targetId, targetEntry, options);
 			});
 		} finally {
 			queuedWorkPause.release();
-			admission?.release();
+			commitFence?.release();
 		}
 	}
 
