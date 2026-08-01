@@ -1063,6 +1063,7 @@ export class AgentSession {
 	private _sessionActionCommitTail: Promise<void> = Promise.resolve();
 	private _sessionActionCommitOwner: symbol | undefined;
 	private readonly _sessionActionCommitContext = new AsyncLocalStorage<symbol>();
+	private readonly _sessionActionCommitDisposeAbortController = new AbortController();
 	// Checkpoint and handoff waiters share lifecycle-edge notifications to avoid polling.
 	private readonly _sessionInputCheckpointWaiters = new Set<() => void>();
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
@@ -3608,6 +3609,7 @@ export class AgentSession {
 				return;
 			}
 			this._disposing = true;
+			this._sessionActionCommitDisposeAbortController.abort();
 			await this._disposeAsyncOnce();
 		})();
 		return this._disposeAsyncPromise;
@@ -3775,6 +3777,7 @@ export class AgentSession {
 			return;
 		}
 		this._disposed = true;
+		this._sessionActionCommitDisposeAbortController.abort();
 		try {
 			// Invalidate scheduled timers and abort any in-flight review so a late
 			// resolution cannot write harness state or re-subscribe handlers.
@@ -6008,11 +6011,16 @@ export class AgentSession {
 		this._sessionActionCommitTail = new Promise<void>((release) => {
 			resolve = release;
 		});
+		const disposeSignal = this._sessionActionCommitDisposeAbortController.signal;
+		const waitSignal = signal ? AbortSignal.any([signal, disposeSignal]) : disposeSignal;
 		try {
-			await waitForPromiseOrAbort(previous, signal, "Update restart preparation cancelled");
+			await waitForPromiseOrAbort(previous, waitSignal, "Update restart preparation cancelled");
 		} catch (error) {
 			// A cancelled waiter remains in the FIFO chain until its predecessor releases.
 			void previous.then(resolve, resolve);
+			if (disposeSignal.aborted) {
+				throw new Error("Cannot admit a session action because the session is disposing or disposed.");
+			}
 			throw error;
 		}
 		const owner = Symbol("session-action-commit");

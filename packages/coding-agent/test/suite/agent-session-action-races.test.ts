@@ -129,6 +129,41 @@ describe("AgentSession action commit-fence races", () => {
 		nextFence.release();
 	});
 
+	it("rejects a prompt waiting behind tree navigation when the session is disposed", async () => {
+		const treeHookReached = createDeferred();
+		const treeHookGate = createDeferred();
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_tree", async () => {
+						treeHookReached.resolve();
+						await treeHookGate.promise;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		await harness.session.prompt("one");
+		const target = harness.sessionManager.getEntries().find((entry) => entry.type === "message");
+		expect(target).toBeDefined();
+		await harness.session.prompt("two");
+
+		const navigation = harness.session.navigateTree(target!.id, { summarize: false });
+		await treeHookReached.promise;
+		const prompt = harness.session.prompt("blocked prompt");
+
+		harness.session.dispose();
+		try {
+			await expect(prompt).rejects.toThrow(
+				"Cannot admit a session action because the session is disposing or disposed.",
+			);
+		} finally {
+			treeHookGate.resolve();
+		}
+		await expect(navigation).resolves.toMatchObject({ cancelled: false });
+	});
+
 	it("does not restart a session command cancelled while waiting for the commit fence", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
