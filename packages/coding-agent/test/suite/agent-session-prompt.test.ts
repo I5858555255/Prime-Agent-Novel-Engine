@@ -143,10 +143,16 @@ describe("AgentSession prompt characterization", () => {
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
 		expect(getMessageText(harness.session.messages[0]!)).toBe("hi");
 		expect(harness.getPendingResponseCount()).toBe(0);
-		expect(harness.eventsOfType("queue_update")).toEqual([]);
+		expect(harness.eventsOfType("session_action_update")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					actions: expect.objectContaining({ queuedCount: 0, steering: [], followUps: [] }),
+				}),
+			]),
+		);
 	});
 
-	it("admits concurrent idle prompts in FIFO order without exposing queue rows", async () => {
+	it("admits concurrent idle prompts in FIFO order with only the waiting action queued", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const firstResponse = createDeferred();
@@ -171,8 +177,8 @@ describe("AgentSession prompt characterization", () => {
 		await vi.waitFor(() => expect(harness.session.isStreaming).toBe(true));
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		expect(secondSettled).toBe(false);
-		expect(harness.session.getFollowUpMessages()).toEqual([]);
-		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.getFollowUpMessages()).toEqual(["second"]);
+		expect(harness.session.queuedActionCount).toBe(1);
 
 		firstResponse.resolve();
 		await vi.waitFor(() => expect(getUserTexts(harness)).toEqual(["first", "second"]));
@@ -443,7 +449,7 @@ describe("AgentSession prompt characterization", () => {
 				signal: controller.signal,
 			}),
 		).rejects.toThrow("Prompt admission was cancelled.");
-		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.queuedActionCount).toBe(0);
 
 		releaseToolExecution();
 		await promptPromise;
@@ -978,7 +984,7 @@ stale post-hook extension instructions`,
 		await harness.session.prompt("normal prompt");
 
 		expect(queuedTurnSawSeparateNextTurnContext).toBe(true);
-		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.queuedActionCount).toBe(0);
 	});
 
 	it("queues accepted agent messages if the session becomes busy before handoff", async () => {
@@ -1178,7 +1184,7 @@ stale post-hook extension instructions`,
 			).toEqual(["newer prompt", "newer response"]),
 		);
 		expect(harness.session.agent.state.errorMessage).toBeUndefined();
-		expect(harness.session.getAcceptedPromptSnapshot()).toBeUndefined();
+		expect(harness.session.unfinishedActionCount).toBe(0);
 		expect(harness.session.hasAcceptedPromptInFlight).toBe(false);
 	});
 
