@@ -407,6 +407,43 @@ describe("AgentSession compaction characterization", () => {
 		await expect(compactPromise).rejects.toThrow("Compaction cancelled");
 	});
 
+	it("does not continue after threshold compaction when the current action is the only work", async () => {
+		vi.useFakeTimers();
+		const harness = await createHarness({
+			settings: { compaction: { enabled: true, reserveTokens: 2000, keepRecentTokens: 1 } },
+			models: [{ id: "faux-1", contextWindow: 20_000 }],
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "auto compacted",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("one"),
+			fauxAssistantMessage("two"),
+			fauxAssistantMessage("threshold"),
+		]);
+		await harness.session.prompt("first");
+		await harness.session.prompt("second");
+		const continueSpy = vi.spyOn(harness.session.agent, "continue").mockResolvedValue();
+
+		await harness.session.prompt("x".repeat(56_000));
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(harness.eventsOfType("compaction_end")).toEqual([
+			expect.objectContaining({ reason: "threshold", aborted: false }),
+		]);
+		expect(continueSpy).not.toHaveBeenCalled();
+	});
+
 	it("resumes after threshold compaction when only agent-level queued messages exist", async () => {
 		vi.useFakeTimers();
 		const harness = await createHarness({

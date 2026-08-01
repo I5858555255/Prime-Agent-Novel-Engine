@@ -5105,6 +5105,18 @@ export class AgentSession {
 		);
 	}
 
+	private _hasPendingSessionWork(): boolean {
+		return this._actionStore.unfinishedActions().some((action) => {
+			const state = action.lifecycle.state;
+			return (
+				state === "queued" ||
+				state === "selected" ||
+				state === "preparing" ||
+				(state === "committing" && action.payload.kind === "turn" && !primaryDeliveryRecord(action).durable)
+			);
+		});
+	}
+
 	private _scheduleSessionInputPump(): void {
 		if (this._sessionInputPumpSuspended || this._queuedWorkPauses.size > 0) return;
 		if (this._disposed || this._disposing || this._sessionInputPumpRequested || !this._hasSelectableSessionInput()) {
@@ -7675,7 +7687,7 @@ export class AgentSession {
 		const resumeAfterFailure = () => {
 			if (
 				reason === "requested" &&
-				(shouldContinueAfterCompaction || this.agent.hasQueuedMessages() || this.unfinishedActionCount > 0)
+				(shouldContinueAfterCompaction || this.agent.hasQueuedMessages() || this._hasPendingSessionWork())
 			) {
 				this._schedulePostCompactionContinue();
 			}
@@ -7712,7 +7724,7 @@ export class AgentSession {
 
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry, customInstructions });
 			// Queued work lives in both the agent queues and the session-owned queues.
-			const hasQueuedMessages = this.agent.hasQueuedMessages() || this.unfinishedActionCount > 0;
+			const hasQueuedMessages = this.agent.hasQueuedMessages() || this._hasPendingSessionWork();
 			const willContinueAfterCompaction = willRetry || shouldContinueAfterCompaction || hasQueuedMessages;
 
 			if (willRetry) {
