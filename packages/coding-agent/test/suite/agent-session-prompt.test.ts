@@ -143,13 +143,7 @@ describe("AgentSession prompt characterization", () => {
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
 		expect(getMessageText(harness.session.messages[0]!)).toBe("hi");
 		expect(harness.getPendingResponseCount()).toBe(0);
-		expect(harness.eventsOfType("session_action_update")).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					actions: expect.objectContaining({ queuedCount: 0, steering: [], followUps: [] }),
-				}),
-			]),
-		);
+		expect(harness.eventsOfType("session_action_update")).toEqual([]);
 	});
 
 	it("admits concurrent idle prompts in FIFO order with only the waiting action queued", async () => {
@@ -177,8 +171,8 @@ describe("AgentSession prompt characterization", () => {
 		await vi.waitFor(() => expect(harness.session.isStreaming).toBe(true));
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		expect(secondSettled).toBe(false);
-		expect(harness.session.getFollowUpMessages()).toEqual(["second"]);
-		expect(harness.session.queuedActionCount).toBe(1);
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+		expect(harness.session.queuedActionCount).toBe(0);
 
 		firstResponse.resolve();
 		await vi.waitFor(() => expect(getUserTexts(harness)).toEqual(["first", "second"]));
@@ -1734,6 +1728,33 @@ stale post-hook extension instructions`,
 		expect(harness.session.clearQueue()).toEqual({ steering: [], followUp: [] });
 		await harness.session.prompt("next prompt");
 		expect(getUserTexts(harness)).toEqual(["next prompt"]);
+	});
+
+	it("rejects an invisible prompt cancelled after a handoff rollback", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const dispatchReached = createDeferred<void>();
+		const rejectDispatch = createDeferred<void>();
+		vi.spyOn(harness.session.agent, "prompt").mockImplementationOnce(async () => {
+			dispatchReached.resolve();
+			await rejectDispatch.promise;
+			throw new Error("handoff interrupted");
+		});
+		const prompt = harness.session.promptUntilAccepted("rolled back prompt");
+		const outcome = prompt.then(
+			() => ({ error: undefined }),
+			(error: unknown) => ({ error }),
+		);
+		await dispatchReached.promise;
+
+		harness.session.requestAbort();
+		rejectDispatch.resolve();
+		await harness.session.waitForSessionInputIdle();
+		expect(harness.session.getSessionActionRecoverySnapshot().actions).toHaveLength(1);
+		harness.session.requestAbort();
+
+		expect((await outcome).error).toEqual(expect.objectContaining({ message: "Prompt aborted before delivery." }));
+		await harness.session.waitForSessionInputIdle();
 	});
 
 	it("aborts while a queued prompt is still preparing without consuming its snapshot", async () => {

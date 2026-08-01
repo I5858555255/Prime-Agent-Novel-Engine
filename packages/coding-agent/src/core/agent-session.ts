@@ -751,6 +751,15 @@ function queuedAgentMessagePreview(action: QueuedSessionAction): string {
 	return payload.preview ?? payload.text;
 }
 
+function visibleSessionActionProjection(actions: readonly QueuedSessionAction[]): readonly QueuedSessionAction[] {
+	return actions.filter(
+		(action) =>
+			action.payload.kind === "session_command" ||
+			action.payload.queueVisible ||
+			action.payload.acceptedAgentMessage,
+	);
+}
+
 const IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY = "ipython_sent_agent_message";
 
 interface PersistedIpythonSentAgentMessage {
@@ -1579,7 +1588,9 @@ export class AgentSession {
 			const ticket = this._actionStore.ticketFor(action);
 			if (
 				action.payload.kind === "turn" &&
-				(action.payload.acceptedAgentMessage || previousStates.get(action.id) !== "queued")
+				(action.payload.acceptedAgentMessage ||
+					!action.payload.queueVisible ||
+					previousStates.get(action.id) !== "queued")
 			) {
 				ticket.rejectDelivered(error);
 			} else {
@@ -3197,6 +3208,7 @@ export class AgentSession {
 				if (record?.role === "primary" && action.lifecycle.state === "committing") {
 					transitionSessionAction(action, { state: "running", execution: "agent_turn" });
 					this._notifySessionInputCheckpointChange();
+					this._emitQueueUpdate();
 				}
 			}
 		}
@@ -5769,7 +5781,7 @@ export class AgentSession {
 	}
 
 	get queuedActionCount(): number {
-		return this._actionStore.queuedActions().length;
+		return visibleSessionActionProjection(this._actionStore.queuedActions()).length;
 	}
 
 	get unfinishedActionCount(): number {
@@ -5789,9 +5801,13 @@ export class AgentSession {
 	}
 
 	getSessionActionSnapshot(): SessionActionSnapshot {
-		const steering = this._actionStore.queuePreview("next_turn_boundary");
-		const followUps = this._actionStore.queuePreview("when_run_idle");
-		const active = this._actionStore.activeActions()[0];
+		const steering = visibleSessionActionProjection(this._actionStore.queuedActions("next_turn_boundary")).map(
+			queuedAgentMessagePreview,
+		);
+		const followUps = visibleSessionActionProjection(this._actionStore.queuedActions("when_run_idle")).map(
+			queuedAgentMessagePreview,
+		);
+		const active = visibleSessionActionProjection(this._actionStore.activeActions())[0];
 		const activeState = active?.lifecycle.state;
 		const phase =
 			activeState === "selected"
@@ -5801,8 +5817,8 @@ export class AgentSession {
 					: undefined;
 		return {
 			queuedCount: steering.length + followUps.length,
-			steering: [...steering],
-			followUps: [...followUps],
+			steering,
+			followUps,
 			...(active && phase
 				? { active: { kind: active.payload.kind, phase, label: compactRlmText(active.payload.text) } }
 				: {}),
@@ -5810,19 +5826,27 @@ export class AgentSession {
 	}
 
 	getSteeringMessages(): readonly string[] {
-		return this._actionStore.queuedActions("next_turn_boundary").map((action) => action.payload.text);
+		return visibleSessionActionProjection(this._actionStore.queuedActions("next_turn_boundary")).map(
+			(action) => action.payload.text,
+		);
 	}
 
 	getSteeringMessagePreviews(): readonly string[] {
-		return this._actionStore.queuedActions("next_turn_boundary").map(queuedAgentMessagePreview);
+		return visibleSessionActionProjection(this._actionStore.queuedActions("next_turn_boundary")).map(
+			queuedAgentMessagePreview,
+		);
 	}
 
 	getFollowUpMessages(): readonly string[] {
-		return this._actionStore.queuedActions("when_run_idle").map((action) => action.payload.text);
+		return visibleSessionActionProjection(this._actionStore.queuedActions("when_run_idle")).map(
+			(action) => action.payload.text,
+		);
 	}
 
 	getFollowUpMessagePreviews(): readonly string[] {
-		return this._actionStore.queuedActions("when_run_idle").map(queuedAgentMessagePreview);
+		return visibleSessionActionProjection(this._actionStore.queuedActions("when_run_idle")).map(
+			queuedAgentMessagePreview,
+		);
 	}
 
 	getSessionActionRecoverySnapshot(): SessionActionRecoverySnapshot {
@@ -6050,7 +6074,7 @@ export class AgentSession {
 		this._sessionInputPumpSuspended = false;
 		this._notifySessionInputCheckpointChange();
 		this._scheduleSessionInputPump();
-		return this.queuedActionCount > 0;
+		return this._hasSelectableSessionInput();
 	}
 
 	async waitForSessionInputIdle(): Promise<void> {

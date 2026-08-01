@@ -514,6 +514,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isStringEnum(value: unknown, allowed: readonly string[]): boolean {
+	return typeof value === "string" && allowed.includes(value);
+}
+
 function readString(value: unknown, fieldName: string): string {
 	if (typeof value !== "string") {
 		throw new Error(`Daemon update restart response is missing ${fieldName}`);
@@ -633,6 +637,20 @@ function isSessionActionRecoveryAction(value: unknown): value is SessionActionRe
 		(value.payload.customMessage === undefined || isCustomMessage(value.payload.customMessage)) &&
 		isRecord(value.payload.executionPolicy) &&
 		isRecord(value.payload.executionPolicy.preparation) &&
+		isStringEnum(value.payload.executionPolicy.preparation.initialRefineBarrier, ["always", "ifInFlight", "skip"]) &&
+		typeof value.payload.executionPolicy.preparation.flushPendingBashBeforeValidation === "boolean" &&
+		typeof value.payload.executionPolicy.preparation.validateModelAndAuth === "boolean" &&
+		typeof value.payload.executionPolicy.preparation.awaitPendingModelSelection === "boolean" &&
+		isStringEnum(value.payload.executionPolicy.preparation.preTurnCompaction, [
+			"beforeModelSelection",
+			"afterModelSelection",
+			"skip",
+		]) &&
+		isStringEnum(value.payload.executionPolicy.preparation.finalRefineBarrier, ["always", "ifInFlight", "skip"]) &&
+		typeof value.payload.executionPolicy.runBeforeAgentStart === "boolean" &&
+		isStringEnum(value.payload.executionPolicy.nextTurnContextTiming, ["preparation", "commit", "skip"]) &&
+		typeof value.payload.executionPolicy.preserveEmptyExtensionPrompt === "boolean" &&
+		typeof value.payload.executionPolicy.completionIncludesRetryChain === "boolean" &&
 		typeof value.payload.queueVisible === "boolean" &&
 		typeof value.payload.acceptedAgentMessage === "boolean" &&
 		typeof value.payload.acceptedBeforeCompletion === "boolean"

@@ -85,6 +85,23 @@ interface MockUpdateRestartManifest {
 	sessions: MockUpdateRestartSession[];
 }
 
+function createMockTurnExecutionPolicy(): Record<string, unknown> {
+	return {
+		preparation: {
+			initialRefineBarrier: "skip",
+			flushPendingBashBeforeValidation: false,
+			validateModelAndAuth: true,
+			awaitPendingModelSelection: true,
+			preTurnCompaction: "beforeModelSelection",
+			finalRefineBarrier: "always",
+		},
+		runBeforeAgentStart: true,
+		nextTurnContextTiming: "commit",
+		preserveEmptyExtensionPrompt: true,
+		completionIncludesRetryChain: true,
+	};
+}
+
 interface MockDaemonRequest {
 	type: string;
 	activeSessionId?: string;
@@ -428,7 +445,7 @@ describe("self-update daemon restart", () => {
 												ownerActionId: "accepted-action",
 											},
 										],
-										executionPolicy: { preparation: {} },
+										executionPolicy: createMockTurnExecutionPolicy(),
 										queueVisible: false,
 										acceptedAgentMessage: false,
 										acceptedBeforeCompletion: true,
@@ -1236,6 +1253,8 @@ describe("self-update daemon restart", () => {
 		const manifest = createAcceptedRecoveryManifest();
 		const session = manifest.sessions[0]!;
 		const action = session.queue.actions.actions[0]!;
+		const incompleteExecutionPolicy = createMockTurnExecutionPolicy();
+		delete incompleteExecutionPolicy.nextTurnContextTiming;
 		const cases: { name: string; action: MockRecoveryAction }[] = [
 			{
 				name: "turn without primary record",
@@ -1244,6 +1263,13 @@ describe("self-update daemon restart", () => {
 			{
 				name: "non-array images",
 				action: { ...action, payload: { ...action.payload, images: {} } },
+			},
+			{
+				name: "turn execution policy missing next-turn context timing",
+				action: {
+					...action,
+					payload: { ...action.payload, executionPolicy: incompleteExecutionPolicy },
+				},
 			},
 			{
 				name: "unknown session command",
@@ -1304,7 +1330,7 @@ describe("self-update daemon restart", () => {
 						ownerActionId: "action-1",
 					},
 				],
-				executionPolicy: { preparation: {} },
+				executionPolicy: createMockTurnExecutionPolicy(),
 				queueVisible: true,
 				acceptedAgentMessage: false,
 				acceptedBeforeCompletion: false,
@@ -1373,7 +1399,7 @@ describe("self-update daemon restart", () => {
 						ownerActionId: "action-queued",
 					},
 				],
-				executionPolicy: { preparation: {} },
+				executionPolicy: createMockTurnExecutionPolicy(),
 				queueVisible: true,
 				acceptedAgentMessage: false,
 				acceptedBeforeCompletion: false,
