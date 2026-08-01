@@ -1415,6 +1415,33 @@ describe("AgentSession queue characterization", () => {
 		expect(getUserTexts(harness)).toEqual(["first heartbeat", "second heartbeat"]);
 	});
 
+	it("does not reclaim a handed-off action before its delivery event", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("delivered")]);
+		const dispatchGate = createDeferred();
+		const promptCalled = createDeferred();
+		const originalPrompt = harness.session.agent.prompt.bind(harness.session.agent);
+		const promptSpy = vi
+			.spyOn(harness.session.agent, "prompt")
+			.mockImplementation(async (messages: Parameters<typeof originalPrompt>[0]) => {
+				promptSpy.mockRestore();
+				promptCalled.resolve();
+				await dispatchGate.promise;
+				return originalPrompt(messages);
+			});
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.followUp("handed off", undefined, { resumeIfIdle: true });
+		pause.release();
+		await promptCalled.promise;
+
+		expect(harness.session.clearQueue()).toEqual({ steering: [], followUp: [] });
+		dispatchGate.resolve();
+		await harness.session.waitForIdle();
+		expect(getUserTexts(harness)).toEqual(["handed off"]);
+		expect(getAssistantTexts(harness)).toEqual(["delivered"]);
+	});
+
 	it("keeps cleared prompts out of the handoff snapshot during the refine wait", async () => {
 		let sessionInternals: { _refineInFlight?: Promise<void> };
 		let clearDuringRefineWait: (() => void) | undefined;

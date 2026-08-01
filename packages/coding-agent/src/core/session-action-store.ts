@@ -63,8 +63,7 @@ const ACTIVE_STATES = new Set<ActionLifecycle["state"]>(["selected", "preparing"
 const CLEARABLE_STATES = new Set<ActionLifecycle["state"]>(["queued", "selected", "preparing"]);
 
 function isClearable(action: SessionAction): boolean {
-	if (CLEARABLE_STATES.has(action.lifecycle.state)) return true;
-	return action.lifecycle.state === "committing" && primaryRecords(action).every((record) => !record.started);
+	return CLEARABLE_STATES.has(action.lifecycle.state);
 }
 
 const LEGAL_TRANSITIONS: Readonly<Record<ActionLifecycle["state"], ReadonlySet<ActionLifecycle["state"]>>> = {
@@ -210,8 +209,8 @@ export class ActionStore<TAction extends SessionAction = SessionAction> {
 		return action;
 	}
 
-	remove(predicate: (action: TAction) => boolean): TAction[] {
-		const removed = this.clearableActions().filter(predicate);
+	remove(predicate: (action: TAction) => boolean, candidates = this.clearableActions()): TAction[] {
+		const removed = candidates.filter(predicate);
 		for (const action of removed) transitionSessionAction(action, { state: "cancelled" });
 		return removed;
 	}

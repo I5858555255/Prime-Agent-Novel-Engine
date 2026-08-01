@@ -1564,9 +1564,10 @@ export class AgentSession {
 	private _cancelSessionActions(
 		predicate: (action: QueuedSessionAction) => boolean,
 		error: Error,
+		candidates = this._actionStore.clearableActions(),
 	): QueuedSessionAction[] {
-		const clearable = this._actionStore.clearableActions().filter(predicate);
-		const previousStates = new Map(clearable.map((action) => [action.id, action.lifecycle.state]));
+		const matching = candidates.filter(predicate);
+		const previousStates = new Map(matching.map((action) => [action.id, action.lifecycle.state]));
 		const preparing = this._actionStore
 			.activeActions()
 			.filter(
@@ -1574,7 +1575,7 @@ export class AgentSession {
 					action.payload.kind === "turn" && action.lifecycle.state === "preparing",
 			);
 		const previousAnchor = preparing.at(-1);
-		const actions = this._actionStore.remove(predicate);
+		const actions = this._actionStore.remove(predicate, candidates);
 		const removed = new Set(actions);
 		if (previousAnchor && removed.has(previousAnchor)) {
 			for (const action of preparing) {
@@ -5648,10 +5649,16 @@ export class AgentSession {
 
 	clearQueuedUserMessagesMatching(predicate: (text: string) => boolean): { steering: string[]; followUp: string[] } {
 		const matching = this._actionStore
-			.clearableActions()
+			.ownedActions()
 			.filter(
 				(action) =>
-					action.payload.kind === "turn" && action.agentMessageId !== undefined && predicate(action.payload.text),
+					action.payload.kind === "turn" &&
+					action.agentMessageId !== undefined &&
+					predicate(action.payload.text) &&
+					(action.lifecycle.state === "queued" ||
+						action.lifecycle.state === "selected" ||
+						action.lifecycle.state === "preparing" ||
+						(action.lifecycle.state === "committing" && !primaryDeliveryRecord(action).started)),
 			);
 		if (matching.length === 0) return { steering: [], followUp: [] };
 		const removedTexts = (delivery: DeliveryPolicy) =>
@@ -5677,7 +5684,7 @@ export class AgentSession {
 					.filter((action) => action.payload.kind === "turn" && action.payload.acceptedAgentMessage === accepted)
 					.map((action) => action.id),
 			);
-			if (ids.size > 0) this._cancelSessionActions((action) => ids.has(action.id), error);
+			if (ids.size > 0) this._cancelSessionActions((action) => ids.has(action.id), error, matching);
 		}
 		if (
 			matching.some(
