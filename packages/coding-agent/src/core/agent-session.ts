@@ -240,7 +240,6 @@ import {
 	type SessionActionSnapshot,
 	type SessionCommandPayload,
 	type SessionTurnPayload,
-	shouldYieldLowerRun,
 	transitionSessionAction,
 	type WakePolicy,
 } from "./session-action-store.js";
@@ -1064,8 +1063,6 @@ export class AgentSession {
 	private _sessionActionCommitTail: Promise<void> = Promise.resolve();
 	private _sessionActionCommitOwner: symbol | undefined;
 	private readonly _sessionActionCommitContext = new AsyncLocalStorage<symbol>();
-	// Reentrant goal-context submission must enqueue instead of recursively dispatching.
-	private _pumpingSessionInput = false;
 	// Checkpoint and handoff waiters share lifecycle-edge notifications to avoid polling.
 	private readonly _sessionInputCheckpointWaiters = new Set<() => void>();
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
@@ -1915,42 +1912,16 @@ export class AgentSession {
 		}
 	}
 
-	private async _runOrQueueGoalContext(
-		kind: "continuation" | "budget_limit" | "objective_updated",
-		images?: ImageContent[],
-	): Promise<void> {
-		if (!this._goalState.objective) {
-			return;
-		}
+	private _runOrQueueGoalContext(kind: "continuation" | "objective_updated", images?: ImageContent[]): void {
+		if (!this._goalState.objective) return;
 		this._ensureGoalRuntimeActive();
 		const message = createGoalContextMessage(this._goalState, kind, images);
-		if (this._pumpingSessionInput) {
-			const normalized = normalizeMessageContent(message.content);
-			if (kind === "budget_limit") {
-				await this._queuePreparedPrompt("steer", normalized.text, normalized.images, {
-					message,
-					resumeIfIdle: true,
-				});
-			} else {
-				const action = this._createPreparedTurnAction("followUp", normalized.text, normalized.images, {
-					message,
-					resumeIfIdle: true,
-				});
-				this._admitSessionInput(action, { front: true, wake: false });
-			}
-			return;
-		}
-		if (this.isStreaming) {
-			if (kind === "budget_limit") this.agent.steer(message);
-			else this.agent.followUp(message);
-			return;
-		}
-
 		const normalized = normalizeMessageContent(message.content);
-		await this._promptInjectedMessage(normalized.text, message, {
+		const action = this._createPreparedTurnAction("followUp", normalized.text, normalized.images, {
+			message,
 			resumeIfIdle: true,
-			executionPolicy: this._turnExecutionPolicy("goalContext"),
 		});
+		this._admitSessionInput(action, { front: true, wake: false });
 	}
 
 	private async _handleGoalSlashCommand(text: string, images: ImageContent[] | undefined): Promise<boolean> {
@@ -2031,15 +2002,16 @@ export class AgentSession {
 	}
 
 	private get _steeringStopPending(): boolean {
-		const activity = this._runtimeActivity(true);
-		if (shouldYieldLowerRun(this._actionStore, activity)) return true;
-		return this._actionStore
-			.activeActions("next_turn_boundary")
-			.some(
-				(action) =>
-					action.payload.kind === "turn" &&
-					(action.lifecycle.state === "selected" || action.lifecycle.state === "preparing"),
-			);
+		return (
+			this._actionStore.queuedActions("next_turn_boundary").length > 0 ||
+			this._actionStore
+				.activeActions("next_turn_boundary")
+				.some(
+					(action) =>
+						action.payload.kind === "turn" &&
+						(action.lifecycle.state === "selected" || action.lifecycle.state === "preparing"),
+				)
+		);
 	}
 
 	private _shouldStopBeforeTurn(): boolean {
@@ -3837,7 +3809,6 @@ export class AgentSession {
 				if (outcome.completion) this._settleAgentMessage(agentMessageId, "completion", completionError);
 			}
 			this._cancelSessionActions(() => true, deliveryError);
-			this._notifySessionInputCheckpointChange();
 			this.agent.clearAllQueues();
 			this._extensionRunner.invalidate(
 				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
@@ -4239,9 +4210,6 @@ export class AgentSession {
 	}
 
 	private _canStartSessionActionImmediately(): boolean {
-		const hasBlockingOwnedWork = this._actionStore
-			.unfinishedActions()
-			.some((action) => action.lifecycle.state !== "queued" || action.wake !== "external_resume");
 		return (
 			!this.isStreaming &&
 			!this.isCompacting &&
@@ -4249,7 +4217,6 @@ export class AgentSession {
 			!this.isBashRunning &&
 			!this._sessionInputPumpSuspended &&
 			this._queuedWorkPauses.size === 0 &&
-			!hasBlockingOwnedWork &&
 			!this._disposed &&
 			!this._disposing
 		);
@@ -5118,7 +5085,7 @@ export class AgentSession {
 		return this._admitSessionInput(action).accepted;
 	}
 
-	private _runtimeActivity(mandatoryCheckpointsComplete = true): RuntimeActivity {
+	private _runtimeActivity(): RuntimeActivity {
 		return {
 			lowerAgentRun: this.isStreaming,
 			compaction: this.isCompacting,
@@ -5128,7 +5095,6 @@ export class AgentSession {
 			branchMutation: this._branchSummaryOperation !== undefined,
 			schedulerPauseCount: this._queuedWorkPauses.size + (this._sessionInputPumpSuspended ? 1 : 0),
 			disposing: this._disposed || this._disposing,
-			mandatoryCheckpointsComplete,
 		};
 	}
 
@@ -5155,7 +5121,6 @@ export class AgentSession {
 	}
 
 	private async _pumpSessionInputs(epoch: number): Promise<void> {
-		this._pumpingSessionInput = true;
 		let blocked = false;
 		try {
 			while (!this._disposed && !this._disposing && this._hasSelectableSessionInput()) {
@@ -5293,7 +5258,6 @@ export class AgentSession {
 				if (epoch !== this._sessionInputPumpEpoch || blocked) return;
 			}
 		} finally {
-			this._pumpingSessionInput = false;
 			if (!blocked && epoch === this._sessionInputPumpEpoch && this._hasSelectableSessionInput()) {
 				this._scheduleSessionInputPump();
 			}
@@ -6060,7 +6024,7 @@ export class AgentSession {
 		while (true) {
 			const pump = this._sessionInputPump;
 			await pump;
-			if (pump === this._sessionInputPump && !this._sessionInputPumpRequested && !this._pumpingSessionInput) return;
+			if (pump === this._sessionInputPump && !this._sessionInputPumpRequested) return;
 		}
 	}
 
@@ -6079,7 +6043,6 @@ export class AgentSession {
 			if (
 				pump === this._sessionInputPump &&
 				!this._sessionInputPumpRequested &&
-				!this._pumpingSessionInput &&
 				!this.agent.state.isStreaming &&
 				this.unfinishedActionCount === 0
 			) {
@@ -6948,7 +6911,7 @@ export class AgentSession {
 			return;
 		}
 		// An empty queue is not idle while the scheduler still owns active work.
-		if (this.unfinishedActionCount > 0 || this._pumpingSessionInput || this._sessionInputPumpRequested) {
+		if (this.unfinishedActionCount > 0 || this._sessionInputPumpRequested) {
 			this._scheduleSessionInputPump();
 			await this._sessionInputPump;
 			if (this._postCompactionContinuationScheduled) {
