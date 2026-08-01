@@ -8,7 +8,7 @@ type ActionKind = "turn" | "command";
 
 interface CommitFenceInternals {
 	_actionStore: ActionStore<SessionAction>;
-	_acquireSessionActionCommitFence(): Promise<{ release(): void }>;
+	_acquireSessionActionCommitFence(signal?: AbortSignal): Promise<{ release(): void }>;
 }
 
 function deliveredCount(harness: Harness, kind: ActionKind, text: string): number {
@@ -93,6 +93,40 @@ describe("AgentSession action commit-fence races", () => {
 		}
 		await Promise.resolve();
 		expect(settlementCount).toBe(1);
+	});
+
+	it("aborts a prompt waiting for the commit fence without leaking the fence", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const internals = harness.session as unknown as CommitFenceInternals;
+		const heldFence = await internals._acquireSessionActionCommitFence();
+		const controller = new AbortController();
+		const prompt = harness.session.prompt("blocked prompt", { signal: controller.signal });
+		let promptSettled = false;
+		let promptError: unknown;
+		void prompt.then(
+			() => {
+				promptSettled = true;
+			},
+			(error: unknown) => {
+				promptSettled = true;
+				promptError = error;
+			},
+		);
+
+		controller.abort();
+		await vi.waitFor(() => {
+			expect(promptSettled).toBe(true);
+			expect(promptError).toMatchObject({
+				name: "PromptAdmissionCancelledError",
+				message: "Prompt admission was cancelled.",
+			});
+		});
+
+		const nextFencePromise = internals._acquireSessionActionCommitFence();
+		heldFence.release();
+		const nextFence = await nextFencePromise;
+		nextFence.release();
 	});
 
 	it("does not restart a session command cancelled while waiting for the commit fence", async () => {

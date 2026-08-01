@@ -434,8 +434,16 @@ describe("AgentSession compaction characterization", () => {
 		await harness.session.prompt("first");
 		await harness.session.prompt("second");
 		const continueSpy = vi.spyOn(harness.session.agent, "continue").mockResolvedValue();
+		const compactionEnd = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type !== "compaction_end" || event.reason !== "threshold") return;
+				unsubscribe();
+				resolve();
+			});
+		});
 
 		await harness.session.prompt("x".repeat(56_000));
+		await compactionEnd;
 		await vi.advanceTimersByTimeAsync(100);
 
 		expect(harness.eventsOfType("compaction_end")).toEqual([

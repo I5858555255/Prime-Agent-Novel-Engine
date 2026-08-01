@@ -4364,7 +4364,12 @@ export class AgentSession {
 			this._sessionInputPumpSuspended = false;
 			this._assertSessionActionAdmissionAvailable();
 		}
-		const commitFence = this.isStreaming ? undefined : await this._acquireSessionActionCommitFence();
+		const commitFence = this.isStreaming
+			? undefined
+			: await this._acquireSessionActionCommitFence(options?.signal).catch((error: unknown) => {
+					throwIfPromptAdmissionCancelled(options?.signal);
+					throw error;
+				});
 		const reportPreflight = oncePreflight(options?.preflightResult);
 		const run = async () => {
 			try {
