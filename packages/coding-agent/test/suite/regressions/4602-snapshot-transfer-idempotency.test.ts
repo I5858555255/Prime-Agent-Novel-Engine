@@ -383,6 +383,7 @@ describe("ENG-4602 snapshot transfer containment", () => {
 				summary: {
 					...frames.begin.snapshot.summary,
 					activity: "working" as const,
+					isSessionActive: true,
 					attachedClients: 2,
 				},
 			},

@@ -67,7 +67,12 @@ describe("confirmDaemonSessionLoss", () => {
 		setTTY(false);
 		const probe: RunningDaemonProbe = {
 			reachable: true,
-			activeSessions: [session({ sessionActions: { queuedCount: 2, steering: [], followUps: [] } })],
+			activeSessions: [
+				session({
+					isSessionActive: true,
+					sessionActions: { queuedCount: 2, steering: [], followUps: [] },
+				}),
+			],
 		};
 		expect(await confirmDaemonSessionLoss(probe, { force: false, copy: COPY })).toBe(false);
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("hint"));
