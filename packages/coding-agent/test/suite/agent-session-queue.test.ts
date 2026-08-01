@@ -24,6 +24,8 @@ import {
 	saveHarnessState,
 } from "../../src/core/refinement/index.js";
 import { parseSessionSlashCommand } from "../../src/core/slash-commands.js";
+import { createAgentConnectionState } from "../../src/modes/agent-connection/snapshot.js";
+import { waitForHeadlessCompletion } from "../../src/modes/headless-completion.js";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
 import { createDeferred, createWaitingHarness, gatedHook, withStreaming } from "./scheduling.js";
 
@@ -1350,6 +1352,7 @@ describe("AgentSession queue characterization", () => {
 		// The pump moved the prompt into _activeSessionInput (preparing); it must
 		// still count as pending and appear in previews and snapshots.
 		expect(harness.session.pendingMessageCount).toBe(1);
+		expect(harness.session.hasSessionInputWork).toBe(true);
 		expect(harness.session.getFollowUpMessagePreviews()).toEqual(["owned prompt"]);
 		expect(harness.session.getFollowUpQueueSnapshots().map((snapshot) => snapshot.text)).toEqual(["owned prompt"]);
 		expect(queueUpdates.at(-1)).toEqual({ steering: [], followUp: ["owned prompt"] });
@@ -1357,6 +1360,7 @@ describe("AgentSession queue characterization", () => {
 		hook.release();
 		await harness.session.waitForIdle();
 		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.hasSessionInputWork).toBe(false);
 		expect(queueUpdates.at(-1)).toEqual({ steering: [], followUp: [] });
 		expect(getUserTexts(harness)).toEqual(["owned prompt"]);
 	});
@@ -1794,6 +1798,81 @@ describe("AgentSession queue characterization", () => {
 		).toBe(false);
 		const followUpEntryId = harness.sessionManager.appendCustomMessageEntry("post-failure", "still writable", false);
 		expect(harness.sessionManager.getBranch().at(-1)?.id).toBe(followUpEntryId);
+	});
+
+	it("does not report an executing command as queued input", async () => {
+		const compactionStarted = createDeferred();
+		const releaseCompaction = createDeferred();
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async () => {
+						compactionStarted.resolve();
+						await releaseCompaction.promise;
+						return { cancel: true };
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+		const queueUpdates: { steering: readonly string[]; followUp: readonly string[] }[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "queue_update") {
+				queueUpdates.push({ steering: [...event.steering], followUp: [...event.followUp] });
+			}
+		});
+
+		const command = harness.session.prompt("/compact", { streamingBehavior: "steer" });
+		await compactionStarted.promise;
+
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.hasSessionInputWork).toBe(true);
+		expect(harness.session.getSteeringMessagePreviews()).toEqual([]);
+		expect(queueUpdates.at(-1)).toEqual({ steering: [], followUp: [] });
+		expect(
+			createAgentConnectionState({ session: harness.session } as Parameters<typeof createAgentConnectionState>[0])
+				.hasActiveSessionInput,
+		).toBe(true);
+
+		releaseCompaction.resolve();
+		await command;
+		expect(harness.session.hasSessionInputWork).toBe(false);
+	});
+
+	it("waits for an executing session command before headless completion", async () => {
+		const compactionStarted = createDeferred();
+		const releaseCompaction = createDeferred();
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async () => {
+						compactionStarted.resolve();
+						await releaseCompaction.promise;
+						return { cancel: true };
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+		const command = harness.session.prompt("/compact", { streamingBehavior: "steer" });
+		await compactionStarted.promise;
+
+		let settled = false;
+		const completion = waitForHeadlessCompletion(harness.session).then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		releaseCompaction.resolve();
+		await Promise.all([command, completion]);
+		expect(settled).toBe(true);
 	});
 
 	it("does not record a benign compaction skip as a command failure", async () => {
