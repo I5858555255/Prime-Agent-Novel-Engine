@@ -590,6 +590,21 @@ interface TurnExecutionPolicy {
 	completionIncludesRetryChain: boolean;
 }
 
+function turnExecutionPoliciesEqual(left: TurnExecutionPolicy, right: TurnExecutionPolicy): boolean {
+	return (
+		left.preparation.initialRefineBarrier === right.preparation.initialRefineBarrier &&
+		left.preparation.flushPendingBashBeforeValidation === right.preparation.flushPendingBashBeforeValidation &&
+		left.preparation.validateModelAndAuth === right.preparation.validateModelAndAuth &&
+		left.preparation.awaitPendingModelSelection === right.preparation.awaitPendingModelSelection &&
+		left.preparation.preTurnCompaction === right.preparation.preTurnCompaction &&
+		left.preparation.finalRefineBarrier === right.preparation.finalRefineBarrier &&
+		left.runBeforeAgentStart === right.runBeforeAgentStart &&
+		left.nextTurnContextTiming === right.nextTurnContextTiming &&
+		left.preserveEmptyExtensionPrompt === right.preserveEmptyExtensionPrompt &&
+		left.completionIncludesRetryChain === right.completionIncludesRetryChain
+	);
+}
+
 interface PreparedTurnPayload extends SessionTurnPayload {
 	images?: ImageContent[];
 	content?: (TextContent | ImageContent)[];
@@ -5084,7 +5099,13 @@ export class AgentSession {
 						const actions: QueuedSessionAction[] = [first];
 						while (!preselected && mode === "all") {
 							const next = this._actionStore.queuedActions(first.delivery)[0];
-							if (!next || next.payload.kind !== "turn") break;
+							if (
+								!next ||
+								next.payload.kind !== "turn" ||
+								!turnExecutionPoliciesEqual(first.payload.executionPolicy, next.payload.executionPolicy)
+							) {
+								break;
+							}
 							this._actionStore.selectFirst();
 							actions.push(next);
 						}

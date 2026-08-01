@@ -1864,6 +1864,49 @@ describe("AgentSession queue characterization", () => {
 		expect(compactionEndErrorSeverity).toBe("warning");
 	});
 
+	it("splits all-mode batches when execution policies differ", async () => {
+		const beforeAgentStartPrompts: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async (event) => {
+						beforeAgentStartPrompts.push(event.prompt);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.session.setFollowUpMode("all");
+		harness.setResponses([fauxAssistantMessage("custom done"), fauxAssistantMessage("follow-up done")]);
+		const prompt = vi.spyOn(harness.session.agent, "prompt");
+		const admitted = createDeferred<void>();
+		let pause: { release(): void } | undefined;
+		const internals = harness.session as unknown as {
+			_canStartSessionActionImmediately(): boolean;
+			_scheduleSessionInputPump(): void;
+		};
+		const immediateEligibilitySpy = vi.spyOn(internals, "_canStartSessionActionImmediately").mockReturnValue(false);
+		const scheduleSpy = vi.spyOn(internals, "_scheduleSessionInputPump").mockImplementation(() => {
+			pause = harness.session.acquireQueuedWorkPause();
+			admitted.resolve();
+		});
+
+		const customTurn = harness.session.sendCustomMessage(
+			{ customType: "trigger", content: "trigger", display: false },
+			{ triggerTurn: true },
+		);
+		await admitted.promise;
+		immediateEligibilitySpy.mockRestore();
+		scheduleSpy.mockRestore();
+		await harness.session.followUp("ordinary follow-up");
+		pause?.release();
+		await customTurn;
+		await harness.session.waitForIdle();
+
+		expect(prompt).toHaveBeenCalledTimes(2);
+		expect(beforeAgentStartPrompts).toEqual(["ordinary follow-up"]);
+	});
+
 	it("serializes concurrent trigger-turn custom messages", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
