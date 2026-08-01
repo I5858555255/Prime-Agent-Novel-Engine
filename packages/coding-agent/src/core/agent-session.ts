@@ -5251,8 +5251,9 @@ export class AgentSession {
 							}
 						}
 						if (undelivered.length > 0) this._emitQueueUpdate();
-						blocked = true;
-						return;
+						blocked = epoch !== this._sessionInputPumpEpoch || this._isBusyForSessionInput("pump");
+						if (blocked) return;
+						continue;
 					}
 					const terminalError = this._asError(error);
 					for (const action of actions) {

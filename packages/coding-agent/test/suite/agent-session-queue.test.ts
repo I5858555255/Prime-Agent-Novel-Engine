@@ -1511,9 +1511,7 @@ describe("AgentSession queue characterization", () => {
 			fence.release();
 		}
 		await harness.session.waitForSessionInputIdle();
-		expect(harness.session.getFollowUpMessages()).toEqual(["survive re-selection"]);
-		expect(harness.session.resumeQueuedWork()).toBe(true);
-
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
 		expect((await removedOutcome).error).toEqual(
 			expect.objectContaining({ message: "Queued agent message was cleared before delivery." }),
 		);
