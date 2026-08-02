@@ -89,9 +89,12 @@ import type { AuthSourceToken } from "./auth-storage.js";
 import {
 	type AgentAutonomousConfig,
 	type AgentAutonomousStatus,
+	type AutonomousEvent,
+	type AutonomousLimitReason,
 	type AutonomousRuntimeState,
 	addAutonomousContinuation,
 	addAutonomousUsage,
+	autonomousLimitUsage,
 	autonomousStatus,
 	createAutonomousRuntimeState,
 	nextAutonomousContinuation,
@@ -337,6 +340,7 @@ export type AgentSessionEvent =
 			/** Echo of the caller-supplied run id, so clients correlate runs by identity. */
 			runId?: string;
 	  }
+	| AutonomousEvent
 	| { type: "refine_complete"; result: RefinementResult }
 	| { type: "refine_failed"; error: string };
 
@@ -1138,6 +1142,8 @@ export class AgentSession {
 	private _scheduledPostCompactionContinuationMessages: AgentMessage[] = [];
 	private _queuedAutonomousThresholdContinuations = new WeakMap<AssistantMessage, AgentMessage>();
 	private _queuedAutonomousContinuationSnapshots = new WeakMap<AgentMessage, AutonomousRuntimeSnapshot>();
+	/** Events for a queued continuation, held until threshold compaction commits or drops it. */
+	private _queuedAutonomousContinuationEvents = new WeakMap<AgentMessage, AutonomousEvent[]>();
 	private _pendingThresholdCompactionAutonomousMessages: AgentMessage[] = [];
 	private _pendingAutoRefineReview: { reason: AutoRefineReason; review: AutoRefineReview } | undefined;
 	private _autoRefineBranchVersion = 0;
@@ -1728,8 +1734,10 @@ export class AgentSession {
 			return false;
 		}
 		if (command.kind === "on") {
+			this._autonomousLimitReported = undefined;
 			setAutonomousEnabled(this._autonomousState, true, { cwd: this._cwd });
 		} else if (command.kind === "off") {
+			this._autonomousLimitReported = undefined;
 			setAutonomousEnabled(this._autonomousState, false);
 			this._clearQueuedAutonomousContinuations();
 		}
@@ -2482,11 +2490,15 @@ export class AgentSession {
 		}
 		const snapshot = this._snapshotAutonomousRuntimeState();
 		const arrivalEpoch = this._sessionInputArrivalEpoch;
+		const autonomousEvents = this._bufferAutonomousEvents();
 		const autonomousMessage = await nextAutonomousContinuation(this._autonomousState, message, {
 			cwd: this._cwd,
 			signal: this.agent.signal,
+			onEvent: autonomousEvents.onEvent,
 		});
 		if (!autonomousMessage) {
+			// No continuation, but no rollback either: the decision stands.
+			autonomousEvents.flush();
 			return undefined;
 		}
 		if (this._sessionInputArrivalEpoch !== arrivalEpoch) {
@@ -2495,6 +2507,9 @@ export class AgentSession {
 		}
 		this._queuedAutonomousThresholdContinuations.set(message, autonomousMessage);
 		this._queuedAutonomousContinuationSnapshots.set(autonomousMessage, snapshot);
+		// A skipped or failed threshold compaction can still roll this decision back,
+		// so hold its events until the continuation is no longer rollbackable.
+		this._queuedAutonomousContinuationEvents.set(autonomousMessage, autonomousEvents.take());
 		this._postCompactionContinuationMessages.push(autonomousMessage);
 		this._pendingThresholdCompactionAutonomousMessages.push(autonomousMessage);
 		const text =
@@ -2540,6 +2555,7 @@ export class AgentSession {
 		}
 		for (const queuedMessage of queuedMessages) {
 			this._queuedAutonomousContinuationSnapshots.delete(queuedMessage);
+			this._queuedAutonomousContinuationEvents.delete(queuedMessage);
 		}
 		this._pendingThresholdCompactionAutonomousMessages = this._pendingThresholdCompactionAutonomousMessages.filter(
 			(message) => !queuedMessageSet.has(message),
@@ -2956,14 +2972,17 @@ export class AgentSession {
 			return [];
 		}
 		const autonomousSnapshot = this._snapshotAutonomousRuntimeState();
+		const autonomousEvents = this._bufferAutonomousEvents();
 		const autonomousMessage = await nextAutonomousContinuation(this._autonomousState, context.message, {
 			cwd: this._cwd,
 			signal,
+			onEvent: autonomousEvents.onEvent,
 		});
 		if (autonomousMessage && this._sessionInputArrivalEpoch !== arrivalEpoch) {
 			this._restoreAutonomousRuntimeSnapshot(autonomousSnapshot);
 			return [];
 		}
+		autonomousEvents.flush();
 		return autonomousMessage ? [autonomousMessage] : [];
 	}
 
@@ -3874,10 +3893,27 @@ export class AgentSession {
 
 	recordHostAutonomousContinuation(): void {
 		addAutonomousContinuation(this._autonomousState);
+		// Host-driven continuations suppress in-session evaluation, so emit here or
+		// headless consumers never see them.
+		this._emitAutonomousEvent({
+			type: "autonomous_continuation",
+			reason: "gate_failed",
+			continuationsUsed: this._autonomousState.continuationsUsed,
+			maxContinuations: this._autonomousState.limits.maxContinuations,
+		});
+	}
+
+	/** Host-driven loops evaluate limits themselves; this reports that stop to clients. */
+	reportAutonomousLimitReached(reason: AutonomousLimitReason): void {
+		const { used, limit } = autonomousLimitUsage(this._autonomousState, reason);
+		this._emitAutonomousEvent({ type: "autonomous_limit_reached", reason, used, limit });
 	}
 
 	async refreshAutonomousGates(): Promise<void> {
-		await refreshAutonomousQualityGates(this._autonomousState, { cwd: this._cwd });
+		await refreshAutonomousQualityGates(this._autonomousState, {
+			cwd: this._cwd,
+			onEvent: (event) => this._emitAutonomousEvent(event),
+		});
 	}
 
 	private async _runWithAutonomousContinuationSuppressed<T>(fn: () => Promise<T>): Promise<T> {
@@ -3887,6 +3923,54 @@ export class AgentSession {
 		} finally {
 			this._autonomousContinuationSuppressionDepth--;
 		}
+	}
+
+	/** Latches the reported limit so the in-session and host paths cannot both report one stop. */
+	private _autonomousLimitReported: AutonomousLimitReason | undefined;
+
+	/**
+	 * Single funnel for autonomous events. A run stops on a limit exactly once, but
+	 * both the in-session decision and the host loop observe that stop, so the
+	 * second report of the same limit is dropped.
+	 */
+	private _emitAutonomousEvent(event: AutonomousEvent): void {
+		if (event.type === "autonomous_limit_reached") {
+			if (this._autonomousLimitReported === event.reason) {
+				return;
+			}
+			this._autonomousLimitReported = event.reason;
+		}
+		this._emit(event);
+	}
+
+	/**
+	 * Buffers autonomous events so a continuation that is rolled back (late user
+	 * input wins the arrival-epoch race) is never reported to clients. Flushing is
+	 * the caller's job, on the paths where the decision actually stands.
+	 */
+	private _bufferAutonomousEvents(): {
+		onEvent: (event: AutonomousEvent) => void;
+		flush: () => void;
+		take: () => AutonomousEvent[];
+	} {
+		const buffered: AutonomousEvent[] = [];
+		return {
+			onEvent: (event) => buffered.push(event),
+			flush: () => {
+				for (const event of buffered.splice(0)) {
+					this._emitAutonomousEvent(event);
+				}
+			},
+			take: () => buffered.splice(0),
+		};
+	}
+
+	/** Flushes events parked with a provisional continuation once it is no longer rollbackable. */
+	private _flushQueuedAutonomousContinuationEvents(message: AgentMessage): void {
+		for (const event of this._queuedAutonomousContinuationEvents.get(message) ?? []) {
+			this._emitAutonomousEvent(event);
+		}
+		this._queuedAutonomousContinuationEvents.delete(message);
 	}
 
 	private _markAutonomousContinuationSuppressed(message: AgentMessage): void {
@@ -5254,6 +5338,11 @@ export class AgentSession {
 				dispatchObserver.stop();
 				endHandoffSection();
 			};
+			// Handoff commits the decision: flush before the turn so continuation and
+			// gate frames precede the turn they caused, not the one after it.
+			for (const prompt of prompts) {
+				this._flushQueuedAutonomousContinuationEvents(prompt.message);
+			}
 			const promptPromise = this.agent.prompt(messages);
 			releaseAdmission();
 			void Promise.race([promptPromise.catch(() => undefined), dispatchObserver.observed]).then(
@@ -6745,6 +6834,9 @@ export class AgentSession {
 
 		this._postCompactionContinuationScheduled = false;
 		try {
+			for (const message of continuationMessages) {
+				this._flushQueuedAutonomousContinuationEvents(message);
+			}
 			await this.agent.continue();
 			this._forgetConsumedPostCompactionContinuations(continuationMessages);
 		} catch (error) {
