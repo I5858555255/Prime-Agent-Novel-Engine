@@ -2986,7 +2986,8 @@ export class DaemonSupervisor {
 
 	private findSummaryInWorker(worker: ResidentWorker, selector: string): SessionSummary | undefined {
 		const pathSelector = looksLikeSessionPath(selector) ? canonicalSessionPath(selector) : undefined;
-		return [...worker.summaries.values()].find((summary) => {
+		const summaries = [...worker.summaries.values()];
+		const exact = summaries.find((summary) => {
 			const activeSessionId = summary.activeSessionId ?? summary.id;
 			return (
 				activeSessionId === selector ||
@@ -2995,6 +2996,13 @@ export class DaemonSupervisor {
 				(pathSelector !== undefined &&
 					summary.sessionFile !== undefined &&
 					canonicalSessionPath(summary.sessionFile) === pathSelector)
+			);
+		});
+		if (exact) return exact;
+		return summaries.find((summary) => {
+			const activeSessionId = summary.activeSessionId ?? summary.id;
+			return (
+				matchesSessionIdSuffix(activeSessionId, selector) || matchesSessionIdSuffix(summary.sessionId, selector)
 			);
 		});
 	}
