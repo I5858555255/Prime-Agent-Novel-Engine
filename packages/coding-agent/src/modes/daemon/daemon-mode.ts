@@ -2380,7 +2380,7 @@ export class AgentDaemon {
 						rlmDepth: existsSync(entry.sessionFile)
 							? resolveSessionRlmDepth(sessionManager.getHeader() ?? {}, entry.sessionFile)
 							: undefined,
-						rlmMaxDepth: entry.rlmMaxDepth ?? 1,
+						rlmMaxDepth: entry.rlmMaxDepth,
 						rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
 					},
 					runtimeMetadata: {
