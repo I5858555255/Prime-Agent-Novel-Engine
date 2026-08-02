@@ -4371,8 +4371,8 @@ export class AgentSession {
 		}
 		if (this._refineInFlight) {
 			await this._waitForRefineIdle();
-			this._applyPreparedSystemPrompt(preparation, true);
 		}
+		this._applyPreparedSystemPrompt(preparation, true);
 
 		const shouldQueueAtHandoff = options?.queueIfBusy === true && this._isBusyForSessionInput("handoff");
 		if (shouldQueueAtHandoff) {
@@ -4647,8 +4647,8 @@ export class AgentSession {
 		}
 		if (this._refineInFlight) {
 			await this._waitForRefineIdle();
-			this._applyPreparedSystemPrompt(preparation, false);
 		}
+		this._applyPreparedSystemPrompt(preparation, false);
 
 		if (acceptedAgentMessagePrompt?.cleared) {
 			reportPreflight(false);
@@ -5288,7 +5288,7 @@ export class AgentSession {
 		releaseAdmission: () => void,
 	): Promise<void> {
 		let nextTurnMessages: CustomMessage[] = [];
-		const messages = await this._prepareForCommit(
+		const preparation = await this._prepareForCommit(
 			{
 				initialRefineBarrier: "skip",
 				flushPendingBashBeforeValidation: false,
@@ -5330,40 +5330,35 @@ export class AgentSession {
 						throw new DeferredSessionInputError("Session input paused before handoff");
 					}
 					if (prompts.length === 0) return undefined;
-					const preparedMessages: AgentMessage[] = [];
-					nextTurnMessages = this._pendingNextTurnMessages;
-					this._pendingNextTurnMessages = [];
-					preparedMessages.push(...nextTurnMessages);
-					for (const prompt of prompts) {
-						preparedMessages.push(...prompt.prefixMessages, prompt.message);
-						if (prompt.suppressAutonomousContinuation) {
-							this._markAutonomousContinuationSuppressed(prompt.message);
-						}
-					}
-					this._appendBeforeAgentStartMessages(preparedMessages, preparation?.result);
 					this._applyPreparedSystemPrompt(preparation, true);
-					return preparedMessages;
+					return preparation;
 				},
 			},
 		);
-		if (!messages) return;
+		if (!preparation) return;
 		let dispatch: PromptDispatchFence | undefined;
 		try {
-			if (this._refineInFlight) {
-				const preparedPrompts = [...prompts];
-				await this._waitForRefineIdle();
-				if (
-					prompts.length !== preparedPrompts.length ||
-					prompts.some((prompt, index) => prompt !== preparedPrompts[index])
-				) {
-					throw new DeferredSessionInputError("Session input changed during refine handoff");
-				}
-				this._applyPreparedSystemPrompt(prompts[0]?.preparation, true);
+			if (this._refineInFlight) await this._waitForRefineIdle();
+			if (this._isSessionInputHandoffDeferred(epoch)) {
+				throw new DeferredSessionInputError("Session input paused before handoff");
 			}
+			if (prompts.length === 0) return;
 			if (this.isStreaming) {
 				// agent.prompt() would reject with its already-processing error; defer instead.
 				throw new DeferredSessionInputError("Agent became active before session input handoff");
 			}
+			this._applyPreparedSystemPrompt(preparation, true);
+			const messages: AgentMessage[] = [];
+			nextTurnMessages = this._pendingNextTurnMessages;
+			this._pendingNextTurnMessages = [];
+			messages.push(...nextTurnMessages);
+			for (const prompt of prompts) {
+				messages.push(...prompt.prefixMessages, prompt.message);
+				if (prompt.suppressAutonomousContinuation) {
+					this._markAutonomousContinuationSuppressed(prompt.message);
+				}
+			}
+			this._appendBeforeAgentStartMessages(messages, preparation.result);
 			if (this._activeSessionInput?.kind === "prompt") {
 				this._activeSessionInput.phase = "handedOff";
 				this._notifySessionInputCheckpointChange();
