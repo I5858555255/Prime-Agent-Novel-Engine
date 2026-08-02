@@ -2843,6 +2843,7 @@ export class DaemonSupervisor {
 		}
 		if (!result) {
 			const snapshotLoadKey = `${activeSessionId}:${client.capabilities.has("chunked_snapshot") ? "chunked" : "full"}`;
+			let retryInvalidatedLoad = true;
 			while (!result) {
 				let loading = match.worker.snapshotLoads.get(snapshotLoadKey);
 				if (!loading) {
@@ -2864,7 +2865,7 @@ export class DaemonSupervisor {
 						});
 						const loaded = attachResultFromResponse(response);
 						if (match.worker.snapshotLoads.get(snapshotLoadKey) !== loading) {
-							throw new SnapshotLoadInvalidatedError();
+							throw new SnapshotLoadInvalidatedError("Session snapshot changed during attach");
 						}
 						return this.cacheLoadedSnapshot(match.worker, activeSessionId, loaded, observedSnapshotId);
 					})();
@@ -2903,6 +2904,10 @@ export class DaemonSupervisor {
 					if (!(error instanceof SnapshotLoadInvalidatedError)) {
 						throw error;
 					}
+					if (!retryInvalidatedLoad) {
+						throw error;
+					}
+					retryInvalidatedLoad = false;
 				}
 			}
 		}
