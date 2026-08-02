@@ -2861,10 +2861,35 @@ export class DaemonSupervisor {
 					});
 					const loaded = attachResultFromResponse(response);
 					return this.cacheLoadedSnapshot(match.worker, activeSessionId, loaded, observedSnapshotId);
-				})().finally(() => {
-					match.worker.snapshotLoads.delete(snapshotLoadKey);
-				});
+				})();
 				match.worker.snapshotLoads.set(snapshotLoadKey, loading);
+				void loading.then(
+					async (loaded) => {
+						try {
+							const snapshotId = loaded.snapshotStream?.id;
+							const transcript = snapshotId
+								? this.snapshotGeneration(match.worker, loaded.activeSessionId, snapshotId)?.transcript
+								: undefined;
+							if (transcript && !transcript.complete) {
+								let chunkIndex = 0;
+								while (await transcript.waitForChunk(chunkIndex)) {
+									chunkIndex++;
+								}
+							}
+						} catch {
+							// Failed transfers must allow a fresh snapshot request.
+						} finally {
+							if (match.worker.snapshotLoads.get(snapshotLoadKey) === loading) {
+								match.worker.snapshotLoads.delete(snapshotLoadKey);
+							}
+						}
+					},
+					() => {
+						if (match.worker.snapshotLoads.get(snapshotLoadKey) === loading) {
+							match.worker.snapshotLoads.delete(snapshotLoadKey);
+						}
+					},
+				);
 			}
 			result = await loading;
 		}
@@ -3641,6 +3666,8 @@ export class DaemonSupervisor {
 	}
 
 	private invalidateWorkerSnapshot(worker: ResidentWorker, activeSessionId: string, transcriptChanged = true): void {
+		worker.snapshotLoads.delete(`${activeSessionId}:chunked`);
+		worker.snapshotLoads.delete(`${activeSessionId}:full`);
 		worker.snapshotCache.delete(activeSessionId);
 		if (!transcriptChanged) {
 			return;
