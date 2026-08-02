@@ -2683,6 +2683,35 @@ describe("AgentSession queue characterization", () => {
 		withStreaming(harness, false);
 	});
 
+	it("waitForIdle observes event-queue work chained while settling", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const initialEvent = createDeferred();
+		const chainedOperation = createDeferred();
+		const internals = harness.session as unknown as { _agentEventQueue: Promise<void> };
+		let eventQueue: Promise<void>;
+		eventQueue = initialEvent.promise.then(() => {
+			internals._agentEventQueue = eventQueue.then(() => chainedOperation.promise);
+		});
+		internals._agentEventQueue = eventQueue;
+		let idle = false;
+		const waiting = harness.session.waitForIdle().then(() => {
+			idle = true;
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		initialEvent.resolve();
+		await eventQueue;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		try {
+			expect(idle).toBe(false);
+		} finally {
+			chainedOperation.resolve();
+		}
+		await waiting;
+		expect(idle).toBe(true);
+	});
+
 	it("waitForIdle observes a run that starts at its final idle boundary", async () => {
 		const responseGate = createDeferred();
 		const waitForResponseStart = createDeferred();

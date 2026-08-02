@@ -6120,9 +6120,11 @@ export class AgentSession {
 			const pump = this._sessionInputPump;
 			await pump;
 			await this.agent.waitForIdle();
-			await this._agentEventQueue;
+			const agentEventQueue = this._agentEventQueue;
+			await agentEventQueue;
 			if (
 				pump === this._sessionInputPump &&
+				agentEventQueue === this._agentEventQueue &&
 				!this._sessionInputPumpRequested &&
 				!this.agent.state.isStreaming &&
 				this.unfinishedActionCount === 0
@@ -6158,18 +6160,6 @@ export class AgentSession {
 
 	restorePendingNextTurnMessages(messages: readonly CustomMessage[]): void {
 		this._pendingNextTurnMessages.push(...messages.map((message) => cloneCustomMessage(message)));
-	}
-
-	hasQueuedFollowUp(queueKey: string): boolean {
-		return this._actionStore
-			.unfinishedActions("when_run_idle")
-			.some(
-				(action) =>
-					action.queueKey === queueKey &&
-					(action.lifecycle.state === "queued" ||
-						action.lifecycle.state === "selected" ||
-						action.lifecycle.state === "preparing"),
-			);
 	}
 
 	removeQueuedFollowUp(queueKey: string): boolean {
