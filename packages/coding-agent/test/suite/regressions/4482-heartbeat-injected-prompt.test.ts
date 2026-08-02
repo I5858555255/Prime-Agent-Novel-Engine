@@ -263,6 +263,85 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 		).toBe(true);
 	});
 
+	it("orders a heartbeat after an earlier prompt with a slow input handler", async () => {
+		let markInputReached = () => {};
+		const inputReached = new Promise<void>((resolve) => {
+			markInputReached = resolve;
+		});
+		let releaseInput = () => {};
+		const inputGate = new Promise<void>((resolve) => {
+			releaseInput = resolve;
+		});
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("input", async (event) => {
+						if (event.text !== "ordinary first") return;
+						markInputReached();
+						await inputGate;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const providerOrder: string[] = [];
+		harness.setResponses([
+			(context) => {
+				providerOrder.push(getMessageText(context.messages.at(-1)));
+				return fauxAssistantMessage("first done");
+			},
+			(context) => {
+				providerOrder.push(getMessageText(context.messages.at(-1)));
+				return fauxAssistantMessage("heartbeat done");
+			},
+		]);
+
+		const ordinary = harness.session.prompt("ordinary first");
+		await inputReached;
+		const heartbeat = harness.session.promptHeartbeat(createHeartbeat());
+		releaseInput();
+		await Promise.all([ordinary, heartbeat]);
+		await harness.session.waitForIdle();
+
+		expect(providerOrder).toEqual(["ordinary first", createHeartbeat().prompt]);
+	});
+
+	it("waits for a queued-work pause before admitting a streaming heartbeat", async () => {
+		let markStarted = () => {};
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		let releaseTurn = () => {};
+		const turnGate = new Promise<void>((resolve) => {
+			releaseTurn = resolve;
+		});
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			async () => {
+				markStarted();
+				await turnGate;
+				return fauxAssistantMessage("original done");
+			},
+			fauxAssistantMessage("heartbeat done"),
+		]);
+
+		const originalTurn = harness.session.prompt("start");
+		await started;
+		const pause = harness.session.acquireQueuedWorkPause();
+		const heartbeat = harness.session.promptHeartbeat(createHeartbeat(), { streamingBehavior: "followUp" });
+		await Promise.resolve();
+		expect(harness.session.getSessionActionRecoverySnapshot().actions).toHaveLength(0);
+
+		pause.release();
+		await heartbeat;
+		expect(harness.session.getSessionActionRecoverySnapshot().actions).toHaveLength(1);
+		releaseTurn();
+		await originalTurn;
+		await harness.session.waitForIdle();
+		expect(harness.session.getSessionActionRecoverySnapshot().actions).toHaveLength(0);
+	});
+
 	it("preserves next-turn context order across queued heartbeat admission", async () => {
 		let markStarted = () => {};
 		const started = new Promise<void>((resolve) => {

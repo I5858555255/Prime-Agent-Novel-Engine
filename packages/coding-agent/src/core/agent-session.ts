@@ -4303,10 +4303,11 @@ export class AgentSession {
 		message: CustomMessage,
 		options?: InternalPromptOptions & { executionPolicy?: TurnExecutionPolicy },
 	): Promise<void> {
-		if (!this.isStreaming) {
-			if (options?.resumeIfIdle) this._sessionInputPumpSuspended = false;
-			this._assertSessionActionAdmissionAvailable();
-		}
+		if (!this.isStreaming && options?.resumeIfIdle) this._sessionInputPumpSuspended = false;
+		const admissionFence = await this._acquireDirectTurnAdmissionFence(options?.signal).catch((error: unknown) => {
+			throwIfPromptAdmissionCancelled(options?.signal);
+			throw error;
+		});
 		const reportPreflight = oncePreflight(options?.preflightResult);
 		try {
 			throwIfPromptAdmissionCancelled(options?.signal);
@@ -4339,6 +4340,7 @@ export class AgentSession {
 				queueVisible: visibleQueued,
 			});
 			const result = this._admitSessionInput(action, { immediatelyEligible: !visibleQueued });
+			admissionFence.release();
 			if (!result.accepted || !result.ticket) {
 				if (prefixMessages) this._pendingNextTurnMessages.unshift(...prefixMessages);
 				reportPreflight(false, false);
@@ -4361,6 +4363,8 @@ export class AgentSession {
 		} catch (error) {
 			reportPreflight(false);
 			throw error;
+		} finally {
+			admissionFence.release();
 		}
 	}
 
@@ -4858,7 +4862,7 @@ export class AgentSession {
 	}
 
 	private _turnExecutionPolicy(
-		kind: "queued" | "directPrompt" | "injected" | "customTrigger" | "goalContext",
+		kind: "queued" | "directPrompt" | "injected" | "customTrigger",
 		options: { returnAfterAccepted?: boolean; skipPrePromptWork?: boolean } = {},
 	): TurnExecutionPolicy {
 		if (kind === "queued") {
@@ -4911,17 +4915,17 @@ export class AgentSession {
 		}
 		return {
 			preparation: {
-				initialRefineBarrier: kind === "goalContext" ? "skip" : "always",
+				initialRefineBarrier: "always",
 				flushPendingBashBeforeValidation: false,
-				validateModelAndAuth: kind === "goalContext",
+				validateModelAndAuth: false,
 				awaitPendingModelSelection: false,
 				preTurnCompaction: "skip",
-				finalRefineBarrier: kind === "goalContext" ? "always" : "skip",
+				finalRefineBarrier: "skip",
 			},
 			runBeforeAgentStart: false,
 			nextTurnContextTiming: "skip",
 			preserveEmptyExtensionPrompt: false,
-			completionIncludesRetryChain: kind === "goalContext",
+			completionIncludesRetryChain: false,
 		};
 	}
 
@@ -5634,18 +5638,23 @@ export class AgentSession {
 				});
 			}
 		} else if (options?.triggerTurn) {
-			this._assertSessionActionAdmissionAvailable();
-			const normalized = normalizeMessageContent(message.content);
-			const immediatelyEligible = this._canStartSessionActionImmediately();
-			const action = this._createPreparedTurnAction("followUp", normalized.text, normalized.images, {
-				message: appMessage,
-				resumeIfIdle: true,
-				executionPolicy: this._turnExecutionPolicy("customTrigger"),
-				queueVisible: false,
-			});
-			const result = this._admitSessionInput(action, { immediatelyEligible });
-			if (!result.ticket) return;
-			await result.ticket.completed;
+			const admissionFence = await this._acquireDirectTurnAdmissionFence();
+			try {
+				const normalized = normalizeMessageContent(message.content);
+				const immediatelyEligible = this._canStartSessionActionImmediately();
+				const action = this._createPreparedTurnAction("followUp", normalized.text, normalized.images, {
+					message: appMessage,
+					resumeIfIdle: true,
+					executionPolicy: this._turnExecutionPolicy("customTrigger"),
+					queueVisible: false,
+				});
+				const result = this._admitSessionInput(action, { immediatelyEligible });
+				admissionFence.release();
+				if (!result.ticket) return;
+				await result.ticket.completed;
+			} finally {
+				admissionFence.release();
+			}
 		} else {
 			this.agent.state.messages.push(appMessage);
 			this.sessionManager.appendCustomMessageEntry(
@@ -6003,6 +6012,38 @@ export class AgentSession {
 				this._scheduleSessionInputPump();
 			},
 		};
+	}
+
+	private async _acquireDirectTurnAdmissionFence(signal?: AbortSignal): Promise<{ owner: symbol; release(): void }> {
+		const disposeSignal = this._sessionActionCommitDisposeAbortController.signal;
+		const waitSignal = signal ? AbortSignal.any([signal, disposeSignal]) : disposeSignal;
+		while (true) {
+			this._assertSessionActionAdmissionAvailable();
+			if (this._queuedWorkPauses.size > 0) {
+				let wake = () => {};
+				const pauseReleased = new Promise<void>((resolve) => {
+					wake = resolve;
+					this._sessionInputCheckpointWaiters.add(resolve);
+				});
+				try {
+					await waitForPromiseOrAbort(pauseReleased, waitSignal, "Update restart preparation cancelled");
+				} catch (error) {
+					if (disposeSignal.aborted) {
+						throw new Error("Cannot admit a session action because the session is disposing or disposed.");
+					}
+					throw error;
+				} finally {
+					this._sessionInputCheckpointWaiters.delete(wake);
+				}
+				continue;
+			}
+			const fence = await this._acquireSessionActionCommitFence(signal);
+			if (this._queuedWorkPauses.size === 0) {
+				this._assertSessionActionAdmissionAvailable();
+				return fence;
+			}
+			fence.release();
+		}
 	}
 
 	private async _acquireSessionActionCommitFence(signal?: AbortSignal): Promise<{ owner: symbol; release(): void }> {

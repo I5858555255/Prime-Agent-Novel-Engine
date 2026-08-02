@@ -2266,7 +2266,7 @@ describe("AgentSession queue characterization", () => {
 		await new Promise<void>((resolve) => setImmediate(resolve));
 
 		harness.session.dispose();
-		await expect(trigger).rejects.toThrow("Session disposed before prompt delivery.");
+		await expect(trigger).rejects.toThrow("session is disposing or disposed");
 
 		expect(prompt).not.toHaveBeenCalled();
 		expect(release).not.toHaveBeenCalled();
