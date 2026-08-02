@@ -3,7 +3,7 @@ import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-work
 import { Container, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { AgentCronJob } from "../../../src/core/cron-jobs.js";
+import { type AgentCronJob, shouldDeferHeartbeatCronJob } from "../../../src/core/cron-jobs.js";
 import { createGoalContextMessage, type GoalState } from "../../../src/core/goals.js";
 import { createHeartbeatPromptMessage, HEARTBEAT_PROMPT_CUSTOM_TYPE } from "../../../src/core/messages.js";
 import {
@@ -261,6 +261,54 @@ describe("ENG-4482 heartbeat injected prompt UI", () => {
 				event.followUp.includes("Heartbeat prompt: Check whether the long-running task needs another step."),
 			),
 		).toBe(true);
+	});
+
+	it("preserves next-turn context order across queued heartbeat admission", async () => {
+		let markStarted = () => {};
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		let releaseTurn = () => {};
+		const turnGate = new Promise<void>((resolve) => {
+			releaseTurn = resolve;
+		});
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let deliveredOrder: string[] = [];
+		harness.setResponses([
+			async () => {
+				markStarted();
+				await turnGate;
+				return fauxAssistantMessage("original turn complete");
+			},
+			(context) => {
+				deliveredOrder = context.messages
+					.map(getMessageText)
+					.filter((text) => ["context A", "context B", createHeartbeat().prompt].includes(text));
+				return fauxAssistantMessage("heartbeat handled");
+			},
+		]);
+
+		const originalTurn = harness.session.prompt("start");
+		await started;
+		expect(harness.session.isStreaming).toBe(true);
+		expect(harness.session.unfinishedActionCount).toBe(1);
+		expect(harness.session.hasPendingSessionWork).toBe(false);
+		expect(shouldDeferHeartbeatCronJob(createHeartbeat(), harness.session)).toBe(false);
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "context A", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		await harness.session.promptHeartbeat(createHeartbeat(), { streamingBehavior: "followUp" });
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "context B", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		releaseTurn();
+		await originalTurn;
+		await harness.session.waitForIdle();
+
+		expect(deliveredOrder).toEqual(["context A", "context B", createHeartbeat().prompt]);
 	});
 
 	it("returns raw text when clearing queued heartbeat prompts while previews remain labeled", async () => {

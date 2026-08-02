@@ -1581,6 +1581,7 @@ export class AgentSession {
 			);
 		const previousAnchor = preparing.at(-1);
 		const actions = this._actionStore.remove(predicate, candidates);
+		const restorableMessages: CustomMessage[] = [];
 		const removed = new Set(actions);
 		if (previousAnchor && removed.has(previousAnchor)) {
 			for (const action of preparing) {
@@ -1611,7 +1612,7 @@ export class AgentSession {
 							!record.durable,
 					)
 					.map((record) => cloneCustomMessage(record.message));
-				this._pendingNextTurnMessages.unshift(...restorable);
+				restorableMessages.push(...restorable);
 				if (dispatched) {
 					payload.captureRunMessages = new Set(payload.records.map((record) => record.message));
 					this.agent.state.messages = this.agent.state.messages.filter(
@@ -1623,6 +1624,7 @@ export class AgentSession {
 				this._actionStore.releaseTerminal(action);
 			}
 		}
+		this._pendingNextTurnMessages.unshift(...restorableMessages);
 		if (actions.length > 0) this._notifySessionInputCheckpointChange();
 		return actions;
 	}
@@ -4432,7 +4434,7 @@ export class AgentSession {
 						if (result.disposition === "starts_when_admitted") await result.ticket.delivered;
 						return;
 					}
-					if (wasRuntimeBusy) return;
+					if (result.disposition === "queued") return;
 					await this.waitForSessionInputIdle();
 					return;
 				}
@@ -5113,7 +5115,7 @@ export class AgentSession {
 		);
 	}
 
-	private _hasPendingSessionWork(): boolean {
+	get hasPendingSessionWork(): boolean {
 		return this._actionStore.unfinishedActions().some((action) => {
 			const state = action.lifecycle.state;
 			return (
@@ -5453,10 +5455,12 @@ export class AgentSession {
 					const contextRecords = nextTurnMessages.map((message) =>
 						this._createDeliveryRecord(turns[0].id, "next_turn", message),
 					);
-					turns[0].payload.records.unshift(...contextRecords);
-					const preparedMessages: AgentMessage[] = [...nextTurnMessages];
+					const firstPrimaryIndex = turns[0].payload.records.indexOf(primaryDeliveryRecord(turns[0]));
+					turns[0].payload.records.splice(firstPrimaryIndex, 0, ...contextRecords);
+					const preparedMessages: AgentMessage[] = turns.flatMap((action) => actionPrefixMessages(action));
+					preparedMessages.push(...nextTurnMessages);
 					for (const action of turns) {
-						preparedMessages.push(...actionPrefixMessages(action), primaryDeliveryRecord(action).message);
+						preparedMessages.push(primaryDeliveryRecord(action).message);
 						if (action.suppressAutonomousContinuation) {
 							this._markAutonomousContinuationSuppressed(primaryDeliveryRecord(action).message);
 						}
@@ -6065,6 +6069,7 @@ export class AgentSession {
 			const pump = this._sessionInputPump;
 			await pump;
 			await this.agent.waitForIdle();
+			await this._agentEventQueue;
 			if (
 				pump === this._sessionInputPump &&
 				!this._sessionInputPumpRequested &&
@@ -7700,7 +7705,7 @@ export class AgentSession {
 		const resumeAfterFailure = () => {
 			if (
 				reason === "requested" &&
-				(shouldContinueAfterCompaction || this.agent.hasQueuedMessages() || this._hasPendingSessionWork())
+				(shouldContinueAfterCompaction || this.agent.hasQueuedMessages() || this.hasPendingSessionWork)
 			) {
 				this._schedulePostCompactionContinue();
 			}
@@ -7737,7 +7742,7 @@ export class AgentSession {
 
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry, customInstructions });
 			// Queued work lives in both the agent queues and the session-owned queues.
-			const hasQueuedMessages = this.agent.hasQueuedMessages() || this._hasPendingSessionWork();
+			const hasQueuedMessages = this.agent.hasQueuedMessages() || this.hasPendingSessionWork;
 			const willContinueAfterCompaction = willRetry || shouldContinueAfterCompaction || hasQueuedMessages;
 
 			if (willRetry) {

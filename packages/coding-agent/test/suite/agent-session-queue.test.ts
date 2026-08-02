@@ -11,6 +11,7 @@ import {
 	createAgentSessionMessage,
 	createAgentSessionMessagePrompt,
 } from "../../src/core/agent-messages.js";
+import { type AgentCronJob, shouldDeferHeartbeatCronJob } from "../../src/core/cron-jobs.js";
 import { createSessionSlashCommandMessage } from "../../src/core/messages.js";
 import {
 	applyRefinementProposal,
@@ -78,6 +79,24 @@ function createAutoRefineHarness(options: Parameters<typeof createHarness>[0] = 
 
 function agentPromptText(id: string, body: string): string {
 	return `Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: ${id}\n\n${body}`;
+}
+
+function heartbeatJob(): AgentCronJob {
+	return {
+		id: "heartbeat-test",
+		status: "active",
+		source: "heartbeat",
+		activeSessionId: "active-test",
+		sessionId: "session-test",
+		sessionFile: "/tmp/session.jsonl",
+		cwd: "/tmp",
+		prompt: "check progress",
+		schedule: { kind: "interval", expression: "every 5m", intervalMs: 300_000 },
+		createdAt: "2026-01-01T00:00:00.000Z",
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		nextRunAt: "2026-01-01T00:05:00.000Z",
+		runCount: 0,
+	};
 }
 
 const skipReviewer = vi.fn(async () => ({ shouldRefine: true, rationale: "durable lesson" }));
@@ -1287,6 +1306,24 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.messages).toEqual([]);
 	});
 
+	it("settles a visibly queued session command while an earlier action is preparing", async () => {
+		const hook = gatedHook({ prompt: "preparing turn" });
+		const harness = await createHarness({ extensionFactories: [hook.factory] });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("done")]);
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.followUp("preparing turn", undefined, { resumeIfIdle: true });
+		pause.release();
+		await hook.reached;
+
+		const command = harness.session.prompt("/goal status");
+		await vi.waitFor(() => expect(harness.session.getFollowUpMessages()).toContain("/goal status"));
+		await expect(command).resolves.toBeUndefined();
+
+		hook.release();
+		await harness.session.waitForIdle();
+	});
+
 	it("removes goal context while its steering handoff is still preparing", async () => {
 		const hook = gatedHook({ prompt: "stale goal context" });
 		const harness = await createHarness({ extensionFactories: [hook.factory] });
@@ -1697,6 +1734,31 @@ describe("AgentSession queue characterization", () => {
 
 		expect(cleared).toEqual({ steering: [], followUp: [clearedAgentMessage] });
 		expect(getUserTexts(harness)).toEqual(["kept"]);
+	});
+
+	it("restores next-turn context from cancelled actions in action order", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const firstPrompt = agentPromptText("agentmsg_restore_first", "first");
+		const secondPrompt = agentPromptText("agentmsg_restore_second", "second");
+		withStreaming(harness, true);
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "context A", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		await harness.session.queueAgentMessagePrompt(firstPrompt, "followUp");
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "context B", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+		await harness.session.queueAgentMessagePrompt(secondPrompt, "followUp");
+
+		expect(harness.session.clearQueue().followUp).toEqual([firstPrompt, secondPrompt]);
+		expect(harness.session.getPendingNextTurnMessageSnapshots().map(getMessageText)).toEqual([
+			"context A",
+			"context B",
+		]);
+		withStreaming(harness, false);
 	});
 
 	it("delivers next-turn context when the first preparing turn is cancelled", async () => {
@@ -2401,6 +2463,28 @@ describe("AgentSession queue characterization", () => {
 		expect(commandNavigated).toBe(true);
 		expect(navigationStarts).toBe(2);
 		expect(harness.sessionManager.getLeafId()).not.toBe(secondId);
+	});
+
+	it("defers steer heartbeats while a non-streaming session command is running", async () => {
+		const commandStarted = createDeferred();
+		const commandGate = createDeferred();
+		const harness = await createHarness();
+		harnesses.push(harness);
+		vi.spyOn(harness.session, "refine").mockImplementation(async () => {
+			commandStarted.resolve();
+			await commandGate.promise;
+			return emptyRefinementResult();
+		});
+
+		const command = harness.session.prompt("/refine --local");
+		await commandStarted.promise;
+		expect(harness.session.isStreaming).toBe(false);
+		expect(harness.session.unfinishedActionCount).toBe(1);
+		expect(harness.session.hasPendingSessionWork).toBe(false);
+		expect(shouldDeferHeartbeatCronJob(heartbeatJob(), harness.session)).toBe(true);
+
+		commandGate.resolve();
+		await command;
 	});
 
 	it("keeps a slow session command on one branch while concurrent navigation waits", async () => {

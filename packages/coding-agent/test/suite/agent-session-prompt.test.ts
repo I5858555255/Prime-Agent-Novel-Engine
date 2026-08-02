@@ -1174,6 +1174,48 @@ stale post-hook extension instructions`,
 		expect(harness.session.hasAcceptedPromptInFlight).toBe(false);
 	});
 
+	it("waitForIdle waits for cancelled dispatch cleanup in the session event queue", async () => {
+		const eventQueueReached = createDeferred();
+		const eventQueueGate = createDeferred();
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_start", async () => {
+						eventQueueReached.resolve();
+						await eventQueueGate.promise;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("never delivered")]);
+		const dispatchGate = gateNextAgentStart(harness);
+		const prompt =
+			"Agent-to-agent message received.\nSource: agent_message\nTo: Target, active target, session session-target\nMessage id: agentmsg_idle_cleanup\n\ncancel me";
+		const accepted = harness.session.acceptAgentMessagePrompt(prompt, { expandPromptTemplates: false });
+		const rejected = expect(accepted).rejects.toThrow("cleared before delivery");
+		await Promise.all([eventQueueReached.promise, dispatchGate.reached]);
+
+		harness.session.clearQueuedUserMessagesMatching((text) => text === prompt);
+		let idle = false;
+		const waiting = harness.session.waitForIdle().then(() => {
+			idle = true;
+		});
+		dispatchGate.release();
+		await rejected;
+		await harness.session.agent.waitForIdle();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		const store = (harness.session as unknown as { _actionStore: { ownedActions(): readonly unknown[] } })
+			._actionStore;
+		expect(idle).toBe(false);
+		expect(store.ownedActions()).toHaveLength(1);
+		eventQueueGate.resolve();
+		await waiting;
+		expect(store.ownedActions()).toHaveLength(0);
+		expect(harness.session.agent.state.errorMessage).toBeUndefined();
+	});
+
 	it("restores drained nextTurn messages when direct agent message acceptance fails before delivery", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
