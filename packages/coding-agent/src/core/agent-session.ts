@@ -4305,6 +4305,7 @@ export class AgentSession {
 
 		let messages: AgentMessage[] | undefined;
 		let drainedNextTurnMessages: CustomMessage[] = [];
+		let preparation: PreparedPromptPreparation | undefined;
 		const previewLabel = injectedMessagePreviewLabel(message);
 		try {
 			const shouldQueueForStreaming = this.isStreaming;
@@ -4348,7 +4349,7 @@ export class AgentSession {
 							basePromptSnapshot,
 							this._baseSystemPromptOptions,
 						);
-						const preparation = { result, basePromptSnapshot };
+						preparation = { result, basePromptSnapshot };
 						this._appendBeforeAgentStartMessages(preparedMessages, result);
 						this._applyPreparedSystemPrompt(preparation, true);
 						return { messages: preparedMessages, preparation };
@@ -4367,6 +4368,10 @@ export class AgentSession {
 		if (!messages) {
 			endDirectPromptSection();
 			return;
+		}
+		if (this._refineInFlight) {
+			await this._waitForRefineIdle();
+			this._applyPreparedSystemPrompt(preparation, true);
 		}
 
 		const shouldQueueAtHandoff = options?.queueIfBusy === true && this._isBusyForSessionInput("handoff");
@@ -4476,6 +4481,7 @@ export class AgentSession {
 		let primaryPromptMessage: QueuedAgentMessage | undefined;
 		let acceptedAgentMessagePrompt: AcceptedAgentMessagePrompt | undefined;
 		let drainedNextTurnMessages: CustomMessage[] = [];
+		let preparation: PreparedPromptPreparation | undefined;
 		let expandedText = text;
 		let currentImages = options?.images;
 
@@ -4616,7 +4622,7 @@ export class AgentSession {
 							basePromptSnapshot,
 							this._baseSystemPromptOptions,
 						);
-						const preparation = { result, basePromptSnapshot };
+						preparation = { result, basePromptSnapshot };
 						this._appendBeforeAgentStartMessages(preparedMessages, result);
 						this._applyPreparedSystemPrompt(preparation, false);
 						return { messages: preparedMessages, preparation };
@@ -4638,6 +4644,10 @@ export class AgentSession {
 		if (!messages) {
 			endDirectPromptSection();
 			return;
+		}
+		if (this._refineInFlight) {
+			await this._waitForRefineIdle();
+			this._applyPreparedSystemPrompt(preparation, false);
 		}
 
 		if (acceptedAgentMessagePrompt?.cleared) {
@@ -5339,6 +5349,17 @@ export class AgentSession {
 		if (!messages) return;
 		let dispatch: PromptDispatchFence | undefined;
 		try {
+			if (this._refineInFlight) {
+				const preparedPrompts = [...prompts];
+				await this._waitForRefineIdle();
+				if (
+					prompts.length !== preparedPrompts.length ||
+					prompts.some((prompt, index) => prompt !== preparedPrompts[index])
+				) {
+					throw new DeferredSessionInputError("Session input changed during refine handoff");
+				}
+				this._applyPreparedSystemPrompt(prompts[0]?.preparation, true);
+			}
 			if (this.isStreaming) {
 				// agent.prompt() would reject with its already-processing error; defer instead.
 				throw new DeferredSessionInputError("Agent became active before session input handoff");
