@@ -4375,7 +4375,7 @@ export class AgentSession {
 		}
 		const commitFence = this.isStreaming
 			? undefined
-			: await this._acquireSessionActionCommitFence(options?.signal).catch((error: unknown) => {
+			: await this._acquireDirectTurnAdmissionFence(options?.signal).catch((error: unknown) => {
 					throwIfPromptAdmissionCancelled(options?.signal);
 					throw error;
 				});
@@ -6015,6 +6015,11 @@ export class AgentSession {
 	}
 
 	private async _acquireDirectTurnAdmissionFence(signal?: AbortSignal): Promise<{ owner: symbol; release(): void }> {
+		const inheritedOwner = this._sessionActionCommitContext.getStore();
+		if (inheritedOwner !== undefined && inheritedOwner === this._sessionActionCommitOwner) {
+			this._assertSessionActionAdmissionAvailable();
+			return this._acquireSessionActionCommitFence(signal);
+		}
 		const disposeSignal = this._sessionActionCommitDisposeAbortController.signal;
 		const waitSignal = signal ? AbortSignal.any([signal, disposeSignal]) : disposeSignal;
 		while (true) {
@@ -6038,9 +6043,14 @@ export class AgentSession {
 				continue;
 			}
 			const fence = await this._acquireSessionActionCommitFence(signal);
-			if (this._queuedWorkPauses.size === 0) {
-				this._assertSessionActionAdmissionAvailable();
-				return fence;
+			try {
+				if (this._queuedWorkPauses.size === 0) {
+					this._assertSessionActionAdmissionAvailable();
+					return fence;
+				}
+			} catch (error) {
+				fence.release();
+				throw error;
 			}
 			fence.release();
 		}

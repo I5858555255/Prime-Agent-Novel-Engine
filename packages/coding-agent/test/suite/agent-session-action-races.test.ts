@@ -8,12 +8,30 @@ type ActionKind = "turn" | "command";
 
 interface CommitFenceInternals {
 	_actionStore: ActionStore<SessionAction>;
+	_scheduleSessionInputPump(): void;
+	_acquireDirectTurnAdmissionFence(signal?: AbortSignal): Promise<{ release(): void }>;
 	_acquireSessionActionCommitFence(signal?: AbortSignal): Promise<{ release(): void }>;
+	_promptInjectedMessage(
+		text: string,
+		message: {
+			role: "custom";
+			customType: string;
+			content: string;
+			display: boolean;
+			details: Record<string, never>;
+			timestamp: number;
+		},
+		options?: { returnAfterAccepted?: boolean },
+	): Promise<void>;
 }
 
 function deliveredCount(harness: Harness, kind: ActionKind, text: string): number {
 	if (kind === "turn") return getUserTexts(harness).filter((candidate) => candidate === text).length;
 	return harness.session.messages.filter((message) => getMessageText(message) === text).length;
+}
+
+function yieldToEventLoop(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
 }
 
 describe("AgentSession action commit-fence races", () => {
@@ -168,13 +186,14 @@ describe("AgentSession action commit-fence races", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const internals = harness.session as unknown as CommitFenceInternals;
-		const pause = harness.session.acquireQueuedWorkPause();
+		const schedule = vi.spyOn(internals, "_scheduleSessionInputPump").mockImplementation(() => {});
 		const text = "/autonomous status";
 		const completion = harness.session.promptAndWait(text);
 		await vi.waitFor(() => expect(internals._actionStore.unfinishedActions()).toHaveLength(1));
 		const heldFence = await internals._acquireSessionActionCommitFence();
 
-		pause.release();
+		schedule.mockRestore();
+		internals._scheduleSessionInputPump();
 		await vi.waitFor(() => expect(internals._actionStore.unfinishedActions()[0]?.lifecycle.state).toBe("selected"));
 		const rejection = expect(completion).rejects.toThrow("cleared before delivery");
 		expect(harness.session.clearQueue().followUp).toEqual([text]);
@@ -183,5 +202,108 @@ describe("AgentSession action commit-fence races", () => {
 		await rejection;
 		await harness.session.waitForSessionInputIdle();
 		expect(internals._actionStore.unfinishedActions()).toEqual([]);
+	});
+
+	it("releases the direct-turn fence when suspension wins after acquisition", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const internals = harness.session as unknown as CommitFenceInternals;
+		await harness.session.followUp("queued work");
+
+		const admission = internals._acquireDirectTurnAdmissionFence();
+		harness.session.requestAbort();
+		await expect(admission).rejects.toThrow("Cannot admit a session action while queued session input is suspended.");
+
+		let nextFence: { release(): void } | undefined;
+		let nextError: unknown;
+		void internals._acquireSessionActionCommitFence().then(
+			(fence) => {
+				nextFence = fence;
+			},
+			(error: unknown) => {
+				nextError = error;
+			},
+		);
+		await yieldToEventLoop();
+		expect(nextError).toBeUndefined();
+		expect(nextFence).toBeDefined();
+		nextFence?.release();
+	});
+
+	it("preserves pause-held arrival order between injected and ordinary prompts", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first done"), fauxAssistantMessage("second done")]);
+		const internals = harness.session as unknown as CommitFenceInternals;
+		const pause = harness.session.acquireQueuedWorkPause();
+		const injectedMessage = {
+			role: "custom" as const,
+			customType: "injected-order-probe",
+			content: "earlier injected prompt",
+			display: true,
+			details: {},
+			timestamp: Date.now(),
+		};
+
+		const injected = internals._promptInjectedMessage("earlier injected prompt", injectedMessage, {
+			returnAfterAccepted: true,
+		});
+		const ordinary = harness.session.promptUntilAccepted("later ordinary prompt");
+		await yieldToEventLoop();
+		pause.release();
+		await Promise.all([injected, ordinary]);
+		await harness.session.waitForIdle();
+
+		expect(
+			harness.session.messages
+				.map((message) => getMessageText(message))
+				.filter((text) => text === "earlier injected prompt" || text === "later ordinary prompt"),
+		).toEqual(["earlier injected prompt", "later ordinary prompt"]);
+	});
+
+	it("cancels an ordinary prompt while queued work is paused", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const pause = harness.session.acquireQueuedWorkPause();
+		const controller = new AbortController();
+		const prompt = harness.session.promptUntilAccepted("cancel during pause", { signal: controller.signal });
+		await yieldToEventLoop();
+
+		controller.abort();
+		await expect(prompt).rejects.toMatchObject({
+			name: "PromptAdmissionCancelledError",
+			message: "Prompt admission was cancelled.",
+		});
+		pause.release();
+		expect(getUserTexts(harness)).toEqual([]);
+	});
+
+	it("admits a reentrant prompt from a navigation hook without waiting on its own pause", async () => {
+		let promptFromHook: (() => Promise<void>) | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_tree", async () => {
+						if (!promptFromHook) throw new Error("Expected prompt hook to be initialized");
+						await promptFromHook();
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		promptFromHook = () => harness.session.promptUntilAccepted("prompt from navigation hook");
+		harness.setResponses([
+			fauxAssistantMessage("one done"),
+			fauxAssistantMessage("two done"),
+			fauxAssistantMessage("hook done"),
+		]);
+		await harness.session.prompt("one");
+		const target = harness.sessionManager.getEntries().find((entry) => entry.type === "message");
+		expect(target).toBeDefined();
+		await harness.session.prompt("two");
+
+		await harness.session.navigateTree(target!.id, { summarize: false });
+		await harness.session.waitForIdle();
+		expect(getUserTexts(harness)).toContain("prompt from navigation hook");
 	});
 });

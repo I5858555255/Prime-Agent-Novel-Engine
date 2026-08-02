@@ -972,7 +972,7 @@ stale post-hook extension instructions`,
 		expect(harness.session.queuedActionCount).toBe(0);
 	});
 
-	it("queues accepted agent messages deferred before handoff without leaking an observer", async () => {
+	it("waits to accept agent messages while queued work is paused without leaking a waiter", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const agentPrompt =
@@ -980,6 +980,7 @@ stale post-hook extension instructions`,
 		const sessionInternals = harness.session as unknown as {
 			_sessionInputCheckpointWaiters: Set<() => void>;
 		};
+		const pause = harness.session.acquireQueuedWorkPause();
 		let acceptedSettled = false;
 		const accepted = harness.session
 			.acceptAgentMessagePrompt(agentPrompt, {
@@ -990,11 +991,11 @@ stale post-hook extension instructions`,
 			.then(() => {
 				acceptedSettled = true;
 			});
-		const pause = harness.session.acquireQueuedWorkPause();
+		await new Promise<void>((resolve) => setImmediate(resolve));
 
-		await vi.waitFor(() => expect(harness.session.getFollowUpMessages()).toEqual([agentPrompt]));
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
 		expect(acceptedSettled).toBe(false);
-		expect(sessionInternals._sessionInputCheckpointWaiters.size).toBe(0);
+		expect(sessionInternals._sessionInputCheckpointWaiters.size).toBe(1);
 
 		harness.setResponses([fauxAssistantMessage("delivered")]);
 		pause.release();
