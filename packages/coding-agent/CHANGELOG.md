@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed top-level CLI help and documentation to expose autonomous mode, quality gates, and their limits.
+
 ## [0.4.0] - 2026-08-01
 
 ### Breaking Changes
