@@ -2344,6 +2344,7 @@ export class AgentDaemon {
 		state: ActiveSessionState,
 		passiveRlmSubagents?: readonly PassiveRlmSubagent[],
 	): Promise<SessionPassivationSnapshot> {
+		const passiveDescendants = passiveRlmSubagents ?? (await this.listPassiveRlmSubagents());
 		const summary = summaryForActiveSession(state);
 		const sessionFile = state.runtime.session.sessionFile;
 		const jobs = this.cronStore
@@ -2354,7 +2355,6 @@ export class AgentDaemon {
 					job.status !== "cancelled" &&
 					job.status !== "completed",
 			);
-		const passiveDescendants = passiveRlmSubagents ?? (await this.listPassiveRlmSubagents());
 		const hasPendingAdmission =
 			this.agentMessageAcceptingTargets.has(state.activeSessionId) ||
 			this.agentMessagePreparingTargets.has(state.activeSessionId) ||
@@ -3341,20 +3341,18 @@ export class AgentDaemon {
 				const snapshotSignal = streamsSnapshot
 					? markClientSnapshotStreaming(client, state.activeSessionId)
 					: undefined;
-				state.clients.add(client);
-				client.attachedActiveSessionIds.add(state.activeSessionId);
 				let result: DaemonAttachResult;
 				try {
 					result = await this.createAttachResult(client, state, command);
 				} catch (error) {
-					state.clients.delete(client);
-					client.attachedActiveSessionIds.delete(state.activeSessionId);
 					removeDaemonClientSessionCapabilities(client, state.activeSessionId);
 					if (streamsSnapshot) {
 						finishClientSnapshotStreaming(client, state.activeSessionId);
 					}
 					throw error;
 				}
+				state.clients.add(client);
+				client.attachedActiveSessionIds.add(state.activeSessionId);
 				if (deferClientEnv && clientEnv) {
 					this.updateRestart?.deferredClientEnv.push({ client, state, env: clientEnv });
 				}
@@ -4824,10 +4822,10 @@ export class AgentDaemon {
 				}
 				return response.data as AgentSessionMessageReceipt;
 			} catch (error) {
+				lastError = error;
 				if (receivedResponse) {
 					throw error;
 				}
-				lastError = error;
 			} finally {
 				client.close();
 			}
@@ -5626,6 +5624,9 @@ export class AgentDaemon {
 					type: "attach",
 					activeSessionId,
 				});
+				if (this.sessions.get(activeSessionId) !== state || !state.clients.has(client)) {
+					continue;
+				}
 				if (
 					client.transport === "private-framed" &&
 					daemonClientCapabilitiesForSession(client, activeSessionId).has("chunked_snapshot")
