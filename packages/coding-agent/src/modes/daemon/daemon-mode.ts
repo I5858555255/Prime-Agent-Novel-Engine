@@ -2624,9 +2624,14 @@ export class AgentDaemon {
 							},
 						},
 						rlmSessionDir: entry.sessionDir,
-						rlmDepth: existsSync(entry.sessionFile)
-							? resolveSessionRlmDepth(sessionManager.getHeader() ?? {}, entry.sessionFile)
-							: (entry.rlmDepth ?? 1),
+						// Registry depth is authoritative (written at spawn); for legacy entries
+						// without it, the shared accessor resolves persisted header depth or the
+						// session file's sub- path before the depth-1 default.
+						rlmDepth:
+							entry.rlmDepth ??
+							(existsSync(entry.sessionFile)
+								? resolveSessionRlmDepth(sessionManager.getHeader() ?? {}, entry.sessionFile)
+								: 1),
 						rlmMaxDepth: entry.rlmMaxDepth,
 						rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
 					},
