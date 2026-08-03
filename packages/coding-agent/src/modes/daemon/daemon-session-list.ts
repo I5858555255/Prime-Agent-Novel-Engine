@@ -67,6 +67,7 @@ export interface SessionSummary {
 	parentSessionId?: string;
 	parentSessionPath?: string;
 	rlmChildId?: string;
+	repliedSinceTask?: boolean;
 	rlmParentNodeId?: string;
 	/** Source of the IPython cell that spawned this subagent, for display. */
 	spawnCode?: string;
@@ -252,6 +253,7 @@ export function summaryForActiveSession(
 		parentSessionId: metadata.parentSessionId,
 		parentSessionPath: savedSession?.parentSessionPath ?? metadata.parentSessionFile,
 		rlmChildId: metadata.rlmChildId,
+		repliedSinceTask: metadata.kind === "subagent" ? session.repliedToParentSinceTask : undefined,
 		rlmParentNodeId: metadata.rlmParentNodeId,
 		// Cap the cell source so the summary stays small on the daemon wire; the
 		// agents view truncates further for display.

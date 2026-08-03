@@ -29,6 +29,8 @@ export interface BuildSystemPromptOptions {
 	allowRecursion?: boolean;
 	/** Fixed recursive-agent depth for this session. */
 	rlmDepth?: number;
+	/** Human-readable parent name or id for child communication doctrine. */
+	rlmParentAgent?: string;
 	/** Global harness state to inject as compact persistent context. */
 	harnessState?: HarnessState;
 }
@@ -107,6 +109,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		activeTools: tools.filter((name) => name === "ipython" || name === "bash" || name === "edit"),
 		allowRecursion,
 		depth: options.rlmDepth,
+		parentAgent: options.rlmParentAgent,
 	});
 
 	// Appended AFTER the trained buildRlmPrompt prefix, and before the harness-state

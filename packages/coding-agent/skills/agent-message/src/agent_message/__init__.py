@@ -12,6 +12,7 @@ from IPython.display import display
 from rlm import host_request
 
 MessageMode = Literal["auto", "follow_up", "steer"]
+ReceiverRole = Literal["parent", "sibling", "child"]
 _MESSAGE_DISPLAY_MIME = "application/vnd.prime-agent.agent-message+json"
 
 
@@ -25,34 +26,49 @@ async def roster() -> dict[str, Any]:
     return await host_request("agent_message.roster")
 
 
-async def send(target: str, message: str, mode: MessageMode = "auto") -> dict[str, Any]:
-    """Send one direct text message to another active Prime Agent session.
+async def send(
+    message: str,
+    receiver_role: ReceiverRole | str | None = None,
+    receiver_name: str | None = None,
+    mode: MessageMode = "auto",
+) -> dict[str, Any]:
+    """Send one direct message, preferably using a nuclear-family role.
 
-    Args:
-        target: Active session id, session id/name, or unambiguous suffix.
-        message: Text payload to deliver.
-        mode: "auto" steers into a busy/streaming target so the message is visible promptly;
-            "follow_up" always uses follow-up when the target is streaming;
-            "steer" interrupts a streaming target.
-
-    Returns a receipt dict whose "deliveryStatus" is "delivered" (reached an
-    idle target's context) or "queued" (accepted; delivers when the target's
-    current work allows -- this call does not block waiting for that).
+    New form: ``send(message, receiver_role="parent" | "sibling" | "child",
+    receiver_name=...)``. A name or id is required for siblings and children and
+    must be omitted for the unique parent. The legacy positional
+    ``send(target, message, mode)`` form remains available during migration.
     """
-    if not isinstance(target, str):
-        raise TypeError(f"target must be str, got {type(target).__name__}")
-    if not isinstance(message, str):
-        raise TypeError(f"message must be str, got {type(message).__name__}")
+    roles = ("parent", "sibling", "child")
+    payload: dict[str, Any]
+    if receiver_role in roles:
+        if not isinstance(message, str):
+            raise TypeError(f"message must be str, got {type(message).__name__}")
+        if receiver_role == "parent":
+            if receiver_name is not None:
+                raise ValueError("receiver_name must be omitted for parent messages")
+        elif not isinstance(receiver_name, str) or not receiver_name.strip():
+            raise ValueError("receiver_name is required for sibling and child messages")
+        payload = {
+            "message": message,
+            "receiver_role": receiver_role,
+            "receiver_name": receiver_name,
+            "mode": mode,
+        }
+    else:
+        # Compatibility: the old parameters were (target, message, mode="auto").
+        target = message
+        legacy_message = receiver_role
+        legacy_mode = receiver_name if receiver_name is not None else mode
+        if not isinstance(target, str):
+            raise TypeError(f"target must be str, got {type(target).__name__}")
+        if not isinstance(legacy_message, str):
+            raise TypeError("legacy agent_message.send requires target and message strings")
+        payload = {"target": target, "message": legacy_message, "mode": legacy_mode}
+        mode = legacy_mode  # validate below
     if mode not in ("auto", "follow_up", "steer"):
         raise ValueError('mode must be "auto", "follow_up", or "steer"')
-    receipt = await host_request(
-        "agent_message.send",
-        {
-            "target": target,
-            "message": message,
-            "mode": mode,
-        },
-    )
+    receipt = await host_request("agent_message.send", payload)
     _emit_sent_message(receipt)
     return receipt
 

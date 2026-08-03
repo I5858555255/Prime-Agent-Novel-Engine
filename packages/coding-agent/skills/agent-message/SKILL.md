@@ -37,7 +37,7 @@ if child is not None:
   `await rlm.list_subagents()` over filtering this global list. Every RLM child
   gets a readable unique `session_name`, or the orchestrator can choose one with
   `rlm("task", name="api-reviewer")`; use that name directly as a target.
-- `await agent_message.send(target, message, mode="auto")` — sends one direct
+- `await agent_message.send(message, receiver_role="parent" | "sibling" | "child", receiver_name=None, mode="auto")` — sends one direct
   text message to an active session. Sending to an idle completed subagent
   starts an ordinary follow-up turn in that same child session and context.
   The child remains available only until its parent session closes. `target`

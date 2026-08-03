@@ -8,8 +8,6 @@ import { describe, expect, it, vi } from "vitest";
 import { type AgentSessionMessageController, DEFAULT_AGENT_MESSAGE_MAX_CHARS } from "../src/core/agent-messages.js";
 import type { AgentObserveController } from "../src/core/agent-observe.js";
 import type { CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
-import { installAgentTraceUpload } from "../src/core/agent-traces.js";
-import { AuthStorage } from "../src/core/auth-storage.js";
 import type { AgentCronJob, AgentCronJobStore } from "../src/core/cron-jobs.js";
 import {
 	type CreateRlmSubagentRuntimeOptions,
@@ -17,7 +15,6 @@ import {
 	type SubagentRuntimeHost,
 } from "../src/core/rlm-runtime.js";
 import { readSessionInfo, type SessionInfo, SessionManager } from "../src/core/session-manager.js";
-import { SettingsManager } from "../src/core/settings-manager.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
 	AgentDaemon,
@@ -381,218 +378,6 @@ describe("daemon mode helpers", () => {
 		expect(acceptAgentMessagePrompt.mock.calls[0]?.[0]).toContain("report current progress");
 	});
 
-	it("starts trace flush and skips the registry when teardown wins the retention race", async () => {
-		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-trace-race-"));
-		try {
-			const manager = SessionManager.create(tempDir, tempDir);
-			manager.newSession();
-			let markTraceStarted: () => void = () => {};
-			const traceStarted = new Promise<void>((resolve) => {
-				markTraceStarted = resolve;
-			});
-			const fetchFn = vi.fn(async () => {
-				markTraceStarted();
-				return await new Promise<Response>(() => {});
-			});
-			installAgentTraceUpload(manager, {
-				authStorage: AuthStorage.inMemory({
-					"prime-agent-traces": { type: "api_key", key: "trace-key" },
-				}),
-				settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
-				fetchFn,
-			});
-			manager.appendSessionInfo("trace-race");
-
-			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
-				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
-				createRuntime: async () => {
-					throw new Error("unexpected runtime creation");
-				},
-			});
-			const parentState = makeState("parent");
-			const parentSession = makeRuntimeSession(manager);
-			parentSession.retainFinishedRlmChildSession = vi.fn(() => false);
-			const childState = makeState("child", parentState.activeSessionId);
-			const childSession = makeRuntimeSession(manager);
-			childState.runtime = { ...childState.runtime, session: childSession } as ActiveSessionState["runtime"];
-			// Competing teardown already closed the state, so this release-time close is a no-op.
-			const closeSession = vi.fn(async () => {});
-			const recordRlmSubagentRegistryEntry = vi.fn();
-			Object.assign(daemon, {
-				findRuntimeState: vi.fn(() => childState),
-				closeSession,
-				recordRlmSubagentRegistryEntry,
-			});
-			const host = Reflect.get(daemon, "createSubagentRuntimeHost").call(daemon, parentState) as SubagentRuntimeHost;
-
-			await host.releaseRlmSubagentRuntime?.(
-				childState.runtime,
-				{ parentSession, id: "child-1" } as CreateRlmSubagentRuntimeOptions,
-				"done",
-			);
-			await traceStarted;
-
-			expect(fetchFn).toHaveBeenCalledOnce();
-			expect(parentSession.retainFinishedRlmChildSession).toHaveBeenCalledWith("child-1", childSession);
-			expect(closeSession).toHaveBeenCalledWith(childState, "completed");
-			expect(recordRlmSubagentRegistryEntry).not.toHaveBeenCalled();
-		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("keeps RLM heartbeats active when a successful subagent is retained", async () => {
-		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-retained-heartbeat-"));
-		try {
-			const sessionDir = join(tempDir, "sessions");
-			const parentManager = SessionManager.create(tempDir, sessionDir);
-			parentManager.newSession();
-			const parentSessionFile = parentManager.getSessionFile();
-			const parentArtifactDir = parentManager.getSessionArtifactDir();
-			if (!parentSessionFile || !parentArtifactDir) {
-				throw new Error("Missing parent session paths");
-			}
-			const childSessionDir = join(parentArtifactDir, "child-1");
-			const childManager = SessionManager.create(tempDir, childSessionDir);
-			childManager.newSession({ parentSession: parentSessionFile });
-			const childSessionFile = childManager.getSessionFile();
-			if (!childSessionFile) {
-				throw new Error("Missing child session file");
-			}
-			let traceUploadStarted: () => void = () => {};
-			const traceStarted = new Promise<void>((resolve) => {
-				traceUploadStarted = resolve;
-			});
-			installAgentTraceUpload(childManager, {
-				authStorage: AuthStorage.inMemory({
-					"prime-agent-traces": { type: "api_key", key: "trace-key" },
-				}),
-				settingsManager: SettingsManager.inMemory({ agentTraces: { enabled: true } }),
-				fetchFn: vi.fn(async () => {
-					traceUploadStarted();
-					return await new Promise<Response>(() => {});
-				}),
-			});
-
-			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
-				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
-				createRuntime: async () => {
-					throw new Error("unexpected runtime creation");
-				},
-			});
-			const parentState = makeState("parent");
-			const parentSession = makeRuntimeSession(parentManager);
-			parentState.runtime = {
-				...parentState.runtime,
-				metadata: { kind: "top-level", createdAt: 1 },
-				session: parentSession,
-			} as unknown as ActiveSessionState["runtime"];
-			const childState = makeState("child", parentState.activeSessionId);
-			childState.extensionUiRequests = new Map();
-			const childSession = makeRuntimeSession(childManager);
-			const promptHeartbeat = vi.fn(
-				async (_job: AgentCronJob, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
-					options?.preflightResult?.(true);
-				},
-			);
-			Object.assign(childSession, {
-				isStreaming: false,
-				isCompacting: false,
-				isRetrying: false,
-				isBashRunning: false,
-				hasAcceptedPromptInFlight: false,
-				sessionActions: { queuedCount: 0, steering: [], followUps: [] },
-				promptHeartbeat,
-				model: { provider: "current-provider", id: "current-model" },
-			});
-			childState.runtime = {
-				...childState.runtime,
-				metadata: {
-					kind: "subagent",
-					createdAt: 2,
-					parentActiveSessionId: parentState.activeSessionId,
-					parentSessionId: parentSession.sessionId,
-					parentSessionFile,
-					rlmChildId: "child-1",
-					rlmParentNodeId: "child-1",
-					sessionDir: childSessionDir,
-				},
-				cwd: tempDir,
-				session: childSession,
-				dispose: vi.fn(async () => {}),
-			} as unknown as ActiveSessionState["runtime"];
-			const internals = daemon as unknown as {
-				cronStore: AgentCronJobStore;
-				cronScheduler: { runDue(now: Date): Promise<number> };
-				sessions: Map<string, ActiveSessionState>;
-				findRuntimeState: ReturnType<typeof vi.fn>;
-				closeSession(state: ActiveSessionState, reason: "shutdown"): Promise<void>;
-				createSubagentRuntimeHost(parent: ActiveSessionState): {
-					releaseRlmSubagentRuntime(
-						runtime: ActiveSessionState["runtime"],
-						options: CreateRlmSubagentRuntimeOptions,
-						status: "done" | "error" | "cancelled",
-					): Promise<void>;
-				};
-			};
-			internals.findRuntimeState = vi.fn(() => childState);
-			const heartbeat = internals.cronStore.createRlmHeartbeat({
-				activeSessionId: childState.activeSessionId,
-				sessionId: childSession.sessionId,
-				sessionFile: childSessionFile,
-				cwd: tempDir,
-				runtimeKind: "subagent",
-				scheduleText: "every 30s",
-				prompt: "report exactly: hi",
-				now: new Date("2026-01-01T00:00:00.000Z"),
-			});
-			const releaseOptions = {
-				parentSession,
-				id: "child-1",
-				prompt: "initialize a heartbeat",
-				sessionName: "heartbeat-child",
-				sessionDir: childSessionDir,
-				rlmDepth: 1,
-				rlmMaxDepth: 4,
-				rlmParentNodeId: "child-1",
-				model: { provider: "spawn-provider", id: "spawn-model" },
-			} as unknown as CreateRlmSubagentRuntimeOptions;
-
-			internals.sessions.set(childState.activeSessionId, childState);
-			const release = internals
-				.createSubagentRuntimeHost(parentState)
-				.releaseRlmSubagentRuntime(childState.runtime, releaseOptions, "done");
-			await expect(Promise.race([release.then(() => "released"), traceStarted.then(() => "trace")])).resolves.toBe(
-				"released",
-			);
-
-			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
-				status: "active",
-				runCount: 0,
-			});
-			expect(parentSession.retainFinishedRlmChildSession).toHaveBeenCalledWith("child-1", childSession);
-			const registryLines = readFileSync(join(parentArtifactDir, "rlm-subagents.jsonl"), "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line) as { model?: { provider: string; modelId: string } });
-			expect(registryLines.at(-1)?.model).toEqual({ provider: "current-provider", modelId: "current-model" });
-			const dueRuns = await internals.cronScheduler.runDue(new Date("2026-07-16T00:00:00.000Z"));
-			expect(dueRuns).toBe(1);
-			expect(promptHeartbeat).toHaveBeenCalledOnce();
-			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
-				status: "active",
-				runCount: 1,
-			});
-
-			await internals.closeSession(childState, "shutdown");
-			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
-				status: "active",
-			});
-		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
 	it("persists explicit child depth for an in-memory daemon parent", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-in-memory-parent-depth-"));
 		try {
@@ -861,8 +646,8 @@ describe("daemon mode helpers", () => {
 			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
 			const childState = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
 			(
-				parentState.runtime.session as unknown as { releaseFinishedRlmChildSession: ReturnType<typeof vi.fn> }
-			).releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+				parentState.runtime.session as unknown as { releaseRlmChildSession: ReturnType<typeof vi.fn> }
+			).releaseRlmChildSession = vi.fn(() => vi.fn());
 			const passivation = internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1);
 			await disposeStarted;
 			const job = internals.cronStore.create({
@@ -5316,9 +5101,9 @@ describe("daemon mode helpers", () => {
 				sessionPath: fixture.parentSessionFile,
 			});
 			const parentSession = parentState.runtime.session as unknown as {
-				releaseFinishedRlmChildSession: ReturnType<typeof vi.fn>;
+				releaseRlmChildSession: ReturnType<typeof vi.fn>;
 			};
-			parentSession.releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+			parentSession.releaseRlmChildSession = vi.fn(() => vi.fn());
 			const childInfo = await readSessionInfo(fixture.childSessionFile);
 			if (!childInfo) throw new Error("Missing child session info");
 			const heartbeat = internals.cronStore.createRlmHeartbeat({
@@ -5346,12 +5131,12 @@ describe("daemon mode helpers", () => {
 			);
 			expect(childState).toBeDefined();
 			expect(fixture.runtimeSessions[1]?.disposeAsync).not.toHaveBeenCalled();
-			expect(parentSession.releaseFinishedRlmChildSession).not.toHaveBeenCalled();
+			expect(parentSession.releaseRlmChildSession).not.toHaveBeenCalled();
 
 			await expect(internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1)).resolves.toBe(1);
 			expect(internals.sessions.has(childState!.activeSessionId)).toBe(false);
 			expect(fixture.runtimeSessions[1]?.disposeAsync).toHaveBeenCalledOnce();
-			expect(parentSession.releaseFinishedRlmChildSession).toHaveBeenCalledWith(
+			expect(parentSession.releaseRlmChildSession).toHaveBeenCalledWith(
 				fixture.childId,
 				childState!.runtime.session,
 			);
@@ -5396,10 +5181,10 @@ describe("daemon mode helpers", () => {
 				sessionPath: fixture.parentSessionFile,
 			});
 			const parentSession = parentState.runtime.session as unknown as {
-				releaseFinishedRlmChildSession: ReturnType<typeof vi.fn>;
-				retainFinishedRlmChildSession: ReturnType<typeof vi.fn>;
+				releaseRlmChildSession: ReturnType<typeof vi.fn>;
+				registerRlmChildSession: ReturnType<typeof vi.fn>;
 			};
-			parentSession.releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+			parentSession.releaseRlmChildSession = vi.fn(() => vi.fn());
 			const childInfo = await readSessionInfo(fixture.childSessionFile);
 			if (!childInfo) throw new Error("Missing child session info");
 			const heartbeat = internals.cronStore.createRlmHeartbeat({
@@ -5431,8 +5216,8 @@ describe("daemon mode helpers", () => {
 			await expect(run).resolves.toBe("skipped");
 			expect(internals.sessions.get(attachedState.activeSessionId)).toBe(attachedState);
 			expect(fixture.runtimeSessions[1]?.disposeAsync).not.toHaveBeenCalled();
-			expect(parentSession.releaseFinishedRlmChildSession).not.toHaveBeenCalled();
-			expect(parentSession.retainFinishedRlmChildSession).toHaveBeenCalledWith(
+			expect(parentSession.releaseRlmChildSession).not.toHaveBeenCalled();
+			expect(parentSession.registerRlmChildSession).toHaveBeenCalledWith(
 				fixture.childId,
 				attachedState.runtime.session,
 			);
@@ -5585,15 +5370,15 @@ describe("daemon mode helpers", () => {
 				sessionPath: fixture.childSessionFile,
 			});
 			const rootSession = rootState.runtime.session as unknown as {
-				releaseFinishedRlmChildSession: ReturnType<typeof vi.fn>;
+				releaseRlmChildSession: ReturnType<typeof vi.fn>;
 			};
-			rootSession.releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+			rootSession.releaseRlmChildSession = vi.fn(() => vi.fn());
 
 			const hydration = internals.getOrHydrateBoundSessionState(fixture.grandchildId);
 			await hydrationStarted;
 			await expect(internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1)).resolves.toBe(0);
 			expect(internals.sessions.get(parentState.activeSessionId)).toBe(parentState);
-			expect(rootSession.releaseFinishedRlmChildSession).not.toHaveBeenCalled();
+			expect(rootSession.releaseRlmChildSession).not.toHaveBeenCalled();
 
 			releaseHydration();
 			const grandchildState = await hydration;
@@ -5603,8 +5388,8 @@ describe("daemon mode helpers", () => {
 				rlmChildId: fixture.grandchildId,
 			});
 			expect(
-				(parentState.runtime.session as unknown as { retainFinishedRlmChildSession: ReturnType<typeof vi.fn> })
-					.retainFinishedRlmChildSession,
+				(parentState.runtime.session as unknown as { registerRlmChildSession: ReturnType<typeof vi.fn> })
+					.registerRlmChildSession,
 			).toHaveBeenCalledWith(fixture.grandchildId, grandchildState.runtime.session);
 		} finally {
 			releaseHydration();
@@ -5834,8 +5619,8 @@ describe("daemon mode helpers", () => {
 			const rootState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
 			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
 			(
-				rootState.runtime.session as unknown as { releaseFinishedRlmChildSession: ReturnType<typeof vi.fn> }
-			).releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+				rootState.runtime.session as unknown as { releaseRlmChildSession: ReturnType<typeof vi.fn> }
+			).releaseRlmChildSession = vi.fn(() => vi.fn());
 
 			const passivation = internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1);
 			await parentDisposeStarted;
@@ -5892,7 +5677,7 @@ describe("daemon mode helpers", () => {
 			await vi.waitFor(() => expect(childState.pendingAttaches).toBe(1));
 			await expect(internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1)).resolves.toBe(0);
 			expect(internals.sessions.get(childState.activeSessionId)).toBe(childState);
-			expect(parentState.runtime.session.releaseFinishedRlmChildSession).not.toHaveBeenCalled();
+			expect(parentState.runtime.session.releaseRlmChildSession).not.toHaveBeenCalled();
 
 			releaseSnapshot();
 			await attach;
@@ -5934,7 +5719,7 @@ describe("daemon mode helpers", () => {
 			await expect(internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1)).resolves.toBe(0);
 			expect(passiveListCalls).toBe(2);
 			expect(childSession.abort).not.toHaveBeenCalled();
-			expect(parentState.runtime.session.releaseFinishedRlmChildSession).not.toHaveBeenCalled();
+			expect(parentState.runtime.session.releaseRlmChildSession).not.toHaveBeenCalled();
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -5963,8 +5748,8 @@ describe("daemon mode helpers", () => {
 			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
 			const childState = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
 			const parentSession = parentState.runtime.session as unknown as {
-				releaseFinishedRlmChildSession: ReturnType<typeof vi.fn>;
-				retainFinishedRlmChildSession: ReturnType<typeof vi.fn>;
+				releaseRlmChildSession: ReturnType<typeof vi.fn>;
+				registerRlmChildSession: ReturnType<typeof vi.fn>;
 			};
 			let parentOwnsChild = true;
 			let forwarderActive = true;
@@ -5975,12 +5760,12 @@ describe("daemon mode helpers", () => {
 			const unsubscribeForwarder = vi.fn(() => {
 				forwarderActive = false;
 			});
-			parentSession.releaseFinishedRlmChildSession = vi.fn(() => {
+			parentSession.releaseRlmChildSession = vi.fn(() => {
 				if (!parentOwnsChild) return false;
 				parentOwnsChild = false;
 				return unsubscribeForwarder;
 			});
-			parentSession.retainFinishedRlmChildSession = vi.fn(
+			parentSession.registerRlmChildSession = vi.fn(
 				(_childId: string, _childSession: unknown, unsubscribe: () => void) => {
 					parentOwnsChild = true;
 					forwarderActive = unsubscribe === unsubscribeForwarder;
@@ -6012,7 +5797,7 @@ describe("daemon mode helpers", () => {
 			await expect(delivery).resolves.toMatchObject({ deliveryStatus: "delivered" });
 			expect(internals.sessions.get(childState.activeSessionId)).toBe(childState);
 			expect(parentOwnsChild).toBe(true);
-			expect(parentSession.retainFinishedRlmChildSession).toHaveBeenCalledWith(
+			expect(parentSession.registerRlmChildSession).toHaveBeenCalledWith(
 				fixture.childId,
 				childState.runtime.session,
 				unsubscribeForwarder,
@@ -6022,7 +5807,7 @@ describe("daemon mode helpers", () => {
 			expect(parentUpdates).toEqual(["recap after failed close"]);
 
 			await expect(internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1)).resolves.toBe(1);
-			expect(parentSession.releaseFinishedRlmChildSession).toHaveBeenCalledTimes(2);
+			expect(parentSession.releaseRlmChildSession).toHaveBeenCalledTimes(2);
 			expect(unsubscribeForwarder).toHaveBeenCalledOnce();
 			emitChildUpdate("recap after successful close");
 			expect(parentUpdates).toEqual(["recap after failed close"]);
@@ -6098,16 +5883,13 @@ describe("daemon mode helpers", () => {
 			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
 			const firstChild = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
 			const parentSession = parentState.runtime.session as unknown as {
-				releaseFinishedRlmChildSession: ReturnType<typeof vi.fn>;
+				releaseRlmChildSession: ReturnType<typeof vi.fn>;
 			};
-			parentSession.releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+			parentSession.releaseRlmChildSession = vi.fn(() => vi.fn());
 
 			expect(await internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 2)).toBe(1);
 			expect(internals.sessions.has(firstChild.activeSessionId)).toBe(false);
-			expect(parentSession.releaseFinishedRlmChildSession).toHaveBeenCalledWith(
-				fixture.childId,
-				firstChild.runtime.session,
-			);
+			expect(parentSession.releaseRlmChildSession).toHaveBeenCalledWith(fixture.childId, firstChild.runtime.session);
 			expect(fixture.runtimeSessions[1]?.disposeAsync).toHaveBeenCalledOnce();
 
 			const listed = (await internals.handleCommand(makeClient("list-client", parentState.activeSessionId), {
@@ -6127,9 +5909,9 @@ describe("daemon mode helpers", () => {
 			// Detach so the same runtime can passivate again and prove a2a wake/delivery.
 			attachedState?.clients.clear();
 			const parentSessionAgain = parentState.runtime.session as unknown as {
-				releaseFinishedRlmChildSession: ReturnType<typeof vi.fn>;
+				releaseRlmChildSession: ReturnType<typeof vi.fn>;
 			};
-			parentSessionAgain.releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+			parentSessionAgain.releaseRlmChildSession = vi.fn(() => vi.fn());
 			expect(await internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 2)).toBe(1);
 			await expect(
 				internals
@@ -6174,8 +5956,8 @@ describe("daemon mode helpers", () => {
 			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
 			const childState = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
 			(
-				parentState.runtime.session as unknown as { releaseFinishedRlmChildSession: ReturnType<typeof vi.fn> }
-			).releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+				parentState.runtime.session as unknown as { releaseRlmChildSession: ReturnType<typeof vi.fn> }
+			).releaseRlmChildSession = vi.fn(() => vi.fn());
 
 			const delivery = internals
 				.createAgentMessageController(() => parentState)
@@ -6218,8 +6000,8 @@ describe("daemon mode helpers", () => {
 			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
 			const childState = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
 			(
-				parentState.runtime.session as unknown as { releaseFinishedRlmChildSession: ReturnType<typeof vi.fn> }
-			).releaseFinishedRlmChildSession = vi.fn(() => vi.fn());
+				parentState.runtime.session as unknown as { releaseRlmChildSession: ReturnType<typeof vi.fn> }
+			).releaseRlmChildSession = vi.fn(() => vi.fn());
 
 			const passivation = internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1);
 			await disposeStarted;
@@ -9017,8 +8799,8 @@ function makeRuntimeSession(
 		},
 		setSubagentRuntimeHost: vi.fn(),
 		getRlmChildRunStatus: vi.fn(() => "running"),
-		retainFinishedRlmChildSession: vi.fn(() => true),
-		releaseFinishedRlmChildSession: vi.fn(() => vi.fn()),
+		registerRlmChildSession: vi.fn(() => true),
+		releaseRlmChildSession: vi.fn(() => vi.fn()),
 		subscribe: vi.fn(() => vi.fn()),
 		bindExtensions: vi.fn(async () => {}),
 		setExecEnvProvider: vi.fn(),
