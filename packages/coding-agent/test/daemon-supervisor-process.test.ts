@@ -571,6 +571,7 @@ describe("daemon supervisor resident workers", () => {
 		const source = await createRoot("source-root");
 		const target = await createRoot("target-root");
 		expect(source.workerPid).not.toBe(target.workerPid);
+		await startBlockingBash(client, target.activeSessionId ?? target.id, join(root, "target-root-blocker.ready"));
 
 		const response = await client.request({
 			type: "send_message",
@@ -586,6 +587,7 @@ describe("daemon supervisor resident workers", () => {
 				source: "agent_message",
 				target: { activeSessionId: target.activeSessionId ?? target.id },
 				message: "hello sibling root",
+				deliveryStatus: "queued",
 			},
 		});
 		const shutdown = await client.request({ type: "shutdown" }, 10_000);
