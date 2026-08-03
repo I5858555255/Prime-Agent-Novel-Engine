@@ -1,5 +1,6 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CustomMessage } from "../../src/core/messages.js";
 import type { ActionStore, SessionAction } from "../../src/core/session-action-store.js";
 import { createHarness, getMessageText, getUserTexts, type Harness } from "./harness.js";
 import { createDeferred } from "./scheduling.js";
@@ -32,6 +33,16 @@ function deliveredCount(harness: Harness, kind: ActionKind, text: string): numbe
 
 function yieldToEventLoop(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
+}
+
+function createContextMessage(content: string): CustomMessage {
+	return {
+		role: "custom",
+		customType: "action-order-context",
+		content,
+		display: false,
+		timestamp: Date.now(),
+	};
 }
 
 describe("AgentSession action commit-fence races", () => {
@@ -259,6 +270,34 @@ describe("AgentSession action commit-fence races", () => {
 				.map((message) => getMessageText(message))
 				.filter((text) => text === "earlier injected prompt" || text === "later ordinary prompt"),
 		).toEqual(["earlier injected prompt", "later ordinary prompt"]);
+	});
+
+	it("keeps each prefix with its primary when dispatching an all-mode batch", async () => {
+		const deliveredMessages: string[] = [];
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([
+			(context) => {
+				deliveredMessages.push(...context.messages.map(getMessageText));
+				return fauxAssistantMessage("done");
+			},
+		]);
+		harness.session.setFollowUpMode("all");
+		await harness.session.restoreFollowUpMessage("primary A", undefined, {
+			prefixMessages: [createContextMessage("prefix A")],
+		});
+		await harness.session.restoreFollowUpMessage("primary B", undefined, {
+			prefixMessages: [createContextMessage("prefix B")],
+		});
+		await harness.session.sendCustomMessage(
+			{ customType: "shared-next-turn", content: "shared next turn", display: false },
+			{ deliverAs: "nextTurn" },
+		);
+
+		harness.session.resumeQueuedWork();
+		await harness.session.waitForIdle();
+
+		expect(deliveredMessages).toEqual(["prefix A", "shared next turn", "primary A", "prefix B", "primary B"]);
 	});
 
 	it("cancels an ordinary prompt while queued work is paused", async () => {

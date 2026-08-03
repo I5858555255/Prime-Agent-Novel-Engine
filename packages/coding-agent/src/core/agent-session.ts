@@ -720,14 +720,6 @@ function primaryDeliveryRecord(action: QueuedSessionAction): DeliveryRecord {
 	return record;
 }
 
-function actionPrefixMessages(action: QueuedSessionAction): CustomMessage[] {
-	return action.payload.kind === "turn"
-		? action.payload.records
-				.filter((record): record is DeliveryRecord & { message: CustomMessage } => record.role === "prefix")
-				.map((record) => record.message)
-		: [];
-}
-
 function normalizeMessageContent(content: string | (TextContent | ImageContent)[]): {
 	text: string;
 	images?: ImageContent[];
@@ -5461,10 +5453,10 @@ export class AgentSession {
 					);
 					const firstPrimaryIndex = turns[0].payload.records.indexOf(primaryDeliveryRecord(turns[0]));
 					turns[0].payload.records.splice(firstPrimaryIndex, 0, ...contextRecords);
-					const preparedMessages: AgentMessage[] = turns.flatMap((action) => actionPrefixMessages(action));
-					preparedMessages.push(...nextTurnMessages);
+					const preparedMessages: AgentMessage[] = turns.flatMap((action) =>
+						action.payload.records.map((record) => record.message),
+					);
 					for (const action of turns) {
-						preparedMessages.push(primaryDeliveryRecord(action).message);
 						if (action.suppressAutonomousContinuation) {
 							this._markAutonomousContinuationSuppressed(primaryDeliveryRecord(action).message);
 						}
