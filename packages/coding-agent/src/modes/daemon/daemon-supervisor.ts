@@ -2000,32 +2000,41 @@ export class DaemonSupervisor {
 		if (pending) {
 			return pending;
 		}
-		let reservedRootName: string | undefined;
-		if (createCommand.name) {
-			const savedSiblings = createCommand.sessionPath ? await this.catalog.siblings(createCommand.sessionPath) : [];
-			const target = savedSiblings.find(
-				(session) => canonicalSessionPath(session.path) === canonicalSessionPath(createCommand.sessionPath!),
-			);
-			const targetSummary = target ? summaryForInactiveSession(target) : { sessionId: "new-root", rlmDepth: 0 };
-			if (target?.parentSessionPath && (target.rlmDepth ?? 0) > 0) {
-				this.assertSavedSiblingNameAvailable(savedSiblings, target, createCommand.name);
-			} else {
-				await this.assertSupervisorSessionNameAvailable(targetSummary, createCommand.name);
-			}
-			if ((targetSummary.rlmDepth ?? 0) === 0) {
-				if (this.pendingRootSessionNames.has(createCommand.name)) {
-					throw new Error(formatAgentSessionNameUnavailable(createCommand.name, 0));
+		const opening = (async () => {
+			let reservedRootName: string | undefined;
+			try {
+				if (createCommand.name) {
+					const savedSiblings = createCommand.sessionPath
+						? await this.catalog.siblings(createCommand.sessionPath)
+						: [];
+					const target = savedSiblings.find(
+						(session) => canonicalSessionPath(session.path) === canonicalSessionPath(createCommand.sessionPath!),
+					);
+					const targetSummary = target
+						? summaryForInactiveSession(target)
+						: { sessionId: "new-root", rlmDepth: 0 };
+					if (target?.parentSessionPath && (target.rlmDepth ?? 0) > 0) {
+						this.assertSavedSiblingNameAvailable(savedSiblings, target, createCommand.name);
+					} else {
+						await this.assertSupervisorSessionNameAvailable(targetSummary, createCommand.name);
+					}
+					if ((targetSummary.rlmDepth ?? 0) === 0) {
+						if (this.pendingRootSessionNames.has(createCommand.name)) {
+							throw new Error(formatAgentSessionNameUnavailable(createCommand.name, 0));
+						}
+						reservedRootName = createCommand.name;
+						this.pendingRootSessionNames.add(reservedRootName);
+					}
 				}
-				reservedRootName = createCommand.name;
-				this.pendingRootSessionNames.add(reservedRootName);
+				return await this.launchWorker(createCommand, undefined, ownerClientId);
+			} finally {
+				if (reservedRootName) this.pendingRootSessionNames.delete(reservedRootName);
 			}
-		}
-		const opening = this.launchWorker(createCommand, undefined, ownerClientId);
+		})();
 		this.openingWorkers.set(key, opening);
 		try {
 			return await opening;
 		} finally {
-			if (reservedRootName) this.pendingRootSessionNames.delete(reservedRootName);
 			if (this.openingWorkers.get(key) === opening) {
 				this.openingWorkers.delete(key);
 			}
@@ -2968,13 +2977,14 @@ export class DaemonSupervisor {
 	}
 
 	private assertSavedSiblingNameAvailable(siblings: SessionInfo[], target: SessionInfo, name: string): void {
+		const setDepth = target.rlmDepth ?? siblings.find((sibling) => sibling.rlmDepth !== undefined)?.rlmDepth ?? 0;
 		assertAgentSessionNameAvailable(
 			siblings.map((info) => {
 				const summary = summaryForInactiveSession(info);
 				return {
 					id: summary.sessionId,
 					...(summary.sessionName ? { name: summary.sessionName } : {}),
-					depth: summary.rlmDepth ?? 0,
+					depth: setDepth,
 					status: classifySessionRosterStatus(summary),
 					...(summary.parentSessionPath
 						? { parentSessionPath: canonicalSessionPath(summary.parentSessionPath) }
@@ -2983,7 +2993,7 @@ export class DaemonSupervisor {
 			}),
 			{
 				name,
-				depth: target.rlmDepth ?? 0,
+				depth: setDepth,
 				parentSessionPath: target.parentSessionPath ? canonicalSessionPath(target.parentSessionPath) : undefined,
 				ignoreSessionId: target.id,
 			},

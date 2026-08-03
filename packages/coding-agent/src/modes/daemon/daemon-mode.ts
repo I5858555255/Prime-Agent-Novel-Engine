@@ -59,6 +59,7 @@ import {
 	DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
 	DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY,
 	DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS,
+	formatAgentSessionNameUnavailable,
 	isAgentSessionMessagePrompt,
 	normalizeAgentSessionMessage,
 	resolveAgentSessionMessageStreamingBehavior,
@@ -486,6 +487,7 @@ export class AgentDaemon {
 	// Sessions inserted into `sessions` but still awaiting extension binding;
 	// visible to host controllers during bind, excluded from targeting.
 	private readonly bindingSessions = new Set<string>();
+	private readonly pendingSessionNames = new Set<string>();
 	private restoreActiveSessionId: string | undefined;
 	private supervisorMonitorTimer?: ReturnType<typeof setTimeout>;
 	private supervisorFenceTimer?: ReturnType<typeof setTimeout>;
@@ -1039,7 +1041,7 @@ export class AgentDaemon {
 		): Promise<void> => {
 			for (const entry of entries) {
 				const sessionKey = resolve(entry.sessionFile);
-				if (entry.status !== "completed" || visited.has(sessionKey)) continue;
+				if (entry.status === "deleted" || visited.has(sessionKey)) continue;
 				visited.add(sessionKey);
 				const info = await readSessionInfo(entry.sessionFile);
 				if (!info) continue;
@@ -1204,9 +1206,6 @@ export class AgentDaemon {
 			lastEventSequence: 0,
 			clientEnv,
 		};
-		if (name) {
-			await this.setStateSessionName(state, name);
-		}
 		this.sessions.set(state.activeSessionId, state);
 		this.bindingSessions.add(state.activeSessionId);
 		let completeBinding!: () => void;
@@ -1216,6 +1215,9 @@ export class AgentDaemon {
 		this.bindingCompletions.set(state.activeSessionId, bindingCompletion);
 		onStateCreated?.(state);
 		try {
+			if (name) {
+				await this.setStateSessionName(state, name);
+			}
 			await bindActiveSessionState(state, {
 				broadcast: (targetSessionState, message) => this.broadcastToSession(targetSessionState, message),
 				createConnectionState: (targetSessionState) => this.createConnectionState(targetSessionState),
@@ -3619,8 +3621,7 @@ export class AgentDaemon {
 				if (!name) {
 					throw new Error("Session name cannot be empty");
 				}
-				await this.assertStateSessionNameAvailable(state, name);
-				state.runtime.session.setSessionName(name);
+				await this.setStateSessionName(state, name);
 				return success(command.id, "rename", summaryForActiveSession(state));
 			}
 
@@ -3634,19 +3635,24 @@ export class AgentDaemon {
 					throw new Error("Session name cannot be empty");
 				}
 				if (state) {
-					await this.assertStateSessionNameAvailable(state, name);
-					state.runtime.session.setSessionName(name);
+					await this.setStateSessionName(state, name);
 				} else {
-					const info = await readSessionInfo(command.sessionPath);
-					if (!info) throw new Error(`Session not found: ${command.sessionPath}`);
-					const depth = info.rlmDepth ?? 0;
-					await this.assertFamilySessionNameAvailable({
-						name,
-						depth,
-						...(depth > 0 && info.parentSessionPath ? { parentSessionPath: info.parentSessionPath } : {}),
-						ignoreSessionId: info.id,
+					await this.withSessionNameReservation(name, 0, async () => {
+						const info = await readSessionInfo(command.sessionPath);
+						if (!info) throw new Error(`Session not found: ${command.sessionPath}`);
+						const depth = info.rlmDepth ?? 0;
+						await this.assertFamilySessionNameAvailable(
+							{
+								name,
+								depth,
+								...(depth > 0 && info.parentSessionPath ? { parentSessionPath: info.parentSessionPath } : {}),
+								ignoreSessionId: info.id,
+							},
+							undefined,
+							true,
+						);
+						SessionManager.open(command.sessionPath).appendSessionInfo(name);
 					});
-					SessionManager.open(command.sessionPath).appendSessionInfo(name);
 				}
 				return success(command.id, "rename_saved_session");
 			}
@@ -4379,8 +4385,7 @@ export class AgentDaemon {
 				if (!name) {
 					throw new Error("Session name cannot be empty");
 				}
-				await this.assertStateSessionNameAvailable(state, name);
-				state.runtime.session.setSessionName(name);
+				await this.setStateSessionName(state, name);
 				return success(command.id, "set_session_name");
 			}
 
@@ -4838,7 +4843,9 @@ export class AgentDaemon {
 				activity: session.isSessionActive ? "working" : "idle",
 				isSessionActive: session.isSessionActive,
 				hasRunningRlmChildren: session.hasRunningRlmChildren?.() ?? false,
-				hasActiveHeartbeat: this.cronStore.getHeartbeat(state.activeSessionId)?.status === "active",
+				hasActiveHeartbeat:
+					this.cronStore.getHeartbeat(state.activeSessionId)?.status === "active" ||
+					this.cronStore.listRlmHeartbeats(state.activeSessionId).some((job) => job.status === "active"),
 				isStreaming: session.isStreaming,
 			} as SessionSummary),
 			...(metadata.rlmChildId ? { rlmChildId: metadata.rlmChildId } : {}),
@@ -4893,8 +4900,9 @@ export class AgentDaemon {
 		};
 	}
 
-	private async createAgentFamilyCatalog(): Promise<AgentFamilyCatalogEntry[]> {
-		const current = [...this.sessions.values()].find((state) => !this.bindingSessions.has(state.activeSessionId));
+	private async createAgentFamilyCatalog(currentState?: ActiveSessionState): Promise<AgentFamilyCatalogEntry[]> {
+		const current =
+			currentState ?? [...this.sessions.values()].find((state) => !this.bindingSessions.has(state.activeSessionId));
 		const listed = current ? await this.createAgentMessageListResult(current) : { agents: [] };
 		const remotePeers = new Set(this.remoteAgentPeers.values());
 		const localAgents = current
@@ -4950,20 +4958,27 @@ export class AgentDaemon {
 	}
 
 	private async createAgentFamilyRoster(currentState: ActiveSessionState): Promise<AgentFamilyRosterResult> {
-		const catalog = await this.createAgentFamilyCatalog();
+		const catalog = await this.createAgentFamilyCatalog(currentState);
 		const current = catalog.find((entry) => entry.id === currentState.runtime.session.sessionId);
 		if (!current) throw new Error("Current agent is missing from the family catalog");
 		return buildAgentFamilyRoster(current, catalog);
 	}
 
-	private async assertFamilySessionNameAvailable(input: {
-		name: string;
-		depth: number;
-		parentSessionId?: string;
-		parentSessionPath?: string;
-		ignoreSessionId?: string;
-	}): Promise<void> {
-		assertAgentSessionNameAvailable(await this.createAgentFamilyCatalog(), {
+	private async assertFamilySessionNameAvailable(
+		input: {
+			name: string;
+			depth: number;
+			parentSessionId?: string;
+			parentSessionPath?: string;
+			ignoreSessionId?: string;
+		},
+		currentState?: ActiveSessionState,
+		ignorePendingReservation = false,
+	): Promise<void> {
+		if (!ignorePendingReservation && this.pendingSessionNames.has(input.name)) {
+			throw new Error(formatAgentSessionNameUnavailable(input.name, input.depth));
+		}
+		assertAgentSessionNameAvailable(await this.createAgentFamilyCatalog(currentState), {
 			...input,
 			...(input.parentSessionPath ? { parentSessionPath: resolve(input.parentSessionPath) } : {}),
 		});
@@ -4973,13 +4988,34 @@ export class AgentDaemon {
 		const session = state.runtime.session;
 		const metadata = state.runtime.metadata;
 		const depth = session.rlmDepth ?? 0;
-		await this.assertFamilySessionNameAvailable({
-			name,
-			depth,
-			...(depth > 0 && metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
-			...(depth > 0 && metadata.parentSessionFile ? { parentSessionPath: metadata.parentSessionFile } : {}),
-			ignoreSessionId: session.sessionId,
-		});
+		const headerParent = depth > 0 ? session.sessionManager.getHeader()?.parentSession : undefined;
+		await this.assertFamilySessionNameAvailable(
+			{
+				name,
+				depth,
+				...(depth > 0 && !headerParent && metadata.parentSessionId
+					? { parentSessionId: metadata.parentSessionId }
+					: {}),
+				...(depth > 0 && (headerParent ?? metadata.parentSessionFile)
+					? { parentSessionPath: headerParent ?? metadata.parentSessionFile }
+					: {}),
+				ignoreSessionId: session.sessionId,
+			},
+			state,
+			true,
+		);
+	}
+
+	private async withSessionNameReservation<T>(name: string, depth: number, action: () => Promise<T>): Promise<T> {
+		if (this.pendingSessionNames.has(name)) {
+			throw new Error(formatAgentSessionNameUnavailable(name, depth));
+		}
+		this.pendingSessionNames.add(name);
+		try {
+			return await action();
+		} finally {
+			this.pendingSessionNames.delete(name);
+		}
 	}
 
 	private async setStateSessionName(state: ActiveSessionState, name: string): Promise<void> {
@@ -4987,8 +5023,10 @@ export class AgentDaemon {
 		if (!normalizedName) {
 			throw new Error("Session name cannot be empty");
 		}
-		await this.assertStateSessionNameAvailable(state, normalizedName);
-		state.runtime.session.setSessionName(normalizedName);
+		return this.withSessionNameReservation(normalizedName, state.runtime.session.rlmDepth ?? 0, async () => {
+			await this.assertStateSessionNameAvailable(state, normalizedName);
+			state.runtime.session.setSessionName(normalizedName);
+		});
 	}
 
 	// Half-bound sessions are hidden from other sessions' listings; the current

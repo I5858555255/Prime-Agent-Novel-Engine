@@ -13,8 +13,16 @@ interface SupervisorInternals {
 	refreshWorkerSummaries(worker: WorkerFixture): Promise<void>;
 	syncAgentPeers(): Promise<void>;
 	findSummaryInWorker(worker: WorkerFixture, selector: string): SessionSummary | undefined;
-	createOrReuseWorker(clientId: string, command: { type: "create"; name: string }): Promise<WorkerFixture>;
+	createOrReuseWorker(
+		clientId: string,
+		command: { type: "create"; name?: string; sessionPath?: string },
+	): Promise<WorkerFixture>;
 	assertSupervisorSavedSessionNameAvailable(sessionPath: string, name: string): Promise<void>;
+	assertSavedSiblingNameAvailable(
+		siblings: Array<Record<string, unknown>>,
+		target: Record<string, unknown>,
+		name: string,
+	): void;
 }
 
 interface WorkerFixture {
@@ -199,6 +207,95 @@ describe("daemon supervisor passive subagent topology", () => {
 			"Session name cannot be empty",
 		);
 		expect(launchWorker).not.toHaveBeenCalled();
+	});
+
+	it("checks inactive root renames against every saved root", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-saved-root-rename-"));
+		tempDirs.push(directory);
+		const targetPath = join(directory, "target.jsonl");
+		const duplicatePath = join(directory, "duplicate.jsonl");
+		const target = {
+			id: "target",
+			path: targetPath,
+			cwd: directory,
+			created: new Date(0),
+			modified: new Date(0),
+			messageCount: 0,
+			firstMessage: "",
+			allMessagesText: "",
+		};
+		const duplicate = { ...target, id: "duplicate", path: duplicatePath, name: "taken" };
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+		Object.assign(supervisor, {
+			catalog: {
+				siblings: vi.fn(async () => [target]),
+				list: vi.fn(async () => [target, duplicate]),
+			},
+		});
+
+		await expect(supervisor.assertSupervisorSavedSessionNameAvailable(targetPath, "taken")).rejects.toThrow(
+			"an agent of that name already exists at depth 0 under this parent",
+		);
+	});
+
+	it("compares legacy and modern saved siblings at one neutral depth", () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-legacy-sibling-name-"));
+		tempDirs.push(directory);
+		const parentSessionPath = join(directory, "parent.jsonl");
+		const base = {
+			cwd: directory,
+			created: new Date(0),
+			modified: new Date(0),
+			messageCount: 0,
+			firstMessage: "",
+			allMessagesText: "",
+		};
+		const target = { ...base, id: "target", path: join(directory, "target.jsonl"), parentSessionPath, rlmDepth: 1 };
+		const legacy = { ...base, id: "legacy", path: join(directory, "legacy.jsonl"), parentSessionPath, name: "taken" };
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+
+		expect(() => supervisor.assertSavedSiblingNameAvailable([target, legacy], target, "taken")).toThrow(
+			"an agent of that name already exists at depth 1 under this parent",
+		);
+	});
+
+	it("publishes an opening reservation before named create validation awaits", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-named-create-race-"));
+		tempDirs.push(directory);
+		const sessionPath = join(directory, "session.jsonl");
+		let releaseSiblings!: () => void;
+		const siblingGate = new Promise<void>((resolve) => {
+			releaseSiblings = resolve;
+		});
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+		const resident = worker("opened");
+		const launchWorker = vi.fn(async () => resident);
+		Object.assign(supervisor, {
+			catalog: {
+				resolve: vi.fn(async () => sessionPath),
+				siblings: vi.fn(async () => {
+					await siblingGate;
+					return [];
+				}),
+				list: vi.fn(async () => []),
+			},
+			launchWorker,
+		});
+
+		const first = supervisor.createOrReuseWorker("client", { type: "create", name: "named", sessionPath });
+		const second = supervisor.createOrReuseWorker("client", { type: "create", sessionPath });
+		releaseSiblings();
+		expect(await Promise.all([first, second])).toEqual([resident, resident]);
+		expect(launchWorker).toHaveBeenCalledOnce();
 	});
 
 	it("retains passive worker summaries but syncs only roots to cross-worker peer maps", async () => {
