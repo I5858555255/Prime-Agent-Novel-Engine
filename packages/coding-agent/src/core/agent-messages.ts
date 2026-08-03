@@ -130,6 +130,7 @@ export interface AgentSessionMessageController {
 	listAgents(): AgentSessionMessageListResult | Promise<AgentSessionMessageListResult>;
 	roster?(): AgentFamilyRosterResult | Promise<AgentFamilyRosterResult>;
 	assertSessionNameAvailable?(input: AgentSessionNameAvailabilityInput): void | Promise<void>;
+	setSessionName?(name: string): void | Promise<void>;
 	sendAgentMessage(input: AgentSessionMessageSendInput): Promise<AgentSessionMessageReceipt>;
 }
 
@@ -139,6 +140,10 @@ export interface AgentSessionMessageSafetyStatus {
 	maxPendingPerSession: number;
 	rateLimitCapacity: number;
 	rateLimitRefillMs: number;
+}
+
+export function formatAgentSessionNameUnavailable(name: string, depth: number): string {
+	return `Agent name "${name}" is unavailable: an agent of that name already exists at depth ${depth} under this parent`;
 }
 
 export function assertAgentSessionNameAvailable(
@@ -153,9 +158,7 @@ export function assertAgentSessionNameAvailable(
 			sameAgentFamilyParent(entry, input),
 	);
 	if (conflict) {
-		throw new Error(
-			`Agent name "${input.name}" is unavailable: an agent of that name already exists at depth ${input.depth} under this parent`,
-		);
+		throw new Error(formatAgentSessionNameUnavailable(input.name, input.depth));
 	}
 }
 

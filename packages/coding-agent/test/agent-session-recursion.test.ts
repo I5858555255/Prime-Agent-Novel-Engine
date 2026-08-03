@@ -28,6 +28,7 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager, type SettingsStorage } from "../src/core/settings-manager.js";
 import type { Skill } from "../src/core/skills.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
+import { type ActiveSessionState, resolveActiveSessionState } from "../src/modes/daemon/active-session-state.js";
 import { createTestResourceLoader } from "./utilities.js";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -377,6 +378,34 @@ describe("AgentSession rlm recursion", () => {
 		await expect(root.runRlmChild("reserved name", { name: "all" })).rejects.toThrow(
 			"Broadcast agent messaging is not supported",
 		);
+	});
+
+	it("throws loud ambiguity when a child name equals a sibling session id for send and delete", async () => {
+		const first = createSession({ rlmSessionDir: join(tempDir, "first") });
+		const second = createSession({ rlmSessionDir: join(tempDir, "second") });
+		second.setSessionName(first.sessionId);
+		const root = createSession();
+		expect(root.retainFinishedRlmChildSession("first-child", first)).toBe(true);
+		expect(root.retainFinishedRlmChildSession("second-child", second)).toBe(true);
+		const states = new Map<string, ActiveSessionState>([
+			[
+				"first-active",
+				{
+					activeSessionId: "first-active",
+					runtime: { session: first },
+				} as ActiveSessionState,
+			],
+			[
+				"second-active",
+				{
+					activeSessionId: "second-active",
+					runtime: { session: second },
+				} as ActiveSessionState,
+			],
+		]);
+
+		expect(() => resolveActiveSessionState(states, first.sessionId)).toThrow("Ambiguous active session");
+		await expect(root.deleteRlmSubagent(first.sessionId)).rejects.toThrow("is ambiguous");
 	});
 
 	it("reserves a running child's current name after it is renamed", async () => {

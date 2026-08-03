@@ -184,6 +184,81 @@ describe("daemon mode helpers", () => {
 		});
 	});
 
+	it("classifies local roster status with heartbeat and running-child activity", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-status-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const state = makeState("local-active");
+		let hasRunningChildren = true;
+		state.runtime = {
+			...state.runtime,
+			cwd: "/tmp",
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: {
+				sessionId: "local-session",
+				isSessionActive: false,
+				isStreaming: false,
+				unfinishedActionCount: 0,
+				hasRunningRlmChildren: () => hasRunningChildren,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			cronStore: { getHeartbeat(activeSessionId: string): AgentCronJob | undefined };
+			createAgentMessageAgentSummary(state: ActiveSessionState): { status?: string };
+		};
+		const getHeartbeat = vi.spyOn(internals.cronStore, "getHeartbeat").mockReturnValue(undefined);
+
+		expect(internals.createAgentMessageAgentSummary(state).status).toBe("running");
+		hasRunningChildren = false;
+		getHeartbeat.mockReturnValue({ status: "active" } as AgentCronJob);
+		expect(internals.createAgentMessageAgentSummary(state).status).toBe("running");
+	});
+
+	it("keeps fresh local rows over stale synced peers in the family catalog", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-local-precedence.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const state = makeState("local-active");
+		state.runtime = {
+			...state.runtime,
+			cwd: "/tmp",
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: {
+				sessionId: "shared-session",
+				sessionName: "fresh-local",
+				isSessionActive: false,
+				isStreaming: false,
+				unfinishedActionCount: 0,
+				hasRunningRlmChildren: () => false,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			remoteAgentPeers: Map<string, Record<string, unknown>>;
+			createAgentFamilyCatalog(): Promise<Array<{ id: string; name?: string }>>;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+		internals.remoteAgentPeers.set("stale-active", {
+			activeSessionId: "stale-active",
+			sessionId: "shared-session",
+			sessionName: "stale-peer",
+			runtimeKind: "top-level",
+			cwd: "/tmp",
+			isStreaming: false,
+			unfinishedActionCount: 0,
+		});
+		const listAll = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
+		try {
+			expect(await internals.createAgentFamilyCatalog()).toContainEqual(
+				expect.objectContaining({ id: "shared-session", name: "fresh-local" }),
+			);
+		} finally {
+			listAll.mockRestore();
+		}
+	});
+
 	it("lists and sends agent messages to completed retained subagents", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },

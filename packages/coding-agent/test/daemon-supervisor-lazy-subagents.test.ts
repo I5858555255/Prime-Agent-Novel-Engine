@@ -12,6 +12,7 @@ interface SupervisorInternals {
 	refreshWorkerSummaries(worker: WorkerFixture): Promise<void>;
 	syncAgentPeers(): Promise<void>;
 	findSummaryInWorker(worker: WorkerFixture, selector: string): SessionSummary | undefined;
+	createOrReuseWorker(clientId: string, command: { type: "create"; name: string }): Promise<WorkerFixture>;
 }
 
 interface WorkerFixture {
@@ -83,6 +84,39 @@ describe("daemon supervisor passive subagent topology", () => {
 		const resident = worker("first", [child]);
 
 		expect(supervisor.findSummaryInWorker(resident, "88889999cccc")).toBe(child);
+	});
+
+	it("rejects an explicit root name that collides with a saved root", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-root-name-"));
+		tempDirs.push(directory);
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+		const launchWorker = vi.fn();
+		Object.assign(supervisor, {
+			catalog: {
+				list: vi.fn(async () => [
+					{
+						id: "saved-root",
+						name: "duplicate-root",
+						path: join(directory, "saved.jsonl"),
+						cwd: directory,
+						created: new Date(0),
+						modified: new Date(0),
+						messageCount: 0,
+						firstMessage: "",
+						allMessagesText: "",
+					},
+				]),
+			},
+			launchWorker,
+		});
+
+		await expect(
+			supervisor.createOrReuseWorker("client", { type: "create", name: "duplicate-root" }),
+		).rejects.toThrow("an agent of that name already exists at depth 0 under this parent");
+		expect(launchWorker).not.toHaveBeenCalled();
 	});
 
 	it("retains passive worker summaries and sends them to cross-worker agent peer maps", async () => {

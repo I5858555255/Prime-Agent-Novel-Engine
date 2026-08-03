@@ -62,6 +62,7 @@ import {
 	type AgentSessionMessageReceipt,
 	assertDirectAgentMessageTarget,
 	createAgentMessageHostHandlers,
+	formatAgentSessionNameUnavailable,
 	isAgentSessionMessage,
 	normalizeAgentSessionMessage,
 	normalizeAgentSessionMessageDeliveryMode,
@@ -8135,7 +8136,11 @@ export class AgentSession {
 				appendEntry: (customType, data) => {
 					this.sessionManager.appendCustomEntry(customType, data);
 				},
-				setSessionName: (name) => {
+				setSessionName: async (name) => {
+					if (this._agentMessageController?.setSessionName) {
+						await this._agentMessageController.setSessionName(name);
+						return;
+					}
 					this.setSessionName(name);
 				},
 				getSessionName: () => {
@@ -9234,9 +9239,7 @@ export class AgentSession {
 	private async _assertRlmSubagentSessionNameAvailable(name: string, ignorePendingReservation = false): Promise<void> {
 		const depth = this._rlmDepth + 1;
 		if (!ignorePendingReservation && this._pendingRlmSubagentSessionNames.has(name)) {
-			throw new Error(
-				`Agent name "${name}" is unavailable: an agent of that name already exists at depth ${depth} under this parent`,
-			);
+			throw new Error(formatAgentSessionNameUnavailable(name, depth));
 		}
 		const localConflict =
 			[...this._activeRlmChildRuns.values()].some(
@@ -9245,9 +9248,7 @@ export class AgentSession {
 			[...this._retainedRlmChildSessions.values()].some((session) => session.sessionName === name) ||
 			[...this._retryableRlmSubagentDeletions.values()].some((entry) => entry.session_name === name);
 		if (localConflict) {
-			throw new Error(
-				`Agent name "${name}" is unavailable: an agent of that name already exists at depth ${depth} under this parent`,
-			);
+			throw new Error(formatAgentSessionNameUnavailable(name, depth));
 		}
 		if (!this._agentMessageController?.assertSessionNameAvailable) return;
 		await this._agentMessageController.assertSessionNameAvailable({
@@ -9326,9 +9327,7 @@ export class AgentSession {
 		}
 		if (requestedSessionName) {
 			if (this._pendingRlmSubagentSessionNames.has(requestedSessionName)) {
-				throw new Error(
-					`Agent name "${requestedSessionName}" is unavailable: an agent of that name already exists at depth ${this._rlmDepth + 1} under this parent`,
-				);
+				throw new Error(formatAgentSessionNameUnavailable(requestedSessionName, this._rlmDepth + 1));
 			}
 			this._pendingRlmSubagentSessionNames.add(requestedSessionName);
 		}
