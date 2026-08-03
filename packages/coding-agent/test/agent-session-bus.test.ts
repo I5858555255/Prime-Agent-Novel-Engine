@@ -207,8 +207,46 @@ describe("agent session bus", () => {
 		});
 
 		sendAgentMessage.mockClear();
-		await handlers["agent_message.send"]!({ target: "all", message: "status" });
+		await expect(handlers["agent_message.send"]!({ target: "all", message: "status" })).resolves.toMatchObject({
+			receipts: [
+				{ id: "root", deliveryStatus: "delivered" },
+				{ id: "sibling", deliveryStatus: "delivered" },
+				{ id: "child", deliveryStatus: "delivered" },
+			],
+		});
 		expect(sendAgentMessage.mock.calls.map(([input]) => input.target)).toEqual(["root", "sibling", "child"]);
+	});
+
+	it("reports individual broadcast failures without rejecting successful receipts", async () => {
+		const sendAgentMessage = vi.fn(async (input: { target: string; message: string }) => {
+			if (input.target === "sibling") throw new Error("rate limited");
+			return {
+				id: input.target,
+				source: AGENT_MESSAGE_SOURCE as typeof AGENT_MESSAGE_SOURCE,
+				target: { activeSessionId: input.target, sessionId: input.target },
+				message: input.message,
+				deliveryStatus: "delivered" as const,
+				deliveredAt: new Date(0).toISOString(),
+				deliveryMode: "auto" as const,
+			};
+		});
+		const handlers = createAgentMessageHostHandlers({
+			roster: () => ({
+				current: { name: "builder", id: "builder", depth: 1 },
+				entries: [
+					{ relationship: "parent", name: "root", id: "root", depth: 0, status: "running" },
+					{ relationship: "sibling", name: "reviewer", id: "sibling", depth: 1, status: "idle" },
+				],
+			}),
+			sendAgentMessage,
+		});
+
+		await expect(handlers["agent_message.send"]!({ target: "all", message: "status" })).resolves.toMatchObject({
+			receipts: [
+				{ id: "root", deliveryStatus: "delivered" },
+				{ target: "sibling", error: "rate limited" },
+			],
+		});
 	});
 
 	it("authorizes exactly one persisted nuclear-family edge", () => {
@@ -225,8 +263,16 @@ describe("agent session bus", () => {
 			id: "sibling",
 			depth: 1,
 			status: "idle" as const,
+			parentSessionId: "root",
 			parentSessionPath: "/root",
 			sessionPath: "/sibling",
+		};
+		const idOnlySibling = {
+			id: "id-only-sibling",
+			depth: 1,
+			status: "idle" as const,
+			parentSessionId: "root",
+			sessionPath: "/id-only-sibling",
 		};
 		const grandchild = {
 			id: "grandchild",
@@ -239,6 +285,7 @@ describe("agent session bus", () => {
 		expect(assertAgentFamilyReach(root, child)).toBe("child");
 		expect(assertAgentFamilyReach(child, root)).toBe("parent");
 		expect(assertAgentFamilyReach(child, sibling)).toBe("sibling");
+		expect(assertAgentFamilyReach(sibling, idOnlySibling)).toBe("sibling");
 		expect(() => assertAgentFamilyReach(root, grandchild)).toThrow(
 			"Agent reach is limited to parent, siblings, and children",
 		);

@@ -78,7 +78,13 @@ async def send(
     if mode not in ("auto", "follow_up", "steer"):
         raise ValueError('mode must be "auto", "follow_up", or "steer"')
     receipt = await host_request("agent_message.send", payload)
-    _emit_sent_message(receipt, receiver_role)
+    receipts = receipt.get("receipts") if isinstance(receipt, dict) else None
+    if isinstance(receipts, list):
+        for item in receipts:
+            if isinstance(item, dict) and "deliveryStatus" in item:
+                _emit_sent_message(item)
+    else:
+        _emit_sent_message(receipt, receiver_role)
     return receipt
 
 

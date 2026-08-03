@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -2027,6 +2027,43 @@ describe("daemon mode helpers", () => {
 			0;
 
 		expect(internals.createAgentObserveListResult(targetState).current.status).toBe("compacting");
+	});
+
+	it("canonicalizes symlinked family paths before comparison", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-family-paths-"));
+		try {
+			const realDir = join(tempDir, "real");
+			const aliasDir = join(tempDir, "alias");
+			mkdirSync(realDir);
+			symlinkSync(realDir, aliasDir, "dir");
+			const daemon = new AgentDaemon("/tmp/prime-agent-family-paths.sock", {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: vi.fn(),
+			});
+			const parent = makeState("parent");
+			const child = makeState("child", "parent");
+			parent.runtime = {
+				...parent.runtime,
+				metadata: { ...parent.runtime.metadata, kind: "top-level" },
+				session: { sessionId: "session-parent", sessionFile: join(realDir, "parent.jsonl") },
+			} as never;
+			child.runtime = {
+				...child.runtime,
+				metadata: {
+					...child.runtime.metadata,
+					parentSessionId: "session-parent",
+					parentSessionFile: join(aliasDir, "parent.jsonl"),
+				},
+				session: { sessionId: "session-child", sessionFile: join(realDir, "child.jsonl") },
+			} as never;
+			const internals = daemon as unknown as {
+				assertAgentFamilyReachable(current: ActiveSessionState, target: ActiveSessionState): void;
+			};
+
+			expect(() => internals.assertAgentFamilyReachable(parent, child)).not.toThrow();
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("limits agent send and observation to the nuclear family", async () => {

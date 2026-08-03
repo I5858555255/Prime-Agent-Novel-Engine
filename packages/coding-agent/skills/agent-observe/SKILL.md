@@ -6,10 +6,11 @@ description: Read-only observation of an agent's parent, siblings, and direct ch
 # Agent Observe
 
 Observe the current agent's nuclear family through the local daemon: parent,
-siblings, direct children, and self. Roots are siblings. This skill is
-read-only: it can list family sessions, inspect one session, and fetch bounded
-recent message previews. It cannot prompt, steer, clear, kill, rename, or otherwise
-mutate another session.
+siblings, direct children, and self. Observation is currently limited to family
+members in the same worker; root siblings in other workers are not observable yet.
+This skill is read-only: it can list family sessions, inspect one session, and fetch
+bounded recent message previews. It cannot prompt, steer, clear, kill, rename, or
+otherwise mutate another session.
 
 Call directly from the kernel:
 

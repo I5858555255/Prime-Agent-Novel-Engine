@@ -42,7 +42,9 @@ if child is not None:
   required for siblings and children and omitted for the unique parent. Legacy
   positional `send(target, message)` resolves names or ids but rejects targets
   outside the nuclear family. `send("all", message)` broadcasts only to the
-  family roster. `mode` is
+  family roster and returns `{receipts: [...]}` in roster order; successful entries
+  are ordinary receipts and failed entries contain the target id and a short `error`.
+  One failed delivery does not reject successful deliveries. `mode` is
   `"auto"`, `"follow_up"`, or `"steer"`. In `auto` mode, messages to busy sessions are queued as steering
   messages so the target sees them during the active run; use `"follow_up"` for
   intentionally delayed delivery. Returns a receipt with a `deliveryStatus`

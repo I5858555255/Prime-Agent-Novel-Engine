@@ -1768,6 +1768,7 @@ export class DaemonSupervisor {
 		}
 
 		if (command.type === "send_message") {
+			// agentOrigin without fromActiveSessionId is trusted only at the direct socket-client boundary.
 			const source = command.fromActiveSessionId
 				? await this.findWorkerForClient(client, command.fromActiveSessionId)
 				: undefined;

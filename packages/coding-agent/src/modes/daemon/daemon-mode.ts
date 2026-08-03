@@ -105,7 +105,7 @@ import {
 	type SessionPassivationSnapshot,
 } from "../../core/session-action-store.js";
 import { deleteSessionFile } from "../../core/session-file-actions.js";
-import { acquireSessionLease, type SessionLease } from "../../core/session-lease.js";
+import { acquireSessionLease, canonicalSessionPath, type SessionLease } from "../../core/session-lease.js";
 import {
 	readSessionInfo,
 	resolveSessionRlmDepth,
@@ -2853,6 +2853,7 @@ export class AgentDaemon {
 		currentState: ActiveSessionState,
 		target: string,
 	): Promise<AgentObserveAgentSnapshot> {
+		// Follow-up: authorize from persisted metadata before hydrating passive targets.
 		const targetState = await this.getOrHydrateBoundSessionState(target);
 		this.assertAgentFamilyReachable(currentState, targetState);
 		return {
@@ -2864,6 +2865,7 @@ export class AgentDaemon {
 		currentState: ActiveSessionState,
 		input: AgentObserveRecentMessagesInput,
 	): Promise<AgentObserveRecentMessagesResult> {
+		// Follow-up: authorize from persisted metadata before hydrating passive targets.
 		const targetState = await this.getOrHydrateBoundSessionState(input.target);
 		this.assertAgentFamilyReachable(currentState, targetState);
 		const limit = normalizeObserveLimit(input.limit);
@@ -5075,8 +5077,10 @@ export class AgentDaemon {
 			depth: state.runtime.session.rlmDepth ?? 0,
 			status: "running",
 			...(metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
-			...(metadata.parentSessionFile ? { parentSessionPath: resolve(metadata.parentSessionFile) } : {}),
-			...(state.runtime.session.sessionFile ? { sessionPath: resolve(state.runtime.session.sessionFile) } : {}),
+			...(metadata.parentSessionFile ? { parentSessionPath: canonicalSessionPath(metadata.parentSessionFile) } : {}),
+			...(state.runtime.session.sessionFile
+				? { sessionPath: canonicalSessionPath(state.runtime.session.sessionFile) }
+				: {}),
 		};
 	}
 
@@ -5125,6 +5129,7 @@ export class AgentDaemon {
 		}
 		const targetSelector = assertDirectAgentMessageTarget(options.targetSelector);
 		const message = normalizeAgentSessionMessage(options.message, DEFAULT_AGENT_MESSAGE_MAX_CHARS);
+		// Follow-up: authorize agent-origin selectors from persisted metadata before hydration.
 		let targetState: ActiveSessionState;
 		try {
 			targetState = this.getBoundSessionState(targetSelector);
