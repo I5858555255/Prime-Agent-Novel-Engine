@@ -19,6 +19,8 @@ export type AgentSessionMessageRuntimeKind = "top-level" | "subagent";
 export type AgentFamilyStatus = "running" | "idle" | "inactive";
 export type AgentFamilyRelationship = "parent" | "sibling" | "child";
 
+export const AGENT_FAMILY_REACH_ERROR = "Agent reach is limited to parent, siblings, and children";
+
 export interface AgentSessionMessageEndpoint {
 	activeSessionId: string;
 	sessionId: string;
@@ -281,6 +283,27 @@ function isAgentFamilyParent(parent: AgentFamilyCatalogEntry, child: AgentFamily
 	);
 }
 
+/** Pure nuclear-family policy over persisted parent-edge snapshots. */
+export function agentFamilyRelationship(
+	current: AgentFamilyCatalogEntry,
+	target: AgentFamilyCatalogEntry,
+): AgentFamilyRelationship | undefined {
+	if (current.id === target.id) return undefined;
+	if (isAgentFamilyParent(target, current)) return "parent";
+	if (isAgentFamilyParent(current, target)) return "child";
+	if (sameAgentFamilyParent(current, target)) return "sibling";
+	return undefined;
+}
+
+export function assertAgentFamilyReach(
+	current: AgentFamilyCatalogEntry,
+	target: AgentFamilyCatalogEntry,
+): AgentFamilyRelationship {
+	const relationship = agentFamilyRelationship(current, target);
+	if (!relationship) throw new Error(AGENT_FAMILY_REACH_ERROR);
+	return relationship;
+}
+
 export function createAgentSessionMessageId(): string {
 	return `agentmsg_${randomUUID()}`;
 }
@@ -504,10 +527,9 @@ export class AgentSessionMessageRateLimiter {
 }
 
 export function createAgentMessageHostHandlers(
-	controller: AgentSessionMessageController,
+	controller: Pick<AgentSessionMessageController, "roster" | "sendAgentMessage">,
 ): Record<string, HostRequestHandler> {
 	return {
-		"agent_message.list": async () => (await controller.listAgents()) as unknown as Record<string, unknown>,
 		"agent_message.roster": async () => {
 			if (!controller.roster) throw new Error("agent family roster is not available in this session");
 			return (await controller.roster()) as unknown as Record<string, unknown>;

@@ -546,6 +546,53 @@ describe("daemon supervisor resident workers", () => {
 		await waitForSocketGone(socketPath);
 	}, 60_000);
 
+	it("delivers agent-origin messages between root siblings on separate workers", async () => {
+		const root = tempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const sessionDir = join(agentDir, "sessions");
+		const socketPath = join(
+			tmpdir(),
+			`prime-supervisor-root-message-${process.pid}-${randomUUID().slice(0, 8)}.sock`,
+		);
+		mkdirSync(projectDir, { recursive: true });
+
+		const supervisor = spawnSupervisor(agentDir, socketPath, projectDir);
+		const client = await connectEventually(socketPath, supervisor);
+		const createRoot = async (name: string) => {
+			const response = await client.request({
+				type: "create",
+				name,
+				config: { cwd: projectDir, agentDir, sessionDir, noTools: true, noExtensions: true },
+			});
+			expect(response.success).toBe(true);
+			return requireSummary(response.success ? response.data : undefined);
+		};
+		const source = await createRoot("source-root");
+		const target = await createRoot("target-root");
+		expect(source.workerPid).not.toBe(target.workerPid);
+
+		const response = await client.request({
+			type: "send_message",
+			fromActiveSessionId: source.activeSessionId ?? source.id,
+			targetActiveSessionId: target.activeSessionId ?? target.id,
+			message: "hello sibling root",
+			agentOrigin: true,
+		});
+		expect(response).toMatchObject({
+			success: true,
+			data: {
+				source: "agent_message",
+				target: { activeSessionId: target.activeSessionId ?? target.id },
+				message: "hello sibling root",
+			},
+		});
+		const shutdown = await client.request({ type: "shutdown" }, 10_000);
+		expect(shutdown.success).toBe(true);
+		client.close();
+		await waitForSocketGone(socketPath);
+	}, 30_000);
+
 	it("cancels an archived session heartbeat without spawning a worker", { tags: ["process-stress"] }, async () => {
 		const root = tempDir();
 		const agentDir = join(root, "agent");

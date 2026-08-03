@@ -16,6 +16,7 @@ import {
 import {
 	type AgentFamilyCatalogEntry,
 	type AgentSessionMessageAgentSummary,
+	assertAgentFamilyReach,
 	assertAgentSessionNameAvailable,
 	formatAgentSessionNameUnavailable,
 } from "../../core/agent-messages.js";
@@ -39,7 +40,7 @@ import {
 	type WorkerEvictionSnapshot,
 } from "../../core/session-action-store.js";
 import { canonicalSessionPath, getProcessStartId, SessionAlreadyActiveError } from "../../core/session-lease.js";
-import type { SessionInfo } from "../../core/session-manager.js";
+import { readSessionInfo, type SessionInfo } from "../../core/session-manager.js";
 import { SettingsManager } from "../../core/settings-manager.js";
 import { signalProcessGroupOrProcess } from "../../utils/child-process.js";
 import type { AgentConnectionHeartbeat } from "../agent-connection/types.js";
@@ -1791,6 +1792,14 @@ export class DaemonSupervisor {
 					}
 					throw error;
 				}
+				if (source && command.agentOrigin === true) {
+					const targetInfo = await readSessionInfo(sessionPath);
+					if (!targetInfo) throw new Error(`Unknown active session: ${command.targetActiveSessionId}`);
+					assertAgentFamilyReach(
+						this.familyCatalogEntry(source.summary),
+						this.familyCatalogEntry(summaryForInactiveSession(targetInfo)),
+					);
+				}
 				const worker = await this.createOrReuseWorker(this.protocolClientId(client), {
 					type: "create",
 					sessionPath,
@@ -1803,6 +1812,9 @@ export class DaemonSupervisor {
 				target = { worker, summary };
 			}
 			const targetActiveSessionId = target.summary.activeSessionId ?? target.summary.id;
+			if (source && command.agentOrigin === true) {
+				assertAgentFamilyReach(this.familyCatalogEntry(source.summary), this.familyCatalogEntry(target.summary));
+			}
 			if (source) {
 				if ((source.summary.activeSessionId ?? source.summary.id) === targetActiveSessionId) {
 					throw new Error("Agent messaging cannot target the sending session");
@@ -2992,9 +3004,10 @@ export class DaemonSupervisor {
 						const peers = [
 							...readyWorkers
 								.filter((candidate) => candidate !== worker)
-								.flatMap((candidate) =>
-									[...candidate.summaries.values()].map((summary) => this.agentPeerSummary(summary)),
-								),
+								.flatMap((candidate) => {
+									const root = candidate.summaries.get(candidate.descriptor.rootActiveSessionId);
+									return root ? [this.agentPeerSummary(root)] : [];
+								}),
 						];
 						const response = await worker.client.requestWorker({ type: "worker_sync_agent_peers", peers }, 5000);
 						if (!response.success) {
@@ -3009,6 +3022,18 @@ export class DaemonSupervisor {
 
 	private isVisibleWorker(worker: ResidentWorker): boolean {
 		return worker.descriptor.ownerClientId === undefined;
+	}
+
+	private familyCatalogEntry(summary: SessionSummary): AgentFamilyCatalogEntry {
+		return {
+			id: summary.sessionId,
+			...(summary.sessionName ? { name: summary.sessionName } : {}),
+			depth: summary.rlmDepth ?? 0,
+			status: classifySessionRosterStatus(summary),
+			...(summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
+			...(summary.parentSessionPath ? { parentSessionPath: canonicalSessionPath(summary.parentSessionPath) } : {}),
+			...(summary.sessionFile ? { sessionPath: canonicalSessionPath(summary.sessionFile) } : {}),
+		};
 	}
 
 	private agentPeerSummary(summary: SessionSummary): AgentSessionMessageAgentSummary {

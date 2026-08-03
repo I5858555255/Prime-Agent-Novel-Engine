@@ -24,6 +24,7 @@ interface WorkerFixture {
 		rootActiveSessionId: string;
 		rootSessionId: string;
 		pid: number;
+		createCommand: { config: { cwd: string } };
 	};
 	client: {
 		request: ReturnType<typeof vi.fn>;
@@ -61,6 +62,7 @@ function worker(workerId: string, summaries: SessionSummary[] = []): WorkerFixtu
 			rootActiveSessionId: `${workerId}-root-active`,
 			rootSessionId: `${workerId}-root-session`,
 			pid: 1,
+			createCommand: { config: { cwd: "/tmp/project" } },
 		},
 		client: {
 			request: vi.fn(),
@@ -199,7 +201,7 @@ describe("daemon supervisor passive subagent topology", () => {
 		expect(launchWorker).not.toHaveBeenCalled();
 	});
 
-	it("retains passive worker summaries and sends them to cross-worker agent peer maps", async () => {
+	it("retains passive worker summaries but syncs only roots to cross-worker peer maps", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-passive-peers-"));
 		tempDirs.push(directory);
 		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
@@ -214,6 +216,12 @@ describe("daemon supervisor passive subagent topology", () => {
 			sessionName: "passive-worker",
 			runtimeKind: "subagent",
 			rlmChildId: "passive-child",
+		});
+		const firstRoot = summary({
+			id: "first-root-active",
+			activeSessionId: "first-root-active",
+			sessionId: "first-root-session",
+			runtimeKind: "top-level",
 		});
 		const first = worker("first");
 		first.client.request.mockResolvedValue(success(undefined, "list", { sessions: [passive] }));
@@ -233,20 +241,18 @@ describe("daemon supervisor passive subagent topology", () => {
 			runtimeKind: "subagent",
 			rlmChildId: "passive-child",
 		});
+		first.summaries.set(first.descriptor.rootActiveSessionId, firstRoot);
 
 		await supervisor.syncAgentPeers();
 		const secondPeerCommand = second.client.requestWorker.mock.calls[0]?.[0] as
 			| { peers: AgentSessionMessageAgentSummary[] }
 			| undefined;
-		expect(secondPeerCommand?.peers).toContainEqual(
+		expect(secondPeerCommand?.peers).toEqual([
 			expect.objectContaining({
-				activeSessionId: "passive-session",
-				sessionId: "passive-session",
-				sessionName: "passive-worker",
-				runtimeKind: "subagent",
-				status: "inactive",
-				rlmChildId: "passive-child",
+				activeSessionId: "first-root-active",
+				sessionId: "first-root-session",
+				runtimeKind: "top-level",
 			}),
-		);
+		]);
 	});
 });

@@ -17,8 +17,8 @@ _MESSAGE_DISPLAY_MIME = "application/vnd.prime-agent.agent-message+json"
 
 
 async def list_agents() -> dict[str, Any]:
-    """List active daemon sessions addressable by agent_message.send()."""
-    return await host_request("agent_message.list")
+    """Compatibility alias for the relationship-scoped family roster."""
+    return await roster()
 
 
 async def roster() -> dict[str, Any]:

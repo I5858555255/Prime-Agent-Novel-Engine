@@ -3059,8 +3059,6 @@ export class AgentSession {
 			throw new Error("agent messaging is not available in this session");
 		}
 		switch (type) {
-			case "agent_message.list":
-				return this._agentMessageController.listAgents();
 			case "agent_message.roster":
 				if (!this._agentMessageController.roster)
 					throw new Error("agent family roster is not available in this session");
@@ -8702,8 +8700,6 @@ export class AgentSession {
 			Object.assign(
 				handlers,
 				createAgentMessageHostHandlers({
-					listAgents: async () =>
-						(await this.handleAgentMessageHostRequest("agent_message.list")) as AgentSessionMessageListResult,
 					roster: async () =>
 						(await this.handleAgentMessageHostRequest("agent_message.roster")) as AgentFamilyRosterResult,
 					awaitPendingChildPublication: (selector) => this._awaitPendingRlmChildPublication(selector),

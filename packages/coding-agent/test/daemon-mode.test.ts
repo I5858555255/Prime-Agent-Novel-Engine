@@ -2029,6 +2029,93 @@ describe("daemon mode helpers", () => {
 		expect(internals.createAgentObserveListResult(targetState).current.status).toBe("compacting");
 	});
 
+	it("limits agent send and observation to the nuclear family", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-family-reach.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const states = [
+			makeState("root"),
+			makeState("child", "root"),
+			makeState("sibling", "root"),
+			makeState("grandchild", "child"),
+			makeState("cousin", "sibling"),
+		];
+		const sessionIds = new Map(states.map((state) => [state.activeSessionId, `session-${state.activeSessionId}`]));
+		for (const state of states) {
+			const parentActiveSessionId = state.runtime.metadata.parentActiveSessionId;
+			state.runtime = {
+				...state.runtime,
+				cwd: "/tmp",
+				diagnostics: [],
+				modelFallbackMessage: undefined,
+				metadata: {
+					...state.runtime.metadata,
+					kind: parentActiveSessionId ? "subagent" : "top-level",
+					...(parentActiveSessionId
+						? {
+								parentSessionId: sessionIds.get(parentActiveSessionId),
+								parentSessionFile: `/tmp/${parentActiveSessionId}.jsonl`,
+							}
+						: {}),
+				},
+				session: {
+					sessionId: sessionIds.get(state.activeSessionId),
+					sessionName: state.activeSessionId,
+					sessionFile: `/tmp/${state.activeSessionId}.jsonl`,
+					sessionManager: {
+						getCwd: () => "/tmp",
+						getHeader: () => ({ created: new Date(0).toISOString() }),
+					},
+					runtimeKind: parentActiveSessionId ? "subagent" : "top-level",
+					rlmDepth: parentActiveSessionId
+						? state.activeSessionId === "grandchild" || state.activeSessionId === "cousin"
+							? 2
+							: 1
+						: 0,
+					isStreaming: false,
+					isCompacting: false,
+					isBashRunning: false,
+					isRetrying: false,
+					isSessionActive: false,
+					hasAcceptedPromptInFlight: false,
+					unfinishedActionCount: 0,
+					messages: [],
+					state: { pendingToolCalls: new Set(), streamingMessage: undefined },
+					hasRunningRlmChildren: () => false,
+					getSessionActionSnapshot: () => ({ queuedCount: 0, steering: [], followUps: [] }),
+				},
+			} as never;
+		}
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createAgentMessageController(getCurrentState: () => ActiveSessionState): AgentSessionMessageController;
+			createAgentObserveController(getCurrentState: () => ActiveSessionState): AgentObserveController;
+		};
+		for (const state of states) internals.sessions.set(state.activeSessionId, state);
+		const child = states[1]!;
+		const messaging = internals.createAgentMessageController(() => child);
+		const observe = internals.createAgentObserveController(() => child);
+
+		expect(observe.listAgents().agents.map((agent) => agent.activeSessionId)).toEqual([
+			"root",
+			"child",
+			"sibling",
+			"grandchild",
+		]);
+		await expect(observe.getAgent("cousin")).rejects.toThrow(
+			"Agent reach is limited to parent, siblings, and children",
+		);
+		await expect(observe.recentMessages({ target: "cousin" })).rejects.toThrow(
+			"Agent reach is limited to parent, siblings, and children",
+		);
+		await expect(messaging.sendAgentMessage({ target: "cousin", message: "no" })).rejects.toThrow(
+			"Agent reach is limited to parent, siblings, and children",
+		);
+	});
+
 	it("serializes concurrent agent messages to an idle target", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
@@ -4943,7 +5030,7 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
-	it("hydrates only the ancestor chain when a nested passive child is messaged", async () => {
+	it("rejects direct messages to nested passive grandchildren", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-nested-message-"));
 		try {
 			const fixture = makePersistedRlmDaemonFixture(tempDir);
@@ -4959,17 +5046,17 @@ describe("daemon mode helpers", () => {
 				sessionPath: fixture.parentSessionFile,
 			});
 
-			await internals
-				.createAgentMessageController(() => parentState)
-				.sendAgentMessage({
-					target: "nested-worker",
-					message: "report nested progress",
-				});
+			await expect(
+				internals
+					.createAgentMessageController(() => parentState)
+					.sendAgentMessage({
+						target: "nested-worker",
+						message: "report nested progress",
+					}),
+			).rejects.toThrow("Agent reach is limited to parent, siblings, and children");
 
+			// Resolution may hydrate the ancestor chain, but delivery never occurs.
 			expect(fixture.createRuntime).toHaveBeenCalledTimes(3);
-			expect([...internals.sessions.values()].map((state) => state.runtime.metadata.rlmChildId)).toEqual(
-				expect.arrayContaining([fixture.childId, fixture.grandchildId]),
-			);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}

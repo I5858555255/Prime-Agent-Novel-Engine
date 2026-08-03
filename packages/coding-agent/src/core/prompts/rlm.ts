@@ -110,6 +110,11 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	if (skillLines.length > 0) {
 		parts.push("", ...skillLines);
 	}
+	if (installedSkills.includes("agent-message") || installedSkills.includes("agent-observe")) {
+		parts.push(
+			"Agent messaging and observation are restricted to your parent, siblings, and direct children; roots are siblings, and deeper communication relays through the intermediate child.",
+		);
+	}
 
 	if (allowRecursion && hasIpython) {
 		parts.push(
@@ -118,7 +123,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			"Choose a stable child name with `await rlm('sub-task', name='api-reviewer')`; names must be unique among siblings. If omitted, the host generates a readable unique name.",
 			"A child inherits your model. If a different model is explicitly requested, use `await rlm.find_models(...)` and an exact returned selector. An unavailable requested model fails spawn; decide whether to retry or omit `model`.",
 			"Children reply explicitly with `await agent_message.send(message, receiver_role='parent')` when an answer is needed. Replies and follow-ups arrive as ordinary agent messages; not every task requires a reply.",
-			"Use `await agent_message.roster()` to discover family and `await rlm.list_subagents()` to recover direct child handles. Inspect a child's rollout with `agent_observe` or read files it wrote; use `agent_message.send(..., receiver_role='child', receiver_name=child.name)` for follow-ups.",
+			"Use `await agent_message.roster()` to discover family and `await rlm.list_subagents()` to recover direct child handles. Messaging and `agent_observe` are restricted to your parent, siblings, and direct children; relay through the intermediate child for deeper descendants. Inspect a child's rollout with `agent_observe` or read files it wrote; use `agent_message.send(..., receiver_role='child', receiver_name=child.name)` for follow-ups.",
 			"Spawn independent children in separate calls and end your turn instead of awaiting completion. Multiple replies may arrive over multiple turns. Delete a direct child explicitly with `await rlm.delete_subagent(child)` when it is no longer needed.",
 		);
 	}

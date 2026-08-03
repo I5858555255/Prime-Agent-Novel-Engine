@@ -45,29 +45,6 @@ describe("agent-message skill over the kernel host bridge", () => {
 		provisioner = new IpythonKernelProvisioner(tempDir, {
 			pythonSkills: [bundledAgentMessageSkill()],
 			hostHandlers: {
-				"agent_message.list": async (payload) => {
-					requests.push({ type: "agent_message.list", payload });
-					return {
-						current: { activeSessionId: "alpha", sessionId: "session-alpha" },
-						agents: [
-							{
-								activeSessionId: "alpha",
-								sessionId: "session-alpha",
-								cwd: tempDir,
-								isStreaming: false,
-								unfinishedActionCount: 0,
-							},
-							{
-								activeSessionId: "beta",
-								sessionId: "session-beta",
-								sessionName: "Beta",
-								cwd: tempDir,
-								isStreaming: true,
-								unfinishedActionCount: 1,
-							},
-						],
-					};
-				},
 				"agent_message.roster": async (payload) => {
 					requests.push({ type: "agent_message.roster", payload });
 					return {
@@ -106,7 +83,7 @@ print(json.dumps({"agents": agents, "roster": roster, "receipt": receipt}, sort_
 
 		expect(result.status).toBe("ok");
 		const output = JSON.parse(result.stdout.trim());
-		expect(output.agents.agents).toHaveLength(2);
+		expect(output.agents).toEqual(output.roster);
 		expect(output.roster).toMatchObject({
 			current: { id: "session-alpha", depth: 0 },
 			entries: [{ relationship: "sibling", id: "session-beta", status: "idle" }],
@@ -127,7 +104,7 @@ print(json.dumps({"agents": agents, "roster": roster, "receipt": receipt}, sort_
 				target: { activeSessionId: "beta", sessionId: "session-beta", sessionName: "Beta" },
 			},
 		]);
-		expect(requests[0]).toMatchObject({ type: "agent_message.list", payload: { type: "agent_message.list" } });
+		expect(requests[0]).toMatchObject({ type: "agent_message.roster", payload: { type: "agent_message.roster" } });
 		expect(requests[1]).toMatchObject({ type: "agent_message.roster", payload: { type: "agent_message.roster" } });
 		expect(requests[2]).toMatchObject({
 			type: "agent_message.send",

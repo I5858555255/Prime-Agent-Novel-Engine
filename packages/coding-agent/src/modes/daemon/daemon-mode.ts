@@ -33,6 +33,7 @@ import {
 	VERSION,
 } from "../../config.js";
 import {
+	AGENT_FAMILY_REACH_ERROR,
 	AGENT_MESSAGE_SOURCE,
 	type AgentFamilyCatalogEntry,
 	type AgentFamilyRelationship,
@@ -46,6 +47,7 @@ import {
 	AgentSessionMessageRateLimiter,
 	type AgentSessionMessageReceipt,
 	type AgentSessionMessageSender,
+	assertAgentFamilyReach,
 	assertAgentMessageQueueCapacity,
 	assertAgentSessionNameAvailable,
 	assertDirectAgentMessageTarget,
@@ -2837,9 +2839,13 @@ export class AgentDaemon {
 	private createAgentObserveListResult(currentState: ActiveSessionState): AgentObserveListResult {
 		return {
 			current: this.createAgentObserveSummary(currentState, currentState),
-			agents: this.listTargetableSessionStates(currentState).map((state) =>
-				this.createAgentObserveSummary(state, currentState),
-			),
+			agents: this.listTargetableSessionStates(currentState)
+				.filter(
+					(state) =>
+						state.activeSessionId === currentState.activeSessionId ||
+						this.isAgentFamilyReachable(currentState, state),
+				)
+				.map((state) => this.createAgentObserveSummary(state, currentState)),
 		};
 	}
 
@@ -2847,8 +2853,10 @@ export class AgentDaemon {
 		currentState: ActiveSessionState,
 		target: string,
 	): Promise<AgentObserveAgentSnapshot> {
+		const targetState = await this.getOrHydrateBoundSessionState(target);
+		this.assertAgentFamilyReachable(currentState, targetState);
 		return {
-			agent: this.createAgentObserveSummary(await this.getOrHydrateBoundSessionState(target), currentState),
+			agent: this.createAgentObserveSummary(targetState, currentState),
 		};
 	}
 
@@ -2857,6 +2865,7 @@ export class AgentDaemon {
 		input: AgentObserveRecentMessagesInput,
 	): Promise<AgentObserveRecentMessagesResult> {
 		const targetState = await this.getOrHydrateBoundSessionState(input.target);
+		this.assertAgentFamilyReachable(currentState, targetState);
 		const limit = normalizeObserveLimit(input.limit);
 		const maxChars = normalizeObserveMaxChars(input.maxChars);
 		const messages = targetState.runtime.session.messages;
@@ -3866,7 +3875,7 @@ export class AgentDaemon {
 					clientId: client.id,
 					senderKey: this.createCliAgentMessageSenderKey(),
 					deliveryMode: command.deliveryMode,
-					origin: "cli",
+					origin: command.agentOrigin === true ? "agent" : "cli",
 				});
 				return success(command.id, "send_message", receipt);
 			}
@@ -5058,6 +5067,34 @@ export class AgentDaemon {
 		}
 	}
 
+	private agentFamilyEntry(state: ActiveSessionState): AgentFamilyCatalogEntry {
+		const metadata = state.runtime.metadata;
+		return {
+			id: state.runtime.session.sessionId,
+			...(state.runtime.session.sessionName ? { name: state.runtime.session.sessionName } : {}),
+			depth: state.runtime.session.rlmDepth ?? 0,
+			status: "running",
+			...(metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
+			...(metadata.parentSessionFile ? { parentSessionPath: resolve(metadata.parentSessionFile) } : {}),
+			...(state.runtime.session.sessionFile ? { sessionPath: resolve(state.runtime.session.sessionFile) } : {}),
+		};
+	}
+
+	private isAgentFamilyReachable(currentState: ActiveSessionState, targetState: ActiveSessionState): boolean {
+		try {
+			assertAgentFamilyReach(this.agentFamilyEntry(currentState), this.agentFamilyEntry(targetState));
+			return true;
+		} catch (error) {
+			if (error instanceof Error && error.message === AGENT_FAMILY_REACH_ERROR) return false;
+			throw error;
+		}
+	}
+
+	private assertAgentFamilyReachable(currentState: ActiveSessionState, targetState: ActiveSessionState): void {
+		if (currentState.activeSessionId === targetState.activeSessionId) return;
+		assertAgentFamilyReach(this.agentFamilyEntry(currentState), this.agentFamilyEntry(targetState));
+	}
+
 	private agentMessageRelationship(
 		fromState: ActiveSessionState | undefined,
 		targetState: ActiveSessionState,
@@ -5123,6 +5160,9 @@ export class AgentDaemon {
 		}
 		if (options.fromState?.activeSessionId === targetState.activeSessionId) {
 			throw new Error("Agent messaging cannot target the sending session");
+		}
+		if (options.origin === "agent" && options.fromState) {
+			this.assertAgentFamilyReachable(options.fromState, targetState);
 		}
 		const releaseQueueSlot = this.reserveAgentMessageQueueSlot(targetState);
 		const senderKey =
@@ -5194,6 +5234,7 @@ export class AgentDaemon {
 						targetActiveSessionId: targetSelector,
 						message,
 						fromActiveSessionId: fromState.activeSessionId,
+						agentOrigin: true,
 						deliveryMode,
 					},
 					30_000,

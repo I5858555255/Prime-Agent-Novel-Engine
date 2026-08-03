@@ -406,6 +406,7 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("name='api-reviewer'");
 		expect(prompt).toContain("session_dir");
 		expect(prompt).toContain("agent_observe");
+		expect(prompt).toContain("restricted to your parent, siblings, and direct children");
 	});
 
 	test("omits ipython-only subagent guidance when ipython is inactive", () => {

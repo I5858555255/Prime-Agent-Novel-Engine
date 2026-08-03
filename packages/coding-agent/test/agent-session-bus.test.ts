@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	AGENT_MESSAGE_SOURCE,
 	AgentSessionMessageRateLimiter,
+	assertAgentFamilyReach,
 	assertAgentMessageQueueCapacity,
 	assertAgentSessionNameAvailable,
 	assertDirectAgentMessageTarget,
 	buildAgentFamilyRoster,
+	createAgentMessageHostHandlers,
 	createAgentSessionMessagePrompt,
 	createAgentSessionMessageReceipt,
 	normalizeAgentSessionMessage,
@@ -168,6 +170,81 @@ describe("agent session bus", () => {
 		expect(() => assertDirectAgentMessageTarget("all")).toThrow("Broadcast agent messaging is not supported");
 		expect(() => assertAgentMessageQueueCapacity(20, 20)).toThrow("Target session has too many pending messages");
 		expect(() => assertAgentMessageQueueCapacity(19, 20)).not.toThrow();
+	});
+
+	it("resolves role sends and scopes all broadcasts to the family roster", async () => {
+		const sendAgentMessage = vi.fn(async (input: { target: string; message: string }) => ({
+			id: input.target,
+			source: AGENT_MESSAGE_SOURCE as typeof AGENT_MESSAGE_SOURCE,
+			target: { activeSessionId: input.target, sessionId: input.target },
+			message: input.message,
+			deliveryStatus: "delivered" as const,
+			deliveredAt: new Date(0).toISOString(),
+			deliveryMode: "auto" as const,
+		}));
+		const handlers = createAgentMessageHostHandlers({
+			roster: () => ({
+				current: { name: "builder", id: "builder", depth: 1 },
+				entries: [
+					{ relationship: "parent", name: "root", id: "root", depth: 0, status: "running" },
+					{ relationship: "sibling", name: "reviewer", id: "sibling", depth: 1, status: "idle" },
+					{ relationship: "child", name: "tester", id: "child", depth: 2, status: "inactive" },
+				],
+			}),
+			sendAgentMessage,
+		});
+
+		await handlers["agent_message.send"]!({
+			message: "hello",
+			receiver_role: "sibling",
+			receiver_name: "reviewer",
+		});
+		expect(sendAgentMessage).toHaveBeenLastCalledWith({
+			target: "sibling",
+			message: "hello",
+			deliveryMode: undefined,
+			receiverRole: "sibling",
+		});
+
+		sendAgentMessage.mockClear();
+		await handlers["agent_message.send"]!({ target: "all", message: "status" });
+		expect(sendAgentMessage.mock.calls.map(([input]) => input.target)).toEqual(["root", "sibling", "child"]);
+	});
+
+	it("authorizes exactly one persisted nuclear-family edge", () => {
+		const root = { id: "root", depth: 0, status: "running" as const, sessionPath: "/root" };
+		const otherRoot = { id: "other-root", depth: 0, status: "running" as const, sessionPath: "/other" };
+		const child = {
+			id: "child",
+			depth: 1,
+			status: "running" as const,
+			parentSessionPath: "/root",
+			sessionPath: "/child",
+		};
+		const sibling = {
+			id: "sibling",
+			depth: 1,
+			status: "idle" as const,
+			parentSessionPath: "/root",
+			sessionPath: "/sibling",
+		};
+		const grandchild = {
+			id: "grandchild",
+			depth: 2,
+			status: "idle" as const,
+			parentSessionPath: "/child",
+		};
+
+		expect(assertAgentFamilyReach(root, otherRoot)).toBe("sibling");
+		expect(assertAgentFamilyReach(root, child)).toBe("child");
+		expect(assertAgentFamilyReach(child, root)).toBe("parent");
+		expect(assertAgentFamilyReach(child, sibling)).toBe("sibling");
+		expect(() => assertAgentFamilyReach(root, grandchild)).toThrow(
+			"Agent reach is limited to parent, siblings, and children",
+		);
+		expect(() => assertAgentFamilyReach(sibling, grandchild)).toThrow(
+			"Agent reach is limited to parent, siblings, and children",
+		);
 	});
 
 	it("enforces names per sibling set across active and inactive catalog rows", () => {
