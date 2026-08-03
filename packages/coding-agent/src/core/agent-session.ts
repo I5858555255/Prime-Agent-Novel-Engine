@@ -1521,10 +1521,7 @@ export class AgentSession {
 			return { maxDepth: this._configuredRlmMaxDepth, source: "inherited" };
 		}
 		const global = this.settingsManager.getRlmMaxDepth();
-		if (global !== undefined) {
-			if (!isNonNegativeInteger(global)) {
-				throw new Error("The rlmMaxDepth setting must be a non-negative integer");
-			}
+		if (global !== undefined && isNonNegativeInteger(global)) {
 			return { maxDepth: global, source: "global" };
 		}
 		const env = process.env.RLM_MAX_DEPTH;
