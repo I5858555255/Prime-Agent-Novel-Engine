@@ -9,6 +9,7 @@ type ActionKind = "turn" | "command";
 
 interface CommitFenceInternals {
 	_actionStore: ActionStore<SessionAction>;
+	_refineInFlight?: Promise<void>;
 	_scheduleSessionInputPump(): void;
 	_acquireDirectTurnAdmissionFence(signal?: AbortSignal): Promise<{ release(): void }>;
 	_acquireSessionActionCommitFence(signal?: AbortSignal): Promise<{ release(): void }>;
@@ -212,6 +213,34 @@ describe("AgentSession action commit-fence races", () => {
 
 		await rejection;
 		await harness.session.waitForSessionInputIdle();
+		expect(internals._actionStore.unfinishedActions()).toEqual([]);
+	});
+
+	it("rechecks refinement before running a command parked on the commit fence", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const internals = harness.session as unknown as CommitFenceInternals;
+		const schedule = vi.spyOn(internals, "_scheduleSessionInputPump").mockImplementation(() => {});
+		const command = harness.session.promptAndWait("/autonomous status");
+		await vi.waitFor(() => expect(internals._actionStore.unfinishedActions()).toHaveLength(1));
+		const heldFence = await internals._acquireSessionActionCommitFence();
+		schedule.mockRestore();
+		internals._scheduleSessionInputPump();
+		await vi.waitFor(() => expect(internals._actionStore.unfinishedActions()[0]?.lifecycle.state).toBe("selected"));
+
+		const refineGate = createDeferred();
+		const refineInFlight = refineGate.promise.finally(() => {
+			if (internals._refineInFlight === refineInFlight) internals._refineInFlight = undefined;
+		});
+		internals._refineInFlight = refineInFlight;
+		heldFence.release();
+		await yieldToEventLoop();
+
+		expect(internals._actionStore.unfinishedActions()[0]?.lifecycle.state).toBe("selected");
+		expect(harness.session.messages).toEqual([]);
+
+		refineGate.resolve();
+		await command;
 		expect(internals._actionStore.unfinishedActions()).toEqual([]);
 	});
 

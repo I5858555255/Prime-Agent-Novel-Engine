@@ -5288,8 +5288,11 @@ export class AgentSession {
 		const commitFence = await this._acquireSessionActionCommitFence();
 		try {
 			await this._sessionActionCommitContext.run(commitFence.owner, async () => {
-				if (action.lifecycle.state === "cancelled") return;
-				if (this._isSessionInputHandoffDeferred(epoch)) {
+				const isCancelled = () => action.lifecycle.state === "cancelled";
+				if (isCancelled()) return;
+				await this._waitForRefineIdle();
+				if (isCancelled()) return;
+				if (this._isSessionInputHandoffDeferred(epoch) || !canSelectSessionAction(this._runtimeActivity())) {
 					this._actionStore.rollback(action);
 					this._notifySessionInputCheckpointChange();
 					this._emitQueueUpdate();
