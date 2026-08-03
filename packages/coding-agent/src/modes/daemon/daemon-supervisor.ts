@@ -2691,9 +2691,11 @@ export class DaemonSupervisor {
 			runtimeKind: summary.runtimeKind ?? "top-level",
 			cwd: summary.cwd,
 			isStreaming: summary.isStreaming,
-			unfinishedActionCount: summary.sessionActions.active
-				? 1 + summary.sessionActions.queuedCount
-				: summary.sessionActions.queuedCount,
+			unfinishedActionCount:
+				summary.unfinishedActionCount ??
+				(summary.sessionActions.active
+					? 1 + summary.sessionActions.queuedCount
+					: summary.sessionActions.queuedCount),
 			...(summary.parentActiveSessionId ? { parentActiveSessionId: summary.parentActiveSessionId } : {}),
 			...(summary.rlmChildId ? { rlmChildId: summary.rlmChildId } : {}),
 		};

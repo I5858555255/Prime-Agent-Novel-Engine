@@ -184,6 +184,7 @@ Response:
     "sessionName": "my-feature-work",
     "autoCompactionEnabled": true,
     "messageCount": 5,
+    "unfinishedActionCount": 0,
     "sessionActions": {
       "queuedCount": 0,
       "steering": [],

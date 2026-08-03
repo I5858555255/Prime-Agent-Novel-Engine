@@ -126,6 +126,19 @@ describe("buildSessionList", () => {
 		expect(summary.activity).toBe("working");
 	});
 
+	it("reports the exact unfinished action count independently of the visible action snapshot", () => {
+		const summary = summaryForActiveSession(
+			makeState({
+				activeSessionId: "batched",
+				unfinishedActionCount: 3,
+				hasAcceptedPromptInFlight: true,
+			}),
+		);
+
+		expect(summary.sessionActions).toMatchObject({ queuedCount: 0, active: { kind: "turn" } });
+		expect(summary.unfinishedActionCount).toBe(3);
+	});
+
 	it("marks a finished subagent idle instead of holding it at working", () => {
 		const oneMessage = [{ role: "user", content: "hi" }] as unknown as AgentMessage[];
 		const entries = buildSessionList(
@@ -552,6 +565,7 @@ interface StateOptions {
 	childRunStatuses?: Record<string, "queued" | "running" | "done" | "error" | "cancelled">;
 	hasRunningRlmChildren?: boolean;
 	hasAcceptedPromptInFlight?: boolean;
+	unfinishedActionCount?: number;
 	contextTokens?: number;
 	streamingMessage?: AgentMessage;
 	metadata?: {
@@ -599,6 +613,7 @@ function makeState(options: StateOptions): ActiveSessionState {
 				getRlmChildRunStatus: (childId: string) => options.childRunStatuses?.[childId],
 				hasRunningRlmChildren: () => options.hasRunningRlmChildren ?? false,
 				hasAcceptedPromptInFlight: options.hasAcceptedPromptInFlight ?? false,
+				unfinishedActionCount: options.unfinishedActionCount ?? (options.hasAcceptedPromptInFlight ? 1 : 0),
 				isSessionActive: options.isStreaming === true || options.hasAcceptedPromptInFlight === true,
 				getCurrentRecap: () => undefined,
 				_contextTokensForCurrentMessages: () => options.contextTokens,

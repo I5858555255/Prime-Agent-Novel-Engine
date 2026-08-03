@@ -47,6 +47,7 @@ export interface SessionSummary {
 	isRunningTools?: boolean;
 	attachedClients: number;
 	messageCount: number;
+	unfinishedActionCount?: number;
 	sessionActions: SessionActionSnapshot;
 	streamingMessage?: AgentMessage;
 	created?: string;
@@ -178,6 +179,7 @@ export function summaryForActiveSession(
 		isRunningTools: session.isStreaming && session.state.pendingToolCalls.size > 0,
 		attachedClients: activeSession.clients.size,
 		messageCount: session.messages.length,
+		unfinishedActionCount: session.unfinishedActionCount,
 		sessionActions: session.getSessionActionSnapshot(),
 		streamingMessage: session.state.streamingMessage,
 		created: savedSession?.created.toISOString() ?? session.sessionManager.getHeader?.()?.timestamp,
@@ -228,6 +230,7 @@ export function summaryForInactiveSession(session: SessionInfo): SessionSummary 
 		isCompacting: false,
 		attachedClients: 0,
 		messageCount: session.messageCount,
+		unfinishedActionCount: 0,
 		sessionActions: { queuedCount: 0, steering: [], followUps: [] },
 		created: session.created.toISOString(),
 		modified: session.modified.toISOString(),

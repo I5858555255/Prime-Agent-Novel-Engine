@@ -1655,6 +1655,7 @@ function isSessionSummary(value: unknown): value is SessionSummary {
 		typeof candidate.isCompacting === "boolean" &&
 		typeof candidate.attachedClients === "number" &&
 		typeof candidate.messageCount === "number" &&
+		(candidate.unfinishedActionCount === undefined || typeof candidate.unfinishedActionCount === "number") &&
 		typeof candidate.sessionActions === "object" &&
 		candidate.sessionActions !== null &&
 		typeof candidate.sessionActions.queuedCount === "number" &&
