@@ -903,10 +903,7 @@ describe("initial goal seeding from config", () => {
 		const goalEntry = branch.find((e) => e.type === "custom" && e.customType === GOAL_STATE_CUSTOM_TYPE);
 		expect(goalEntry).toBeDefined();
 
-		// The first turn must carry the goal context to the model; seeding
-		// without it left the goal invisible (active state, silent model).
-		// Later contexts may follow from the goal continuation loop; the
-		// seeded one must precede the first assistant reply.
+		// The seeded goal context must reach the model before its first reply.
 		harness.setResponses([fauxAssistantMessage("ack")]);
 		await harness.session.prompt("hello");
 		const messages = harness.session.messages;
