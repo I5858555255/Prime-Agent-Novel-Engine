@@ -4897,6 +4897,7 @@ export class AgentDaemon {
 				rlmDepth: info.rlmDepth ?? entry.rlmDepth,
 				status: "inactive",
 				rlmChildId: entry.childId,
+				rlmChildRegistryStatus: entry.status,
 				sessionDir: entry.sessionDir,
 				sessionPath: entry.sessionFile,
 			});

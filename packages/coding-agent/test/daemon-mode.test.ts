@@ -4696,7 +4696,8 @@ describe("daemon mode helpers", () => {
 			expect(children.every((child) => child.activeSessionId === undefined)).toBe(true);
 			// Snapshotting must reuse the passive registry walk without hydrating children.
 			expect(fixture.createRuntime).toHaveBeenCalledOnce();
-			expect((await internals.createAgentMessageController(() => parentState).listAgents()).agents).toContainEqual(
+			const listedAgents = await internals.createAgentMessageController(() => parentState).listAgents();
+			expect(listedAgents.agents).toContainEqual(
 				expect.objectContaining({
 					activeSessionId: expect.any(String),
 					sessionId: expect.any(String),
@@ -4705,14 +4706,15 @@ describe("daemon mode helpers", () => {
 					parentActiveSessionId: parentState.activeSessionId,
 					status: "inactive",
 					rlmChildId: fixture.childId,
+					rlmChildRegistryStatus: "running",
 				}),
 			);
-			expect((await internals.createAgentMessageController(() => parentState).listAgents()).agents).toContainEqual(
+			expect(listedAgents.agents).toContainEqual(
 				expect.objectContaining({
-					activeSessionId: expect.any(String),
 					sessionName: "nested-worker",
 					status: "inactive",
 					rlmChildId: fixture.grandchildId,
+					rlmChildRegistryStatus: "completed",
 				}),
 			);
 			const messageController = internals.createAgentMessageController(() => parentState);

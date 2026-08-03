@@ -1078,26 +1078,30 @@ describe("AgentSession rlm recursion", () => {
 		expect(await root.listRlmSubagents()).toEqual({ subagents: [] });
 	});
 
-	it("lists and deletes a passive daemon child without a retained runtime", async () => {
+	it("lists passive daemon children using their nonresident registry outcomes", async () => {
 		const deleteRlmSubagentRuntime = vi.fn(async () => {});
 		const root = createSession({
 			agentMessageController: {
 				listAgents: () => ({
 					current: { activeSessionId: "parent-active", sessionId: "parent-session" },
-					agents: [
-						{
-							activeSessionId: "passive-session",
-							sessionId: "passive-session",
-							sessionName: "passive-worker",
-							runtimeKind: "subagent",
-							cwd: tempDir,
-							isStreaming: false,
-							unfinishedActionCount: 0,
-							parentActiveSessionId: "parent-active",
-							rlmChildId: "passive-child",
-							sessionDir: join(tempDir, "passive-child"),
-						},
-					],
+					agents: (
+						[
+							["failed", "running"],
+							["finished", "completed"],
+						] as const
+					).map(([name, registryStatus]) => ({
+						activeSessionId: `${name}-session`,
+						sessionId: `${name}-session`,
+						sessionName: `${name}-worker`,
+						runtimeKind: "subagent",
+						cwd: tempDir,
+						isStreaming: false,
+						unfinishedActionCount: 0,
+						parentActiveSessionId: "parent-active",
+						rlmChildId: `${name}-child`,
+						rlmChildRegistryStatus: registryStatus,
+						sessionDir: join(tempDir, `${name}-child`),
+					})),
 				}),
 				sendAgentMessage: async () => {
 					throw new Error("unexpected send");
@@ -1110,19 +1114,29 @@ describe("AgentSession rlm recursion", () => {
 				deleteRlmSubagentRuntime,
 			},
 		});
-		const expected = {
-			rlm_child_id: "passive-child",
-			active_session_id: "passive-session",
-			session_id: "passive-session",
-			session_name: "passive-worker",
-			session_dir: join(tempDir, "passive-child"),
-			status: "completed" as const,
-		};
+		const expected = [
+			{
+				rlm_child_id: "failed-child",
+				active_session_id: "failed-session",
+				session_id: "failed-session",
+				session_name: "failed-worker",
+				session_dir: join(tempDir, "failed-child"),
+				status: "error" as const,
+			},
+			{
+				rlm_child_id: "finished-child",
+				active_session_id: "finished-session",
+				session_id: "finished-session",
+				session_name: "finished-worker",
+				session_dir: join(tempDir, "finished-child"),
+				status: "completed" as const,
+			},
+		];
 
-		expect(await root.listRlmSubagents()).toEqual({ subagents: [expected] });
-		await expect(root.deleteRlmSubagent("passive-worker")).resolves.toEqual({ subagent: expected });
-		expect(deleteRlmSubagentRuntime).toHaveBeenCalledWith("passive-child", undefined);
-		expect(await root.listRlmSubagents()).toEqual({ subagents: [] });
+		expect(await root.listRlmSubagents()).toEqual({ subagents: expected });
+		await expect(root.deleteRlmSubagent("finished-worker")).resolves.toEqual({ subagent: expected[1] });
+		expect(deleteRlmSubagentRuntime).toHaveBeenCalledWith("finished-child", undefined);
+		expect(await root.listRlmSubagents()).toEqual({ subagents: [expected[0]] });
 	});
 
 	it("coalesces concurrent deletion of the same passive daemon child", async () => {

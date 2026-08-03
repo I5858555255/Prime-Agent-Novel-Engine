@@ -9131,7 +9131,7 @@ export class AgentSession {
 				session_id: daemonChild.sessionId,
 				session_name: daemonChild.sessionName ?? createDefaultRlmSubagentSessionName("", childId),
 				session_dir: daemonChild.sessionDir,
-				status: "completed",
+				status: daemonChild.rlmChildRegistryStatus === "completed" ? "completed" : "error",
 			});
 		}
 		return { subagents };
