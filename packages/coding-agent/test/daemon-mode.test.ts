@@ -260,11 +260,21 @@ describe("daemon mode helpers", () => {
 		const second = makeState("second");
 		first.runtime = {
 			...first.runtime,
-			session: { sessionId: "first-session", rlmDepth: 0, setSessionName: vi.fn() },
+			session: {
+				sessionId: "first-session",
+				rlmDepth: 0,
+				sessionManager: { getHeader: vi.fn(() => undefined) },
+				setSessionName: vi.fn(),
+			},
 		} as never;
 		second.runtime = {
 			...second.runtime,
-			session: { sessionId: "second-session", rlmDepth: 0, setSessionName: vi.fn() },
+			session: {
+				sessionId: "second-session",
+				rlmDepth: 0,
+				sessionManager: { getHeader: vi.fn(() => undefined) },
+				setSessionName: vi.fn(),
+			},
 		} as never;
 		let releaseValidation!: () => void;
 		const validationGate = new Promise<void>((resolve) => {
@@ -284,6 +294,53 @@ describe("daemon mode helpers", () => {
 		await expect(firstRename).resolves.toBeUndefined();
 		expect(first.runtime.session.setSessionName).toHaveBeenCalledWith("shared");
 		expect(second.runtime.session.setSessionName).not.toHaveBeenCalled();
+	});
+
+	it("allows concurrent same-name renames under different parents", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-scoped-name-reservation.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const first = makeState("first", "parent-a");
+		const second = makeState("second", "parent-b");
+		first.runtime = {
+			...first.runtime,
+			metadata: { ...first.runtime.metadata, parentSessionId: "parent-session-a" },
+			session: {
+				sessionId: "first-session",
+				rlmDepth: 1,
+				sessionManager: { getHeader: vi.fn(() => undefined) },
+				setSessionName: vi.fn(),
+			},
+		} as never;
+		second.runtime = {
+			...second.runtime,
+			metadata: { ...second.runtime.metadata, parentSessionId: "parent-session-b" },
+			session: {
+				sessionId: "second-session",
+				rlmDepth: 1,
+				sessionManager: { getHeader: vi.fn(() => undefined) },
+				setSessionName: vi.fn(),
+			},
+		} as never;
+		let releaseValidation!: () => void;
+		const validationGate = new Promise<void>((resolve) => {
+			releaseValidation = resolve;
+		});
+		const internals = daemon as unknown as {
+			assertStateSessionNameAvailable: ReturnType<typeof vi.fn>;
+			setStateSessionName(state: ActiveSessionState, name: string): Promise<void>;
+		};
+		internals.assertStateSessionNameAvailable = vi.fn(async () => validationGate);
+
+		const firstRename = internals.setStateSessionName(first, "worker");
+		const secondRename = internals.setStateSessionName(second, "worker");
+		await vi.waitFor(() => expect(internals.assertStateSessionNameAvailable).toHaveBeenCalledTimes(2));
+		releaseValidation();
+
+		await expect(Promise.all([firstRename, secondRename])).resolves.toEqual([undefined, undefined]);
+		expect(first.runtime.session.setSessionName).toHaveBeenCalledWith("worker");
+		expect(second.runtime.session.setSessionName).toHaveBeenCalledWith("worker");
 	});
 
 	it("scopes a switched child rename from its persisted parent header", async () => {
@@ -4588,7 +4645,7 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
-	it("reopens a parent with completed children without creating child runtimes and lists them as passive", async () => {
+	it("reports failed passive children as errors without creating child runtimes", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-list-"));
 		try {
 			const fixture = makePersistedRlmDaemonFixture(tempDir);
@@ -4601,6 +4658,10 @@ describe("daemon mode helpers", () => {
 				lines[0] = JSON.stringify(header);
 				writeFileSync(sessionFile, lines.join("\n"));
 			}
+			const parentRegistry = join(fixture.parentArtifactDir, "rlm-subagents.jsonl");
+			const failedEntry = JSON.parse(readFileSync(parentRegistry, "utf8").trim()) as Record<string, unknown>;
+			// Failed children retain their last "running" registry row after the runtime is released.
+			writeFileSync(parentRegistry, `${JSON.stringify({ ...failedEntry, status: "running" })}\n`);
 			const internals = fixture.daemon as unknown as {
 				sessions: Map<string, ActiveSessionState>;
 				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
@@ -4624,7 +4685,7 @@ describe("daemon mode helpers", () => {
 			expect(children).toEqual([
 				expect.objectContaining({
 					id: fixture.childId,
-					status: "done",
+					status: "error",
 				}),
 				expect.objectContaining({
 					id: fixture.grandchildId,
@@ -5181,7 +5242,7 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
-	it("rejects direct messages to nested passive grandchildren", async () => {
+	it("rejects direct messages to nested passive grandchildren without hydrating them", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-nested-message-"));
 		try {
 			const fixture = makePersistedRlmDaemonFixture(tempDir);
@@ -5191,11 +5252,13 @@ describe("daemon mode helpers", () => {
 				createAgentMessageController(
 					getCurrentState: () => ActiveSessionState | undefined,
 				): AgentSessionMessageController;
+				createAgentObserveController(getCurrentState: () => ActiveSessionState | undefined): AgentObserveController;
 			};
 			const parentState = await internals.createRuntime({
 				type: "create",
 				sessionPath: fixture.parentSessionFile,
 			});
+			const reachError = "Agent reach is limited to parent, siblings, and children";
 
 			await expect(
 				internals
@@ -5204,10 +5267,13 @@ describe("daemon mode helpers", () => {
 						target: "nested-worker",
 						message: "report nested progress",
 					}),
-			).rejects.toThrow("Agent reach is limited to parent, siblings, and children");
+			).rejects.toThrow(reachError);
+			const observe = internals.createAgentObserveController(() => parentState);
+			await expect(observe.getAgent("nested-worker")).rejects.toThrow(reachError);
+			await expect(observe.recentMessages({ target: "nested-worker" })).rejects.toThrow(reachError);
 
-			// Resolution may hydrate the ancestor chain, but delivery never occurs.
-			expect(fixture.createRuntime).toHaveBeenCalledTimes(3);
+			expect([...internals.sessions.values()]).toEqual([parentState]);
+			expect(fixture.createRuntime).toHaveBeenCalledOnce();
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}

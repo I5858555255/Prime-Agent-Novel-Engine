@@ -579,6 +579,7 @@ describe("daemon supervisor resident workers", () => {
 			message: "hello sibling root",
 			agentOrigin: true,
 		});
+		expect(response.success, JSON.stringify(response)).toBe(true);
 		expect(response).toMatchObject({
 			success: true,
 			data: {
