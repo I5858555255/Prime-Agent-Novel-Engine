@@ -917,6 +917,20 @@ describe("initial goal seeding from config", () => {
 		expect(currentAgentContext(harness).messages).toContain(messages[firstContextIndex]);
 	});
 
+	it("drops the seeded goal context when the goal is cleared before the first prompt", async () => {
+		const harness = await createHarness({
+			persistSession: true,
+			initialGoal: { objective: "Write tests", tokenBudget: 50000 },
+		});
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("ack")]);
+		await harness.session.prompt("/goal clear");
+		expect(harness.session.goalState.status).toBe("idle");
+		await harness.session.prompt("hello");
+		expect(goalContextMessages(harness)).toHaveLength(0);
+	});
+
 	it("does not seed initialGoal for subagent sessions (rlmDepth > 0)", async () => {
 		const harness = await createHarness({
 			persistSession: true,

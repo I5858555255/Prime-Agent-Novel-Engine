@@ -1625,6 +1625,9 @@ export class AgentSession {
 	}
 
 	private _clearQueuedGoalContexts(): void {
+		this._pendingNextTurnMessages = this._pendingNextTurnMessages.filter(
+			(message) => message.customType !== GOAL_CONTEXT_CUSTOM_TYPE,
+		);
 		this.agent.removeQueuedMessages(
 			(message) => message.role === "custom" && message.customType === GOAL_CONTEXT_CUSTOM_TYPE,
 		);
