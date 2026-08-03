@@ -13,7 +13,11 @@ import {
 	getDaemonUpdateRestartManifestPath,
 	VERSION,
 } from "../../config.js";
-import type { AgentSessionMessageAgentSummary } from "../../core/agent-messages.js";
+import {
+	type AgentFamilyCatalogEntry,
+	type AgentSessionMessageAgentSummary,
+	assertAgentSessionNameAvailable,
+} from "../../core/agent-messages.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import {
 	type AgentCronJob,
@@ -72,7 +76,12 @@ import {
 } from "./daemon-protocol.js";
 import { getDaemonRuntimeIdentity } from "./daemon-runtime-identity.js";
 import { matchesSessionIdSuffix } from "./daemon-session-id.js";
-import { isSessionSummaryBusy, type SessionSummary, summaryForInactiveSession } from "./daemon-session-list.js";
+import {
+	classifySessionRosterStatus,
+	isSessionSummaryBusy,
+	type SessionSummary,
+	summaryForInactiveSession,
+} from "./daemon-session-list.js";
 import {
 	acquireDaemonSocketPathLease,
 	cleanupDaemonSocketPath,
@@ -1736,6 +1745,7 @@ export class DaemonSupervisor {
 				return this.forwardToWorker(match.worker, command);
 			}
 			case "rename_saved_session":
+				await this.assertSupervisorSavedSessionNameAvailable(command.sessionPath, command.name.trim());
 				if (!command.activeSessionId) {
 					await this.catalog.rename(command.sessionPath, command.name);
 					return success(command.id, command.type);
@@ -1845,6 +1855,9 @@ export class DaemonSupervisor {
 				command.type === "kill" &&
 				(match.summary.activeSessionId ?? match.summary.id) === match.worker.descriptor.rootActiveSessionId;
 			if (!isRootKill) {
+				if (command.type === "rename" || command.type === "set_session_name") {
+					await this.assertSupervisorSessionNameAvailable(match.summary, command.name.trim());
+				}
 				const response = await this.forwardToWorker(match.worker, resolvedCommand);
 				if (admission && response.success) admission.status = "owned";
 				return response;
@@ -2860,6 +2873,49 @@ export class DaemonSupervisor {
 		}
 	}
 
+	private async familyCatalogEntries(): Promise<AgentFamilyCatalogEntry[]> {
+		const active = [...this.workers.values()].flatMap((worker) => [...worker.summaries.values()]);
+		const activePaths = new Set(
+			active.flatMap((summary) => (summary.sessionFile ? [canonicalSessionPath(summary.sessionFile)] : [])),
+		);
+		const savedRoots = (await this.catalog.list()).filter(
+			(info) => !info.parentSessionPath && !activePaths.has(canonicalSessionPath(info.path)),
+		);
+		return [...active, ...savedRoots.map((info) => summaryForInactiveSession(info))].map((summary) => ({
+			id: summary.sessionId,
+			...(summary.sessionName ? { name: summary.sessionName } : {}),
+			depth: summary.rlmDepth ?? 0,
+			status: classifySessionRosterStatus(summary),
+			...(summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
+			...(summary.parentSessionPath ? { parentSessionPath: canonicalSessionPath(summary.parentSessionPath) } : {}),
+			...(summary.sessionFile ? { sessionPath: canonicalSessionPath(summary.sessionFile) } : {}),
+		}));
+	}
+
+	private async assertSupervisorSessionNameAvailable(
+		target: Pick<SessionSummary, "sessionId" | "rlmDepth" | "parentSessionId" | "parentSessionPath">,
+		name: string,
+	): Promise<void> {
+		assertAgentSessionNameAvailable(await this.familyCatalogEntries(), {
+			name,
+			depth: target.rlmDepth ?? 0,
+			parentSessionId: target.parentSessionId,
+			parentSessionPath: target.parentSessionPath ? canonicalSessionPath(target.parentSessionPath) : undefined,
+			ignoreSessionId: target.sessionId,
+		});
+	}
+
+	private async assertSupervisorSavedSessionNameAvailable(sessionPath: string, name: string): Promise<void> {
+		const targetPath = canonicalSessionPath(sessionPath);
+		const active = [...this.workers.values()]
+			.flatMap((worker) => [...worker.summaries.values()])
+			.find((summary) => summary.sessionFile && canonicalSessionPath(summary.sessionFile) === targetPath);
+		if (active) return this.assertSupervisorSessionNameAvailable(active, name);
+		const saved = (await this.catalog.list()).find((info) => canonicalSessionPath(info.path) === targetPath);
+		if (!saved) throw new Error(`Session not found: ${sessionPath}`);
+		return this.assertSupervisorSessionNameAvailable(summaryForInactiveSession(saved), name);
+	}
+
 	private syncAgentPeers(): Promise<void> {
 		const sync = this.agentPeerSyncQueue
 			.catch(() => undefined)
@@ -2870,13 +2926,26 @@ export class DaemonSupervisor {
 						worker.descriptor.lifecycle === "ready" &&
 						worker.client !== undefined,
 				);
+				const activePaths = new Set(
+					readyWorkers.flatMap((worker) =>
+						[...worker.summaries.values()].flatMap((summary) =>
+							summary.sessionFile ? [canonicalSessionPath(summary.sessionFile)] : [],
+						),
+					),
+				);
+				const inactiveRoots = (await this.catalog.list())
+					.filter((info) => !info.parentSessionPath && !activePaths.has(canonicalSessionPath(info.path)))
+					.map((info) => this.agentPeerSummary(summaryForInactiveSession(info)));
 				await Promise.all(
 					readyWorkers.map(async (worker) => {
-						const peers = readyWorkers
-							.filter((candidate) => candidate !== worker)
-							.flatMap((candidate) =>
-								[...candidate.summaries.values()].map((summary) => this.agentPeerSummary(summary)),
-							);
+						const peers = [
+							...inactiveRoots,
+							...readyWorkers
+								.filter((candidate) => candidate !== worker)
+								.flatMap((candidate) =>
+									[...candidate.summaries.values()].map((summary) => this.agentPeerSummary(summary)),
+								),
+						];
 						const response = await worker.client.requestWorker({ type: "worker_sync_agent_peers", peers }, 5000);
 						if (!response.success) {
 							throw new Error(response.error);
@@ -2906,6 +2975,11 @@ export class DaemonSupervisor {
 					? 1 + summary.sessionActions.queuedCount
 					: summary.sessionActions.queuedCount),
 			...(summary.parentActiveSessionId ? { parentActiveSessionId: summary.parentActiveSessionId } : {}),
+			...(summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
+			...(summary.parentSessionPath ? { parentSessionPath: summary.parentSessionPath } : {}),
+			...(summary.sessionFile ? { sessionPath: summary.sessionFile } : {}),
+			...(summary.rlmDepth !== undefined ? { rlmDepth: summary.rlmDepth } : {}),
+			status: classifySessionRosterStatus(summary),
 			...(summary.rlmChildId ? { rlmChildId: summary.rlmChildId } : {}),
 		};
 	}

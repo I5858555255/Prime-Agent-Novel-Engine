@@ -370,15 +370,9 @@ describe("AgentSession rlm recursion", () => {
 		expect(childSession.sessionName).toBe("api-reviewer");
 		expect((await root.listRlmSubagents()).subagents[0]?.session_name).toBe("api-reviewer");
 
-		await expect(root.runRlmChild("collide with child id", { name: childId })).rejects.toThrow(
-			`RLM subagent session name "${childId}" is already in use`,
-		);
 		await expect(root.runRlmChild("inspect another API", { name: "api-reviewer" })).rejects.toThrow(
-			'RLM subagent session name "api-reviewer" is already in use',
+			'Agent name "api-reviewer" is unavailable: an agent of that name already exists at depth 1 under this parent',
 		);
-		await expect(
-			root.runRlmChild("collide with retained session id", { name: childSession.sessionId }),
-		).rejects.toThrow(`RLM subagent session name "${childSession.sessionId}" is already in use`);
 		await expect(root.runRlmChild("invalid name", { name: "   " })).rejects.toThrow("rlm.run name must not be empty");
 		await expect(root.runRlmChild("reserved name", { name: "all" })).rejects.toThrow(
 			"Broadcast agent messaging is not supported",
@@ -418,10 +412,7 @@ describe("AgentSession rlm recursion", () => {
 		expect((await root.listRlmSubagents()).subagents[0]?.session_name).toBe("renamed-running-worker");
 
 		await expect(root.runRlmChild("reuse renamed selector", { name: "renamed-running-worker" })).rejects.toThrow(
-			'RLM subagent session name "renamed-running-worker" is already in use',
-		);
-		await expect(root.runRlmChild("reuse running session id", { name: running.session_id })).rejects.toThrow(
-			`RLM subagent session name "${running.session_id}" is already in use`,
+			'Agent name "renamed-running-worker" is unavailable: an agent of that name already exists at depth 1 under this parent',
 		);
 		releaseChild();
 		await runPromise;
@@ -490,10 +481,7 @@ describe("AgentSession rlm recursion", () => {
 		expect((root as unknown as InspectableRlmSession)._retryableRlmSubagentDeletions.size).toBe(1);
 		child.setSessionName("renamed-retry-worker");
 		await expect(root.runRlmChild("reuse retry selector", { name: "retained-retry-worker" })).rejects.toThrow(
-			'RLM subagent session name "retained-retry-worker" is already in use',
-		);
-		await expect(root.runRlmChild("reuse retry session ID", { name: retainedSnapshot.session_id })).rejects.toThrow(
-			`RLM subagent session name "${retainedSnapshot.session_id}" is already in use`,
+			'Agent name "retained-retry-worker" is unavailable: an agent of that name already exists at depth 1 under this parent',
 		);
 
 		await expect(root.deleteRlmSubagent("retained-retry-worker")).resolves.toMatchObject({
@@ -1656,7 +1644,9 @@ describe("AgentSession rlm recursion", () => {
 		await runFailure;
 		expect((root as unknown as InspectableRlmSession)._activeRlmChildRuns.size).toBe(1);
 		expect(await root.listRlmSubagents()).toEqual({ subagents: [] });
-		await expect(root.runRlmChild("replacement", { name: "queued-worker" })).rejects.toThrow("already in use");
+		await expect(root.runRlmChild("replacement", { name: "queued-worker" })).rejects.toThrow(
+			"an agent of that name already exists at depth 1 under this parent",
+		);
 
 		releaseRuntimeCreation();
 		await waitFor(() => releaseRuntime.mock.calls.length === 1);

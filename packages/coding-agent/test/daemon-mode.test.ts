@@ -4384,6 +4384,21 @@ describe("daemon mode helpers", () => {
 					rlmChildId: fixture.grandchildId,
 				}),
 			);
+			const messageController = internals.createAgentMessageController(() => parentState);
+			await expect(messageController.roster?.()).resolves.toMatchObject({
+				current: { id: parentState.runtime.session.sessionId, depth: 0 },
+				entries: [
+					expect.objectContaining({ relationship: "child", name: "renamed-worker", depth: 1, status: "idle" }),
+				],
+			});
+			await expect(
+				messageController.assertSessionNameAvailable?.({
+					name: "renamed-worker",
+					depth: 1,
+					parentSessionId: parentState.runtime.session.sessionId,
+					parentSessionPath: fixture.parentSessionFile,
+				}),
+			).rejects.toThrow("an agent of that name already exists at depth 1 under this parent");
 			const listResponse = (await internals.handleCommand(makeClient("client-1", parentState.activeSessionId), {
 				type: "list",
 				all: true,
