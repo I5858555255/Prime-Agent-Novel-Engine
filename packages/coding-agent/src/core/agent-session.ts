@@ -1248,6 +1248,14 @@ export class AgentSession {
 		// or restart/rehydration of a session that already has messages or a goal.
 		if (this._rlmDepth === 0 && config.initialGoal && this._isBranchSeedable()) {
 			this._goalState = this._startGoal(config.initialGoal.objective, config.initialGoal.tokenBudget);
+			// The goal-context message is the only way the model learns a goal
+			// exists (there is no goal block in the system prompt). The slash
+			// command injects it via _runOrQueueGoalContext; CLI seeding runs
+			// mid-construction where no action can be admitted yet, so ride the
+			// next-turn context bucket instead: delivered with the first turn,
+			// persisted into the transcript, and therefore visible to
+			// continuations of the session.
+			this._pendingNextTurnMessages.push(createGoalContextMessage(this._goalState, "continuation"));
 		}
 		this._restoreLateIpythonSentAgentMessages();
 		if (this._goalState.status === "active") {
