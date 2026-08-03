@@ -216,14 +216,15 @@ describe("daemon protocol helpers", () => {
 		});
 	});
 
-	it("salvages command ids from rejected lines regardless of protocol validity", () => {
+	it("salvages command ids from rejected lines regardless of shape validity", () => {
 		const oldEnvelope = JSON.stringify(
 			createDaemonCommandEnvelope({ type: "list" } as DaemonCommand, "list-1", "old-client", 6),
 		);
 		expect(salvageDaemonCommandId(oldEnvelope)).toBe("list-1");
 		expect(salvageDaemonCommandId(JSON.stringify({ type: "list", id: "bare-1" }))).toBe("bare-1");
+		expect(salvageDaemonCommandId(JSON.stringify({ type: null, id: "typeless-1" }))).toBe("typeless-1");
+		expect(salvageDaemonCommandId(JSON.stringify({ id: "no-type" }))).toBe("no-type");
 		expect(salvageDaemonCommandId(JSON.stringify({ type: "command", id: 7 }))).toBeUndefined();
-		expect(salvageDaemonCommandId(JSON.stringify({ id: "no-type" }))).toBeUndefined();
 		expect(salvageDaemonCommandId(JSON.stringify("command"))).toBeUndefined();
 		expect(salvageDaemonCommandId("{ not json")).toBeUndefined();
 	});
