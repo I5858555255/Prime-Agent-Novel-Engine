@@ -225,6 +225,7 @@ import {
 	type RlmDeleteSubagentResult,
 	type RlmFindModelsResult,
 	type RlmListSubagentsResult,
+	type RlmSpawnHandle,
 	type RlmSubagentRegistryEntry,
 	type RlmSubagentRuntime,
 	type SubagentRuntimeHost,
@@ -936,6 +937,8 @@ interface RlmChildRun {
 	abort: () => void;
 	/** Child session, once its runtime exists. Used to cancel nested child runs. */
 	session?: AgentSession;
+	/** Selector snapshot for a delete admitted while runtime startup was still pending. */
+	detachedDeletion?: RlmSubagentRegistryEntry;
 	/** Re-emits the run's rlm_child_update snapshot with its current status. */
 	emitUpdate?: () => void;
 	/** Idempotent child-event forwarder cleanup, once the child runtime exists. */
@@ -1207,6 +1210,9 @@ export class AgentSession {
 	// the daemon does the same by leaving the child session resident in its registry.
 	private _rlmChildSessions = new Map<string, AgentSession>();
 	private _deletedRlmChildIds = new Set<string>();
+	// Failed explicit deletes stay hidden from listings but retain their original
+	// selector so a later delete can retry cleanup without orphaning the runtime.
+	private _rlmChildCleanupFailures = new Map<string, RlmSubagentRegistryEntry>();
 	private _deletingRlmChildren = new Map<
 		string,
 		{
@@ -3924,6 +3930,7 @@ export class AgentSession {
 			await session.disposeAsync().catch(() => undefined);
 		}
 		this._rlmChildSessions.clear();
+		this._rlmChildCleanupFailures.clear();
 		this._deletedRlmChildIds.clear();
 		try {
 			await this._ipythonKernelProvisioner?.dispose();
@@ -3962,6 +3969,7 @@ export class AgentSession {
 				session.dispose();
 			}
 			this._rlmChildSessions.clear();
+			this._rlmChildCleanupFailures.clear();
 			this._deletedRlmChildIds.clear();
 			this._pendingNextTurnMessages = [];
 			const deliveryError = new Error("Session disposed before prompt delivery.");
@@ -9031,7 +9039,11 @@ export class AgentSession {
 			recorded.add(run.id);
 		}
 		for (const [childId, childSession] of this._rlmChildSessions) {
-			if (this._deletingRlmChildren.has(childId) || recorded.has(childId)) {
+			if (
+				this._deletingRlmChildren.has(childId) ||
+				recorded.has(childId) ||
+				this._rlmChildCleanupFailures.has(childId)
+			) {
 				continue;
 			}
 			const daemonChild = daemonChildren.get(childId);
@@ -9055,6 +9067,7 @@ export class AgentSession {
 				recorded.has(childId) ||
 				this._deletingRlmChildren.has(childId) ||
 				this._deletedRlmChildIds.has(childId) ||
+				this._rlmChildCleanupFailures.has(childId) ||
 				!daemonChild.sessionDir
 			) {
 				continue;
@@ -9081,7 +9094,7 @@ export class AgentSession {
 	}
 
 	private async _resolveDirectRlmSubagent(target: string): Promise<RlmSubagentRegistryEntry> {
-		const candidates = [...(await this.listRlmSubagents()).subagents];
+		const candidates = [...(await this.listRlmSubagents()).subagents, ...this._rlmChildCleanupFailures.values()];
 		const matches = candidates.filter((entry) => this._rlmSubagentMatchesTarget(entry, target));
 		if (matches.length === 0) {
 			throw new Error(`No direct RLM subagent matches "${target}" in the current parent session`);
@@ -9104,7 +9117,9 @@ export class AgentSession {
 		if (isRunning()) {
 			return "running";
 		}
-		const subagent = (await this.listRlmSubagents()).subagents.find((entry) => entry.rlm_child_id === childId);
+		const subagent = [...(await this.listRlmSubagents()).subagents, ...this._rlmChildCleanupFailures.values()].find(
+			(entry) => entry.rlm_child_id === childId,
+		);
 		if (!subagent) {
 			for (const run of this._activeRlmChildRuns.values()) {
 				const result = await run.session?.deleteInactiveRlmSubagent(childId, isExternallyRunning);
@@ -9144,9 +9159,10 @@ export class AgentSession {
 		// Running and retained children can be reserved synchronously. This keeps
 		// them hidden immediately while the async daemon listing checks for a
 		// conflicting passive selector.
-		const localMatches = [...this._buildRlmSubagentList().subagents].filter((entry) =>
-			this._rlmSubagentMatchesTarget(entry, target),
-		);
+		const localMatches = [
+			...this._buildRlmSubagentList().subagents,
+			...this._rlmChildCleanupFailures.values(),
+		].filter((entry) => this._rlmSubagentMatchesTarget(entry, target));
 		const matchingChildIds = new Set([
 			...inFlight.map(({ subagent }) => subagent.rlm_child_id),
 			...localMatches.map((subagent) => subagent.rlm_child_id),
@@ -9185,9 +9201,10 @@ export class AgentSession {
 			});
 		}
 
-		const directMatches = [...(await this.listRlmSubagents()).subagents].filter((entry) =>
-			this._rlmSubagentMatchesTarget(entry, target),
-		);
+		const directMatches = [
+			...(await this.listRlmSubagents()).subagents,
+			...this._rlmChildCleanupFailures.values(),
+		].filter((entry) => this._rlmSubagentMatchesTarget(entry, target));
 		const directChildIds = new Set(directMatches.map((subagent) => subagent.rlm_child_id));
 		if (directChildIds.size > 1) {
 			throw new Error(`RLM subagent selector "${target}" is ambiguous in the current parent session`);
@@ -9228,6 +9245,7 @@ export class AgentSession {
 		this._rlmChildUnsubscribes.get(childId)?.();
 		this._rlmChildUnsubscribes.delete(childId);
 		this._rlmChildSessions.delete(childId);
+		this._rlmChildCleanupFailures.delete(childId);
 		if (!run || this._activeRlmChildRuns.get(childId) === run) {
 			this._activeRlmChildRuns.delete(childId);
 		}
@@ -9266,39 +9284,34 @@ export class AgentSession {
 				try {
 					await this._deleteRlmSubagentSession(childId, liveSession);
 				} catch (error) {
-					// The initial run was cancelled even though host closure failed. Reject its
-					// public promise now. Parent teardown owns cleanup once it starts, so do not
-					// repopulate maps that dispose() has already cleared.
 					if (this._disposed || this._disposing) {
 						this._removeRlmSubagentTracking(childId, run);
 						void liveSession.disposeAsync().catch(() => undefined);
 						throw error;
 					}
 					this._rlmChildSessions.set(childId, liveSession);
-					if (run.unsubscribe) {
-						this._rlmChildUnsubscribes.set(childId, run.unsubscribe);
-					}
+					this._rlmChildCleanupFailures.set(childId, subagent);
+					if (run.unsubscribe) this._rlmChildUnsubscribes.set(childId, run.unsubscribe);
 					this._activeRlmChildRuns.delete(childId);
 					run.abort = noopRlmChildAbort;
 					run.unsubscribe = undefined;
 					run.session = undefined;
 					throw error;
 				}
-				// Runtime closure is the deletion boundary. Reject the public call and do
-				// not wait for provider/tool work that ignored abort; the tombstone blocks
-				// any late retention by the detached work task.
 				this._deletedRlmChildIds.add(childId);
 				this._removeRlmSubagentTracking(childId, run);
 				return { subagent };
 			}
 
+			// Startup can be blocked in a host before it has a session to close. Admit
+			// deletion immediately, but retain the cancelled run as a hidden tombstone
+			// until startup settles so selectors cannot be reused underneath it.
+			run.detachedDeletion = subagent;
 			this._deletedRlmChildIds.add(childId);
-			this._removeRlmSubagentTracking(childId, run);
 			return { subagent };
 		}
 
 		this._emitRlmSubagentRemoval(subagent);
-
 		const retained = this._rlmChildSessions.get(childId);
 		try {
 			await this._deleteRlmSubagentSession(childId, retained);
@@ -9307,8 +9320,7 @@ export class AgentSession {
 				this._removeRlmSubagentTracking(childId);
 				void retained?.disposeAsync().catch(() => undefined);
 			} else {
-				// Hide failed cleanup from the public registry while preserving the
-				// original selector and any retained session for an explicit retry.
+				this._rlmChildCleanupFailures.set(childId, subagent);
 			}
 			throw error;
 		}
@@ -9429,7 +9441,9 @@ export class AgentSession {
 		const localConflict =
 			[...this._activeRlmChildRuns.values()].some(
 				(run) => run.session?.sessionName === name || (!run.session && run.sessionName === name),
-			) || [...this._rlmChildSessions.values()].some((session) => session.sessionName === name);
+			) ||
+			[...this._rlmChildSessions.values()].some((session) => session.sessionName === name) ||
+			[...this._rlmChildCleanupFailures.values()].some((entry) => entry.session_name === name);
 		if (localConflict) {
 			throw new Error(formatAgentSessionNameUnavailable(name, depth));
 		}
@@ -9504,12 +9518,7 @@ export class AgentSession {
 		prompt: string,
 		kwargs: Record<string, unknown> = {},
 		spawnCode?: string,
-	): Promise<{
-		rlm_child_id: string;
-		name: string;
-		session_dir: string;
-		model: string;
-	}> {
+	): Promise<RlmSpawnHandle> {
 		const { name: rawName, model: rawModel, ...unsupported } = kwargs;
 		const unsupportedKwargs = Object.keys(unsupported);
 		if (unsupportedKwargs.length > 0) {
@@ -9556,7 +9565,7 @@ export class AgentSession {
 			prompt,
 			sessionName,
 			sessionDir: childSessionDir,
-			status: "running",
+			status: "queued",
 			abort: noopRlmChildAbort,
 		};
 		this._activeRlmChildRuns.set(run.id, run);
@@ -9588,6 +9597,7 @@ export class AgentSession {
 
 		const publishChildSession = (child: AgentSession) => {
 			childSession = child;
+			if (this._activeRlmChildRuns.get(run.id) !== run) return;
 			run.session = child;
 			run.abort = () => void child.abort();
 		};
@@ -9602,91 +9612,127 @@ export class AgentSession {
 			}),
 			onSessionPublished: publishChildSession,
 		};
-		try {
-			const childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
-			const child = childRuntime.session;
-			if (child.sessionName !== sessionName) child.setSessionName(sessionName);
-			publishChildSession(child);
-			const unsubscribeChildEvents = child.subscribe((event) => {
-				if (event.type === "rlm_child_update") {
-					this._emit(event);
-					return;
-				}
-				if (event.type === "message_end" && event.message.role === "assistant") {
-					const assistant = event.message as AssistantMessage;
-					if (assistant.stopReason !== "error" && assistant.stopReason !== "aborted") {
-						attributeChildUsage(parentAssistantForUsage?.usage ?? emptyUsage(), assistant.usage);
-						if (parentAssistantForUsage) {
-							const parentEntry = this._findAssistantEntryForMessage(parentAssistantForUsage);
-							if (parentEntry) {
-								const messages = child.messages;
-								const assistantIndex = messages.lastIndexOf(assistant);
-								const precedingPrompt = messages
-									.slice(0, assistantIndex)
-									.reverse()
-									.find((message) => message.role === "user" || message.role === "custom");
-								const assistantCount = messages
-									.slice(0, assistantIndex + 1)
-									.filter((message) => message.role === "assistant").length;
-								const origin =
-									assistantCount === 1
-										? "spawn_task"
-										: precedingPrompt?.role === "custom" && isAgentSessionMessage(precedingPrompt)
-											? "agent_message"
-											: "direct_user";
-								this.sessionManager.appendChildUsageAttribution(
-									parentEntry.id,
-									assistant.usage,
-									parentAssistantForUsage.usage,
-									origin,
-								);
+
+		// Runtime startup and the task run are deliberately detached. The public
+		// spawn resolves at admission, while this task owns live tracking, usage,
+		// retention, cancellation, and late-startup cleanup.
+		void (async () => {
+			let childRuntime: RlmSubagentRuntime | undefined;
+			try {
+				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
+				const child = childRuntime.session;
+				if (child.sessionName !== sessionName) child.setSessionName(sessionName);
+				publishChildSession(child);
+				if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
+				run.status = "running";
+				emitChildUpdate();
+				const unsubscribeChildEvents = child.subscribe((event) => {
+					if (event.type === "rlm_child_update") {
+						this._emit(event);
+						return;
+					}
+					if (event.type === "message_end" && event.message.role === "assistant") {
+						const assistant = event.message as AssistantMessage;
+						if (assistant.stopReason !== "error" && assistant.stopReason !== "aborted") {
+							attributeChildUsage(parentAssistantForUsage?.usage ?? emptyUsage(), assistant.usage);
+							if (parentAssistantForUsage) {
+								const parentEntry = this._findAssistantEntryForMessage(parentAssistantForUsage);
+								if (parentEntry) {
+									const messages = child.messages;
+									const assistantIndex = messages.lastIndexOf(assistant);
+									const precedingPrompt = messages
+										.slice(0, assistantIndex)
+										.reverse()
+										.find((message) => message.role === "user" || message.role === "custom");
+									const assistantCount = messages
+										.slice(0, assistantIndex + 1)
+										.filter((message) => message.role === "assistant").length;
+									const origin =
+										assistantCount === 1
+											? "spawn_task"
+											: precedingPrompt?.role === "custom" && isAgentSessionMessage(precedingPrompt)
+												? "agent_message"
+												: "direct_user";
+									this.sessionManager.appendChildUsageAttribution(
+										parentEntry.id,
+										assistant.usage,
+										parentAssistantForUsage.usage,
+										origin,
+									);
+								}
 							}
 						}
-					}
-					const text = compactRlmText(readAssistantText(assistant));
-					if (text) answerPreview = text;
-					void flushAgentTraceUpload(child.sessionManager).catch(() => undefined);
-					emitChildUpdate();
-				} else if (event.type === "message_start" || event.type === "message_update") {
-					if (event.message.role === "assistant") {
-						const text = compactRlmText(readAssistantText(event.message as AssistantMessage));
+						const text = compactRlmText(readAssistantText(assistant));
 						if (text) answerPreview = text;
-						activity = { kind: "writing" };
+						void flushAgentTraceUpload(child.sessionManager).catch(() => undefined);
+						emitChildUpdate();
+					} else if (event.type === "message_start" || event.type === "message_update") {
+						if (event.message.role === "assistant") {
+							const text = compactRlmText(readAssistantText(event.message as AssistantMessage));
+							if (text) answerPreview = text;
+							activity = { kind: "writing" };
+							emitChildUpdate();
+						}
+					} else if (event.type === "tool_execution_start") {
+						toolUseCount += 1;
+						runningToolCount += 1;
+						activity = { kind: "executing", toolName: event.toolName };
+						emitChildUpdate();
+					} else if (event.type === "tool_execution_end") {
+						runningToolCount = Math.max(0, runningToolCount - 1);
+						if (runningToolCount === 0) activity = { kind: "waiting" };
+						emitChildUpdate();
+					} else if (event.type === "session_info_changed" || event.type === "recap_update") {
 						emitChildUpdate();
 					}
-				} else if (event.type === "tool_execution_start") {
-					toolUseCount += 1;
-					runningToolCount += 1;
-					activity = { kind: "executing", toolName: event.toolName };
-					emitChildUpdate();
-				} else if (event.type === "tool_execution_end") {
-					runningToolCount = Math.max(0, runningToolCount - 1);
-					if (runningToolCount === 0) activity = { kind: "waiting" };
-					emitChildUpdate();
-				} else if (event.type === "session_info_changed" || event.type === "recap_update") {
-					emitChildUpdate();
-				} else if (event.type === "agent_end") {
-					run.status = "done";
-					durationMs = Date.now() - startedAt;
-					activity = undefined;
-					emitChildUpdate();
+				});
+				run.unsubscribe = unsubscribeChildEvents;
+				await child.promptAndWait(`[task from parent]\n\n${prompt}`, {
+					expandPromptTemplates: false,
+					source: "extension",
+				});
+				if (run.error) throw new Error(run.error);
+				run.status = "done";
+				durationMs = Date.now() - startedAt;
+				activity = undefined;
+				emitChildUpdate();
+				if (!this.registerRlmChildSession(run.id, child)) {
+					await child.disposeAsync().catch(() => undefined);
 				}
-			});
-			run.unsubscribe = unsubscribeChildEvents;
-			await child.promptUntilAccepted(`[task from parent]\n\n${prompt}`, {
-				expandPromptTemplates: false,
-				source: "extension",
-			});
-		} catch (error) {
-			this._activeRlmChildRuns.delete(run.id);
-			run.unsubscribe?.();
-			await childSession?.disposeAsync().catch(() => undefined);
-			run.status = "error";
-			run.error = error instanceof Error ? error.message : String(error);
-			durationMs = Date.now() - startedAt;
-			emitChildUpdate();
-			throw new Error(`Failed to spawn subagent: ${run.error}`);
-		}
+			} catch (error) {
+				if (run.status !== "cancelled") {
+					run.status = "error";
+					run.error = error instanceof Error ? error.message : String(error);
+				}
+				durationMs = Date.now() - startedAt;
+				activity = undefined;
+				emitChildUpdate();
+				if (!run.detachedDeletion) await childSession?.disposeAsync().catch(() => undefined);
+			} finally {
+				if (run.detachedDeletion && childRuntime) {
+					try {
+						await this._deleteRlmSubagentSession(run.id, childRuntime.session);
+					} catch {
+						if (!this._disposed && !this._disposing) {
+							this._rlmChildSessions.set(run.id, childRuntime.session);
+							this._rlmChildCleanupFailures.set(run.id, run.detachedDeletion);
+						}
+					}
+				}
+				if (this._activeRlmChildRuns.get(run.id) === run) {
+					if (this._rlmChildSessions.has(run.id)) {
+						this._activeRlmChildRuns.delete(run.id);
+						if (run.unsubscribe) this._rlmChildUnsubscribes.set(run.id, run.unsubscribe);
+						run.abort = noopRlmChildAbort;
+						run.unsubscribe = undefined;
+						run.session = undefined;
+					} else {
+						this._removeRlmSubagentTracking(run.id, run);
+					}
+				}
+			}
+		})().catch(() => undefined);
+
 		return {
 			rlm_child_id: childNodeId,
 			name: sessionName,
