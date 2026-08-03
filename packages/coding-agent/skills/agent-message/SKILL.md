@@ -27,21 +27,18 @@ if child is not None:
 
 ## API
 
-- `await agent_message.roster()` — returns `current` (`name`, `id`, `depth`) and
-  relationship-scoped `entries` (`relationship`, `name`, `id`, `depth`, `status`)
+- `await agent_message.list_agents()` — returns `current` (`name`, `id`, `depth`)
+  and family-scoped `entries` (`relationship`, `name`, `id`, `depth`, `status`)
   for the current agent's parent, siblings, and children. It includes inactive
-  family members and sorts parent, siblings by name, then children by name.
-- `await agent_message.list_agents()` — compatibility alias for
-  `agent_message.roster()`; it is family-scoped and does not expose a global
-  daemon session list.
+  family members and sorts parent, siblings by name, then children by name; it
+  does not expose a global daemon session list.
 - `await agent_message.send(message, receiver_role="parent" | "sibling" | "child", receiver_name=None, mode="auto")` — sends one direct
   text message to an active session. Sending to an idle completed subagent
   starts an ordinary follow-up turn in that same child session and context.
   The child remains available only until its parent session closes. The daemon
   resolves `receiver_role` within the current agent family; `receiver_name` is
-  required for siblings and children and omitted for the unique parent. Legacy
-  positional `send(target, message)` resolves names or ids but rejects targets
-  outside the nuclear family. `send("all", message)` broadcasts only to the
+  required for siblings and children and omitted for the unique parent.
+  `send("all", message)` broadcasts only to the
   family roster and returns `{receipts: [...]}` in roster order; successful entries
   are ordinary receipts and failed entries contain the target id and a short `error`.
   One failed delivery does not reject successful deliveries. `mode` is

@@ -217,6 +217,22 @@ describe("agent session bus", () => {
 		expect(sendAgentMessage.mock.calls.map(([input]) => input.target)).toEqual(["root", "sibling", "child"]);
 	});
 
+	it("rejects non-all string targets at the host boundary", async () => {
+		const sendAgentMessage = vi.fn();
+		const handlers = createAgentMessageHostHandlers({
+			roster: () => ({
+				current: { name: "builder", id: "builder", depth: 1 },
+				entries: [],
+			}),
+			sendAgentMessage,
+		});
+
+		await expect(handlers["agent_message.send"]!({ target: "reviewer", message: "status" })).rejects.toThrow(
+			"use receiver_role and receiver_name",
+		);
+		expect(sendAgentMessage).not.toHaveBeenCalled();
+	});
+
 	it("reports individual broadcast failures without rejecting successful receipts", async () => {
 		const sendAgentMessage = vi.fn(async (input: { target: string; message: string }) => {
 			if (input.target === "sibling") throw new Error("rate limited");

@@ -528,10 +528,10 @@ export class AgentSessionMessageRateLimiter {
 }
 
 export function createAgentMessageHostHandlers(
-	controller: Pick<AgentSessionMessageController, "roster" | "sendAgentMessage">,
+	controller: Pick<AgentSessionMessageController, "roster" | "sendAgentMessage" | "awaitPendingChildPublication">,
 ): Record<string, HostRequestHandler> {
 	return {
-		"agent_message.roster": async () => {
+		"agent_message.list_agents": async () => {
 			if (!controller.roster) throw new Error("agent family roster is not available in this session");
 			return (await controller.roster()) as unknown as Record<string, unknown>;
 		},
@@ -541,30 +541,32 @@ export function createAgentMessageHostHandlers(
 			}
 			let target: string;
 			if (typeof payload.target === "string") {
-				target = payload.target;
-				if (target.trim().toLowerCase() === "all") {
-					if (!controller.roster) throw new Error("agent family roster is not available in this session");
-					const roster = await controller.roster();
-					const results = await Promise.allSettled(
-						roster.entries.map((entry) =>
-							controller.sendAgentMessage({
-								target: entry.id,
-								message: payload.message as string,
-								deliveryMode: normalizeAgentSessionMessageDeliveryMode(payload.mode),
-								receiverRole: entry.relationship,
-							}),
-						),
+				if (payload.target !== "all") {
+					throw new Error(
+						"positional agent_message.send targets are not supported; use receiver_role and receiver_name",
 					);
-					const receipts = results.map((result, index) =>
-						result.status === "fulfilled"
-							? result.value
-							: {
-									target: roster.entries[index]!.id,
-									error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-								},
-					);
-					return { receipts } as unknown as Record<string, unknown>;
 				}
+				if (!controller.roster) throw new Error("agent family roster is not available in this session");
+				const roster = await controller.roster();
+				const results = await Promise.allSettled(
+					roster.entries.map((entry) =>
+						controller.sendAgentMessage({
+							target: entry.id,
+							message: payload.message as string,
+							deliveryMode: normalizeAgentSessionMessageDeliveryMode(payload.mode),
+							receiverRole: entry.relationship,
+						}),
+					),
+				);
+				const receipts = results.map((result, index) =>
+					result.status === "fulfilled"
+						? result.value
+						: {
+								target: roster.entries[index]!.id,
+								error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+							},
+				);
+				return { receipts } as unknown as Record<string, unknown>;
 			} else {
 				const role = payload.receiver_role;
 				if (role !== "parent" && role !== "sibling" && role !== "child") {
@@ -602,9 +604,7 @@ export function createAgentMessageHostHandlers(
 				target,
 				message: payload.message,
 				deliveryMode: normalizeAgentSessionMessageDeliveryMode(payload.mode),
-				...(typeof payload.target === "string"
-					? {}
-					: { receiverRole: payload.receiver_role as AgentFamilyRelationship }),
+				receiverRole: payload.receiver_role as AgentFamilyRelationship,
 			})) as unknown as Record<string, unknown>;
 		},
 	};

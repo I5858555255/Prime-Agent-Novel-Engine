@@ -133,7 +133,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		if (hasAgentMessage) {
 			parts.push(
 				"Children reply explicitly with `await agent_message.send(message, receiver_role='parent')` when an answer is needed. Replies and follow-ups arrive as ordinary agent messages; not every task requires a reply.",
-				"Use `await agent_message.roster()` to discover family and `await rlm.list_subagents()` to recover direct child handles. Use `agent_message.send(..., receiver_role='child', receiver_name=child.name)` for follow-ups.",
+				"Use `await agent_message.list_agents()` to discover family and `await rlm.list_subagents()` to recover direct child handles. Use `agent_message.send(..., receiver_role='child', receiver_name=child.name)` for follow-ups.",
 			);
 		} else {
 			parts.push("Use `await rlm.list_subagents()` to recover direct child handles after admission.");

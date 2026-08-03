@@ -879,29 +879,37 @@ describe("AgentSession rlm recursion", () => {
 		expect(child.repliedToParentSinceTask).toBe(true);
 	});
 
-	it("does not reject a delivered string-target send when roster bookkeeping fails", async () => {
-		const sendAgentMessage = vi.fn(async () => ({
-			id: "agentmsg-delivered",
-			source: "agent_message" as const,
-			target: { activeSessionId: "parent-active", sessionId: "parent-session" },
-			message: "done",
-			deliveryStatus: "delivered" as const,
-			deliveryMode: "auto" as const,
-		}));
-		const child = createSession({
-			depth: 1,
-			agentMessageController: {
-				listAgents: () => ({ agents: [] }),
-				roster: () => {
-					throw new Error("catalog unavailable");
-				},
-				sendAgentMessage,
-			},
+	it("resets replied state when a parent message is accepted", async () => {
+		const child = createSession({ depth: 1 });
+		(child as unknown as { _repliedToParentSinceTask: boolean })._repliedToParentSinceTask = true;
+		const message = createAgentSessionMessage({
+			id: "agentmsg-parent-task",
+			source: "agent_message",
+			message: "new task",
+			fromRelationship: "parent",
+			target: { activeSessionId: "child-active", sessionId: child.sessionId },
+			deliveryMode: "auto",
 		});
-		const send = (child as unknown as InspectableRlmSession)._createKernelHostHandlers()["agent_message.send"]!;
 
-		await expect(send({ target: "parent", message: "done" })).resolves.toMatchObject({ id: "agentmsg-delivered" });
-		expect(sendAgentMessage).toHaveBeenCalledOnce();
+		await child.acceptAgentMessagePrompt(message.content as string, { customMessage: message });
+
+		expect(child.repliedToParentSinceTask).toBe(false);
+	});
+
+	it("resets replied state when a parent follow-up is queued", async () => {
+		const child = createSession({ depth: 1 });
+		(child as unknown as { _repliedToParentSinceTask: boolean })._repliedToParentSinceTask = true;
+		const message = createAgentSessionMessage({
+			id: "agentmsg-parent-follow-up",
+			source: "agent_message",
+			message: "continue",
+			fromRelationship: "parent",
+			target: { activeSessionId: "child-active", sessionId: child.sessionId },
+			deliveryMode: "follow_up",
+		});
+
+		await child.queueAgentMessagePrompt(message.content as string, "followUp", message);
+
 		expect(child.repliedToParentSinceTask).toBe(false);
 	});
 
