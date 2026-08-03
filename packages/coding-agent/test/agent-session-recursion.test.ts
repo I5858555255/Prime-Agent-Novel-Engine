@@ -14,7 +14,11 @@ import {
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AgentSessionMessageController, isAgentSessionMessage } from "../src/core/agent-messages.js";
+import {
+	type AgentSessionMessageController,
+	createAgentSessionMessage,
+	isAgentSessionMessage,
+} from "../src/core/agent-messages.js";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { LoadExtensionsResult } from "../src/core/extensions/index.js";
@@ -875,6 +879,32 @@ describe("AgentSession rlm recursion", () => {
 		expect(child.repliedToParentSinceTask).toBe(true);
 	});
 
+	it("does not reject a delivered string-target send when roster bookkeeping fails", async () => {
+		const sendAgentMessage = vi.fn(async () => ({
+			id: "agentmsg-delivered",
+			source: "agent_message" as const,
+			target: { activeSessionId: "parent-active", sessionId: "parent-session" },
+			message: "done",
+			deliveryStatus: "delivered" as const,
+			deliveryMode: "auto" as const,
+		}));
+		const child = createSession({
+			depth: 1,
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster: () => {
+					throw new Error("catalog unavailable");
+				},
+				sendAgentMessage,
+			},
+		});
+		const send = (child as unknown as InspectableRlmSession)._createKernelHostHandlers()["agent_message.send"]!;
+
+		await expect(send({ target: "parent", message: "done" })).resolves.toMatchObject({ id: "agentmsg-delivered" });
+		expect(sendAgentMessage).toHaveBeenCalledOnce();
+		expect(child.repliedToParentSinceTask).toBe(false);
+	});
+
 	it("leaves replied state unknown when a child session is rehydrated", () => {
 		const manager = SessionManager.create(tempDir, join(tempDir, "resumed-child"));
 		manager.newSession({ rlmDepth: 1 });
@@ -883,6 +913,58 @@ describe("AgentSession rlm recursion", () => {
 
 		const resumed = createSession({ depth: 1, sessionManager: manager });
 		expect(resumed.repliedToParentSinceTask).toBeUndefined();
+	});
+
+	it("surfaces post-admission startup failure in the parent transcript and subagent registry", async () => {
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => {
+					throw new Error("kernel startup failed");
+				},
+				deleteRlmSubagentRuntime: async () => {},
+			},
+		});
+
+		const spawned = await root.runRlmChild("start failing child", { name: "failing-worker" });
+		await vi.waitFor(async () => {
+			expect((await root.listRlmSubagents()).subagents).toContainEqual(
+				expect.objectContaining({ rlm_child_id: spawned.rlm_child_id, status: "error" }),
+			);
+		});
+		await vi.waitFor(() => {
+			expect(root.messages).toContainEqual(
+				expect.objectContaining({
+					role: "custom",
+					customType: "rlm_child_failure",
+					content: expect.stringContaining("failing-worker"),
+				}),
+			);
+			expect(root.messages).toContainEqual(
+				expect.objectContaining({ content: expect.stringContaining("kernel startup failed") }),
+			);
+		});
+	});
+
+	it("releases a hosted child when its initial task fails", async () => {
+		const child = createSession({ rlmSessionDir: join(tempDir, "host-error-child") });
+		vi.spyOn(child, "promptAndWait").mockRejectedValue(new Error("child prompt failed"));
+		const releaseRlmSubagentRuntime = vi.fn(async () => {});
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: child }),
+				releaseRlmSubagentRuntime,
+				deleteRlmSubagentRuntime: async () => {},
+			},
+		});
+
+		const spawned = await root.runRlmChild("fail hosted child");
+		await vi.waitFor(() => {
+			expect(releaseRlmSubagentRuntime).toHaveBeenCalledWith(
+				expect.objectContaining({ session: child }),
+				expect.objectContaining({ id: spawned.rlm_child_id }),
+				"error",
+			);
+		});
 	});
 
 	it("notifies the runtime host when the initial child task completes", async () => {

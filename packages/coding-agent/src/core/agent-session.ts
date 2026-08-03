@@ -180,6 +180,7 @@ import {
 	type CustomMessage,
 	createCompactionOutcomeMessage,
 	createHeartbeatPromptMessage,
+	createRlmChildFailureMessage,
 	createSessionSlashCommandMessage,
 	createSessionSlashCommandResultMessage,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
@@ -4453,7 +4454,7 @@ export class AgentSession {
 	async acceptAgentMessagePrompt(text: string, options?: PromptOptions): Promise<void> {
 		const customMessage =
 			options?.customMessage && isAgentSessionMessage(options.customMessage) ? options.customMessage : undefined;
-		return this._prompt(text, {
+		await this._prompt(text, {
 			...options,
 			expandPromptTemplates: false,
 			skipInputHandlers: true,
@@ -4462,6 +4463,7 @@ export class AgentSession {
 			agentMessageId: options?.agentMessageId ?? customMessage?.details.id ?? parseAgentSessionMessagePromptId(text),
 			customMessage,
 		});
+		if (customMessage?.details.fromRelationship === "parent") this._repliedToParentSinceTask = false;
 	}
 
 	async queueAgentMessagePrompt(
@@ -4475,12 +4477,15 @@ export class AgentSession {
 				agentMessageId,
 				message: customMessage,
 			});
+			if (customMessage?.details.fromRelationship === "parent") this._repliedToParentSinceTask = false;
 			return true;
 		}
-		return this._queuePreparedPrompt("followUp", text, undefined, {
+		const queued = await this._queuePreparedPrompt("followUp", text, undefined, {
 			agentMessageId,
 			message: customMessage,
 		});
+		if (queued && customMessage?.details.fromRelationship === "parent") this._repliedToParentSinceTask = false;
+		return queued;
 	}
 
 	async promptHeartbeat(job: AgentCronJob, options?: PromptOptions): Promise<void> {
@@ -8712,12 +8717,16 @@ export class AgentSession {
 						if (this._rlmDepth > 0) {
 							let addressedParent = input.receiverRole === "parent";
 							if (input.receiverRole === undefined && this._agentMessageController?.roster) {
-								const roster = await this._agentMessageController.roster();
-								addressedParent = roster.entries.some(
-									(entry) =>
-										entry.relationship === "parent" &&
-										(entry.id === input.target || entry.name === input.target),
-								);
+								try {
+									const roster = await this._agentMessageController.roster();
+									addressedParent = roster.entries.some(
+										(entry) =>
+											entry.relationship === "parent" &&
+											(entry.id === input.target || entry.name === input.target),
+									);
+								} catch {
+									addressedParent = false;
+								}
 							}
 							if (addressedParent) this._repliedToParentSinceTask = true;
 						}
@@ -9068,7 +9077,7 @@ export class AgentSession {
 		const subagents: RlmListSubagentsResult["subagents"] = [];
 		const recorded = new Set<string>();
 		for (const run of this._activeRlmChildRuns.values()) {
-			if (this._deletingRlmChildren.has(run.id) || run.status === "error" || run.status === "cancelled") {
+			if (this._deletingRlmChildren.has(run.id) || run.status === "cancelled") {
 				continue;
 			}
 			const daemonChild = daemonChildren.get(run.id);
@@ -9078,7 +9087,7 @@ export class AgentSession {
 				session_id: daemonChild?.sessionId ?? run.session?.sessionId ?? null,
 				session_name: daemonChild?.sessionName ?? run.session?.sessionName ?? run.sessionName,
 				session_dir: run.sessionDir,
-				status: run.status === "done" ? "completed" : "running",
+				status: run.status === "done" ? "completed" : run.status === "error" ? "error" : "running",
 			});
 			recorded.add(run.id);
 		}
@@ -9324,6 +9333,11 @@ export class AgentSession {
 				this._emitRlmSubagentRemoval(subagent);
 			}
 			const liveSession = run.session;
+			if (run.status === "error" && !liveSession) {
+				this._deletedRlmChildIds.add(childId);
+				this._removeRlmSubagentTracking(childId, run);
+				return { subagent };
+			}
 			if (liveSession) {
 				try {
 					await this._deleteRlmSubagentSession(childId, liveSession);
@@ -9784,16 +9798,41 @@ export class AgentSession {
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();
-				if (!run.detachedDeletion) {
+				if (run.status === "error" && !run.detachedDeletion) {
+					const failureMessage = createRlmChildFailureMessage({
+						childId: run.id,
+						sessionName,
+						error: run.error ?? "unknown error",
+					});
+					await this._promptInjectedMessage(failureMessage.content as string, failureMessage, {
+						streamingBehavior: "followUp",
+						queueIfBusy: true,
+						returnAfterAccepted: true,
+						suppressAutonomousContinuation: true,
+					}).catch(() => undefined);
+				}
+				if (!run.detachedDeletion && childSession && this._subagentRuntimeHost?.releaseRlmSubagentRuntime) {
+					try {
+						await this._subagentRuntimeHost.releaseRlmSubagentRuntime(
+							childRuntime ?? { session: childSession },
+							subagentOptions,
+							run.status === "cancelled" ? "cancelled" : "error",
+						);
+						if (run.status === "cancelled" && !this._disposed && !this._disposing) {
+							this._deletedRlmChildIds.add(run.id);
+							this._removeRlmSubagentTracking(run.id);
+						}
+					} catch {
+						await childSession?.disposeAsync().catch(() => undefined);
+					}
+				} else if (!run.detachedDeletion) {
 					try {
 						if (childRuntime && this._subagentRuntimeHost) {
 							await this._subagentRuntimeHost.deleteRlmSubagentRuntime(run.id, childRuntime.session);
 						} else if (childSession) {
 							await childSession.disposeAsync();
-						} else {
-							return;
 						}
-						if (!this._disposed && !this._disposing) {
+						if (run.status === "cancelled" && !this._disposed && !this._disposing) {
 							this._deletedRlmChildIds.add(run.id);
 							this._removeRlmSubagentTracking(run.id);
 						}
@@ -9819,12 +9858,15 @@ export class AgentSession {
 						run.abort = noopRlmChildAbort;
 						run.unsubscribe = undefined;
 						run.session = undefined;
-					} else {
+					} else if (run.status !== "error") {
 						this._removeRlmSubagentTracking(run.id, run);
+					} else {
+						run.unsubscribe?.();
+						run.abort = noopRlmChildAbort;
+						run.unsubscribe = undefined;
 					}
 				}
 			}
-			// Follow-up: deliver post-admission startup failures to the parent over a2a.
 		})().catch(() => undefined);
 
 		return {
