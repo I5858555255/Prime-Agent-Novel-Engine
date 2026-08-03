@@ -5393,9 +5393,7 @@ export class AgentSession {
 			) {
 				throw new Error("Session input dispatch settled without durable delivery");
 			}
-			this._forgetConsumedPostCompactionContinuations(
-				turns.map((action) => primaryDeliveryRecord(action).message),
-			);
+			this._forgetConsumedPostCompactionContinuations(turns.map((action) => primaryDeliveryRecord(action).message));
 		} catch (error) {
 			const delivered = new Set(this.agent.state.messages);
 			this._pendingNextTurnMessages.unshift(...nextTurnMessages.filter((message) => !delivered.has(message)));
@@ -5648,18 +5646,24 @@ export class AgentSession {
 	}
 
 	clearQueuedUserMessagesMatching(predicate: (text: string) => boolean): { steering: string[]; followUp: string[] } {
-		const matching = this._actionStore
-			.ownedActions()
-			.filter(
-				(action) =>
-					action.payload.kind === "turn" &&
-					action.agentMessageId !== undefined &&
-					predicate(action.payload.text) &&
-					(action.lifecycle.state === "queued" ||
-						action.lifecycle.state === "selected" ||
-						action.lifecycle.state === "preparing" ||
-						(action.lifecycle.state === "committing" && !primaryDeliveryRecord(action).started)),
-			);
+		const ownedActions = this._actionStore.ownedActions();
+		const dispatchedTurnCount = ownedActions.filter(
+			(action) =>
+				action.payload.kind === "turn" &&
+				(action.lifecycle.state === "committing" || action.lifecycle.state === "running"),
+		).length;
+		const matching = ownedActions.filter(
+			(action) =>
+				action.payload.kind === "turn" &&
+				action.agentMessageId !== undefined &&
+				predicate(action.payload.text) &&
+				(action.lifecycle.state === "queued" ||
+					action.lifecycle.state === "selected" ||
+					action.lifecycle.state === "preparing" ||
+					(action.lifecycle.state === "committing" &&
+						dispatchedTurnCount === 1 &&
+						!primaryDeliveryRecord(action).started)),
+		);
 		if (matching.length === 0) return { steering: [], followUp: [] };
 		const removedTexts = (delivery: DeliveryPolicy) =>
 			[

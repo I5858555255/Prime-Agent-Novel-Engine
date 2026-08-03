@@ -1442,6 +1442,46 @@ describe("AgentSession queue characterization", () => {
 		expect(getAssistantTexts(harness)).toEqual(["delivered"]);
 	});
 
+	it("does not cancel one action from a handed-off batch", async () => {
+		const firstPrompt = agentPromptText("agentmsg_batch_first", "first");
+		const secondPrompt = agentPromptText("agentmsg_batch_second", "second");
+		let cancelSecond: (() => void) | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("message_start", (event) => {
+						if (event.message.role === "user" && getMessageText(event.message) === firstPrompt) {
+							cancelSecond?.();
+						}
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.session.setFollowUpMode("all");
+		harness.setResponses([fauxAssistantMessage("shared response")]);
+		let cleared: { steering: string[]; followUp: string[] } | undefined;
+		cancelSecond = () => {
+			cleared = harness.session.clearQueuedUserMessagesMatching((text) => text === secondPrompt);
+		};
+
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.queueAgentMessagePrompt(firstPrompt, "followUp");
+		await harness.session.queueAgentMessagePrompt(secondPrompt, "followUp");
+		pause.release();
+		await harness.session.waitForIdle();
+
+		expect(cleared).toEqual({ steering: [], followUp: [] });
+		expect(getUserTexts(harness)).toEqual([firstPrompt, secondPrompt]);
+		expect(getAssistantTexts(harness)).toEqual(["shared response"]);
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "message")
+				.map((entry) => getMessageText(entry.message)),
+		).toContain("shared response");
+	});
+
 	it("keeps cleared prompts out of the handoff snapshot during the refine wait", async () => {
 		let sessionInternals: { _refineInFlight?: Promise<void> };
 		let clearDuringRefineWait: (() => void) | undefined;
