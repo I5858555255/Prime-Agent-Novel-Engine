@@ -117,7 +117,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 /**
  * Supplemental sub-agent delegation guidance, appended after the base RLM
  * prompt (see system-prompt.ts). The recursion block covers the mechanics
- * (`rlm(...)`, `asyncio.gather`, `asyncio.create_task`); this block adds the
+ * (`rlm(...)` admission and handle management); this block adds the
  * when and why in the same When -> Why -> menu order Claude Code's Agent tool
  * uses. The subagent-spec menu itself renders just after this, inside the
  * harness-state block.

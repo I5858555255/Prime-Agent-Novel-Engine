@@ -915,9 +915,9 @@ export class AgentDaemon {
 			status: PersistedRlmSubagentRegistryEntry["status"];
 			createdAt?: number;
 		},
-	): void {
+	): boolean {
 		const parentSession = parentState.runtime.session;
-		this.appendRlmSubagentRegistryEntry(parentState, {
+		return this.appendRlmSubagentRegistryEntry(parentState, {
 			type: "rlm_subagent",
 			childId: input.childId,
 			sessionName: input.sessionName,
@@ -2196,6 +2196,32 @@ export class AgentDaemon {
 	private createSubagentRuntimeHost(parentState: ActiveSessionState): SubagentRuntimeHost {
 		return {
 			createRlmSubagentRuntime: async (options) => this.createRlmSubagentRuntime(parentState, options),
+			completeRlmSubagentRuntime: (childId, session) => {
+				const state = [...this.sessions.values()].find(
+					(candidate) =>
+						candidate.runtime.metadata.kind === "subagent" &&
+						candidate.runtime.metadata.parentActiveSessionId === parentState.activeSessionId &&
+						candidate.runtime.metadata.rlmChildId === childId &&
+						candidate.runtime.session === session,
+				);
+				if (!state?.runtime.session.sessionFile) return false;
+				const metadata = state.runtime.metadata;
+				const model = session.model;
+				return this.recordRlmSubagentRegistryEntry(parentState, {
+					childId,
+					sessionName: session.sessionName ?? childId,
+					sessionDir: metadata.sessionDir ?? dirname(state.runtime.session.sessionFile),
+					sessionFile: state.runtime.session.sessionFile,
+					rlmDepth: session.rlmDepth,
+					rlmMaxDepth: session.rlmMaxDepth,
+					rlmParentNodeId: metadata.rlmParentNodeId,
+					prompt: metadata.prompt && metadata.prompt.length <= 4096 ? metadata.prompt : undefined,
+					spawnCode: metadata.spawnCode,
+					...(model ? { model: { provider: model.provider, modelId: model.id } } : {}),
+					status: "completed",
+					createdAt: metadata.createdAt,
+				});
+			},
 			deleteRlmSubagentRuntime: async (childId, session) => {
 				const state = [...this.sessions.values()].find(
 					(candidate) =>
@@ -4872,11 +4898,11 @@ export class AgentDaemon {
 				depth: agent.rlmDepth ?? 0,
 				status: agent.status ?? "idle",
 				...(agent.runtimeKind === "subagent"
-					? {
-							repliedSinceTask:
-								this.findSessionBySessionFile(agent.sessionPath)?.runtime.session.repliedToParentSinceTask ??
-								false,
-						}
+					? (() => {
+							const repliedSinceTask = this.findSessionBySessionFile(agent.sessionPath)?.runtime.session
+								.repliedToParentSinceTask;
+							return repliedSinceTask === undefined ? {} : { repliedSinceTask };
+						})()
 					: {}),
 				...(agent.parentSessionId ? { parentSessionId: agent.parentSessionId } : {}),
 				...(agent.parentSessionPath ? { parentSessionPath: resolve(agent.parentSessionPath) } : {}),

@@ -259,7 +259,26 @@ describe("AgentSession rlm recursion", () => {
 			settingsManager,
 			cwd: tempDir,
 			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
-			resourceLoader: createTestResourceLoader(),
+			resourceLoader: createTestResourceLoader({
+				skills: options.agentMessageController
+					? [
+							{
+								name: "agent-message",
+								description: "test",
+								filePath: join(tempDir, "SKILL.md"),
+								baseDir: tempDir,
+								sourceInfo: createSyntheticSourceInfo(join(tempDir, "SKILL.md"), { source: "test" }),
+								disableModelInvocation: false,
+								kind: "python",
+								python: {
+									importName: "agent_message",
+									packagePath: tempDir,
+									pyprojectPath: join(tempDir, "pyproject.toml"),
+								},
+							},
+						]
+					: undefined,
+			}),
 			agentMessageController: options.agentMessageController,
 			subagentRuntimeHost: options.subagentRuntimeHost,
 			rlmDepth: options.depth,
@@ -638,6 +657,70 @@ describe("AgentSession rlm recursion", () => {
 		// Context tokens from the child's own assistant usage (input 7 + output 3); no tools ran.
 		expect(doneUpdate?.tokenCount).toBe(10);
 		expect(doneUpdate?.toolUseCount).toBeUndefined();
+	});
+
+	it("marks an in-cell roled send to the parent as replied", async () => {
+		const sendAgentMessage = vi.fn(async () => ({
+			id: "agentmsg-reply",
+			source: "agent_message" as const,
+			target: { activeSessionId: "parent-active", sessionId: "parent-session" },
+			message: "done",
+			deliveryStatus: "delivered" as const,
+			deliveryMode: "auto" as const,
+		}));
+		const child = createSession({
+			depth: 1,
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster: () => ({
+					current: { name: "child", id: "child-session", depth: 1 },
+					entries: [{ relationship: "parent", name: "parent", id: "parent-session", depth: 0, status: "idle" }],
+				}),
+				sendAgentMessage,
+			},
+		});
+		const handlers = (child as unknown as InspectableRlmSession)._createKernelHostHandlers();
+		const send = handlers["agent_message.send"];
+		if (!send) throw new Error("Missing agent_message.send host handler");
+
+		expect(child.repliedToParentSinceTask).toBe(false);
+		await expect(send({ message: "done", receiver_role: "parent" })).resolves.toMatchObject({
+			message: "done",
+		});
+		expect(sendAgentMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ target: "parent-session", message: "done" }),
+		);
+		expect(child.repliedToParentSinceTask).toBe(true);
+	});
+
+	it("leaves replied state unknown when a child session is rehydrated", () => {
+		const manager = SessionManager.create(tempDir, join(tempDir, "resumed-child"));
+		manager.newSession({ rlmDepth: 1 });
+		manager.appendMessage({ role: "user", content: "previous task", timestamp: 1 });
+		manager.flushNow();
+
+		const resumed = createSession({ depth: 1, sessionManager: manager });
+		expect(resumed.repliedToParentSinceTask).toBeUndefined();
+	});
+
+	it("notifies the runtime host when the initial child task completes", async () => {
+		const child = createSession({ rlmSessionDir: join(tempDir, "host-completion-child") });
+		const completeRlmSubagentRuntime = vi.fn(() => true);
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: child }),
+				completeRlmSubagentRuntime,
+				deleteRlmSubagentRuntime: async (_id, session) => session?.disposeAsync(),
+			},
+		});
+
+		const spawned = await root.runRlmChild("persist completion");
+		await vi.waitFor(() => {
+			expect(completeRlmSubagentRuntime).toHaveBeenCalledWith(spawned.rlm_child_id, child);
+		});
+		expect((await root.listRlmSubagents()).subagents).toContainEqual(
+			expect.objectContaining({ rlm_child_id: spawned.rlm_child_id, status: "completed" }),
+		);
 	});
 
 	it("lists a completed child with its parent-scoped messaging identity until disposal", async () => {

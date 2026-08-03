@@ -136,6 +136,27 @@ print(json.dumps({"agents": agents, "roster": roster, "receipt": receipt}, sort_
 		expect(requests[2].payload).not.toHaveProperty("from");
 	});
 
+	it("rejects an unknown receiver role instead of treating it as a legacy target", async () => {
+		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [bundledAgentMessageSkill()],
+			hostHandlers: {
+				"agent_message.send": async () => {
+					throw new Error("should not reach host");
+				},
+			},
+		});
+
+		const manager = await provisioner.ensure();
+		const result = await manager.execute(`
+try:
+    await agent_message.send("done", receiver_role="Parent")
+except ValueError as error:
+    print(f"ValueError: {error}")
+`);
+		expect(result.status).toBe("ok");
+		expect(result.stdout.trim()).toBe('ValueError: receiver_role must be "parent", "sibling", or "child"');
+	});
+
 	it("validates mode before sending to the host", async () => {
 		provisioner = new IpythonKernelProvisioner(tempDir, {
 			pythonSkills: [bundledAgentMessageSkill()],

@@ -1202,7 +1202,7 @@ export class AgentSession {
 	private _rlmSessionDir?: string;
 	private _rlmParentNodeId?: string;
 	private _rlmParentAgent?: string;
-	private _repliedToParentSinceTask = false;
+	private _repliedToParentSinceTask: boolean | undefined;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
 	private _pendingRlmSubagentSessionNames = new Set<string>();
@@ -1314,6 +1314,12 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._rlmParentAgent = config.rlmParentAgent;
+		// A resumed child may have replied before this process started; false would
+		// claim knowledge that is not present in the session transcript.
+		this._repliedToParentSinceTask =
+			this._rlmDepth > 0 && this.sessionManager.getBranch().some((entry) => entry.type === "message")
+				? undefined
+				: false;
 		this._subagentRuntimeHost = config.subagentRuntimeHost;
 		this._autonomousState = createAutonomousRuntimeState(config.autonomous, {
 			cwd: this._cwd,
@@ -1527,7 +1533,6 @@ export class AgentSession {
 	}
 
 	private _recordLateIpythonSentAgentMessage(toolCallId: string, message: KernelSentAgentMessage): void {
-		if (this._rlmDepth > 0) this._repliedToParentSinceTask = true;
 		const record = () => {
 			if (this._disposed || !this._rememberLateIpythonSentAgentMessage(toolCallId, message)) {
 				return;
@@ -8691,12 +8696,26 @@ export class AgentSession {
 						(await this.handleAgentMessageHostRequest("agent_message.list")) as AgentSessionMessageListResult,
 					roster: async () =>
 						(await this.handleAgentMessageHostRequest("agent_message.roster")) as AgentFamilyRosterResult,
-					sendAgentMessage: async (input) =>
-						(await this.handleAgentMessageHostRequest("agent_message.send", {
+					sendAgentMessage: async (input) => {
+						const receipt = (await this.handleAgentMessageHostRequest("agent_message.send", {
 							target: input.target,
 							message: input.message,
 							mode: input.deliveryMode,
-						})) as AgentSessionMessageReceipt,
+						})) as AgentSessionMessageReceipt;
+						if (this._rlmDepth > 0) {
+							let addressedParent = input.receiverRole === "parent";
+							if (input.receiverRole === undefined && this._agentMessageController?.roster) {
+								const roster = await this._agentMessageController.roster();
+								addressedParent = roster.entries.some(
+									(entry) =>
+										entry.relationship === "parent" &&
+										(entry.id === input.target || entry.name === input.target),
+								);
+							}
+							if (addressedParent) this._repliedToParentSinceTask = true;
+						}
+						return receipt;
+					},
 				}),
 			);
 		}
@@ -8854,7 +8873,7 @@ export class AgentSession {
 		this._emit({ type: "recap_update", recap });
 	}
 
-	get repliedToParentSinceTask(): boolean {
+	get repliedToParentSinceTask(): boolean | undefined {
 		return this._repliedToParentSinceTask;
 	}
 
@@ -9338,11 +9357,14 @@ export class AgentSession {
 	registerRlmChildSession(childId: string, session: AgentSession, unsubscribe?: () => void): boolean {
 		// A child can finish concurrently while the parent is (or has) torn down; don't
 		// resurrect the map (it would never be disposed), just drop the child now.
-		if (this._disposed || this._disposing) {
-			void session.disposeAsync().catch(() => undefined);
+		if (this._deletingRlmChildren.has(childId) || this._deletedRlmChildIds.has(childId)) {
 			return false;
 		}
-		if (this._deletingRlmChildren.has(childId) || this._deletedRlmChildIds.has(childId)) {
+		if (this._subagentRuntimeHost?.completeRlmSubagentRuntime?.(childId, session) === false) {
+			return false;
+		}
+		if (this._disposed || this._disposing) {
+			void session.disposeAsync().catch(() => undefined);
 			return false;
 		}
 		this._rlmChildSessions.set(childId, session);
@@ -9731,6 +9753,7 @@ export class AgentSession {
 					}
 				}
 			}
+			// Follow-up: deliver post-admission startup failures to the parent over a2a.
 		})().catch(() => undefined);
 
 		return {

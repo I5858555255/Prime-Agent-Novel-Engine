@@ -253,7 +253,9 @@ export function summaryForActiveSession(
 		parentSessionId: metadata.parentSessionId,
 		parentSessionPath: savedSession?.parentSessionPath ?? metadata.parentSessionFile,
 		rlmChildId: metadata.rlmChildId,
-		repliedSinceTask: metadata.kind === "subagent" ? session.repliedToParentSinceTask : undefined,
+		...(metadata.kind === "subagent" && session.repliedToParentSinceTask !== undefined
+			? { repliedSinceTask: session.repliedToParentSinceTask }
+			: {}),
 		rlmParentNodeId: metadata.rlmParentNodeId,
 		// Cap the cell source so the summary stays small on the daemon wire; the
 		// agents view truncates further for display.

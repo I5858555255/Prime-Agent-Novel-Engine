@@ -28,6 +28,7 @@ async def roster() -> dict[str, Any]:
 
 async def send(
     message: str,
+    *legacy_args: str,
     receiver_role: ReceiverRole | str | None = None,
     receiver_name: str | None = None,
     mode: MessageMode = "auto",
@@ -41,7 +42,26 @@ async def send(
     """
     roles = ("parent", "sibling", "child")
     payload: dict[str, Any]
-    if receiver_role in roles:
+    if legacy_args:
+        if receiver_role is not None or receiver_name is not None:
+            raise TypeError(
+                "legacy agent_message.send cannot combine positional target/message "
+                "with receiver_role or receiver_name"
+            )
+        if len(legacy_args) > 2:
+            raise TypeError("legacy agent_message.send accepts target, message, and optional mode")
+        target = message
+        legacy_message = legacy_args[0]
+        if len(legacy_args) == 2:
+            mode = legacy_args[1]  # type: ignore[assignment]
+        if not isinstance(target, str):
+            raise TypeError(f"target must be str, got {type(target).__name__}")
+        if not isinstance(legacy_message, str):
+            raise TypeError("legacy agent_message.send requires target and message strings")
+        payload = {"target": target, "message": legacy_message, "mode": mode}
+    else:
+        if receiver_role not in roles:
+            raise ValueError('receiver_role must be "parent", "sibling", or "child"')
         if not isinstance(message, str):
             raise TypeError(f"message must be str, got {type(message).__name__}")
         if receiver_role == "parent":
@@ -55,17 +75,6 @@ async def send(
             "receiver_name": receiver_name,
             "mode": mode,
         }
-    else:
-        # Compatibility: the old parameters were (target, message, mode="auto").
-        target = message
-        legacy_message = receiver_role
-        legacy_mode = receiver_name if receiver_name is not None else mode
-        if not isinstance(target, str):
-            raise TypeError(f"target must be str, got {type(target).__name__}")
-        if not isinstance(legacy_message, str):
-            raise TypeError("legacy agent_message.send requires target and message strings")
-        payload = {"target": target, "message": legacy_message, "mode": legacy_mode}
-        mode = legacy_mode  # validate below
     if mode not in ("auto", "follow_up", "steer"):
         raise ValueError('mode must be "auto", "follow_up", or "steer"')
     receipt = await host_request("agent_message.send", payload)
