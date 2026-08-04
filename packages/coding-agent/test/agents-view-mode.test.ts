@@ -6,6 +6,7 @@ import {
 	AgentsViewMode,
 	type AgentsViewPersistentState,
 	combineAgentsViewStartupNotices,
+	createInitialAgentsViewPersistentState,
 	runAgentsViewMode,
 } from "../src/modes/agents-view/agents-view-mode.js";
 import { DaemonClient } from "../src/modes/daemon/daemon-client.js";
@@ -74,6 +75,33 @@ describe("AgentsViewMode search selection", () => {
 });
 
 describe("AgentsViewMode persistent catalog state", () => {
+	it("keeps an initial handoff scope when the first live poll fails after both catalogs settle", async () => {
+		const root = summary();
+		const scope = { sessionId: root.sessionId, activeSessionId: root.activeSessionId };
+		const persistentState = createInitialAgentsViewPersistentState({
+			initialScopeKey: scope,
+			initialSession: root,
+		});
+		persistentState.lastSuccessfulSavedSessions = [];
+		const view = new AgentsViewMode({ config: {}, uiServices: createUiServices() }, persistentState);
+		Reflect.set(view, "client", {
+			isConnected: true,
+			request: vi.fn(async () => {
+				throw new Error("transient list failure");
+			}),
+		});
+
+		try {
+			await expect(invoke("refreshSessions", view, { preserveStatusOnError: true })).resolves.toBe(false);
+			expect(Reflect.get(view, "liveCatalogReady")).toBe(true);
+			expect(Reflect.get(view, "savedCatalogReady")).toBe(true);
+			expect(persistentState.scopeFrames).toEqual([{ scope, returnChat: root }]);
+			expect(persistentState.lastSuccessfulLiveSummaries).toEqual([root]);
+		} finally {
+			stopThemeWatcher();
+		}
+	});
+
 	it("keeps a live-only scope after a fresh instance's first live poll fails", async () => {
 		const root = summary();
 		const persistentState: AgentsViewPersistentState = {

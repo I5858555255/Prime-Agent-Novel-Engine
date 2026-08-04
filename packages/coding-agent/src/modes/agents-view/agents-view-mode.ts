@@ -279,7 +279,10 @@ export function createInitialAgentsViewPersistentState(
 				}
 			: {}),
 		...(options.initialScopeKey
-			? { scopeFrames: createInitialAgentsViewScopeFrames(options.initialScopeKey, initialSession) }
+			? {
+					scopeFrames: createInitialAgentsViewScopeFrames(options.initialScopeKey, initialSession),
+					...(initialSession ? { lastSuccessfulLiveSummaries: [initialSession] } : {}),
+				}
 			: {}),
 	};
 }
