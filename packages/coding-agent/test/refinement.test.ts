@@ -1093,6 +1093,32 @@ describe("harness refinement", () => {
 		);
 	});
 
+	it("reports truncation when a JSON-only reply is cut after a nested closing brace", async () => {
+		const state = loadHarnessState(makeTempDir());
+		// Ends on "}" so it takes the startsWith/endsWith fast path rather than
+		// the brace-slicing fallback, but is still an incomplete object.
+		const truncated = `{
+  "summary": "s",
+  "edits": [
+    { "action": "create", "kind": "memory", "id": "a", "title": "t", "content": "first" }`;
+		completeSimpleMock.mockResolvedValueOnce(assistantText(truncated));
+
+		await expect(refineHarness([], state, [], createRefineModel(false), "api-key", {})).rejects.toThrow(
+			/stopped before completing its JSON object/,
+		);
+	});
+
+	it("reports malformed JSON as invalid rather than as an exhausted budget", async () => {
+		const state = loadHarnessState(makeTempDir());
+		// Complete and balanced, but not valid JSON: this is a model formatting
+		// failure, not a truncation, and must not blame the output budget.
+		completeSimpleMock.mockResolvedValueOnce(assistantText('Here is the result: {"edits": [oops]}'));
+
+		await expect(refineHarness([], state, [], createRefineModel(false), "api-key", {})).rejects.toThrow(
+			/did not return valid JSON/,
+		);
+	});
+
 	it("rolls back created, updated, and deleted entries from refinement history", async () => {
 		const state = loadHarnessState(makeTempDir());
 		seedEntry(state, "memory", "kept_memory");

@@ -561,28 +561,71 @@ function historyForPrompt(history: RefinementResult[]): string {
 		.join("\n\n");
 }
 
+/**
+ * Whether a JSON candidate ends mid-value: an unterminated string, or unclosed
+ * objects/arrays. A reply cut off by an exhausted output budget is incomplete in
+ * this sense, while a complete-but-malformed reply is balanced. Brace slicing can
+ * also produce a balanced fragment, so callers treat "balanced" as malformed.
+ */
+function isIncompleteJson(candidate: string): boolean {
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (const char of candidate) {
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (inString) {
+			if (char === "\\") escaped = true;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (char === '"') inString = true;
+		else if (char === "{" || char === "[") depth++;
+		else if (char === "}" || char === "]") depth--;
+	}
+	return inString || depth > 0;
+}
+
+function parseJsonCandidate(candidate: string): unknown {
+	try {
+		return JSON.parse(candidate);
+	} catch (error) {
+		// A truncated reply and a malformed one both fail here, and JSON.parse
+		// describes the fragment rather than the cause. Name the cause instead.
+		if (isIncompleteJson(candidate)) {
+			throw new Error(TRUNCATED_JSON_ERROR);
+		}
+		throw new Error(`the model did not return valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
 function extractJsonObject(text: string): unknown {
 	const trimmed = text.trim();
 	if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-		return JSON.parse(trimmed);
+		// A reply truncated after a nested closing brace still looks well-formed
+		// here, so this path needs the same diagnosis as the slicing fallback.
+		return parseJsonCandidate(trimmed);
 	}
 	const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
 	if (fenced) {
-		return JSON.parse(fenced[1].trim());
+		return parseJsonCandidate(fenced[1].trim());
 	}
 	// Brace slicing recovers JSON wrapped in prose. On a reply truncated inside the
-	// edits array it would otherwise slice to an earlier edit's closing brace and
-	// hand back a fragment whose JSON.parse error describes the fragment, not the
-	// truncation. Only accept a slice that actually parses.
+	// edits array it slices to an earlier edit's closing brace, so a failure here
+	// is diagnosed against the original text rather than the balanced fragment.
 	const start = trimmed.indexOf("{");
 	const end = trimmed.lastIndexOf("}");
 	if (start !== -1 && end > start) {
-		const sliced = trimmed.slice(start, end + 1);
 		try {
-			return JSON.parse(sliced);
+			return JSON.parse(trimmed.slice(start, end + 1));
 		} catch {
-			throw new Error(TRUNCATED_JSON_ERROR);
+			return parseJsonCandidate(trimmed.slice(start));
 		}
+	}
+	if (isIncompleteJson(trimmed)) {
+		throw new Error(TRUNCATED_JSON_ERROR);
 	}
 	throw new Error("Refiner did not return a JSON object");
 }
