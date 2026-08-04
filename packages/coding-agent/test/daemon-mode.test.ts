@@ -238,6 +238,11 @@ describe("daemon mode helpers", () => {
 
 		expect(internals.createAgentMessageAgentSummary(state).status).toBe("running");
 		hasRunningChildren = false;
+		state.runtime = {
+			...state.runtime,
+			metadata: { kind: "subagent", createdAt: 1 },
+		} as ActiveSessionState["runtime"];
+		expect(internals.createAgentMessageAgentSummary(state).status).toBe("idle");
 		getHeartbeat.mockReturnValue({ status: "active" } as AgentCronJob);
 		expect(internals.createAgentMessageAgentSummary(state).status).toBe("running");
 	});
@@ -4476,6 +4481,7 @@ describe("daemon mode helpers", () => {
 					sessionName: "renamed-worker",
 					runtimeKind: "subagent",
 					parentActiveSessionId: parentState.activeSessionId,
+					status: "inactive",
 					rlmChildId: fixture.childId,
 				}),
 			);
@@ -4483,6 +4489,7 @@ describe("daemon mode helpers", () => {
 				expect.objectContaining({
 					activeSessionId: expect.any(String),
 					sessionName: "nested-worker",
+					status: "inactive",
 					rlmChildId: fixture.grandchildId,
 				}),
 			);
@@ -4490,7 +4497,7 @@ describe("daemon mode helpers", () => {
 			await expect(messageController.roster?.()).resolves.toMatchObject({
 				current: { id: parentState.runtime.session.sessionId, depth: 0 },
 				entries: [
-					expect.objectContaining({ relationship: "child", name: "renamed-worker", depth: 1, status: "idle" }),
+					expect.objectContaining({ relationship: "child", name: "renamed-worker", depth: 1, status: "inactive" }),
 				],
 			});
 			await expect(
@@ -6321,8 +6328,26 @@ describe("daemon mode helpers", () => {
 				sessionPath: fixture.parentSessionFile,
 			});
 
-			await internals.createSubagentRuntimeHost(parentState).deleteRlmSubagentRuntime(fixture.childId);
+			const parentSession = parentState.runtime.session as unknown as {
+				cancelRlmChildRun: ReturnType<typeof vi.fn>;
+				deleteRlmSubagent: ReturnType<typeof vi.fn>;
+			};
+			parentSession.cancelRlmChildRun = vi.fn(() => false);
+			parentSession.deleteRlmSubagent = vi.fn(async (childId: string) => {
+				await internals.createSubagentRuntimeHost(parentState).deleteRlmSubagentRuntime(childId);
+			});
+			const result = (await (
+				fixture.daemon as unknown as {
+					handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+				}
+			).handleCommand(makeClient("client-1", parentState.activeSessionId), {
+				type: "cancel_rlm_child",
+				activeSessionId: parentState.activeSessionId,
+				childId: fixture.childId,
+			})) as { data: { cancelled: boolean } };
 
+			expect(result.data.cancelled).toBe(false);
+			expect(parentSession.deleteRlmSubagent).toHaveBeenCalledWith(fixture.childId);
 			expect(fixture.createRuntime).toHaveBeenCalledOnce();
 			expect(existsSync(fixture.childSessionFile)).toBe(true);
 			const persisted = readFileSync(join(fixture.parentArtifactDir, "rlm-subagents.jsonl"), "utf8")

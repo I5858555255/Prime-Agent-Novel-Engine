@@ -200,6 +200,7 @@ describe("daemon supervisor passive subagent topology", () => {
 				sessionId: "passive-session",
 				sessionName: "passive-worker",
 				runtimeKind: "subagent",
+				status: "inactive",
 				rlmChildId: "passive-child",
 			}),
 		);

@@ -3968,6 +3968,9 @@ export class AgentDaemon {
 			case "cancel_rlm_child": {
 				const state = this.getSessionState(command.activeSessionId);
 				const cancelled = state.runtime.session.cancelRlmChildRun(command.childId);
+				if (!cancelled) {
+					await state.runtime.session.deleteRlmSubagent(command.childId);
+				}
 				return success(command.id, "cancel_rlm_child", { cancelled });
 			}
 
@@ -4798,7 +4801,7 @@ export class AgentDaemon {
 					passive.rootParentState?.runtime.session.sessionFile ??
 					passive.rootInfo?.path,
 				rlmDepth: info.rlmDepth ?? entry.rlmDepth,
-				status: "idle",
+				status: "inactive",
 				rlmChildId: entry.childId,
 				sessionDir: entry.sessionDir,
 				sessionPath: entry.sessionFile,

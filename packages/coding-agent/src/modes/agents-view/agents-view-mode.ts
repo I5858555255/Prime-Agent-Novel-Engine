@@ -182,6 +182,7 @@ type PendingKillSubagent = {
 	identity: string;
 	rootActiveSessionId: string;
 	childId: string;
+	inactive: boolean;
 };
 
 export async function resolveAgentsViewSessionUiServices(
@@ -1923,10 +1924,8 @@ export class AgentsViewMode implements Component, Focusable {
 		await this.stopAgentForDeletion(row);
 	}
 
-	// Subagent rows only stay visible while the daemon hosts their session, and
-	// the daemon releases a child session as soon as its run settles, so any
-	// visible subagent is part of an active run regardless of its idle/streaming
-	// status. A kill that races completion reports "already finished".
+	// Resident subagents are stopped; inactive registry-backed subagents are
+	// deleted through the same parent command after it finds no active run.
 	private async handleKillSubagentSelected(row: AgentsViewRow): Promise<void> {
 		const identity = getSummaryIdentity(row.summary);
 		if (this.pendingKillSubagent?.identity === identity && this.isDeleteConfirmationVisible()) {
@@ -1941,12 +1940,12 @@ export class AgentsViewMode implements Component, Focusable {
 			this.setStatusMessage("Cannot stop subagent without its parent agent");
 			return;
 		}
-		this.pendingKillSubagent = { identity, rootActiveSessionId, childId };
+		this.pendingKillSubagent = { identity, rootActiveSessionId, childId, inactive: row.section === "inactive" };
 		this.showDeleteConfirmation();
 	}
 
 	private async killSubagent(pending: PendingKillSubagent): Promise<void> {
-		this.setStatusMessage("Stopping subagent...");
+		this.setStatusMessage(pending.inactive ? "Deleting subagent..." : "Stopping subagent...");
 		try {
 			const response = await this.requireClient().request({
 				type: "cancel_rlm_child",
@@ -1955,7 +1954,10 @@ export class AgentsViewMode implements Component, Focusable {
 			});
 			const data = requireDaemonData(response);
 			const cancelled = isRecord(data) && data.cancelled === true;
-			this.setStatusMessage(cancelled ? "Subagent stopped" : "Subagent already finished", { render: false });
+			this.setStatusMessage(
+				pending.inactive ? "Subagent deleted" : cancelled ? "Subagent stopped" : "Subagent already finished",
+				{ render: false },
+			);
 			await this.refreshSessions();
 		} catch (error) {
 			this.setStatusMessage(
@@ -2537,7 +2539,7 @@ export class AgentsViewMode implements Component, Focusable {
 		const title = pendingDelete
 			? this.getPendingDeleteTitle()
 			: pendingKill
-				? `${keyText("app.agents.delete")} again to stop`
+				? `${keyText("app.agents.delete")} again to ${this.pendingKillSubagent?.inactive ? "delete" : "stop"}`
 				: styleRowTitle(row);
 		// Append the background summary as a dim suffix on the same line, e.g.
 		// "fix auth · Refactoring token validation". Hidden during delete/stop
@@ -2634,7 +2636,7 @@ export class AgentsViewMode implements Component, Focusable {
 		if (this.replyTarget) {
 			return truncateToWidth(theme.fg("muted", this.renderReplyComposerHints()), width);
 		}
-		// Replying is reserved for top-level agents; subagents can be stopped.
+		// Replying is reserved for top-level agents; subagents can be stopped or deleted.
 		const selectedRow = this.rows[this.selectedIndex];
 		const selectedAgent = selectedRow?.kind === "agent";
 		const selectedSubagent = selectedRow?.kind === "subagent";
@@ -2650,7 +2652,9 @@ export class AgentsViewMode implements Component, Focusable {
 			selectedAgent
 				? `${keyText("app.agents.delete")} ${selectedRow?.section === "inactive" ? "delete" : "stop/deactivate"}`
 				: undefined,
-			selectedSubagent ? `${keyText("app.agents.delete")} stop` : undefined,
+			selectedSubagent
+				? `${keyText("app.agents.delete")} ${selectedRow.section === "inactive" ? "delete" : "stop"}`
+				: undefined,
 			this.selectedRowCanShowProgram() ? `${keyText("app.agents.program")} program` : undefined,
 		]
 			.filter((hint): hint is string => hint !== undefined)

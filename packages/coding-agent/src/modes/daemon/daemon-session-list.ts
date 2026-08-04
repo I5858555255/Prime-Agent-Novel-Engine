@@ -101,9 +101,9 @@ export function resolveAttachModelFallbackMessage(
 }
 
 export function classifySessionRosterStatus(summary: SessionSummary): SessionRosterStatus {
-	if (!summary.activeSessionId && summary.runtimeKind !== "subagent") return "inactive";
+	if (!summary.activeSessionId) return "inactive";
 	if (summary.hasActiveHeartbeat || summary.activity === "working" || isSessionSummaryBusy(summary)) return "running";
-	return summary.activeSessionId || summary.runtimeKind === "subagent" ? "idle" : "inactive";
+	return "idle";
 }
 
 export function isSessionSummaryBusy(summary: SessionSummary): boolean {
