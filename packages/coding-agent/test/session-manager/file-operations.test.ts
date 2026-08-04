@@ -289,6 +289,47 @@ describe("session tree metadata", () => {
 		}
 	});
 
+	it("copies and backfills a readable source depth for a legacy fork", async () => {
+		const tempDir = join(tmpdir(), `legacy-fork-source-depth-test-${Date.now()}-${Math.random()}`);
+		mkdirSync(tempDir, { recursive: true });
+		try {
+			const sourceFile = join(tempDir, "source.jsonl");
+			const forkFile = join(tempDir, "fork.jsonl");
+			writeFileSync(
+				sourceFile,
+				`${JSON.stringify({
+					type: "session",
+					id: "source",
+					timestamp: "2025-01-01T00:00:00Z",
+					cwd: tempDir,
+					rlmDepth: 2,
+				})}
+`,
+			);
+			const forkHeader = {
+				type: "session" as const,
+				id: "fork",
+				timestamp: "2025-01-01T00:00:01Z",
+				cwd: tempDir,
+				parentSession: sourceFile,
+			};
+			writeFileSync(
+				forkFile,
+				`${JSON.stringify(forkHeader)}
+`,
+			);
+
+			expect(resolveSessionRlmDepth(forkHeader, forkFile)).toBe(2);
+			expect((await readSessionInfo(forkFile))?.rlmDepth).toBe(2);
+			expect(JSON.parse(readFileSync(forkFile, "utf8").split("\n")[0] ?? "{}").rlmDepth).toBeUndefined();
+
+			expect(SessionManager.open(forkFile).getHeader()?.rlmDepth).toBe(2);
+			expect(JSON.parse(readFileSync(forkFile, "utf8").split("\n")[0] ?? "{}").rlmDepth).toBe(2);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("treats a legacy fork in the sessions directory as a root", async () => {
 		const tempDir = join(tmpdir(), `legacy-fork-depth-test-${Date.now()}-${Math.random()}`);
 		mkdirSync(tempDir, { recursive: true });

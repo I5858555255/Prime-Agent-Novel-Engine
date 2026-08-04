@@ -706,20 +706,45 @@ export function resolveSessionRlmDepth(
 	header: { rlmDepth?: number; parentSession?: string },
 	sessionPath: string,
 ): number {
+	return resolveLegacySessionRlmDepth(header, sessionPath, new Set()) ?? legacyChildDepthFromPath(sessionPath);
+}
+
+function resolveLegacySessionRlmDepth(
+	header: { rlmDepth?: number; parentSession?: string },
+	sessionPath: string,
+	visitedPaths: Set<string>,
+): number | undefined {
 	if (isValidRlmDepth(header.rlmDepth)) {
 		return header.rlmDepth;
 	}
 	if (!header.parentSession) {
 		return 0;
 	}
+
+	const resolvedSessionPath = resolve(sessionPath);
+	if (visitedPaths.has(resolvedSessionPath)) {
+		return undefined;
+	}
+	visitedPaths.add(resolvedSessionPath);
+
+	const pathDepth = legacyChildDepthFromPath(sessionPath);
 	try {
-		const parentDepth = deriveChildRlmDepth(readSessionHeader(header.parentSession));
-		if (parentDepth !== undefined) {
-			return parentDepth;
+		const parentHeader = readSessionHeader(header.parentSession);
+		if (parentHeader) {
+			const parentDepth = resolveLegacySessionRlmDepth(parentHeader, header.parentSession, visitedPaths);
+			if (parentDepth !== undefined) {
+				return pathDepth > 0 ? parentDepth + 1 : parentDepth;
+			}
 		}
 	} catch {
-		// Fall back to the session path for unavailable or invalid legacy parents.
+		// Fall back to artifact ancestry for unavailable or invalid legacy parents.
+	} finally {
+		visitedPaths.delete(resolvedSessionPath);
 	}
+	return pathDepth;
+}
+
+function legacyChildDepthFromPath(sessionPath: string): number {
 	let depth = 0;
 	for (const segment of dirname(sessionPath)
 		.split(/[\\/]+/)
