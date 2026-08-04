@@ -378,6 +378,43 @@ describe("daemon mode helpers", () => {
 		expect(acceptAgentMessagePrompt.mock.calls[0]?.[0]).toContain("report current progress");
 	});
 
+	it("closes a released hosted child through daemon session bookkeeping", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-daemon-release-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const parentState = makeState("parent");
+		const childState = makeState("child", parentState.activeSessionId);
+		Object.assign(childState.runtime.metadata, {
+			kind: "subagent",
+			parentActiveSessionId: parentState.activeSessionId,
+			rlmChildId: "child-1",
+		});
+		let internals: {
+			sessions: Map<string, ActiveSessionState>;
+			closeSession: (state: ActiveSessionState, reason: "completed") => Promise<void>;
+			createSubagentRuntimeHost(parentState: ActiveSessionState): SubagentRuntimeHost;
+		};
+		const closeSession = vi.fn(async (state: ActiveSessionState) => {
+			internals.sessions.delete(state.activeSessionId);
+		});
+		internals = daemon as unknown as typeof internals;
+		internals.sessions.set(parentState.activeSessionId, parentState);
+		internals.sessions.set(childState.activeSessionId, childState);
+		internals.closeSession = closeSession;
+
+		await internals
+			.createSubagentRuntimeHost(parentState)
+			.releaseRlmSubagentRuntime?.(
+				{ session: childState.runtime.session },
+				{ id: "child-1" } as CreateRlmSubagentRuntimeOptions,
+				"error",
+			);
+
+		expect(closeSession).toHaveBeenCalledWith(childState, "completed");
+		expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
+	});
+
 	it("persists a real child completion for passive discovery, roster, and listing", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-real-completion-"));
 		try {

@@ -366,7 +366,7 @@ export function isAgentSessionMessagePrompt(text: string): boolean {
 
 export function createAgentSessionMessagePrompt(payload: AgentSessionMessagePayload): string {
 	const relationshipLabel = payload.fromRelationship
-		? `[from ${payload.fromRelationship}${payload.fromRelationship === "parent" ? "" : `:${payload.from?.sessionName ?? payload.from?.sessionId ?? payload.from?.activeSessionId ?? "unknown"}`}]`
+		? `[from ${payload.fromRelationship}${payload.fromRelationship === "parent" ? "" : `:${formatAgentSessionMessageMetadata(payload.from?.sessionName ?? payload.from?.sessionId ?? payload.from?.activeSessionId ?? "unknown")}`}]`
 		: undefined;
 	const lines = [
 		...(relationshipLabel ? [relationshipLabel] : []),
@@ -559,7 +559,7 @@ export function createAgentMessageHostHandlers(
 }
 
 function formatAgentSessionMessageMetadata(value: string): string {
-	return value.replace(/[\s,]+/g, " ").trim();
+	return value.replace(/[\s,[\]]+/g, " ").trim();
 }
 
 function formatAgentSessionMessageSender(sender: AgentSessionMessageSender): string {

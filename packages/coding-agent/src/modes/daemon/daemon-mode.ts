@@ -2223,6 +2223,20 @@ export class AgentDaemon {
 					createdAt: metadata.createdAt,
 				});
 			},
+			releaseRlmSubagentRuntime: async (runtime, options, status) => {
+				const state = [...this.sessions.values()].find(
+					(candidate) =>
+						candidate.runtime.metadata.kind === "subagent" &&
+						candidate.runtime.metadata.parentActiveSessionId === parentState.activeSessionId &&
+						candidate.runtime.metadata.rlmChildId === options.id &&
+						candidate.runtime.session === runtime.session,
+				);
+				if (state) {
+					await this.closeSession(state, status === "cancelled" ? "killed" : "completed");
+				} else {
+					await runtime.session.disposeAsync();
+				}
+			},
 			deleteRlmSubagentRuntime: async (childId, session) => {
 				const state = [...this.sessions.values()].find(
 					(candidate) =>

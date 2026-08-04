@@ -33,6 +33,30 @@ const IPYTHON_CONTROL_PROMPT = [
 	"RLM-native call contract: installed Python skills are pre-imported modules. Read the matching SKILL.md and call its documented function, such as `await <skill_import>.<function>(...)`; when a CLI exists, use `<skill_import> ...` from shell. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm('sub-task')`; admission returns a child handle immediately. Results arrive only through explicit `agent_message` replies or files, never as an `rlm()` return value. Do not invent non-native wrappers such as `call_skill(...)` or `run_subagent(...)`.",
 ].join("\n");
 
+export interface ChildAgentDoctrineOptions {
+	depth?: number;
+	parentAgent?: string;
+	installedSkills?: string[];
+	activeTools?: string[];
+}
+
+export function buildChildAgentDoctrine(options: ChildAgentDoctrineOptions): string | undefined {
+	const depth = options.depth ?? 0;
+	const hasIpython = options.activeTools === undefined || options.activeTools.includes("ipython");
+	const hasAgentMessage = options.installedSkills?.includes("agent_message") ?? false;
+	if (depth <= 0) return undefined;
+
+	const lines = [
+		`You are a child agent spawned by ${options.parentAgent ?? "your parent agent"}. Task prompts are labeled \`[task from parent]\`.`,
+	];
+	if (hasAgentMessage && hasIpython) {
+		lines.push(
+			'When a task calls for an answer, reply explicitly with `await agent_message.send(message, receiver_role="parent")`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.',
+		);
+	}
+	return lines.join("\n");
+}
+
 export function buildRlmPrompt(options: RlmPromptOptions): string {
 	const { cwd, skillsDir, messagesPath } = options;
 	const installedSkills = options.installedSkills ?? [];
@@ -53,11 +77,9 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		"Install additional packages with `uv pip install <pkg>` (this is a uv-managed venv with no pip module).",
 	];
 
-	if (depth > 0) {
-		parts.push(
-			"",
-			`You are a child agent spawned by ${options.parentAgent ?? "your parent agent"}. Task prompts are labeled \`[task from parent]\`. When a task calls for an answer, reply explicitly with \`await agent_message.send(message, receiver_role="parent")\`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.`,
-		);
+	const childDoctrine = buildChildAgentDoctrine(options);
+	if (childDoctrine) {
+		parts.push("", childDoctrine);
 	}
 
 	const skillLines: string[] = [];

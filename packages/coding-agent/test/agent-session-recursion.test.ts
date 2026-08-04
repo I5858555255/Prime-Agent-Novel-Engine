@@ -1714,6 +1714,32 @@ describe("AgentSession rlm recursion", () => {
 		await expect(root.deleteInactiveRlmSubagent("unknown-child")).resolves.toBe("not_found");
 	});
 
+	it("releases a hosted child when completion persistence fails", async () => {
+		const child = createSession({ rlmSessionDir: join(tempDir, "host-completion-failure-child") });
+		const disposeChild = vi.spyOn(child, "disposeAsync");
+		const releaseRlmSubagentRuntime = vi.fn(async () => {});
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: child }),
+				completeRlmSubagentRuntime: () => false,
+				releaseRlmSubagentRuntime,
+				deleteRlmSubagentRuntime: async () => {},
+			},
+		});
+
+		const spawned = await root.runRlmChild("finish without registry persistence");
+		await vi.waitFor(() => {
+			expect(releaseRlmSubagentRuntime).toHaveBeenCalledWith(
+				expect.objectContaining({ session: child }),
+				expect.objectContaining({ id: spawned.rlm_child_id }),
+				"error",
+			);
+		});
+		expect(disposeChild).not.toHaveBeenCalled();
+		expect((root as unknown as InspectableRlmSession)._activeRlmChildRuns.size).toBe(0);
+		expect(root.getRlmChildSession(spawned.rlm_child_id)).toBeUndefined();
+	});
+
 	it("does not let completion retention resurrect a child being deleted", async () => {
 		const root = createSession();
 		const spawned = await root.runRlmChild("fast child", { name: "fast-worker" });

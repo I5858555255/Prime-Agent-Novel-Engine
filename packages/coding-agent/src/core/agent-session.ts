@@ -9744,7 +9744,13 @@ export class AgentSession {
 				activity = undefined;
 				emitChildUpdate();
 				if (!this.registerRlmChildSession(run.id, child)) {
-					await child.disposeAsync().catch(() => undefined);
+					if (childRuntime && this._subagentRuntimeHost?.releaseRlmSubagentRuntime) {
+						await this._subagentRuntimeHost
+							.releaseRlmSubagentRuntime(childRuntime, subagentOptions, "error")
+							.catch(() => void child.disposeAsync().catch(() => undefined));
+					} else {
+						await child.disposeAsync().catch(() => undefined);
+					}
 				}
 			} catch (error) {
 				if (run.status !== "cancelled") {

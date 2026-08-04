@@ -543,6 +543,38 @@ describe("buildSystemPrompt", () => {
 		expect(prompt.indexOf("# Continual Harness State")).toBeLessThan(prompt.indexOf("custom append"));
 	});
 
+	test("adds child reply doctrine to custom prompts when messaging is available", () => {
+		const prompt = buildSystemPrompt({
+			customPrompt: "custom body",
+			selectedTools: ["ipython"],
+			contextFiles: [],
+			skills: [pythonSkill("agent-message")],
+			cwd: "/repo",
+			rlmDepth: 1,
+			rlmParentAgent: "orchestrator",
+		});
+
+		expect(prompt).toContain("You are a child agent spawned by orchestrator");
+		expect(prompt).toContain('await agent_message.send(message, receiver_role="parent")');
+		expect(prompt).not.toContain("You are a general purpose agent that uses code to solve tasks.");
+	});
+
+	test("gates custom-prompt child reply doctrine on IPython and agent messaging", () => {
+		const build = (selectedTools: string[], skills: Skill[]) =>
+			buildSystemPrompt({
+				customPrompt: "custom body",
+				selectedTools,
+				contextFiles: [],
+				skills,
+				cwd: "/repo",
+				rlmDepth: 1,
+			});
+
+		expect(build(["ipython"], [])).toContain("You are a child agent spawned by your parent agent");
+		expect(build(["ipython"], [])).not.toContain("agent_message.send");
+		expect(build(["bash"], [pythonSkill("agent-message")])).not.toContain("agent_message.send");
+	});
+
 	test("append system prompt content is included after the rlm harness prompt", () => {
 		const prompt = buildSystemPrompt({
 			selectedTools: ["ipython"],
