@@ -4803,6 +4803,35 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("rehydrates completed children without rewriting their completed registry entry", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-idempotent-rlm-hydration-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createAgentMessageController(
+					getCurrentState: () => ActiveSessionState | undefined,
+				): AgentSessionMessageController;
+				recordRlmSubagentRegistryEntry: ReturnType<typeof vi.fn>;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const registryPath = join(fixture.parentArtifactDir, "rlm-subagents.jsonl");
+			const before = readFileSync(registryPath, "utf8");
+			internals.recordRlmSubagentRegistryEntry = vi.fn(() => false);
+
+			await expect(
+				internals
+					.createAgentMessageController(() => parentState)
+					.sendAgentMessage({ target: "renamed-worker", message: "report progress" }),
+			).resolves.toMatchObject({ deliveryStatus: "delivered" });
+
+			expect(internals.recordRlmSubagentRegistryEntry).not.toHaveBeenCalled();
+			expect(readFileSync(registryPath, "utf8")).toBe(before);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("rehydrates a legacy passive subagent at depth one", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-legacy-rlm-depth-"));
 		try {

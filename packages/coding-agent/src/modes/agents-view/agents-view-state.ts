@@ -955,11 +955,11 @@ function getSessionStatusLabel(summary: SessionSummary, hasActiveHeartbeat = sum
 	if (summary.lifecycle === "archived") {
 		return "archived";
 	}
-	if (summary.runtimeKind === "subagent" && summary.repliedSinceTask) {
-		return "replied";
-	}
 	if (hasActiveHeartbeat) {
 		return "heartbeat active";
+	}
+	if (summary.runtimeKind === "subagent" && summary.repliedSinceTask) {
+		return "replied";
 	}
 	if (summary.activity === "working") {
 		return "classifying";

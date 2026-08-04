@@ -9667,15 +9667,12 @@ export class AgentSession {
 										.slice(0, assistantIndex)
 										.reverse()
 										.find((message) => message.role === "user" || message.role === "custom");
-									const assistantCount = messages
-										.slice(0, assistantIndex + 1)
-										.filter((message) => message.role === "assistant").length;
 									const origin =
-										assistantCount === 1
-											? "spawn_task"
-											: precedingPrompt?.role === "custom" && isAgentSessionMessage(precedingPrompt)
-												? "agent_message"
-												: "direct_user";
+										precedingPrompt?.role === "custom" && isAgentSessionMessage(precedingPrompt)
+											? precedingPrompt.details.id.startsWith("spawn:")
+												? "spawn_task"
+												: "agent_message"
+											: "direct_user";
 									this.sessionManager.appendChildUsageAttribution(
 										parentEntry.id,
 										assistant.usage,
@@ -9745,7 +9742,15 @@ export class AgentSession {
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();
-				if (!run.detachedDeletion) await childSession?.disposeAsync().catch(() => undefined);
+				if (!run.detachedDeletion) {
+					if (childRuntime && this._subagentRuntimeHost) {
+						await this._subagentRuntimeHost
+							.deleteRlmSubagentRuntime(run.id, childRuntime.session)
+							.catch(() => undefined);
+					} else {
+						await childSession?.disposeAsync().catch(() => undefined);
+					}
+				}
 			} finally {
 				if (run.detachedDeletion && childRuntime) {
 					try {

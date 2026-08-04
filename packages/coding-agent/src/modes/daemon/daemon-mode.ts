@@ -2205,6 +2205,7 @@ export class AgentDaemon {
 						candidate.runtime.session === session,
 				);
 				if (!state?.runtime.session.sessionFile) return false;
+				if (state.runtime.metadata.rehydratedCompleted) return true;
 				const metadata = state.runtime.metadata;
 				const model = session.model;
 				return this.recordRlmSubagentRegistryEntry(parentState, {
@@ -2728,6 +2729,7 @@ export class AgentDaemon {
 							: {}),
 						rlmChildId: entry.childId,
 						rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
+						rehydratedCompleted: true,
 						...(entry.prompt ? { prompt: entry.prompt } : {}),
 						...(entry.spawnCode ? { spawnCode: entry.spawnCode } : {}),
 						sessionDir: entry.sessionDir,

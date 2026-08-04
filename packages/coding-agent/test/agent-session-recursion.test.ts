@@ -12,6 +12,7 @@ import {
 	type TextContent,
 	type Usage,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AgentSessionMessageController, isAgentSessionMessage } from "../src/core/agent-messages.js";
 import { AgentSession } from "../src/core/agent-session.js";
@@ -233,6 +234,7 @@ describe("AgentSession rlm recursion", () => {
 			streamFn?: StreamFn;
 			agentMessageController?: AgentSessionMessageController;
 			subagentRuntimeHost?: SubagentRuntimeHost;
+			customTools?: ConstructorParameters<typeof AgentSession>[0]["customTools"];
 			rlmSessionDir?: string;
 			sessionManager?: SessionManager;
 			settingsManager?: SettingsManager;
@@ -283,6 +285,7 @@ describe("AgentSession rlm recursion", () => {
 			}),
 			agentMessageController: options.agentMessageController,
 			subagentRuntimeHost: options.subagentRuntimeHost,
+			customTools: options.customTools,
 			rlmDepth: options.depth,
 			rlmMaxDepth: options.maxDepth,
 			rlmSessionDir: options.rlmSessionDir,
@@ -1089,6 +1092,56 @@ describe("AgentSession rlm recursion", () => {
 		expect(attribution.childUsage.input).toBe(7);
 		expect(attribution.childUsage.output).toBe(3);
 		expect(attribution.aggregateUsage.cost.total).toBe(10);
+	});
+
+	it("attributes every tool-loop turn in the admitted task to spawn usage", async () => {
+		const tool = {
+			name: "echo",
+			description: "Echo a value",
+			label: "echo",
+			parameters: Type.Object({ value: Type.String() }),
+			execute: async (_toolCallId: string, params: { value: string }) => ({
+				content: [{ type: "text" as const, text: params.value }],
+				details: {},
+			}),
+		};
+		const root = createSession({
+			customTools: [tool],
+			streamFn: (_model, context) => {
+				const toolResultCount = context.messages.filter((message) => message.role === "toolResult").length;
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					const message =
+						toolResultCount === 0
+							? {
+									...assistantMessage("", usage(1, 1)),
+									content: [
+										{ type: "toolCall" as const, id: "echo-1", name: "echo", arguments: { value: "ok" } },
+									],
+									stopReason: "toolUse" as const,
+								}
+							: assistantMessage("done", usage(2, 2));
+					stream.push({
+						type: "done",
+						reason: toolResultCount === 0 ? "toolUse" : "stop",
+						message,
+					});
+				});
+				return stream;
+			},
+		});
+		const parentAssistant = assistantMessage("running ipython", usage(0, 0));
+		root.agent.state.messages.push(parentAssistant);
+		root.sessionManager.appendMessage(parentAssistant);
+
+		await root.runRlmChild("use a tool");
+		await vi.waitFor(() => {
+			const attributions = root.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "child_usage_attributed");
+			expect(attributions).toHaveLength(2);
+			expect(attributions.map((entry) => entry.origin)).toEqual(["spawn_task", "spawn_task"]);
+		});
 	});
 
 	it("gets and persists per-chat max-depth changes without transcript messages", async () => {
