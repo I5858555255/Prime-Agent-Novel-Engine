@@ -5266,12 +5266,30 @@ export class AgentDaemon {
 				this.assertAgentFamilyReachable(currentState, targetState);
 				return this.getOrHydrateBoundSessionState(target);
 			}
-			if (error instanceof AmbiguousActiveSessionError) throw error;
+			if (error instanceof AmbiguousActiveSessionError) {
+				const targetState = this.resolveAgentFamilySessionName(currentState, target, error);
+				return this.getOrHydrateBoundSessionState(targetState.activeSessionId);
+			}
 		}
 		const passive = await this.findPassiveRlmSubagent(target);
 		if (!passive) return this.getOrHydrateBoundSessionState(target);
 		assertAgentFamilyReach(this.agentFamilyEntry(currentState), this.passiveAgentFamilyEntry(passive));
 		return this.hydratePassiveRlmSubagent(passive);
+	}
+
+	private resolveAgentFamilySessionName(
+		currentState: ActiveSessionState,
+		target: string,
+		ambiguity: AmbiguousActiveSessionError,
+	): ActiveSessionState {
+		const reachableMatches = [...this.sessions.values()].filter(
+			(state) =>
+				state.runtime.session.sessionName === target &&
+				(state.activeSessionId === currentState.activeSessionId ||
+					this.isAgentFamilyReachable(currentState, state)),
+		);
+		if (reachableMatches.length !== 1) throw ambiguity;
+		return reachableMatches[0]!;
 	}
 
 	private isAgentFamilyReachable(currentState: ActiveSessionState, targetState: ActiveSessionState): boolean {
@@ -5322,34 +5340,40 @@ export class AgentDaemon {
 				}
 				targetState = await this.getOrHydrateBoundSessionState(targetSelector);
 			} else {
-				if (error instanceof AmbiguousActiveSessionError) throw error;
-				const passiveSubagent = await this.findPassiveRlmSubagent(targetSelector);
-				if (passiveSubagent) {
-					if (options.origin === "agent" && options.fromState) {
-						assertAgentFamilyReach(
-							this.agentFamilyEntry(options.fromState),
-							this.passiveAgentFamilyEntry(passiveSubagent),
-						);
-					}
-					targetState = await this.hydratePassiveRlmSubagent(passiveSubagent);
+				if (error instanceof AmbiguousActiveSessionError) {
+					if (options.origin !== "agent" || !options.fromState) throw error;
+					const resolved = this.resolveAgentFamilySessionName(options.fromState, targetSelector, error);
+					targetState = await this.getOrHydrateBoundSessionState(resolved.activeSessionId);
 				} else {
-					const hydratingChild = [...this.sessions.values()].find(
-						(state) =>
-							state.runtime.metadata.kind === "subagent" && state.runtime.metadata.rlmChildId === targetSelector,
-					);
-					if (hydratingChild) {
-						targetState = await this.waitForHydratingChild(hydratingChild, targetSelector);
-					} else if (this.options.worker && options.fromState) {
-						// The supervisor can resolve and wake a saved worker even when it is no longer
-						// present in this worker's resident peer snapshot.
-						return this.sendRemoteAgentSessionMessage(
-							options.fromState,
-							targetSelector,
-							message,
-							options.deliveryMode,
-						);
+					const passiveSubagent = await this.findPassiveRlmSubagent(targetSelector);
+					if (passiveSubagent) {
+						if (options.origin === "agent" && options.fromState) {
+							assertAgentFamilyReach(
+								this.agentFamilyEntry(options.fromState),
+								this.passiveAgentFamilyEntry(passiveSubagent),
+							);
+						}
+						targetState = await this.hydratePassiveRlmSubagent(passiveSubagent);
 					} else {
-						throw error;
+						const hydratingChild = [...this.sessions.values()].find(
+							(state) =>
+								state.runtime.metadata.kind === "subagent" &&
+								state.runtime.metadata.rlmChildId === targetSelector,
+						);
+						if (hydratingChild) {
+							targetState = await this.waitForHydratingChild(hydratingChild, targetSelector);
+						} else if (this.options.worker && options.fromState) {
+							// The supervisor can resolve and wake a saved worker even when it is no longer
+							// present in this worker's resident peer snapshot.
+							return this.sendRemoteAgentSessionMessage(
+								options.fromState,
+								targetSelector,
+								message,
+								options.deliveryMode,
+							);
+						} else {
+							throw error;
+						}
 					}
 				}
 			}

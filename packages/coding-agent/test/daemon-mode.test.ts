@@ -2646,6 +2646,74 @@ describe("daemon mode helpers", () => {
 		);
 	});
 
+	it("resolves a duplicate session name to the only family-reachable agent", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-family-name-resolution.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const observer = makeAgentFamilyState("observer", "observer");
+		const familyHelper = makeAgentFamilyState("family-helper", "helper", observer.state);
+		const otherRoot = makeAgentFamilyState("other-root", "other-root");
+		const unrelatedHelper = makeAgentFamilyState("unrelated-helper", "helper", otherRoot.state);
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createAgentMessageController(
+				getCurrentState: () => ActiveSessionState | undefined,
+			): AgentSessionMessageController;
+			createAgentObserveController(getCurrentState: () => ActiveSessionState | undefined): AgentObserveController;
+		};
+		for (const fixture of [observer, familyHelper, otherRoot, unrelatedHelper]) {
+			internals.sessions.set(fixture.state.activeSessionId, fixture.state);
+		}
+
+		const observe = internals.createAgentObserveController(() => observer.state);
+		await expect(observe.getAgent("helper")).resolves.toMatchObject({
+			agent: { activeSessionId: familyHelper.state.activeSessionId },
+		});
+		await expect(observe.recentMessages({ target: "helper" })).resolves.toMatchObject({
+			agent: { activeSessionId: familyHelper.state.activeSessionId },
+		});
+		await expect(
+			internals
+				.createAgentMessageController(() => observer.state)
+				.sendAgentMessage({ target: "helper", message: "report progress" }),
+		).resolves.toMatchObject({ target: { activeSessionId: familyHelper.state.activeSessionId } });
+		expect(familyHelper.acceptAgentMessagePrompt).toHaveBeenCalledOnce();
+		expect(unrelatedHelper.acceptAgentMessagePrompt).not.toHaveBeenCalled();
+	});
+
+	it("keeps a duplicate session name ambiguous when two family agents are reachable", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-family-name-ambiguity.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const parent = makeAgentFamilyState("parent", "helper");
+		const observer = makeAgentFamilyState("observer", "observer", parent.state);
+		const sibling = makeAgentFamilyState("sibling", "helper", parent.state);
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createAgentMessageController(
+				getCurrentState: () => ActiveSessionState | undefined,
+			): AgentSessionMessageController;
+			createAgentObserveController(getCurrentState: () => ActiveSessionState | undefined): AgentObserveController;
+		};
+		for (const fixture of [parent, observer, sibling]) {
+			internals.sessions.set(fixture.state.activeSessionId, fixture.state);
+		}
+		const expectedError = 'Ambiguous active session "helper"';
+
+		await expect(internals.createAgentObserveController(() => observer.state).getAgent("helper")).rejects.toThrow(
+			expectedError,
+		);
+		await expect(
+			internals
+				.createAgentMessageController(() => observer.state)
+				.sendAgentMessage({ target: "helper", message: "report progress" }),
+		).rejects.toThrow(expectedError);
+		expect(parent.acceptAgentMessagePrompt).not.toHaveBeenCalled();
+		expect(sibling.acceptAgentMessagePrompt).not.toHaveBeenCalled();
+	});
+
 	it("serializes concurrent agent messages to an idle target", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
@@ -9664,6 +9732,54 @@ function makeRuntimeSession(
 		disposeAsync: vi.fn(async () => {}),
 		abort: vi.fn(async () => {}),
 	} as unknown as Awaited<ReturnType<CreateAgentSessionRuntimeFactory>>["session"];
+}
+
+function makeAgentFamilyState(
+	activeSessionId: string,
+	sessionName: string,
+	parent?: ActiveSessionState,
+): { state: ActiveSessionState; acceptAgentMessagePrompt: ReturnType<typeof vi.fn> } {
+	const state = makeState(activeSessionId, parent?.activeSessionId);
+	const acceptAgentMessagePrompt = vi.fn(
+		(_message: string, options?: { preflightResult?: (didSucceed: boolean) => void }) => {
+			options?.preflightResult?.(true);
+			return Promise.resolve();
+		},
+	);
+	const parentSessionId = parent?.runtime.session.sessionId;
+	state.runtime = {
+		...state.runtime,
+		cwd: "/tmp",
+		diagnostics: [],
+		metadata: {
+			kind: parent ? "subagent" : "top-level",
+			createdAt: 1,
+			...(parent ? { parentActiveSessionId: parent.activeSessionId, parentSessionId } : {}),
+		},
+		session: {
+			sessionId: `session-${activeSessionId}`,
+			sessionName,
+			runtimeKind: parent ? "subagent" : "top-level",
+			rlmDepth: parent ? (parent.runtime.session.rlmDepth ?? 0) + 1 : 0,
+			isStreaming: false,
+			isCompacting: false,
+			isBashRunning: false,
+			isRetrying: false,
+			isSessionActive: false,
+			hasAcceptedPromptInFlight: false,
+			unfinishedActionCount: 0,
+			messages: [],
+			state: { pendingToolCalls: new Set(), streamingMessage: undefined },
+			sessionManager: {
+				getCwd: () => "/tmp",
+				getHeader: () => ({ created: new Date(0).toISOString() }),
+			},
+			hasRunningRlmChildren: () => false,
+			getSessionActionSnapshot: () => ({ queuedCount: 0, steering: [], followUps: [] }),
+			acceptAgentMessagePrompt,
+		},
+	} as never;
+	return { state, acceptAgentMessagePrompt };
 }
 
 function makeState(activeSessionId: string, parentActiveSessionId?: string): ActiveSessionState {
