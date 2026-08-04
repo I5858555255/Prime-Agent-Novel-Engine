@@ -164,6 +164,36 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.cleanup();
 	}, 30_000);
 
+	it("surfaces heartbeat and schedule changes, which are not session events", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));
+		const toAgent = new TransformStream<Uint8Array, Uint8Array>();
+		const toClient = new TransformStream<Uint8Array, Uint8Array>();
+		const updates: any[] = [];
+		void runAcpModeWithConnection(connection, {
+			stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+		} as any);
+		const handle = acp
+			.client({ name: "hb" })
+			.onNotification("session/update", (ctx: any) => {
+				updates.push(ctx.params);
+			})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+		await handle.agent.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+		await handle.agent.request("session/new", { cwd: harness.tempDir, mcpServers: [] });
+
+		// heartbeats_changed is connection-level; a session-event-only filter drops it.
+		await (connection as any).emit({ type: "heartbeats_changed" });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		const flags = updates
+			.map((u) => u.update?._meta?.[PRIME_AGENT_META_NAMESPACE]?.heartbeatsChanged)
+			.filter((value) => value !== undefined);
+		expect(flags, "heartbeat changes must reach the ACP client").toContain(true);
+		harness.cleanup();
+	}, 30_000);
+
 	it("advertises prime-agent capabilities without polluting the ACP object root", async () => {
 		const harness = await createHarness();
 		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));

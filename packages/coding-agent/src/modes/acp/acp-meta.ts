@@ -59,6 +59,8 @@ export interface PrimeAgentAgentMessageMeta {
 }
 
 export interface PrimeAgentSessionMeta {
+	/** Set when the session's heartbeat or cron schedule changed. */
+	heartbeatsChanged?: boolean;
 	goal?: PrimeAgentGoalMeta;
 	refinement?: PrimeAgentRefinementMeta;
 	agentMessage?: PrimeAgentAgentMessageMeta;

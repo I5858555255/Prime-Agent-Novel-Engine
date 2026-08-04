@@ -196,6 +196,49 @@ describe("ACP session event mapping", () => {
 		});
 	});
 
+	it("streams bash output incrementally and surfaces compaction over ACP", () => {
+		const start = acpUpdatesForSessionEvent({
+			type: "bash_start",
+			command: "echo hi",
+			excludeFromContext: false,
+			runId: "b1",
+		} as AgentConnectionSessionEvent);
+		const mid = acpUpdatesForSessionEvent({ type: "bash_output", chunk: "hi\n" } as AgentConnectionSessionEvent);
+		const end = acpUpdatesForSessionEvent({
+			type: "bash_end",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			runId: "b1",
+		} as AgentConnectionSessionEvent);
+
+		expect(start[0]).toMatchObject({ sessionUpdate: "tool_call", kind: "execute" });
+		expect(JSON.stringify(mid[0]?.content)).toContain("hi");
+		expect(end[0]).toMatchObject({ status: "completed" });
+
+		const compaction = acpUpdatesForSessionEvent({
+			type: "compaction_end",
+			reason: "threshold",
+			result: { summary: "kept the last turns", tokensBefore: 90_000, firstKeptEntryId: "e1" },
+			aborted: false,
+			willRetry: false,
+		} as AgentConnectionSessionEvent);
+		expect(compaction[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: { compaction: { tokensBefore: 90_000, summary: "kept the last turns" } },
+		});
+	});
+
+	it("reports a cancelled bash run as a failed tool call", () => {
+		const end = acpUpdatesForSessionEvent({
+			type: "bash_end",
+			exitCode: undefined,
+			cancelled: true,
+			truncated: false,
+			runId: "b2",
+		} as AgentConnectionSessionEvent);
+		expect(end[0]).toMatchObject({ status: "failed" });
+	});
+
 	it("emits nothing for events ACP has no place for", () => {
 		expect(acpUpdatesForSessionEvent({ type: "agent_start" } as AgentConnectionSessionEvent)).toEqual([]);
 		expect(acpUpdatesForSessionEvent({ type: "recap_update", recap: "x" } as AgentConnectionSessionEvent)).toEqual(

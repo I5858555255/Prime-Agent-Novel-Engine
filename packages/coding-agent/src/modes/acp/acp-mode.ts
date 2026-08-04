@@ -118,9 +118,18 @@ export async function runAcpModeWithConnection(
 			// subagents are fire-and-forget and keep reporting after the spawning
 			// turn ends, so a turn-scoped subscription would drop their updates.
 			entry.unsubscribe = connection.subscribe((event) => {
+				const notify = (update: Record<string, unknown>) =>
+					void ctx.client.notify(acp.methods.client.session.update, { sessionId, update }).catch(() => undefined);
+				// Heartbeats and cron schedules are connection-level rather than
+				// session events, but they drive the long-running work an ACP client
+				// most needs to observe.
+				if (event.type === "heartbeats_changed") {
+					notify({ sessionUpdate: "session_info_update", _meta: primeAgentMeta({ heartbeatsChanged: true }) });
+					return;
+				}
 				if (event.type !== "session_event") return;
 				for (const update of acpUpdatesForSessionEvent(event.event)) {
-					void ctx.client.notify(acp.methods.client.session.update, { sessionId, update }).catch(() => undefined);
+					notify(update);
 				}
 			});
 			return { sessionId };
