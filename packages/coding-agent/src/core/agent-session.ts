@@ -8943,7 +8943,7 @@ export class AgentSession {
 		return matches[0]!;
 	}
 
-	/** Delete an inactive direct child by its registry child id without affecting active runs. */
+	/** Delete an inactive direct or nested child by its registry child id without affecting active runs. */
 	async deleteInactiveRlmSubagent(
 		childId: string,
 		isExternallyRunning: () => boolean = () => false,
@@ -8957,6 +8957,18 @@ export class AgentSession {
 			...this._retryableRlmSubagentDeletions.values(),
 		].find((entry) => entry.rlm_child_id === childId);
 		if (!subagent) {
+			for (const run of this._activeRlmChildRuns.values()) {
+				const result = await run.session?.deleteInactiveRlmSubagent(childId, isExternallyRunning);
+				if (result && result !== "not_found") {
+					return result;
+				}
+			}
+			for (const retained of this._retainedRlmChildSessions.values()) {
+				const result = await retained.deleteInactiveRlmSubagent(childId, isExternallyRunning);
+				if (result !== "not_found") {
+					return result;
+				}
+			}
 			return "not_found";
 		}
 		if (isRunning()) {

@@ -3979,7 +3979,6 @@ export class AgentDaemon {
 					const childState = [...this.sessions.values()].find(
 						(candidate) =>
 							candidate.runtime.metadata.kind === "subagent" &&
-							candidate.runtime.metadata.parentActiveSessionId === state.activeSessionId &&
 							candidate.runtime.metadata.rlmChildId === command.childId,
 					);
 					return (

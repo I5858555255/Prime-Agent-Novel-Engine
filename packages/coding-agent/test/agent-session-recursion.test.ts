@@ -1910,6 +1910,55 @@ describe("AgentSession rlm recursion", () => {
 		expect(await root.listRlmSubagents()).toEqual({ subagents: [] });
 	});
 
+	it("deletes an inactive nested RLM child through the root session", async () => {
+		let releaseParent: () => void = () => {};
+		const parentRelease = new Promise<void>((resolve) => {
+			releaseParent = resolve;
+		});
+		let parentStarted = false;
+		const root = createSession({
+			maxDepth: 2,
+			streamFn: (_model, context) => {
+				const text = userText(context);
+				if (text !== "slow parent") {
+					return streamAnswer(`child answer: ${text}`);
+				}
+				const stream = createAssistantMessageEventStream();
+				parentStarted = true;
+				void parentRelease.then(() => {
+					stream.push({ type: "done", reason: "stop", message: assistantMessage("parent done") });
+				});
+				return stream;
+			},
+		});
+
+		const parentPromise = root.runRlmChild("slow parent");
+		await waitFor(() => parentStarted);
+		const parentRun = [...(root as unknown as InspectableRlmSession)._activeRlmChildRuns.values()][0];
+		if (!parentRun?.session) {
+			throw new Error("Missing parent child session");
+		}
+		const parentSession = parentRun.session;
+		const nestedResult = await parentSession.runRlmChild("nested child");
+		if (!nestedResult.session_dir) {
+			throw new Error("Missing nested child session directory");
+		}
+		const nestedId = basename(nestedResult.session_dir);
+		const nestedSession = parentSession.getRlmChildSession(nestedId);
+		if (!nestedSession) {
+			throw new Error("Missing retained nested child session");
+		}
+		const disposeNested = vi.spyOn(nestedSession, "disposeAsync");
+
+		await expect(root.deleteInactiveRlmSubagent(nestedId)).resolves.toBe("deleted");
+		expect(await parentSession.listRlmSubagents()).toEqual({ subagents: [] });
+		expect(disposeNested).toHaveBeenCalledOnce();
+		expect(parentRun.status).toBe("running");
+
+		releaseParent();
+		await expect(parentPromise).resolves.toMatchObject({ answer: "parent done" });
+	});
+
 	it("cancels nested rlm child runs through the root session", async () => {
 		let releaseChild: () => void = () => {};
 		const release = new Promise<void>((resolve) => {

@@ -6398,6 +6398,48 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("refuses to delete a busy nested resident child through the root session", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-nested-rlm-delete-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			const rootState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const nestedState = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
+			const nestedSession = nestedState.runtime.session;
+			nestedState.runtime = {
+				...nestedState.runtime,
+				metadata: {
+					...nestedState.runtime.metadata,
+					parentActiveSessionId: "intermediate-active",
+				},
+				session: nestedSession,
+			} as ActiveSessionState["runtime"];
+			Object.defineProperty(nestedState.runtime.session, "isStreaming", { get: () => true });
+			Object.defineProperty(nestedState.runtime.session, "unfinishedActionCount", { get: () => 0 });
+			const rootSession = rootState.runtime.session as unknown as {
+				deleteInactiveRlmSubagent: ReturnType<typeof vi.fn>;
+			};
+			const deleteSpy = vi.fn(async () => "deleted" as const);
+			rootSession.deleteInactiveRlmSubagent = deleteSpy;
+
+			const result = (await internals.handleCommand(makeClient("client-1", rootState.activeSessionId), {
+				type: "delete_rlm_subagent",
+				activeSessionId: rootState.activeSessionId,
+				childId: fixture.childId,
+			})) as { data: { deleted: boolean; reason?: string } };
+
+			expect(result.data).toEqual({ deleted: false, reason: "running" });
+			expect(deleteSpy).not.toHaveBeenCalled();
+			expect(internals.sessions.get(nestedState.activeSessionId)).toBe(nestedState);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("deletes a passive child without hydrating it and treats unknown children benignly", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-delete-"));
 		try {
