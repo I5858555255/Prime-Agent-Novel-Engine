@@ -5147,6 +5147,9 @@ export class AgentDaemon {
 		} catch (error) {
 			disposeError = error;
 		}
+		for (const client of state.clients) {
+			abortClientSnapshotStreaming(client, state.activeSessionId);
+		}
 		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
 		for (const client of state.clients) {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);
@@ -5264,7 +5267,9 @@ export class AgentDaemon {
 		void this.prepareReplacementSnapshot(client, state, message, snapshotId, snapshotSignal).catch((error) => {
 			finishClientSnapshotStreaming(client, state.activeSessionId);
 			this.log(`could not prepare replacement snapshot: ${String(error)}`);
-			if (!client.socket.destroyed) this.write(client, message);
+			if (!client.socket.destroyed && this.sessions.get(state.activeSessionId) === state) {
+				this.write(client, message);
+			}
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpBackpressuredClient(client).catch((catchupError) =>
 					this.log(`could not catch up replacement snapshot: ${String(catchupError)}`),
@@ -5284,6 +5289,10 @@ export class AgentDaemon {
 			type: "attach",
 			activeSessionId: state.activeSessionId,
 		});
+		if (this.sessions.get(state.activeSessionId) !== state) {
+			finishClientSnapshotStreaming(client, state.activeSessionId);
+			return;
+		}
 		const transcript = createSnapshotTranscriptChunks({
 			activeSessionId: state.activeSessionId,
 			snapshotId,

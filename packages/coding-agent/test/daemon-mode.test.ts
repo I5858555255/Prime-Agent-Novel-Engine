@@ -3175,9 +3175,11 @@ describe("daemon mode helpers", () => {
 				lastEventSequence: 0,
 			} as unknown as DaemonAttachResult;
 			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
 				createAttachResult: () => Promise<DaemonAttachResult>;
 				broadcastToSession(state: ActiveSessionState, message: unknown): void;
 			};
+			internals.sessions.set(state.activeSessionId, state);
 			internals.createAttachResult = async () => result;
 
 			internals.broadcastToSession(state, {
@@ -3196,6 +3198,95 @@ describe("daemon mode helpers", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it.each(["resolved", "rejected"] as const)(
+		"does not send a replacement snapshot after the session closes while preparation is %s",
+		async (outcome) => {
+			const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+				defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const state = makeState("active");
+			state.eventGeneration = "generation-1";
+			state.extensionUiRequests = new Map();
+			state.unsubscribe = vi.fn();
+			state.runtime = {
+				...state.runtime,
+				dispose: vi.fn(async () => {}),
+				session: {
+					sessionId: "session-active",
+					sessionFile: undefined,
+					isBashRunning: false,
+					abort: vi.fn(async () => {}),
+					sessionManager: { appendSessionState: vi.fn() },
+				},
+			} as unknown as ActiveSessionState["runtime"];
+			const write = vi.fn((_data: unknown) => true);
+			const client = makeClient("client-1", state.activeSessionId);
+			client.socket = { destroyed: false, write } as unknown as Socket;
+			client.transport = "private-framed";
+			setDaemonClientSessionCapabilities(client, state.activeSessionId, new Set(["chunked_snapshot"]));
+			state.clients.add(client);
+			let resolveAttach: (result: DaemonAttachResult) => void = () => {};
+			let rejectAttach: (error: Error) => void = () => {};
+			const pendingAttach = new Promise<DaemonAttachResult>((resolve, reject) => {
+				resolveAttach = resolve;
+				rejectAttach = reject;
+			});
+			const streamWorkerSnapshot = vi.fn(async () => {});
+			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				createAttachResult: ReturnType<typeof vi.fn>;
+				streamWorkerSnapshot: typeof streamWorkerSnapshot;
+				closeSession(state: ActiveSessionState, reason: "killed"): Promise<void>;
+				closeChildSessions: ReturnType<typeof vi.fn>;
+				isEmptyDraftContent: ReturnType<typeof vi.fn>;
+				abortBashForClose: ReturnType<typeof vi.fn>;
+				recordWorkerRecoveryState: ReturnType<typeof vi.fn>;
+				cancelScheduledJobsForSession: ReturnType<typeof vi.fn>;
+				broadcastToSession(state: ActiveSessionState, message: unknown): void;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+			internals.createAttachResult = vi.fn(() => pendingAttach);
+			internals.streamWorkerSnapshot = streamWorkerSnapshot;
+			internals.closeChildSessions = vi.fn(async () => undefined);
+			internals.isEmptyDraftContent = vi.fn(() => true);
+			internals.abortBashForClose = vi.fn(async () => {});
+			internals.recordWorkerRecoveryState = vi.fn();
+			internals.cancelScheduledJobsForSession = vi.fn();
+
+			internals.broadcastToSession(state, {
+				type: "session_replaced",
+				activeSessionId: state.activeSessionId,
+				state: {},
+				messages: [],
+			});
+			const snapshotSignal = client.snapshotTransferAbortControllers?.get(state.activeSessionId)?.signal;
+			expect(snapshotSignal?.aborted).toBe(false);
+
+			await internals.closeSession(state, "killed");
+			expect(snapshotSignal?.aborted).toBe(true);
+
+			if (outcome === "resolved") {
+				resolveAttach({
+					activeSessionId: state.activeSessionId,
+					snapshot: { summary: {}, state: {}, messages: [] },
+					lastEventSequence: 0,
+				} as unknown as DaemonAttachResult);
+			} else {
+				rejectAttach(new Error("snapshot preparation failed after close"));
+			}
+			await vi.waitFor(() => expect(client.snapshotStreaming).toBe(false));
+
+			const frames = write.mock.calls.map((call) => String(call[0])).join("\n");
+			expect(frames).toContain('"type":"session_closed"');
+			expect(frames).not.toContain('"type":"session_replaced"');
+			expect(frames).not.toContain('"type":"session_snapshot_begin"');
+			expect(streamWorkerSnapshot).not.toHaveBeenCalled();
+		},
+	);
 
 	it.each([
 		["explicit session file", (sessionPath: string) => ({ type: "create" as const, sessionPath })],
