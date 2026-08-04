@@ -2587,7 +2587,7 @@ export class AgentDaemon {
 			const state = await pending;
 			if (state.runtime.metadata.kind !== "subagent" || state.runtime.metadata.rlmChildId !== entry.childId) {
 				if (this.openingSessions.get(sessionKey) === pending) this.openingSessions.delete(sessionKey);
-				return this.rehydrateCompletedRlmSubagent(parentState, entry);
+				return this.rehydrateCompletedRlmSubagent(parentState, entry, restoreActiveSessionId);
 			}
 			return this.waitForBoundSession(state);
 		}

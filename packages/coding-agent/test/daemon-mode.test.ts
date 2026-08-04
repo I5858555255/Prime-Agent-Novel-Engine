@@ -5241,7 +5241,7 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
-	it("repairs a wrong-kind pending open before returning a hydrated child", async () => {
+	it("repairs a wrong-kind pending open while preserving the passive row id", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-wrong-kind-open-"));
 		try {
 			const fixture = makePersistedRlmDaemonFixture(tempDir);
@@ -5250,10 +5250,10 @@ describe("daemon mode helpers", () => {
 				openingSessions: Map<string, Promise<ActiveSessionState>>;
 				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
 				findPassiveRlmSubagent(id: string): Promise<unknown>;
-				rehydrateCompletedRlmSubagent(parent: ActiveSessionState, entry: unknown): Promise<ActiveSessionState>;
+				hydratePassiveRlmSubagent(passive: unknown): Promise<ActiveSessionState>;
 			};
-			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
-			const passive = (await internals.findPassiveRlmSubagent(fixture.childId)) as { entry: unknown };
+			await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const passive = (await internals.findPassiveRlmSubagent(fixture.childId)) as { info: { id: string } };
 			const wrongState = makeState("wrong-kind");
 			Object.assign(wrongState, { extensionUiRequests: new Map(), eventGeneration: "wrong", lastEventSequence: 0 });
 			Object.assign(wrongState.runtime, {
@@ -5264,8 +5264,9 @@ describe("daemon mode helpers", () => {
 			internals.sessions.set(wrongState.activeSessionId, wrongState);
 			internals.openingSessions.set(resolve(fixture.childSessionFile), Promise.resolve(wrongState));
 
-			const childState = await internals.rehydrateCompletedRlmSubagent(parentState, passive.entry);
+			const childState = await internals.hydratePassiveRlmSubagent(passive);
 
+			expect(childState.activeSessionId).toBe(passive.info.id);
 			expect(childState.runtime.metadata).toMatchObject({ kind: "subagent", rlmChildId: fixture.childId });
 			expect(internals.sessions.has(wrongState.activeSessionId)).toBe(false);
 		} finally {
