@@ -3647,6 +3647,60 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("does not match a renamed passive child by its stale registry name", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-renamed-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const siblingId = "child-2";
+			const siblingSessionDir = join(fixture.parentArtifactDir, siblingId);
+			const siblingManager = SessionManager.create(tempDir, siblingSessionDir);
+			siblingManager.newSession({ parentSession: fixture.parentSessionFile });
+			siblingManager.appendSessionInfo("spawn-worker");
+			siblingManager.flushNow();
+			const siblingSessionFile = siblingManager.getSessionFile();
+			if (!siblingSessionFile) throw new Error("Missing sibling session file");
+			const parentRegistry = join(fixture.parentArtifactDir, "rlm-subagents.jsonl");
+			writeFileSync(
+				parentRegistry,
+				`${readFileSync(parentRegistry, "utf8")}${JSON.stringify({
+					type: "rlm_subagent",
+					childId: siblingId,
+					sessionName: "spawn-worker",
+					sessionDir: siblingSessionDir,
+					sessionFile: siblingSessionFile,
+					parentSessionId: fixture.parentSessionId,
+					parentSessionFile: fixture.parentSessionFile,
+					status: "completed",
+					createdAt: 2,
+					updatedAt: "2026-01-01T00:00:01.000Z",
+				})}\n`,
+			);
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createAgentMessageController(
+					getCurrentState: () => ActiveSessionState | undefined,
+				): AgentSessionMessageController;
+			};
+			const parentState = await internals.createRuntime({
+				type: "create",
+				sessionPath: fixture.parentSessionFile,
+			});
+
+			await expect(
+				internals
+					.createAgentMessageController(() => parentState)
+					.sendAgentMessage({ target: "spawn-worker", message: "report progress" }),
+			).resolves.toMatchObject({
+				deliveryStatus: "delivered",
+				target: { runtimeKind: "subagent", sessionName: "spawn-worker" },
+			});
+			expect(fixture.createRuntime).toHaveBeenCalledTimes(2);
+			expect(fixture.createRuntime.mock.calls[1]?.[0].sessionManager.getSessionFile()).toBe(siblingSessionFile);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("hydrates only the ancestor chain when a nested passive child is messaged", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-nested-message-"));
 		try {
@@ -5899,6 +5953,7 @@ function makePersistedRlmDaemonFixture(
 		acceptAgentMessagePrompt,
 		parentSessionFile,
 		parentArtifactDir,
+		parentSessionId: parentManager.getSessionId(),
 		childId,
 		childSessionFile,
 		childSessionDir,

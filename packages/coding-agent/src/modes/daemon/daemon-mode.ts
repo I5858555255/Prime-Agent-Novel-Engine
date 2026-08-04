@@ -1048,9 +1048,8 @@ export class AgentDaemon {
 			({ entry, info }) =>
 				entry.childId === target ||
 				resolve(entry.sessionFile) === resolve(target) ||
-				entry.sessionName === target ||
 				info.id === target ||
-				info.name === target,
+				(info.name ?? entry.sessionName) === target,
 		);
 		if (matches.length > 1) {
 			throw new Error(`Session selector "${target}" is ambiguous`);
