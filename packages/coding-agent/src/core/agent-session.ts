@@ -54,12 +54,14 @@ import { sleep } from "../utils/sleep.js";
 import {
 	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
 	AGENT_MESSAGE_SKILL_NAME,
+	type AgentFamilyCatalogEntry,
 	type AgentFamilyRosterResult,
 	type AgentSessionMessage,
 	type AgentSessionMessageAgentSummary,
 	type AgentSessionMessageController,
 	type AgentSessionMessageListResult,
 	type AgentSessionMessageReceipt,
+	assertAgentSessionNameAvailable,
 	assertDirectAgentMessageTarget,
 	createAgentMessageHostHandlers,
 	formatAgentSessionNameUnavailable,
@@ -9250,13 +9252,31 @@ export class AgentSession {
 		if (localConflict) {
 			throw new Error(formatAgentSessionNameUnavailable(name, depth));
 		}
-		if (!this._agentMessageController?.assertSessionNameAvailable) return;
-		await this._agentMessageController.assertSessionNameAvailable({
+		const controller = this._agentMessageController;
+		if (!controller) return;
+		const input = {
 			name,
 			depth,
 			parentSessionId: this.sessionId,
 			parentSessionPath: this.sessionFile,
-		});
+		};
+		if (controller.assertSessionNameAvailable) {
+			await controller.assertSessionNameAvailable(input);
+			return;
+		}
+		const listed = await controller.listAgents();
+		const catalog = listed.agents.map(
+			(agent): AgentFamilyCatalogEntry => ({
+				id: agent.sessionId,
+				...(agent.sessionName ? { name: agent.sessionName } : {}),
+				depth: agent.rlmDepth ?? 0,
+				status: agent.status ?? "idle",
+				...(agent.parentSessionId ? { parentSessionId: agent.parentSessionId } : {}),
+				...(agent.parentSessionPath ? { parentSessionPath: agent.parentSessionPath } : {}),
+				...(agent.sessionPath ? { sessionPath: agent.sessionPath } : {}),
+			}),
+		);
+		assertAgentSessionNameAvailable(catalog, input);
 	}
 
 	private async _authenticatedRlmModels(): Promise<Model<Api>[]> {

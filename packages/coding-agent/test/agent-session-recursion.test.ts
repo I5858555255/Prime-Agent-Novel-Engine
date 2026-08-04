@@ -380,6 +380,59 @@ describe("AgentSession rlm recursion", () => {
 		);
 	});
 
+	it("falls back to listed family metadata when a controller lacks name validation", async () => {
+		const listAgents = vi.fn(() => ({
+			current: { activeSessionId: "parent-active", sessionId: "unrelated-current" },
+			agents: [
+				{
+					activeSessionId: "passive-active",
+					sessionId: "passive-session",
+					sessionName: "passive-worker",
+					runtimeKind: "subagent" as const,
+					cwd: tempDir,
+					isStreaming: false,
+					unfinishedActionCount: 0,
+					parentSessionId: "parent-session",
+					parentSessionPath: parentPath,
+					rlmDepth: 1,
+					status: "idle" as const,
+				},
+				{
+					activeSessionId: "other-active",
+					sessionId: "other-session",
+					sessionName: "other-family-worker",
+					runtimeKind: "subagent" as const,
+					cwd: tempDir,
+					isStreaming: false,
+					unfinishedActionCount: 0,
+					parentSessionId: "other-parent",
+					rlmDepth: 1,
+				},
+			],
+		}));
+		const manager = SessionManager.create(tempDir, join(tempDir, "sessions"));
+		manager.newSession({ id: "parent-session" });
+		const parentPath = manager.getSessionFile();
+		if (!parentPath) throw new Error("Missing parent session path");
+		const root = createSession({
+			sessionManager: manager,
+			agentMessageController: {
+				listAgents,
+				sendAgentMessage: async () => {
+					throw new Error("unexpected send");
+				},
+			},
+		});
+
+		await expect(root.runRlmChild("duplicate passive", { name: "passive-worker" })).rejects.toThrow(
+			'Agent name "passive-worker" is unavailable',
+		);
+		await expect(root.runRlmChild("different family", { name: "other-family-worker" })).resolves.toMatchObject({
+			answer: "child answer: different family",
+		});
+		expect(listAgents).toHaveBeenCalled();
+	});
+
 	it("throws loud ambiguity when a child name equals a sibling session id for send and delete", async () => {
 		const first = createSession({ rlmSessionDir: join(tempDir, "first") });
 		const second = createSession({ rlmSessionDir: join(tempDir, "second") });

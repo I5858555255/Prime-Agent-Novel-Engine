@@ -1334,6 +1334,23 @@ export class AgentDaemon {
 			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
 				throw new RuntimeOpenCancelledError();
 			}
+			if (command.name) {
+				const normalizedName = command.name.trim();
+				if (!normalizedName) {
+					throw new Error("Session name cannot be empty");
+				}
+				await this.assertFamilySessionNameAvailable({
+					name: normalizedName,
+					depth: passiveSubagent.info.rlmDepth ?? passiveSubagent.entry.rlmDepth ?? 1,
+					parentSessionId: passiveSubagent.entry.parentSessionId,
+					parentSessionPath:
+						passiveSubagent.entry.parentSessionFile ??
+						passiveSubagent.chain.at(-2)?.sessionFile ??
+						passiveSubagent.rootParentState?.runtime.session.sessionFile ??
+						passiveSubagent.rootInfo?.path,
+					ignoreSessionId: passiveSubagent.info.id,
+				});
+			}
 			const state = await this.hydratePassiveRlmSubagent(passiveSubagent, clientEnv);
 			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
 				throw new RuntimeOpenCancelledError();
@@ -4881,8 +4898,12 @@ export class AgentDaemon {
 	}
 
 	private async setStateSessionName(state: ActiveSessionState, name: string): Promise<void> {
-		await this.assertStateSessionNameAvailable(state, name);
-		state.runtime.session.setSessionName(name);
+		const normalizedName = name.trim();
+		if (!normalizedName) {
+			throw new Error("Session name cannot be empty");
+		}
+		await this.assertStateSessionNameAvailable(state, normalizedName);
+		state.runtime.session.setSessionName(normalizedName);
 	}
 
 	// Half-bound sessions are hidden from other sessions' listings; the current

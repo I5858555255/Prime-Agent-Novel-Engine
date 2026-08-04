@@ -119,6 +119,42 @@ describe("daemon supervisor passive subagent topology", () => {
 		expect(launchWorker).not.toHaveBeenCalled();
 	});
 
+	it("normalizes explicit root names before supervisor validation and launch", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-normalized-root-name-"));
+		tempDirs.push(directory);
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+		const launchWorker = vi.fn();
+		Object.assign(supervisor, {
+			catalog: {
+				list: vi.fn(async () => [
+					{
+						id: "saved-root",
+						name: "duplicate-root",
+						path: join(directory, "saved.jsonl"),
+						cwd: directory,
+						created: new Date(0),
+						modified: new Date(0),
+						messageCount: 0,
+						firstMessage: "",
+						allMessagesText: "",
+					},
+				]),
+			},
+			launchWorker,
+		});
+
+		await expect(
+			supervisor.createOrReuseWorker("client", { type: "create", name: "  duplicate-root  " }),
+		).rejects.toThrow('Agent name "duplicate-root" is unavailable');
+		await expect(supervisor.createOrReuseWorker("client", { type: "create", name: "   " })).rejects.toThrow(
+			"Session name cannot be empty",
+		);
+		expect(launchWorker).not.toHaveBeenCalled();
+	});
+
 	it("retains passive worker summaries and sends them to cross-worker agent peer maps", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-passive-peers-"));
 		tempDirs.push(directory);

@@ -55,6 +55,33 @@ describe("daemon mode helpers", () => {
 		expect(client.id).toBe("public-client");
 	});
 
+	it("normalizes daemon session names before validation and persistence", async () => {
+		const daemon = new AgentDaemon("/tmp/unused-daemon.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const setSessionName = vi.fn();
+		const state = makeState("active");
+		state.runtime = {
+			...state.runtime,
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: { setSessionName },
+		} as never;
+		const assertStateSessionNameAvailable = vi.fn(async () => {});
+		const internals = daemon as unknown as {
+			assertStateSessionNameAvailable: typeof assertStateSessionNameAvailable;
+			setStateSessionName(state: ActiveSessionState, name: string): Promise<void>;
+		};
+		internals.assertStateSessionNameAvailable = assertStateSessionNameAvailable;
+
+		await internals.setStateSessionName(state, "  normalized  ");
+
+		expect(assertStateSessionNameAvailable).toHaveBeenCalledWith(state, "normalized");
+		expect(setSessionName).toHaveBeenCalledWith("normalized");
+		await expect(internals.setStateSessionName(state, "   ")).rejects.toThrow("Session name cannot be empty");
+		expect(setSessionName).toHaveBeenCalledOnce();
+	});
+
 	it("finds only direct child active sessions", () => {
 		const parent = makeState("parent");
 		const child = makeState("child", "parent");
@@ -4718,6 +4745,48 @@ describe("daemon mode helpers", () => {
 				summary: { sessionId: "session-4" },
 			});
 			expect(internals.buildRlmChildSnapshotsWithPassiveRlmSubagents).toHaveBeenCalledTimes(4);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("validates a requested passive child name before hydration", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-passive-name-preflight-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				assertFamilySessionNameAvailable: ReturnType<typeof vi.fn>;
+				hydratePassiveRlmSubagent: ReturnType<typeof vi.fn>;
+			};
+			const parentState = await internals.createRuntime({
+				type: "create",
+				sessionPath: fixture.parentSessionFile,
+			});
+			const nameError = new Error("sibling name collision");
+			internals.assertFamilySessionNameAvailable = vi.fn(async () => {
+				throw nameError;
+			});
+			internals.hydratePassiveRlmSubagent = vi.fn();
+
+			await expect(
+				internals.createRuntime({
+					type: "create",
+					sessionPath: fixture.childSessionFile,
+					name: "  sibling  ",
+				}),
+			).rejects.toBe(nameError);
+			expect(internals.assertFamilySessionNameAvailable).toHaveBeenCalledWith({
+				name: "sibling",
+				depth: 1,
+				parentSessionId: parentState.runtime.session.sessionId,
+				parentSessionPath: fixture.parentSessionFile,
+				ignoreSessionId: expect.any(String),
+			});
+			expect(internals.hydratePassiveRlmSubagent).not.toHaveBeenCalled();
+			expect(fixture.createRuntime).toHaveBeenCalledOnce();
+			expect([...internals.sessions.values()]).toEqual([parentState]);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}

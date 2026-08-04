@@ -1951,6 +1951,13 @@ export class DaemonSupervisor {
 
 	private async createOrReuseWorker(clientId: string, command: DaemonCreateCommand): Promise<ResidentWorker> {
 		let createCommand = command;
+		if (command.name !== undefined) {
+			const normalizedName = command.name.trim();
+			if (!normalizedName) {
+				throw new Error("Session name cannot be empty");
+			}
+			createCommand = { ...command, name: normalizedName };
+		}
 		const ownerClientId = command.lifecycle === "client_owned" ? clientId : undefined;
 		if (command.sessionPath) {
 			const activeMatches = this.matchWorkers(command.sessionPath);
@@ -1964,7 +1971,7 @@ export class DaemonSupervisor {
 			const sessionPath = looksLikeSessionPath(command.sessionPath)
 				? resolve(command.sessionPath)
 				: await this.catalog.resolve(command.sessionPath, config.cwd ?? process.cwd(), config.sessionDir);
-			createCommand = { ...command, sessionPath };
+			createCommand = { ...createCommand, sessionPath };
 			const existing = this.findWorkerBySessionFile(sessionPath);
 			if (existing) {
 				return this.reuseWorkerForCreate(existing.worker, ownerClientId, sessionPath);
