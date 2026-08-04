@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentSessionMessageAgentSummary } from "../src/core/agent-messages.js";
+import { type AgentSessionMessageAgentSummary, sessionNameReservationKey } from "../src/core/agent-messages.js";
 import { readSessionInfo, SessionManager } from "../src/core/session-manager.js";
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
@@ -23,12 +23,6 @@ interface SupervisorInternals {
 		target: Record<string, unknown>,
 		name: string,
 	): void;
-	sessionNameReservationKey(input: {
-		name: string;
-		depth: number;
-		parentSessionId?: string;
-		parentSessionPath?: string;
-	}): string;
 	handleCommand(client: object, command: Record<string, unknown>): Promise<unknown>;
 }
 
@@ -309,15 +303,11 @@ describe("daemon supervisor passive subagent topology", () => {
 	});
 
 	it("uses injective structural session name reservation keys", () => {
-		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-reservation-key-"));
-		tempDirs.push(directory);
-		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
-			defaultSessionConfig: { agentDir: directory, cwd: directory },
-			descriptorDir: join(directory, "workers"),
-		}) as unknown as SupervisorInternals;
-
-		expect(supervisor.sessionNameReservationKey({ name: "b:c", depth: 1, parentSessionPath: "/a" })).not.toBe(
-			supervisor.sessionNameReservationKey({ name: "c", depth: 1, parentSessionPath: "/a:b" }),
+		expect(sessionNameReservationKey({ name: "b:c", depth: 1, parentSessionPath: "/a" })).not.toBe(
+			sessionNameReservationKey({ name: "c", depth: 1, parentSessionPath: "/a:b" }),
+		);
+		expect(sessionNameReservationKey({ name: "worker", depth: 1, parentSessionPath: "/a" })).toBe(
+			sessionNameReservationKey({ name: "worker", depth: 1, parentSessionPath: "/a" }),
 		);
 	});
 

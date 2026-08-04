@@ -64,6 +64,7 @@ import {
 	isAgentSessionMessagePrompt,
 	normalizeAgentSessionMessage,
 	resolveAgentSessionMessageStreamingBehavior,
+	sessionNameReservationKey,
 } from "../../core/agent-messages.js";
 import {
 	type AgentObserveAgentSnapshot,
@@ -2238,7 +2239,16 @@ export class AgentDaemon {
 				});
 			},
 			releaseRlmSubagentRuntime: async (runtime, options, status) => {
-				if (status === "cancelled") await this.recordRlmSubagentDeletion(parentState, options.id);
+				// Persist the deletion boundary first, but never let a registry failure
+				// strand the cancelled child as a stale resident session.
+				let deletionError: unknown;
+				if (status === "cancelled") {
+					try {
+						await this.recordRlmSubagentDeletion(parentState, options.id);
+					} catch (error) {
+						deletionError = error;
+					}
+				}
 				const state = [...this.sessions.values()].find(
 					(candidate) =>
 						candidate.runtime.metadata.kind === "subagent" &&
@@ -2251,6 +2261,7 @@ export class AgentDaemon {
 				} else {
 					await runtime.session.disposeAsync();
 				}
+				if (deletionError !== undefined) throw deletionError;
 			},
 			deleteRlmSubagentRuntime: async (childId, session) => {
 				const state = [...this.sessions.values()].find(
@@ -5019,20 +5030,6 @@ export class AgentDaemon {
 		return buildAgentFamilyRoster(current, catalog);
 	}
 
-	private sessionNameReservationKey(input: {
-		name: string;
-		depth: number;
-		parentSessionId?: string;
-		parentSessionPath?: string;
-	}): string {
-		const parentIdentity = input.parentSessionPath
-			? `path:${canonicalSessionPath(input.parentSessionPath)}`
-			: input.parentSessionId
-				? `id:${input.parentSessionId}`
-				: "root";
-		return `${input.depth}:${parentIdentity}:${input.name}`;
-	}
-
 	private async assertFamilySessionNameAvailable(
 		input: {
 			name: string;
@@ -5044,7 +5041,7 @@ export class AgentDaemon {
 		currentState?: ActiveSessionState,
 		ignorePendingReservation = false,
 	): Promise<void> {
-		if (!ignorePendingReservation && this.pendingSessionNames.has(this.sessionNameReservationKey(input))) {
+		if (!ignorePendingReservation && this.pendingSessionNames.has(sessionNameReservationKey(input))) {
 			throw new Error(formatAgentSessionNameUnavailable(input.name, input.depth));
 		}
 		assertAgentSessionNameAvailable(await this.createAgentFamilyCatalog(currentState), {
@@ -5086,7 +5083,7 @@ export class AgentDaemon {
 		input: { name: string; depth: number; parentSessionId?: string; parentSessionPath?: string },
 		action: () => Promise<T>,
 	): Promise<T> {
-		const key = this.sessionNameReservationKey(input);
+		const key = sessionNameReservationKey(input);
 		if (this.pendingSessionNames.has(key)) {
 			throw new Error(formatAgentSessionNameUnavailable(input.name, input.depth));
 		}

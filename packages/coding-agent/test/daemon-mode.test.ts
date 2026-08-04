@@ -9,6 +9,7 @@ import {
 	AGENT_FAMILY_REACH_ERROR,
 	type AgentSessionMessageController,
 	DEFAULT_AGENT_MESSAGE_MAX_CHARS,
+	sessionNameReservationKey,
 } from "../src/core/agent-messages.js";
 import type { AgentObserveController } from "../src/core/agent-observe.js";
 import type { CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
@@ -485,7 +486,6 @@ describe("daemon mode helpers", () => {
 				sessions: Map<string, ActiveSessionState>;
 				remoteAgentPeers: Map<string, typeof child>;
 				createAgentFamilyRoster(state: ActiveSessionState): Promise<{ entries: Array<{ id: string }> }>;
-				sessionNameReservationKey(input: { name: string; depth: number; parentSessionPath: string }): string;
 			};
 			internals.sessions.set(parent.activeSessionId, parent);
 			internals.remoteAgentPeers.set(child.activeSessionId, child);
@@ -495,13 +495,13 @@ describe("daemon mode helpers", () => {
 					entries: [expect.objectContaining({ id: "session-child" })],
 				});
 				expect(
-					internals.sessionNameReservationKey({
+					sessionNameReservationKey({
 						name: "worker",
 						depth: 1,
 						parentSessionPath: parentPath,
 					}),
 				).toBe(
-					internals.sessionNameReservationKey({
+					sessionNameReservationKey({
 						name: "worker",
 						depth: 1,
 						parentSessionPath: join(aliasDir, "parent.jsonl"),
@@ -653,6 +653,23 @@ describe("daemon mode helpers", () => {
 			);
 		expect(recordDeletion).toHaveBeenCalledWith(parentState, "child-1");
 		expect(recordDeletion.mock.invocationCallOrder[0]).toBeLessThan(closeSession.mock.invocationCallOrder[1]!);
+		expect(closeSession).toHaveBeenLastCalledWith(childState, "killed");
+		expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
+
+		// A registry failure must not strand the cancelled child as a stale resident session.
+		internals.sessions.set(childState.activeSessionId, childState);
+		internals.recordRlmSubagentDeletion = vi.fn(async () => {
+			throw new Error("registry write failed");
+		});
+		await expect(
+			internals
+				.createSubagentRuntimeHost(parentState)
+				.releaseRlmSubagentRuntime?.(
+					{ session: childState.runtime.session },
+					{ id: "child-1" } as CreateRlmSubagentRuntimeOptions,
+					"cancelled",
+				),
+		).rejects.toThrow("registry write failed");
 		expect(closeSession).toHaveBeenLastCalledWith(childState, "killed");
 		expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
 	});

@@ -19,6 +19,7 @@ import {
 	assertAgentFamilyReach,
 	assertAgentSessionNameAvailable,
 	formatAgentSessionNameUnavailable,
+	sessionNameReservationKey,
 } from "../../core/agent-messages.js";
 import { type AgentSessionRuntimeConfig, mergeAgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
 import {
@@ -2953,25 +2954,11 @@ export class DaemonSupervisor {
 		}));
 	}
 
-	private sessionNameReservationKey(input: {
-		name: string;
-		depth: number;
-		parentSessionId?: string;
-		parentSessionPath?: string;
-	}): string {
-		const [parentType, parentValue] = input.parentSessionPath
-			? ["path", canonicalSessionPath(input.parentSessionPath)]
-			: input.parentSessionId
-				? ["id", input.parentSessionId]
-				: ["root", ""];
-		return JSON.stringify([input.depth, parentType, parentValue, input.name]);
-	}
-
 	private async withSessionNameReservation<T>(
 		input: { name: string; depth: number; parentSessionId?: string; parentSessionPath?: string },
 		action: () => Promise<T>,
 	): Promise<T> {
-		const key = this.sessionNameReservationKey(input);
+		const key = sessionNameReservationKey(input);
 		if (this.pendingSessionNames.has(key)) {
 			throw new Error(formatAgentSessionNameUnavailable(input.name, input.depth));
 		}

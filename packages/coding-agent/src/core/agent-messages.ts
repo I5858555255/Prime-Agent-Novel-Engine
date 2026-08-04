@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { HostRequestHandler } from "./kernel/index.js";
 import type { CustomMessage } from "./messages.js";
+import { canonicalSessionPath } from "./session-lease.js";
 
 export const AGENT_MESSAGE_CUSTOM_TYPE = "agent_message";
 export const AGENT_MESSAGE_SKILL_NAME = "agent-message";
@@ -169,6 +170,25 @@ export interface AgentSessionMessageSafetyStatus {
 	maxPendingPerSession: number;
 	rateLimitCapacity: number;
 	rateLimitRefillMs: number;
+}
+
+/**
+ * Structural reservation key for sibling-scoped session names. JSON encoding keeps
+ * parent paths and names containing delimiter characters from colliding into one key;
+ * the worker- and supervisor-side reservation maps must never diverge in encoding.
+ */
+export function sessionNameReservationKey(input: {
+	name: string;
+	depth: number;
+	parentSessionId?: string;
+	parentSessionPath?: string;
+}): string {
+	const [parentType, parentValue] = input.parentSessionPath
+		? ["path", canonicalSessionPath(input.parentSessionPath)]
+		: input.parentSessionId
+			? ["id", input.parentSessionId]
+			: ["root", ""];
+	return JSON.stringify([input.depth, parentType, parentValue, input.name]);
 }
 
 export function formatAgentSessionNameUnavailable(name: string, depth: number): string {
