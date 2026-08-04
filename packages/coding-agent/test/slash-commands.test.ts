@@ -92,7 +92,9 @@ describe("slash command aliases", () => {
 			aliases: ["usage"],
 		});
 		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "name")).toMatchObject({
-			description: "Set session display name",
+			description: "Set or show the session display name",
+			argumentHint: "[name]",
+			takesArgument: true,
 			aliases: ["rename"],
 		});
 	});
