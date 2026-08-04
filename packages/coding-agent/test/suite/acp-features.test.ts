@@ -494,6 +494,33 @@ describe("ACP mode preserves prime-agent features", () => {
 		// Closing must abort the underlying agent, not just drop local bookkeeping:
 		// otherwise the agent keeps burning tokens with nobody listening.
 		expect(aborted, "session/close must abort the underlying agent").toBe(true);
+		// The in-flight turn must not surface as a clean completion after a close.
+		const outcome = await turn;
+		if (typeof outcome === "object" && outcome && "stopReason" in outcome) {
+			expect(["cancelled", "end_turn"]).toContain((outcome as { stopReason: string }).stopReason);
+		}
+		harness.cleanup();
+	}, 30_000);
+
+	it("rejects prompts and repeat closes after a session is closed", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("one")]);
+		const fixture = await connectAcp(harness);
+
+		await fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [{ type: "text", text: "one" }],
+		});
+		await fixture.agent.request("session/close", { sessionId: fixture.sessionId });
+
+		// A closed session id must not be usable again for either operation.
+		await expect(
+			fixture.agent.request("session/prompt", {
+				sessionId: fixture.sessionId,
+				prompt: [{ type: "text", text: "again" }],
+			}),
+		).rejects.toThrow();
+		await expect(fixture.agent.request("session/close", { sessionId: fixture.sessionId })).rejects.toThrow();
 		harness.cleanup();
 	}, 30_000);
 
