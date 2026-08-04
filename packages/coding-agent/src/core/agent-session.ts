@@ -9503,9 +9503,7 @@ export class AgentSession {
 		}
 		const localConflict =
 			[...this._activeRlmChildRuns.values()].some(
-				(run) =>
-					!run.detachedDeletion &&
-					(run.session?.sessionName === name || (!run.session && run.sessionName === name)),
+				(run) => run.session?.sessionName === name || (!run.session && run.sessionName === name),
 			) ||
 			[...this._rlmChildSessions.values()].some((session) => session.sessionName === name) ||
 			[...this._rlmChildCleanupFailures.values()].some((entry) => entry.session_name === name);
@@ -9692,6 +9690,7 @@ export class AgentSession {
 			try {
 				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 				const child = childRuntime.session;
+				if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
 				if (child.sessionName !== sessionName) child.setSessionName(sessionName);
 				publishChildSession(child);
 				throwIfCancelled();

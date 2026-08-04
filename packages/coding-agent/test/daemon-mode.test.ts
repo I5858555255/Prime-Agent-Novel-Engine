@@ -2727,6 +2727,38 @@ describe("daemon mode helpers", () => {
 		expect(unrelatedHelper.acceptAgentMessagePrompt).not.toHaveBeenCalled();
 	});
 
+	it("keeps a session ID ambiguous when a reachable agent uses it as its name", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-family-id-ambiguity.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const parent = makeAgentFamilyState("parent", "parent");
+		const observer = makeAgentFamilyState("observer", "observer", parent.state);
+		const sibling = makeAgentFamilyState("sibling", parent.state.runtime.session.sessionId, parent.state);
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createAgentMessageController(
+				getCurrentState: () => ActiveSessionState | undefined,
+			): AgentSessionMessageController;
+			createAgentObserveController(getCurrentState: () => ActiveSessionState | undefined): AgentObserveController;
+		};
+		for (const fixture of [parent, observer, sibling]) {
+			internals.sessions.set(fixture.state.activeSessionId, fixture.state);
+		}
+		const expectedError = `Ambiguous active session "${parent.state.runtime.session.sessionId}"`;
+
+		await expect(
+			internals.createAgentObserveController(() => observer.state).getAgent(parent.state.runtime.session.sessionId),
+		).rejects.toThrow(expectedError);
+		await expect(
+			internals
+				.createAgentMessageController(() => observer.state)
+				.sendAgentMessage({ target: parent.state.runtime.session.sessionId, message: "report progress" }),
+		).rejects.toThrow(expectedError);
+		expect(parent.acceptAgentMessagePrompt).not.toHaveBeenCalled();
+		expect(sibling.acceptAgentMessagePrompt).not.toHaveBeenCalled();
+	});
+
 	it("keeps a duplicate session name ambiguous when two family agents are reachable", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-family-name-ambiguity.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },

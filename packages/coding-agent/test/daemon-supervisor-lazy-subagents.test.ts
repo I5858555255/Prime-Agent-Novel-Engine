@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type AgentSessionMessageAgentSummary, sessionNameReservationKey } from "../src/core/agent-messages.js";
+import {
+	type AgentFamilyCatalogEntry,
+	type AgentSessionMessageAgentSummary,
+	assertAgentFamilyReach,
+	sessionNameReservationKey,
+} from "../src/core/agent-messages.js";
 import { readSessionInfo, SessionManager } from "../src/core/session-manager.js";
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
@@ -23,6 +28,7 @@ interface SupervisorInternals {
 		target: Record<string, unknown>,
 		name: string,
 	): void;
+	familyCatalogEntry(summary: SessionSummary): AgentFamilyCatalogEntry;
 	handleCommand(client: object, command: Record<string, unknown>): Promise<unknown>;
 }
 
@@ -242,6 +248,44 @@ describe("daemon supervisor passive subagent topology", () => {
 
 		await expect(supervisor.assertSupervisorSavedSessionNameAvailable(targetPath, "taken")).rejects.toThrow(
 			"an agent of that name already exists at depth 0 under this parent",
+		);
+	});
+
+	it("retains a legacy child's parent edge when its depth is unknown", () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-legacy-family-"));
+		tempDirs.push(directory);
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+		const parentPath = join(directory, "parent.jsonl");
+		const child = supervisor.familyCatalogEntry(
+			summary({
+				id: "legacy-child-active",
+				sessionId: "legacy-child",
+				parentSessionPath: parentPath,
+			}),
+		);
+		const parent = supervisor.familyCatalogEntry(
+			summary({ id: "parent-active", sessionId: "parent", sessionFile: parentPath, rlmDepth: 0 }),
+		);
+		const unrelated = supervisor.familyCatalogEntry(
+			summary({ id: "unrelated-active", sessionId: "unrelated", rlmDepth: 0 }),
+		);
+		const forkedRoot = supervisor.familyCatalogEntry(
+			summary({
+				id: "forked-root-active",
+				sessionId: "forked-root",
+				parentSessionPath: parentPath,
+				rlmDepth: 0,
+			}),
+		);
+
+		expect(child).toMatchObject({ depth: 1, parentSessionPath: parent.sessionPath });
+		expect(forkedRoot).not.toHaveProperty("parentSessionPath");
+		expect(() => assertAgentFamilyReach(child, parent)).not.toThrow();
+		expect(() => assertAgentFamilyReach(child, unrelated)).toThrow(
+			"Agent reach is limited to parent, siblings, and children",
 		);
 	});
 

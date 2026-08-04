@@ -5296,14 +5296,21 @@ export class AgentDaemon {
 		target: string,
 		ambiguity: AmbiguousActiveSessionError,
 	): ActiveSessionState {
-		const reachableMatches = [...this.sessions.values()].filter(
-			(state) =>
-				state.runtime.session.sessionName === target &&
-				(state.activeSessionId === currentState.activeSessionId ||
-					this.isAgentFamilyReachable(currentState, state)),
-		);
-		if (reachableMatches.length !== 1) throw ambiguity;
-		return reachableMatches[0]!;
+		const reachableMatches = new Map(
+			[...this.sessions.values()]
+				.filter((state) => {
+					const session = state.runtime.session;
+					return (
+						(session.sessionId === target || session.sessionName === target) &&
+						(state.activeSessionId === currentState.activeSessionId ||
+							this.isAgentFamilyReachable(currentState, state))
+					);
+				})
+				.map((state) => [state.activeSessionId, state]),
+		).values();
+		const matches = [...reachableMatches];
+		if (matches.length !== 1) throw ambiguity;
+		return matches[0]!;
 	}
 
 	private isAgentFamilyReachable(currentState: ActiveSessionState, targetState: ActiveSessionState): boolean {

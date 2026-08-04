@@ -2943,20 +2943,9 @@ export class DaemonSupervisor {
 				(info.rlmDepth ?? (info.parentSessionPath ? -1 : 0)) === 0 &&
 				!activePaths.has(canonicalSessionPath(info.path)),
 		);
-		return [...active, ...savedRoots.map((info) => summaryForInactiveSession(info))].map((summary) => {
-			const depth = summary.rlmDepth ?? 0;
-			return {
-				id: summary.sessionId,
-				...(summary.sessionName ? { name: summary.sessionName } : {}),
-				depth,
-				status: classifySessionRosterStatus(summary),
-				...(depth > 0 && summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
-				...(depth > 0 && summary.parentSessionPath
-					? { parentSessionPath: canonicalSessionPath(summary.parentSessionPath) }
-					: {}),
-				...(summary.sessionFile ? { sessionPath: canonicalSessionPath(summary.sessionFile) } : {}),
-			};
-		});
+		return [...active, ...savedRoots.map((info) => summaryForInactiveSession(info))].map((summary) =>
+			this.familyCatalogEntry(summary),
+		);
 	}
 
 	private async withSessionNameReservation<T>(
@@ -3011,7 +3000,7 @@ export class DaemonSupervisor {
 		target: Pick<SessionSummary, "rlmDepth" | "parentSessionId" | "parentSessionPath">,
 		name: string,
 	): { name: string; depth: number; parentSessionId?: string; parentSessionPath?: string } {
-		const depth = target.rlmDepth ?? 0;
+		const depth = target.rlmDepth ?? (target.parentSessionPath ? 1 : 0);
 		return {
 			name,
 			depth,
@@ -3096,7 +3085,7 @@ export class DaemonSupervisor {
 	}
 
 	private familyCatalogEntry(summary: SessionSummary): AgentFamilyCatalogEntry {
-		const depth = summary.rlmDepth ?? 0;
+		const depth = summary.rlmDepth ?? (summary.parentSessionPath ? 1 : 0);
 		return {
 			id: summary.sessionId,
 			...(summary.sessionName ? { name: summary.sessionName } : {}),

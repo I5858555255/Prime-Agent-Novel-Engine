@@ -2258,7 +2258,7 @@ describe("AgentSession rlm recursion", () => {
 		expect(internals._rlmChildCleanupFailures.size).toBe(0);
 	});
 
-	it("frees an errored startup name while its detached failure injection settles", async () => {
+	it("reserves an errored startup name while its detached failure injection settles", async () => {
 		let releaseFailureInjection: () => void = () => {};
 		const failureInjectionGate = new Promise<void>((resolve) => {
 			releaseFailureInjection = resolve;
@@ -2283,12 +2283,49 @@ describe("AgentSession rlm recursion", () => {
 		const internals = root as unknown as InspectableRlmSession;
 		expect(internals._activeRlmChildRuns.size).toBe(1);
 		expect(await root.listRlmSubagents()).toEqual({ subagents: [] });
-		await expect(root.runRlmChild("replacement", { name: "failed-worker" })).resolves.toMatchObject({
-			name: "failed-worker",
-		});
+		await expect(root.runRlmChild("replacement", { name: "failed-worker" })).rejects.toThrow(
+			"an agent of that name already exists at depth 1 under this parent",
+		);
 
 		releaseFailureInjection();
 		await waitFor(() => !internals._activeRlmChildRuns.has(failed?.rlm_child_id ?? ""));
+		await expect(root.runRlmChild("replacement", { name: "failed-worker" })).resolves.toMatchObject({
+			name: "failed-worker",
+		});
+	});
+
+	it("reserves a deleted queued child's name until startup settles", async () => {
+		let releaseRuntimeCreation: () => void = () => {};
+		const runtimeCreationGate = new Promise<void>((resolve) => {
+			releaseRuntimeCreation = resolve;
+		});
+		let runtimeCreationStarted = false;
+		const hostedChild = createSession();
+		const setSessionName = vi.spyOn(hostedChild, "setSessionName");
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => {
+					runtimeCreationStarted = true;
+					await runtimeCreationGate;
+					return { session: hostedChild };
+				},
+				deleteRlmSubagentRuntime: async (_id, child) => child?.disposeAsync(),
+			},
+		});
+		await root.runRlmChild("blocked before runtime creation", { name: "reserved-worker" });
+		await waitFor(() => runtimeCreationStarted);
+
+		await root.deleteRlmSubagent("reserved-worker");
+		await expect(root.runRlmChild("replacement", { name: "reserved-worker" })).rejects.toThrow(
+			"an agent of that name already exists at depth 1 under this parent",
+		);
+
+		releaseRuntimeCreation();
+		await waitFor(() => (root as unknown as InspectableRlmSession)._activeRlmChildRuns.size === 0);
+		expect(setSessionName).not.toHaveBeenCalled();
+		await expect(root.runRlmChild("replacement", { name: "reserved-worker" })).resolves.toMatchObject({
+			name: "reserved-worker",
+		});
 	});
 
 	it("deletes a queued child without waiting for blocked startup", async () => {
