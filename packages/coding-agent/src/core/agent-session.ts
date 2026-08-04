@@ -872,8 +872,9 @@ type GoalSlashCommand =
 
 type AutonomousSlashCommand = { kind: "status" } | { kind: "on" } | { kind: "off" };
 
-type RlmMaxDepthSource = "default" | "env" | "global" | "inherited" | "chat";
-type RlmMaxDepthSlashCommand = { kind: "status" } | { kind: "set"; maxDepth: number; global: boolean };
+import type { RlmMaxDepthSource, RlmMaxDepthStatus, SetRlmMaxDepthResult } from "./rlm-max-depth.js";
+
+export type { RlmMaxDepthSource, RlmMaxDepthStatus, SetRlmMaxDepthResult } from "./rlm-max-depth.js";
 
 interface PersistedRlmMaxDepthState {
 	maxDepth: number;
@@ -1932,71 +1933,6 @@ export class AgentSession {
 			this._clearQueuedAutonomousContinuations();
 		}
 		this._emitAutonomousStatus();
-		return true;
-	}
-
-	private _parseRlmMaxDepthSlashCommand(text: string): RlmMaxDepthSlashCommand | undefined {
-		const command = parseSessionSlashCommand(text);
-		if (command?.name !== "rlm-max-depth") return undefined;
-		if (!command.args) return { kind: "status" };
-
-		const tokens = command.args.split(/\s+/);
-		const global = tokens[1] === "--global";
-		if (tokens.length > (global ? 2 : 1) || !/^\d+$/.test(tokens[0] ?? "")) {
-			throw new Error("Usage: /rlm-max-depth [<non-negative integer> [--global]]");
-		}
-		const maxDepth = Number(tokens[0]);
-		if (!isNonNegativeInteger(maxDepth)) {
-			throw new Error("RLM max depth must be a non-negative integer.");
-		}
-		return { kind: "set", maxDepth, global };
-	}
-
-	private _emitRlmMaxDepthStatus(globalUpdated = false): void {
-		let content = `RLM max depth: ${this._rlmMaxDepth} (source: ${this._rlmMaxDepthSource}).`;
-		if (globalUpdated) {
-			content +=
-				" Saved for this chat and as the global default for new sessions; other existing sessions are unchanged.";
-		}
-		const message = {
-			role: "custom" as const,
-			customType: "rlm_max_depth_status",
-			content,
-			display: true,
-			details: {
-				maxDepth: this._rlmMaxDepth,
-				source: this._rlmMaxDepthSource,
-				globalUpdated,
-			},
-			timestamp: Date.now(),
-		} satisfies CustomMessage<{ maxDepth: number; source: RlmMaxDepthSource; globalUpdated: boolean }>;
-		this.agent.state.messages.push(message);
-		this.sessionManager.appendCustomMessageEntry(
-			message.customType,
-			message.content,
-			message.display,
-			message.details,
-		);
-		this._emit({ type: "message_start", message });
-		this._emit({ type: "message_end", message });
-	}
-
-	private async _handleRlmMaxDepthSlashCommand(text: string): Promise<boolean> {
-		const command = this._parseRlmMaxDepthSlashCommand(text);
-		if (!command) return false;
-		if (command.kind === "set") {
-			if (command.global) {
-				this.settingsManager.setRlmMaxDepth(command.maxDepth);
-				await this.settingsManager.flush();
-			}
-			this._rlmMaxDepth = command.maxDepth;
-			this._rlmMaxDepthSource = "chat";
-			this.sessionManager.appendCustomEntry(RLM_MAX_DEPTH_STATE_CUSTOM_TYPE, { maxDepth: command.maxDepth });
-			this.sessionManager.flushNow();
-			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-			this.agent.state.systemPrompt = this._baseSystemPrompt;
-		}
-		this._emitRlmMaxDepthStatus(command.kind === "set" && command.global);
 		return true;
 	}
 
@@ -5695,9 +5631,6 @@ export class AgentSession {
 					break;
 				case "autonomous":
 					await this._handleAutonomousSlashCommand(input.text);
-					break;
-				case "rlm-max-depth":
-					await this._handleRlmMaxDepthSlashCommand(input.text);
 					break;
 			}
 			if (resultText) {
@@ -10224,9 +10157,39 @@ export class AgentSession {
 	// Session Management
 	// =========================================================================
 
-	/**
-	 * Set a display name for the current session.
-	 */
+	/** Current RLM max-depth value and the source that supplied it. */
+	getRlmMaxDepthStatus(): RlmMaxDepthStatus {
+		return { maxDepth: this._rlmMaxDepth, source: this._rlmMaxDepthSource };
+	}
+
+	/** Persist and immediately apply a per-chat RLM max-depth override. */
+	async setRlmMaxDepth(maxDepth: number, options: { global?: boolean } = {}): Promise<SetRlmMaxDepthResult> {
+		if (!isNonNegativeInteger(maxDepth)) {
+			throw new Error("RLM max depth must be a non-negative integer.");
+		}
+
+		this.sessionManager.appendCustomEntryWithRollback(RLM_MAX_DEPTH_STATE_CUSTOM_TYPE, { maxDepth });
+		this._rlmMaxDepth = maxDepth;
+		this._rlmMaxDepthSource = "chat";
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._baseSystemPrompt;
+
+		let globalError: string | undefined;
+		if (options.global) {
+			this.settingsManager.setRlmMaxDepth(maxDepth);
+			await this.settingsManager.flush();
+			const errors = this.settingsManager.drainErrors().filter(({ scope }) => scope === "global");
+			globalError = errors.map(({ error }) => error.message).join("; ") || undefined;
+		}
+
+		return {
+			...this.getRlmMaxDepthStatus(),
+			globalSaved: options.global === true && globalError === undefined,
+			...(globalError ? { globalError } : {}),
+		};
+	}
+
+	/** Set a display name for the current session. */
 	setSessionName(name: string): void {
 		this.sessionManager.appendSessionInfo(name);
 		this._emit({ type: "session_info_changed", name: this.sessionManager.getSessionName() });

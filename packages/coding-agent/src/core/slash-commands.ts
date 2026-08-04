@@ -10,7 +10,7 @@ export interface SlashCommandInfo {
 	sourceInfo: SourceInfo;
 }
 
-export const SESSION_SLASH_COMMAND_NAMES = ["compact", "refine", "goal", "autonomous", "rlm-max-depth"] as const;
+export const SESSION_SLASH_COMMAND_NAMES = ["compact", "refine", "goal", "autonomous"] as const;
 
 export type SessionSlashCommandName = (typeof SESSION_SLASH_COMMAND_NAMES)[number];
 
@@ -174,7 +174,7 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "rlm-max-depth",
 		description:
-			"Set/view the per-chat persistent RLM max depth; only newly spawned children inherit it, child overrides win; --global sets only new sessions + this one",
+			"Set/view the per-chat persistent RLM max depth immediately; never interrupts or queues the running turn",
 		argumentHint: "[<int> [--global]]",
 		takesArgument: true,
 	},
