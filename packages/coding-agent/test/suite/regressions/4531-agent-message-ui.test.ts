@@ -5,15 +5,20 @@ import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
 	AGENT_MESSAGE_SOURCE,
+	type AgentFamilyRelationship,
 	type AgentSessionMessage,
 	type AgentSessionMessagePayload,
 	createAgentSessionMessage,
 	createAgentSessionMessagePrompt,
+	formatAgentMessageParticipant,
 	isAgentSessionMessagePrompt,
 } from "../../../src/core/agent-messages.js";
 import type { KernelSentAgentMessage } from "../../../src/core/kernel/index.js";
 import { AgentMessageComponent } from "../../../src/modes/interactive/components/agent-message.js";
-import { buildConversationComponents } from "../../../src/modes/interactive/components/conversation-components.js";
+import {
+	buildConversationComponents,
+	isCompactAgentMessageNeighbor,
+} from "../../../src/modes/interactive/components/conversation-components.js";
 import { IPythonCellComponent } from "../../../src/modes/interactive/components/ipython-cell.js";
 import { formatQueuedMessagePreview, InteractiveMode } from "../../../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.js";
@@ -290,6 +295,27 @@ describe("ENG-4531 agent message UI", () => {
 		).toBe(true);
 	});
 
+	it.each([
+		["received", "parent", { sessionName: "Planner" }, "from parent Planner"],
+		["received", "parent", {}, "from parent unknown"],
+		["sent", "parent", { activeSessionId: "parent-active" }, "to parent parent-active"],
+		["sent", "parent", {}, "to parent unknown"],
+		["received", "sibling", { clientId: "sibling-client" }, "from sibling sibling-client"],
+		["received", "sibling", {}, "from sibling unknown"],
+		["sent", "sibling", { sessionId: "sibling-session" }, "to sibling sibling-session"],
+		["sent", "sibling", {}, "to sibling unknown"],
+		["received", "child", { sessionName: "Worker" }, "from child Worker"],
+		["received", "child", {}, "from child unknown"],
+		["sent", "child", { sessionName: "Worker" }, "to child Worker"],
+		["sent", "child", {}, "to child unknown"],
+		["received", undefined, { sessionName: "Legacy" }, "from Legacy"],
+		["sent", undefined, {}, "to unknown"],
+	] as const)("formats %s %s agent-message participants", (direction, role, endpoint, expected) => {
+		expect(formatAgentMessageParticipant(direction, role as AgentFamilyRelationship | undefined, endpoint)).toBe(
+			expected,
+		);
+	});
+
 	it("classifies a spawn task as an agent message component", () => {
 		const spawnMessage: AgentSessionMessage = {
 			role: "custom",
@@ -314,7 +340,7 @@ describe("ENG-4531 agent message UI", () => {
 
 		expect(components).toHaveLength(1);
 		expect(components[0]).toBeInstanceOf(AgentMessageComponent);
-		expect(render(components[0] as AgentMessageComponent)).toContain("Agent message received · parent");
+		expect(render(components[0] as AgentMessageComponent)).toContain("Agent message received · from parent Planner");
 	});
 
 	it("uses compact rebuilt spacing for agent messages next to messages and tool cells", () => {
@@ -330,6 +356,8 @@ describe("ENG-4531 agent message UI", () => {
 			getToolDefinition: () => undefined,
 		};
 
+		expect(isCompactAgentMessageNeighbor(new IPythonCellComponent({ code: "print('direct')" }))).toBe(true);
+
 		const adjacent = buildConversationComponents([first, second], options);
 		expect(adjacent).toHaveLength(2);
 		expect(adjacent[0]?.render(120)[0]).toBe("");
@@ -340,14 +368,20 @@ describe("ENG-4531 agent message UI", () => {
 		const messageThenTool = buildConversationComponents([first, toolCall], options);
 		expect(messageThenTool.at(-1)?.render(120)[0]).not.toBe("");
 
-		const textThenMessage = buildConversationComponents(
+		const userThenMessage = buildConversationComponents(
 			[{ role: "user", content: "intervening prompt", timestamp: 123 }, second] as AgentMessage[],
 			options,
 		);
-		expect(textThenMessage[1]?.render(120)[0]).toBe("");
+		expect(userThenMessage[1]?.render(120)[0]).toBe("");
+
+		const assistantThenMessage = buildConversationComponents(
+			[fauxAssistantMessage("intervening response"), second],
+			options,
+		);
+		expect(assistantThenMessage[1]?.render(120)[0]).toBe("");
 	});
 
-	it("suppresses leading space only between adjacent live agent messages", () => {
+	it("suppresses live spacing between agent messages and following tool activity", () => {
 		const chatContainer = new Container();
 		const mode = {
 			chatContainer,
@@ -365,6 +399,9 @@ describe("ENG-4531 agent message UI", () => {
 		expect(chatContainer.children[0]?.render(120)[0]).toBe("");
 		expect(chatContainer.children[1]?.render(120)[0]).not.toBe("");
 
+		addMessage(fauxAssistantMessage(fauxToolCall("ipython", { code: "print('live')" }), { stopReason: "toolUse" }));
+		expect(chatContainer.children[2]?.render(120)[0]).not.toBe("");
+
 		const toolComponents = buildConversationComponents(
 			[fauxAssistantMessage(fauxToolCall("ipython", { code: "print('ready')" }), { stopReason: "toolUse" })],
 			{
@@ -378,11 +415,11 @@ describe("ENG-4531 agent message UI", () => {
 		if (!toolComponent) throw new Error("Missing tool component");
 		chatContainer.addChild(toolComponent);
 		addMessage(second);
-		expect(chatContainer.children[3]?.render(120)[0]).not.toBe("");
+		expect(chatContainer.children[4]?.render(120)[0]).not.toBe("");
 
 		chatContainer.addChild(new Container());
 		addMessage(second);
-		expect(chatContainer.children[5]?.render(120)[0]).toBe("");
+		expect(chatContainer.children[6]?.render(120)[0]).toBe("");
 	});
 
 	it("renders relationship-aware sender labels with identifier fallbacks", () => {
@@ -402,40 +439,37 @@ describe("ENG-4531 agent message UI", () => {
 			from: { sessionId: "legacy-session" },
 		});
 
-		expect(render(new AgentMessageComponent(parent))).toContain("Agent message received · parent");
-		expect(render(new AgentMessageComponent(sibling))).toContain("Agent message received · sibling:Peer");
-		expect(render(new AgentMessageComponent(childById))).toContain("Agent message received · child:child-session");
+		expect(render(new AgentMessageComponent(parent))).toContain("Agent message received · from parent Planner");
+		expect(render(new AgentMessageComponent(sibling))).toContain("Agent message received · from sibling Peer");
+		expect(render(new AgentMessageComponent(childById))).toContain(
+			"Agent message received · from child child-session",
+		);
 		expect(render(new AgentMessageComponent(unknownRelationship))).toContain(
-			"Agent message received · legacy-session",
+			"Agent message received · from legacy-session",
 		);
 		const expanded = new AgentMessageComponent(sibling);
 		expanded.setExpanded(true);
-		expect(render(expanded)).toContain("Agent message received · sibling:Peer");
+		expect(render(expanded)).toContain("Agent message received · from sibling Peer");
 	});
 
-	it("renders a compact subagent-style row and expands only the message body", () => {
-		const body = `${"Inspect the benchmark results and compare every shard. ".repeat(4)}Final instruction.`;
+	it("renders a compact row and an aligned multiline gutter when expanded", () => {
+		const body = "Reply to your parent with exactly: hi\nThen wait for more work.";
 		const component = new AgentMessageComponent(createAgentSessionMessage(createPayload(body)));
 		const collapsed = render(component);
 
-		expect(collapsed).toContain("◆ Agent message received · Planner");
+		expect(collapsed).toContain("◆ Agent message received · from Planner");
 		expect(collapsed).toContain("to expand");
-		expect(collapsed).not.toContain("Final instruction.");
-		expect(collapsed).not.toContain("Source: agent_message");
-		expect(collapsed).not.toContain("Message id:");
+		expect(collapsed).not.toContain("Then wait for more work.");
 
 		component.setExpanded(true);
 		const expanded = render(component);
-		expect(expanded.replace(/\s+/g, " ")).toContain("Final instruction.");
-		expect(
-			expanded
-				.split("\n")
-				.slice(2)
-				.filter(Boolean)
-				.every((line) => line.startsWith("  ")),
-		).toBe(true);
+		const expandedLines = expanded.split("\n");
+		expect(expandedLines[1]?.trimEnd()).toBe(" ◆ Agent message received · from Planner");
+		expect(expandedLines.slice(2)).toEqual([
+			" ╰─ Reply to your parent with exactly: hi",
+			"    Then wait for more work.",
+		]);
 		expect(expanded).not.toContain("Source: agent_message");
-		expect(expanded).not.toContain("To: Worker");
 		expect(expanded).not.toContain("Message id:");
 	});
 
@@ -473,8 +507,12 @@ describe("ENG-4531 agent message UI", () => {
 		});
 
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("◆ Agent message queued to child:Worker · Review shard seven.");
-		expect(rendered).toContain("◆ Agent message sent to parent · Continue with shard eight.");
+		const lines = rendered.split("\n");
+		expect(lines).toEqual([
+			expect.stringContaining("python"),
+			" ◆ Agent message queued · to child Worker · Review shard seven.",
+			" ◆ Agent message sent · to parent Worker · Continue with shard eight.",
+		]);
 		expect(rendered).not.toContain("Agent message received");
 	});
 });

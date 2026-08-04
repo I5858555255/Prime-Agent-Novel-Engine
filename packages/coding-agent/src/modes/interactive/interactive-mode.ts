@@ -5319,7 +5319,9 @@ export class InteractiveMode {
 					// client's pane, never in this window's chat.
 					break;
 				}
-				const component = new BashExecutionComponent(event.command, this.ui, event.excludeFromContext);
+				const component = new BashExecutionComponent(event.command, this.ui, event.excludeFromContext, {
+					suppressLeadingSpace: this.chatContainer.children.at(-1) instanceof AgentMessageComponent,
+				});
 				if (ownSideBash && this.sideQuestionComponent) {
 					// Same component as the main thread, mounted inside the pane.
 					this.sideQuestionComponent.addBash(component);
@@ -5646,7 +5648,9 @@ export class InteractiveMode {
 			this.hiddenThinkingLabel,
 			{
 				expanded: this.toolOutputExpanded,
-				precededByToolActivity: this.chatContainer.children.at(-1) instanceof ToolExecutionComponent,
+				precededByToolActivity:
+					this.chatContainer.children.at(-1) instanceof ToolExecutionComponent ||
+					this.chatContainer.children.at(-1) instanceof AgentMessageComponent,
 			},
 		);
 		this.streamingMessage = message;
@@ -6152,7 +6156,9 @@ export class InteractiveMode {
 	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
 		switch (message.role) {
 			case "bashExecution": {
-				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
+				const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext, {
+					suppressLeadingSpace: this.chatContainer.children.at(-1) instanceof AgentMessageComponent,
+				});
 				if (message.output) {
 					component.appendOutput(message.output);
 				}
@@ -6284,7 +6290,9 @@ export class InteractiveMode {
 					this.hiddenThinkingLabel,
 					{
 						expanded: this.toolOutputExpanded,
-						precededByToolActivity: this.chatContainer.children.at(-1) instanceof ToolExecutionComponent,
+						precededByToolActivity:
+							this.chatContainer.children.at(-1) instanceof ToolExecutionComponent ||
+							this.chatContainer.children.at(-1) instanceof AgentMessageComponent,
 					},
 				);
 				this.chatContainer.addChild(assistantComponent);

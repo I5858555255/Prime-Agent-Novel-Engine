@@ -30,6 +30,24 @@ export interface AgentSessionMessageSender extends Partial<AgentSessionMessageEn
 	clientId?: string;
 }
 
+export type AgentMessageDirection = "received" | "sent";
+
+/** Format the directional role/name segment shared by received and sent agent-message UI. */
+export function formatAgentMessageParticipant(
+	direction: AgentMessageDirection,
+	role: AgentFamilyRelationship | undefined,
+	endpoint: Partial<AgentSessionMessageEndpoint> & { clientId?: string } = {},
+): string {
+	const nameOrId =
+		endpoint.sessionName?.trim() ||
+		endpoint.activeSessionId?.trim() ||
+		endpoint.clientId?.trim() ||
+		endpoint.sessionId?.trim() ||
+		"unknown";
+	const participant = role ? `${role} ${nameOrId}` : nameOrId;
+	return `${direction === "received" ? "from" : "to"} ${participant}`;
+}
+
 export interface AgentSessionMessageAgentSummary extends AgentSessionMessageEndpoint {
 	cwd: string;
 	isStreaming: boolean;

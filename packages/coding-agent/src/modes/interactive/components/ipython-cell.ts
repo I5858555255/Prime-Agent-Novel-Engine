@@ -6,6 +6,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { formatAgentMessageParticipant } from "../../../core/agent-messages.js";
 import { previewIpythonCode } from "../../../core/tools/code-preview.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.js";
 import { parseIpythonBashCell } from "../../../core/tools/ipython-cell-code.js";
@@ -611,23 +612,14 @@ export class IPythonCellComponent implements Component {
 
 	private renderSentAgentMessages(lines: string[], width: number, messages: readonly SentAgentMessageDisplay[]): void {
 		for (const message of messages) {
-			this.addPlain(lines, "");
-			const target =
-				message.target.sessionName?.trim() ||
-				message.target.activeSessionId.trim() ||
-				message.target.sessionId.trim() ||
-				"Unknown agent";
 			const label = message.deliveryStatus === "delivered" ? "Agent message sent" : "Agent message queued";
-			const recipient =
-				message.receiverRole === "parent"
-					? "parent"
-					: message.receiverRole
-						? `${message.receiverRole}:${target}`
-						: target;
+			const recipient = formatAgentMessageParticipant("sent", message.receiverRole, message.target);
 			const text = message.message.replace(/\s+/g, " ").trim();
 			const line =
 				theme.fg("accent", "◆") +
-				` ${theme.fg("muted", `${label} to ${recipient}`)}` +
+				` ${theme.fg("muted", label)}` +
+				theme.fg("dim", " · ") +
+				theme.fg("muted", recipient) +
 				theme.fg("dim", " · ") +
 				theme.fg("muted", text);
 			this.addPlain(lines, truncateToWidth(line, Math.max(1, width - 1), "…"));
