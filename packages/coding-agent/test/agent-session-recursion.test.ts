@@ -21,6 +21,7 @@ import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import {
 	createDefaultRlmSubagentSessionName,
+	createRlmDeleteSubagentHostHandler,
 	createRlmRunHostHandler,
 	type SubagentRuntimeHost,
 } from "../src/core/rlm-runtime.js";
@@ -269,6 +270,26 @@ describe("AgentSession rlm recursion", () => {
 		});
 		return session;
 	}
+
+	it("propagates skipped-running deletion outcomes through the host handler", async () => {
+		const subagent = {
+			rlm_child_id: "running-child",
+			active_session_id: "running-session",
+			session_id: "running-session",
+			session_name: "running-worker",
+			session_dir: join(tempDir, "running-child"),
+			status: "running" as const,
+		};
+		const deleteHandler = createRlmDeleteSubagentHostHandler(async () => ({
+			subagent,
+			outcome: "skipped_running",
+		}));
+
+		await expect(deleteHandler({ target: subagent.rlm_child_id })).resolves.toEqual({
+			subagent,
+			outcome: "skipped_running",
+		});
+	});
 
 	it("persists RLM_DEPTH for a fresh session and reports the seeded depth", () => {
 		vi.stubEnv("RLM_DEPTH", "1");

@@ -200,8 +200,8 @@ export function createRlmDeleteSubagentHostHandler(handler: RlmDeleteSubagentHan
 		if (typeof payload.target !== "string" || !payload.target.trim()) {
 			throw new Error("rlm.delete_subagent target must be a non-empty string");
 		}
-		const { subagent } = await handler(payload.target.trim());
-		return { subagent };
+		const { subagent, outcome } = await handler(payload.target.trim());
+		return outcome === undefined ? { subagent } : { subagent, outcome };
 	};
 }
 
