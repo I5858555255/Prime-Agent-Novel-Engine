@@ -437,7 +437,8 @@ export class AgentDaemon {
 		{
 			promise: Promise<void>;
 			reason: DaemonSessionClosedReason;
-			killedEffects?: Promise<void>;
+			descendants: Set<ActiveSessionState>;
+			reasonUpgrade?: Promise<void>;
 		}
 	>();
 	private readonly sideQuestionRuns = new Map<
@@ -5378,6 +5379,7 @@ export class AgentDaemon {
 		reason: DaemonSessionClosedReason,
 		waitForAbort = true,
 		cascadeChildren = true,
+		descendantCollector?: Set<ActiveSessionState>,
 	): Promise<void> {
 		this.abortWaitingPromptAdmissionsForSession(state.activeSessionId);
 		for (const client of state.clients) {
@@ -5385,27 +5387,56 @@ export class AgentDaemon {
 		}
 		const existingClose = this.closingSessions.get(state.activeSessionId);
 		if (existingClose) {
+			const requestedReason = this.isStrongerCloseReason(reason, existingClose.reason)
+				? reason
+				: existingClose.reason;
 			await existingClose.promise;
-			if (reason === "killed" && this.closeKeepsResumeEntry(existingClose.reason)) {
-				existingClose.killedEffects ??= Promise.resolve().then(() => {
-					this.cancelScheduledJobsForSession(state);
-					this.archiveSession(state);
-				});
-				await existingClose.killedEffects;
-			}
+			existingClose.reasonUpgrade = (existingClose.reasonUpgrade ?? Promise.resolve()).then(() => {
+				if (!this.isStrongerCloseReason(requestedReason, existingClose.reason)) return;
+				this.applyReasonUpgrade(state, existingClose.descendants, existingClose.reason, requestedReason);
+				existingClose.reason = requestedReason;
+			});
+			await existingClose.reasonUpgrade;
+			descendantCollector?.add(state);
+			for (const descendant of existingClose.descendants) descendantCollector?.add(descendant);
 			return;
 		}
+		const descendants = new Set<ActiveSessionState>();
 		const closePromise = Promise.resolve().then(() =>
-			this.closeSessionOnce(state, reason, waitForAbort, cascadeChildren),
+			this.closeSessionOnce(state, reason, waitForAbort, cascadeChildren, descendants),
 		);
-		const close = { promise: closePromise, reason };
+		const close = { promise: closePromise, reason, descendants };
 		this.closingSessions.set(state.activeSessionId, close);
 		try {
 			await closePromise;
 		} finally {
+			descendantCollector?.add(state);
+			for (const descendant of descendants) descendantCollector?.add(descendant);
 			if (this.closingSessions.get(state.activeSessionId) === close) {
 				this.closingSessions.delete(state.activeSessionId);
 			}
+		}
+	}
+
+	private closeReasonStrength(reason: DaemonSessionClosedReason): number {
+		if (reason === "killed") return 2;
+		if (reason === "completed" || reason === "replaced") return 1;
+		return 0;
+	}
+
+	private isStrongerCloseReason(candidate: DaemonSessionClosedReason, current: DaemonSessionClosedReason): boolean {
+		return this.closeReasonStrength(candidate) > this.closeReasonStrength(current);
+	}
+
+	private applyReasonUpgrade(
+		state: ActiveSessionState,
+		descendants: ReadonlySet<ActiveSessionState>,
+		from: DaemonSessionClosedReason,
+		to: DaemonSessionClosedReason,
+	): void {
+		for (const target of [state, ...descendants]) {
+			if (to === "killed") this.cancelScheduledJobsForSession(target);
+			if (this.closeKeepsResumeEntry(from)) this.archiveSession(target);
 		}
 	}
 
@@ -5433,6 +5464,7 @@ export class AgentDaemon {
 		reason: DaemonSessionClosedReason,
 		waitForAbort: boolean,
 		cascadeChildren: boolean,
+		descendants: Set<ActiveSessionState>,
 	): Promise<void> {
 		if (!this.sessions.has(state.activeSessionId)) {
 			return;
@@ -5445,7 +5477,9 @@ export class AgentDaemon {
 		// Abort in-flight status work before any await/dispose so it can't write
 		// agent_status to a session being torn down.
 		this.summarizer.forget(state.activeSessionId);
-		const cascadeError = cascadeChildren ? await this.closeChildSessions(state, reason, waitForAbort) : undefined;
+		const cascadeError = cascadeChildren
+			? await this.closeChildSessions(state, reason, waitForAbort, descendants)
+			: undefined;
 		// Empty draft (no messages, config, or jobs): discard rather than persist an
 		// empty session file. Mirrors the detach-time discard so a config-bearing
 		// draft closed via kill/completed is never wiped.
@@ -5514,11 +5548,13 @@ export class AgentDaemon {
 		parentState: ActiveSessionState,
 		reason: DaemonSessionClosedReason,
 		waitForAbort = true,
+		descendants = new Set<ActiveSessionState>(),
 	): Promise<unknown> {
 		let cascadeError: unknown;
 		for (const childState of getChildActiveSessionStates(this.sessions, parentState)) {
+			descendants.add(childState);
 			try {
-				await this.closeSession(childState, reason, waitForAbort);
+				await this.closeSession(childState, reason, waitForAbort, true, descendants);
 			} catch (error) {
 				cascadeError ??= error;
 			}

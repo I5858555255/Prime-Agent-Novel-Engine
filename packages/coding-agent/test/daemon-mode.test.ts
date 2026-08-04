@@ -6559,6 +6559,129 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("upgrades resident descendants when kill joins a parent shutdown close", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-kill-parent-shutdown-race-"));
+		let releaseParentDispose!: () => void;
+		const parentDisposeGate = new Promise<void>((resolve) => {
+			releaseParentDispose = resolve;
+		});
+		let markParentDisposeStarted!: () => void;
+		const parentDisposeStarted = new Promise<void>((resolve) => {
+			markParentDisposeStarted = resolve;
+		});
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				closeSession(state: ActiveSessionState, reason: "shutdown"): Promise<void>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const childState = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
+			parentState.runtime.dispose = vi.fn(async () => {
+				markParentDisposeStarted();
+				await parentDisposeGate;
+			});
+			const childJob = internals.cronStore.create({
+				activeSessionId: childState.activeSessionId,
+				sessionId: childState.runtime.session.sessionId,
+				sessionFile: fixture.childSessionFile,
+				cwd: tempDir,
+				scheduleText: "every 5m",
+				prompt: "scheduled child work",
+			});
+
+			const shutdownClose = internals.closeSession(parentState, "shutdown");
+			await parentDisposeStarted;
+			const kill = internals.handleCommand(makeClient("client-1", parentState.activeSessionId), {
+				id: "command-1",
+				type: "kill",
+				activeSessionId: parentState.activeSessionId,
+			});
+			releaseParentDispose();
+
+			await expect(Promise.all([shutdownClose, kill])).resolves.toBeDefined();
+			expect(internals.cronStore.list().find((job) => job.id === childJob.id)).toMatchObject({
+				status: "cancelled",
+			});
+			expect(SessionManager.open(fixture.childSessionFile).getSessionState()).toEqual({ status: "archived" });
+		} finally {
+			releaseParentDispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not duplicate effects when kill joins a completed close", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-kill-completed-race-"));
+		let releaseDispose!: () => void;
+		const disposeGate = new Promise<void>((resolve) => {
+			releaseDispose = resolve;
+		});
+		let markDisposeStarted!: () => void;
+		const disposeStarted = new Promise<void>((resolve) => {
+			markDisposeStarted = resolve;
+		});
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const appendSessionState = vi.fn();
+			const state = makeState("active-1");
+			state.extensionUiRequests = new Map();
+			state.runtime = {
+				metadata: { kind: "subagent", createdAt: 1 },
+				cwd: tempDir,
+				dispose: vi.fn(async () => {
+					markDisposeStarted();
+					await disposeGate;
+				}),
+				session: {
+					sessionId: "session-1",
+					sessionFile: join(tempDir, "session.jsonl"),
+					messages: ["user message"],
+					isBashRunning: false,
+					sessionManager: { appendSessionState, hasUserContent: () => true },
+				},
+			} as never;
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				sessions: Map<string, ActiveSessionState>;
+				closeSession(state: ActiveSessionState, reason: "completed"): Promise<void>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+			const cron = internals.cronStore.create({
+				activeSessionId: state.activeSessionId,
+				sessionId: "session-1",
+				sessionFile: join(tempDir, "session.jsonl"),
+				cwd: tempDir,
+				scheduleText: "in 1h",
+				prompt: "check completed run",
+			});
+
+			const completedClose = internals.closeSession(state, "completed");
+			await disposeStarted;
+			const kill = internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+				id: "command-1",
+				type: "kill",
+				activeSessionId: state.activeSessionId,
+			});
+			releaseDispose();
+
+			await expect(Promise.all([completedClose, kill])).resolves.toBeDefined();
+			expect(internals.cronStore.list().find((job) => job.id === cron.id)).toMatchObject({ status: "cancelled" });
+			expect(appendSessionState).toHaveBeenCalledOnce();
+			expect(appendSessionState).toHaveBeenCalledWith({ status: "archived" });
+		} finally {
+			releaseDispose();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("cancels scheduled jobs when a saved session is deleted", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-delete-cron-"));
 		try {
