@@ -438,7 +438,12 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 		let opened: OpenedAgentsViewSession | undefined;
 		try {
 			opened = await openAgentsViewSession(options, result.summary);
-			if (opened.cwdFallbackNotice) persistentState.statusMessage = opened.cwdFallbackNotice;
+			if (opened.cwdFallbackNotice) {
+				persistentState.statusMessage = combineAgentsViewStartupNotices(
+					result.statusMessage,
+					opened.cwdFallbackNotice,
+				);
+			}
 			const uiServices = await resolveAgentsViewSessionUiServices(options, opened.summary);
 			const interactiveMode = new InteractiveMode({
 				agentConnection: opened.connection,
@@ -2407,7 +2412,6 @@ export class AgentsViewMode implements Component, Focusable {
 				sticky: true,
 				render: false,
 			});
-			this.applySessionList([]);
 		}
 	}
 

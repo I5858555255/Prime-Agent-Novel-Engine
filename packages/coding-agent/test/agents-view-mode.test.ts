@@ -1,12 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { DaemonAgentConnection } from "../src/modes/agent-connection/daemon-agent-connection.js";
 import {
 	AgentsViewMode,
 	type AgentsViewPersistentState,
 	combineAgentsViewStartupNotices,
+	runAgentsViewMode,
 } from "../src/modes/agents-view/agents-view-mode.js";
+import { DaemonClient } from "../src/modes/daemon/daemon-client.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../src/modes/interactive/interactive-mode-services.js";
 import { stopThemeWatcher } from "../src/modes/interactive/theme/theme.js";
 
@@ -44,6 +48,11 @@ function invoke(method: string, self: object, ...args: unknown[]): unknown {
 	if (typeof member !== "function") throw new Error(`AgentsViewMode.${method} no longer exists`);
 	return member.call(self, ...args);
 }
+
+afterEach(() => {
+	vi.restoreAllMocks();
+	stopThemeWatcher();
+});
 
 describe("AgentsViewMode search selection", () => {
 	it("keeps the selection chosen by row rebuilding when the query changes", () => {
@@ -89,6 +98,40 @@ describe("AgentsViewMode persistent catalog state", () => {
 			stopThemeWatcher();
 		}
 	});
+
+	it("keeps a live-only scope through reconnect timeout and settles it on the next successful list", async () => {
+		vi.useFakeTimers();
+		const root = summary();
+		const frame = { scope: { sessionId: root.sessionId, activeSessionId: root.activeSessionId } };
+		const persistentState: AgentsViewPersistentState = {
+			scopeFrames: [frame],
+			lastSuccessfulLiveSummaries: [root],
+			lastSuccessfulSavedSessions: [],
+		};
+		const view = new AgentsViewMode(
+			{ config: {}, uiServices: createUiServices(), reconnectTimeoutMs: 0 },
+			persistentState,
+		);
+		const client = { isConnected: false, reconnect: vi.fn() };
+		Reflect.set(view, "client", client);
+		Reflect.set(view, "liveCatalogReady", true);
+		Reflect.set(view, "savedCatalogReady", true);
+
+		try {
+			await expect(invoke("reconnectClient", view, client, new Error("disconnected"))).resolves.toBeUndefined();
+			expect(persistentState.scopeFrames).toEqual([frame]);
+			expect(Reflect.get(view, "lastListedSummaries")).toEqual([root]);
+
+			Reflect.set(view, "client", {
+				isConnected: true,
+				request: vi.fn(async () => ({ success: true, data: { sessions: [] } })),
+			});
+			await expect(invoke("refreshSessions", view)).resolves.toBe(true);
+			expect(persistentState.scopeFrames).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("agents view startup notices", () => {
@@ -100,5 +143,57 @@ describe("agents view startup notices", () => {
 		expect(combineAgentsViewStartupNotices(undefined, "Original directory is missing")).toBe(
 			"Original directory is missing",
 		);
+	});
+
+	it("persists the combined open and cwd fallback notices after returning to agents view", async () => {
+		const root = summary({
+			activeSessionId: undefined,
+			cwd: "/definitely/not/a/real/dir/for/this/test",
+			lifecycle: "archived",
+			sessionFile: "/tmp/root.jsonl",
+		});
+		let runs = 0;
+		vi.spyOn(AgentsViewMode.prototype, "run").mockImplementation(async function (this: AgentsViewMode) {
+			runs += 1;
+			if (runs === 1) {
+				return {
+					type: "open",
+					summary: root,
+					hasChildren: false,
+					statusMessage: "Child unavailable",
+				};
+			}
+			expect(Reflect.get(this, "persistentState")).toMatchObject({
+				statusMessage: `Child unavailable · Original directory is missing (${root.cwd}); opened in ${process.cwd()} instead.`,
+			});
+			return { type: "exit" };
+		});
+		vi.spyOn(DaemonClient.prototype, "connect").mockResolvedValue();
+		vi.spyOn(DaemonClient.prototype, "request").mockResolvedValue({
+			type: "response",
+			command: "create",
+			success: true,
+			data: { ...root, cwd: process.cwd(), activeSessionId: "resumed-active", lifecycle: "live" },
+		});
+		vi.spyOn(DaemonAgentConnection, "attach").mockResolvedValue({
+			dispose: vi.fn(async () => {}),
+			onBeforeSessionInvalidate: vi.fn(),
+		} as unknown as DaemonAgentConnection);
+		vi.spyOn(InteractiveMode.prototype, "run").mockResolvedValue({
+			type: "agents_view",
+			source: {
+				activeSessionId: "resumed-active",
+				sessionId: root.sessionId,
+				cwd: process.cwd(),
+			},
+		});
+
+		await runAgentsViewMode({
+			config: { cwd: process.cwd() },
+			socketPath: "/tmp/agents-view-test.sock",
+			uiServices: createUiServices(),
+		});
+
+		expect(runs).toBe(2);
 	});
 });
