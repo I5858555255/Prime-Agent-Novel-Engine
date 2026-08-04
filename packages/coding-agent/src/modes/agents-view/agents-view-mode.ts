@@ -137,6 +137,7 @@ export type AgentsViewRunResult =
 			selection: SessionSummary;
 			expandedAncestorSessionIds: string[];
 			returnChat?: SessionSummary;
+			hasChildren: boolean;
 	  }
 	| {
 			type: "open";
@@ -242,6 +243,18 @@ export function createAgentsViewReplyHeadline(text: string | undefined): string 
 
 export function getAgentsViewDepth(scopeRoot: SessionSummary | undefined): number {
 	return scopeRoot ? (scopeRoot.rlmDepth ?? 0) + 1 : 0;
+}
+
+export function createScopeBackReturnChatOpenResult(
+	result: Extract<AgentsViewRunResult, { type: "scope_back" }>,
+): Extract<AgentsViewRunResult, { type: "open" }> | undefined {
+	if (!result.returnChat) return undefined;
+	return {
+		type: "open",
+		summary: result.returnChat,
+		expandedAncestorSessionIds: result.expandedAncestorSessionIds,
+		hasChildren: result.hasChildren,
+	};
 }
 
 interface OpenedAgentsViewSession {
@@ -380,8 +393,9 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 			persistentState.selectedSessionKey = getAgentsViewSelectionKey(viewResult.selection);
 			persistentState.pendingExpandedAncestorSessionIds = viewResult.expandedAncestorSessionIds;
 			persistentState.query = "";
-			if (!viewResult.returnChat) continue;
-			result = { type: "open", summary: viewResult.returnChat };
+			const returnChatResult = createScopeBackReturnChatOpenResult(viewResult);
+			if (!returnChatResult) continue;
+			result = returnChatResult;
 		} else {
 			result = viewResult;
 		}
@@ -686,12 +700,22 @@ export class AgentsViewMode implements Component, Focusable {
 			const ancestors = this.scopeKey
 				? getUnifiedSessionAncestorSessionIds(this.unifiedRecords, this.scopeKey, this.unifiedIndex)
 				: [];
+			const scopeRoot = this.scopeRootSummary;
 			const result = resolveAgentsViewLeftResult(
-				this.scopeRootSummary,
+				scopeRoot,
 				ancestors,
 				this.persistentState.scopeFrames?.at(-1)?.returnChat,
 			);
-			if (result) this.finish(result);
+			if (result && scopeRoot) {
+				this.finish({
+					...result,
+					hasChildren: hasUnifiedSessionChildren(
+						this.unifiedRecords,
+						getAgentsViewSelectionKey(scopeRoot),
+						this.unifiedIndex,
+					),
+				});
+			}
 			// Global view has no hierarchy parent: consume Left without opening chat.
 			return true;
 		};

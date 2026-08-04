@@ -10,6 +10,7 @@ import {
 	createAgentsViewListCommand,
 	createAgentsViewReplyHeadline,
 	createAgentsViewResumeConfig,
+	createScopeBackReturnChatOpenResult,
 	formatAgentsViewRelativeTime,
 	formatAgentsViewStatusLine,
 	getAgentsViewDepth,
@@ -1206,6 +1207,25 @@ describe("agents view state", () => {
 				type: "scope_back",
 				selection: root,
 				expandedAncestorSessionIds: ["parent-session"],
+			});
+		});
+
+		test("carries expansion and child metadata when scope-back reopens its return chat", () => {
+			const root = makeSummary({ sessionId: "root-session", activeSessionId: "root-active" });
+
+			expect(
+				createScopeBackReturnChatOpenResult({
+					type: "scope_back",
+					selection: root,
+					returnChat: root,
+					expandedAncestorSessionIds: ["ancestor-session", "parent-session"],
+					hasChildren: true,
+				}),
+			).toEqual({
+				type: "open",
+				summary: root,
+				expandedAncestorSessionIds: ["ancestor-session", "parent-session"],
+				hasChildren: true,
 			});
 		});
 
