@@ -313,6 +313,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 const DAEMON_CLIENT_CAPABILITY_SET: ReadonlySet<string> = new Set(DAEMON_SUPPORTED_CLIENT_CAPABILITIES);
+const CLIENT_CATCHUP_RETRY_MS = 250;
 const UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS = 5000;
 const SUPERVISOR_FENCE_POLL_MS = 250;
 const UPDATE_RESTART_MARKER =
@@ -2648,6 +2649,7 @@ export class AgentDaemon {
 			cleanedUp = true;
 			socket.off("close", cleanup);
 			socket.off("error", cleanup);
+			this.clearClientCatchupRetry(client);
 			this.detachClient(client);
 			client.detachInput();
 			this.clients.delete(client);
@@ -5361,6 +5363,7 @@ export class AgentDaemon {
 		if (client.snapshotStreaming || client.backpressured) {
 			return Promise.resolve();
 		}
+		this.clearClientCatchupRetry(client);
 		const catchup = this.drainBackpressuredClientCatchupQueue(client).finally(() => {
 			if (client.catchupPromise === catchup) {
 				client.catchupPromise = undefined;
@@ -5368,6 +5371,33 @@ export class AgentDaemon {
 		});
 		client.catchupPromise = catchup;
 		return catchup;
+	}
+
+	private clearClientCatchupRetry(client: DaemonSocketClient): void {
+		if (!client.catchupRetryTimer) {
+			return;
+		}
+		clearTimeout(client.catchupRetryTimer);
+		client.catchupRetryTimer = undefined;
+	}
+
+	private scheduleClientCatchupRetry(client: DaemonSocketClient): void {
+		if (client.socket.destroyed || client.catchupRetryTimer) {
+			return;
+		}
+		client.catchupRetryTimer = setTimeout(() => {
+			client.catchupRetryTimer = undefined;
+			if (client.socket.destroyed || !client.catchupActiveSessionIds?.size) {
+				return;
+			}
+			if (client.snapshotStreaming || client.backpressured) {
+				this.scheduleClientCatchupRetry(client);
+				return;
+			}
+			void this.catchUpBackpressuredClient(client).catch((error) =>
+				this.log(`could not retry catch-up for client ${client.id}: ${String(error)}`),
+			);
+		}, CLIENT_CATCHUP_RETRY_MS);
 	}
 
 	private async drainBackpressuredClientCatchupQueue(client: DaemonSocketClient): Promise<void> {
@@ -5484,6 +5514,7 @@ export class AgentDaemon {
 					this.queueClientCatchup(client, remaining.activeSessionId, remaining.purpose);
 				}
 				this.log(`could not catch up client ${client.id} for ${activeSessionId}: ${String(error)}`);
+				this.scheduleClientCatchupRetry(client);
 				return "retry-later";
 			}
 		}

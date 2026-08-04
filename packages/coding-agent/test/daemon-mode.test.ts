@@ -3086,7 +3086,7 @@ describe("daemon mode helpers", () => {
 		expect(client.catchupActiveSessionIds).toEqual(new Set());
 	});
 
-	it("retries every pending catch-up after snapshot creation rejects", async () => {
+	it("automatically retries every pending catch-up after snapshot creation rejects", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -3146,13 +3146,57 @@ describe("daemon mode helpers", () => {
 		);
 		expect(createAttachResult).toHaveBeenCalledOnce();
 
-		await internals.catchUpBackpressuredClient(client);
+		await vi.waitFor(() => expect(createAttachResult).toHaveBeenCalledTimes(3));
 
-		expect(createAttachResult).toHaveBeenCalledTimes(3);
 		expect(client.catchupActiveSessionIds).toEqual(new Set());
 		expect(client.catchupPurposes).toEqual(new Map());
 		const messages = write.mock.calls.map(([data]) => JSON.parse(String(data)) as { type: string });
 		expect(messages.map((message) => message.type)).toEqual(["session_replaced", "session_resynced"]);
+	});
+
+	it("clears a scheduled catch-up retry when the client disconnects", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const state = makeState("active");
+		state.extensionUiRequests = new Map();
+		const socketState = { destroyed: false };
+		const socket = Object.assign(new EventEmitter(), {
+			get destroyed() {
+				return socketState.destroyed;
+			},
+			write: vi.fn((_data: unknown) => true),
+		}) as unknown as Socket;
+		const createAttachResult = vi.fn(async () => {
+			throw new Error("snapshot creation failed");
+		});
+		const internals = daemon as unknown as {
+			clients: Set<DaemonSocketClient>;
+			sessions: Map<string, ActiveSessionState>;
+			handleConnection(socket: Socket): void;
+			createAttachResult: typeof createAttachResult;
+			queueClientCatchup(client: DaemonSocketClient, activeSessionId: string): void;
+			catchUpBackpressuredClient(client: DaemonSocketClient): Promise<void>;
+		};
+		internals.handleConnection(socket);
+		const client = [...internals.clients][0]!;
+		client.attachedActiveSessionIds.add(state.activeSessionId);
+		state.clients.add(client);
+		internals.sessions.set(state.activeSessionId, state);
+		internals.createAttachResult = createAttachResult;
+		internals.queueClientCatchup(client, state.activeSessionId);
+
+		await internals.catchUpBackpressuredClient(client);
+
+		expect(client.catchupRetryTimer).toBeDefined();
+		socketState.destroyed = true;
+		socket.emit("close");
+		expect(client.catchupRetryTimer).toBeUndefined();
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(createAttachResult).toHaveBeenCalledOnce();
 	});
 
 	it("marks a chunked attach as snapshotting before deferred streaming", async () => {
