@@ -312,7 +312,32 @@ describe("ensureInteractiveDaemonRunning", () => {
 
 		try {
 			await expect(ensureInteractiveDaemonRunning(socketPath)).rejects.toThrow(
-				/exited during startup \(code 7\)\. No daemon log was written/,
+				/exited during startup \(code 7\)\. The daemon wrote nothing to its log/,
+			);
+		} finally {
+			process.argv[1] = originalEntrypoint;
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not attribute a previous run's log to a daemon that crashed before logging", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pa-launch-startup-stale-"));
+		const entrypoint = join(dir, "crash.mjs");
+		const socketPath = join(dir, "d.sock");
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		process.env[ENV_AGENT_DIR] = join(dir, "agent");
+		const logPath = getDaemonLogPath(socketPath);
+		mkdirSync(dirname(logPath), { recursive: true });
+		writeFileSync(logPath, "supervisor: error from an earlier run\n");
+		writeFileSync(entrypoint, "process.exit(7);");
+		const originalEntrypoint = process.argv[1]!;
+		process.argv[1] = entrypoint;
+
+		try {
+			await expect(ensureInteractiveDaemonRunning(socketPath)).rejects.toThrow(
+				/exited during startup \(code 7\)\. The daemon wrote nothing to its log/,
 			);
 		} finally {
 			process.argv[1] = originalEntrypoint;

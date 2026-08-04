@@ -6,7 +6,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { appendRotatingLog, expandTildePath, getClientErrorLogPath, getDaemonLogPath, VERSION } from "../config.js";
 import { ORPHAN_PROCESS_JOURNAL_ENV } from "../core/orphan-process-journal.js";
@@ -366,6 +366,7 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 	delete env[SESSION_LEASES_ENABLED_ENV];
 	delete env[SESSION_LEASE_OWNER_ID_ENV];
 
+	const logOffset = currentDaemonLogSize(socketPath);
 	const child = spawn(
 		process.execPath,
 		[...process.execArgv, entrypoint, "--mode", "daemon", "--daemon-socket", socketPath],
@@ -390,7 +391,7 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 			return;
 		}
 		const signal = childExit.signal ? `, signal ${childExit.signal}` : "";
-		const logTail = readDaemonLogTail(socketPath);
+		const logTail = readDaemonLogTail(socketPath, logOffset);
 		throw new Error(
 			`Prime Agent daemon exited during startup (code ${childExit.code ?? "unknown"}${signal}).${logTail}`,
 		);
@@ -407,18 +408,34 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 	}
 
 	throwIfExited();
-	throw new Error(`Timed out waiting for daemon to start on ${socketPath}.${readDaemonLogTail(socketPath)}`);
+	throw new Error(
+		`Timed out waiting for daemon to start on ${socketPath}.${readDaemonLogTail(socketPath, logOffset)}`,
+	);
 }
 
-function readDaemonLogTail(socketPath: string): string {
+function currentDaemonLogSize(socketPath: string): number {
+	try {
+		return statSync(getDaemonLogPath(socketPath)).size;
+	} catch {
+		return 0;
+	}
+}
+
+/** Reads only log content written after `offset`, so stale content from earlier daemon runs is not misattributed to this startup attempt. */
+function readDaemonLogTail(socketPath: string, offset: number): string {
 	const logPath = getDaemonLogPath(socketPath);
 	let tail = "";
 	try {
-		tail = readFileSync(logPath, "utf8").slice(-DAEMON_STARTUP_LOG_TAIL_BYTES).trim();
+		const content = readFileSync(logPath, "utf8");
+		// A rotation may have shrunk the file below the pre-spawn offset.
+		tail = content
+			.slice(content.length < offset ? 0 : offset)
+			.slice(-DAEMON_STARTUP_LOG_TAIL_BYTES)
+			.trim();
 	} catch {
 		// Missing log means the daemon crashed before logging was set up.
 	}
-	return tail ? ` Recent daemon log (${logPath}):\n${tail}` : ` No daemon log was written (${logPath}).`;
+	return tail ? ` Recent daemon log (${logPath}):\n${tail}` : ` The daemon wrote nothing to its log (${logPath}).`;
 }
 
 const ensurePromises = new Map<string, Promise<void>>();
