@@ -5272,7 +5272,7 @@ export class AgentDaemon {
 		targetState: ActiveSessionState,
 	): AgentFamilyRelationship | undefined {
 		if (!fromState) return undefined;
-		return agentFamilyRelationship(this.agentFamilyEntry(fromState), this.agentFamilyEntry(targetState));
+		return agentFamilyRelationship(this.agentFamilyEntry(targetState), this.agentFamilyEntry(fromState));
 	}
 
 	private async sendAgentSessionMessage(options: {

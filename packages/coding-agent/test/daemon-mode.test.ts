@@ -2396,8 +2396,8 @@ describe("daemon mode helpers", () => {
 			agentMessageRelationship(from: ActiveSessionState, target: ActiveSessionState): string | undefined;
 		};
 
-		expect(internals.agentMessageRelationship(child, parent)).toBe("parent");
-		expect(internals.agentMessageRelationship(parent, child)).toBe("child");
+		expect(internals.agentMessageRelationship(child, parent)).toBe("child");
+		expect(internals.agentMessageRelationship(parent, child)).toBe("parent");
 	});
 
 	it("limits agent send and observation to the nuclear family", async () => {

@@ -36,6 +36,7 @@ import { SettingsManager, type SettingsStorage } from "../src/core/settings-mana
 import type { Skill } from "../src/core/skills.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
 import { type ActiveSessionState, resolveActiveSessionState } from "../src/modes/daemon/active-session-state.js";
+import { AgentDaemon } from "../src/modes/daemon/daemon-mode.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -215,6 +216,17 @@ async function expectSettlesWithin(promise: Promise<void>, timeoutMs: number): P
 		sleep(timeoutMs).then(() => "timeout" as const),
 	]);
 	expect(result).toBe("settled");
+}
+
+function findLastMessage(
+	messages: readonly AgentMessage[],
+	predicate: (message: AgentMessage) => boolean,
+): AgentMessage | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message && predicate(message)) return message;
+	}
+	return undefined;
 }
 
 describe("AgentSession rlm recursion", () => {
@@ -877,6 +889,76 @@ describe("AgentSession rlm recursion", () => {
 		});
 		expect(roster).toHaveBeenCalledTimes(1);
 		expect(child.repliedToParentSinceTask).toBe(true);
+	});
+
+	it("routes family messages with sender-perspective labels and resets parent steer reply state", async () => {
+		const parent = createSession();
+		parent.setSessionName("parent");
+		const child = createSession({ depth: 1 });
+		child.setSessionName("worker");
+		(child as unknown as { _repliedToParentSinceTask: boolean })._repliedToParentSinceTask = true;
+
+		const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+			createRuntime: vi.fn(),
+		});
+		const parentState = {
+			activeSessionId: "parent-active",
+			clients: new Set(),
+			pendingAttaches: 0,
+			lastEventSequence: 0,
+			runtime: {
+				metadata: { kind: "top-level", createdAt: 1 },
+				session: parent,
+			},
+		} as unknown as ActiveSessionState;
+		const childState = {
+			activeSessionId: "child-active",
+			clients: new Set(),
+			pendingAttaches: 0,
+			lastEventSequence: 0,
+			runtime: {
+				metadata: {
+					kind: "subagent",
+					createdAt: 1,
+					parentActiveSessionId: "parent-active",
+					parentSessionId: parent.sessionId,
+				},
+				session: child,
+			},
+		} as unknown as ActiveSessionState;
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			sendAgentSessionMessage(options: {
+				targetSelector: string;
+				message: string;
+				fromState: ActiveSessionState;
+				deliveryMode?: "auto" | "steer" | "follow_up";
+				origin: "agent";
+			}): Promise<unknown>;
+		};
+		internals.sessions.set(parentState.activeSessionId, parentState);
+		internals.sessions.set(childState.activeSessionId, childState);
+
+		await internals.sendAgentSessionMessage({
+			targetSelector: parentState.activeSessionId,
+			message: "done",
+			fromState: childState,
+			origin: "agent",
+		});
+		const reply = findLastMessage(parent.messages, isAgentSessionMessage);
+		expect(reply && isAgentSessionMessage(reply) ? reply.content : undefined).toContain("[from child:worker]");
+
+		await internals.sendAgentSessionMessage({
+			targetSelector: childState.activeSessionId,
+			message: "continue",
+			fromState: parentState,
+			deliveryMode: "steer",
+			origin: "agent",
+		});
+		const steer = findLastMessage(child.messages, isAgentSessionMessage);
+		expect(steer && isAgentSessionMessage(steer) ? steer.content : undefined).toContain("[from parent]");
+		expect(child.repliedToParentSinceTask).toBe(false);
 	});
 
 	it("resets replied state when a parent message is accepted", async () => {
