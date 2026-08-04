@@ -64,6 +64,17 @@ describe("built-in slash commands", () => {
 	});
 
 	test("marks argument commands as taking a free-form argument", () => {
+		for (const [name, argumentHint] of [
+			["model", "[search]"],
+			["export", "[path]"],
+			["import", "<path.jsonl>"],
+			["name", "[name]"],
+		] as const) {
+			expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === name)).toMatchObject({
+				argumentHint,
+				takesArgument: true,
+			});
+		}
 		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "goal")).toMatchObject({
 			takesArgument: true,
 		});
