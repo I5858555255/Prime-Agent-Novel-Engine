@@ -16,7 +16,7 @@ import {
 	createDefaultRlmSubagentSessionName,
 	type SubagentRuntimeHost,
 } from "../src/core/rlm-runtime.js";
-import { readSessionInfo, SessionManager } from "../src/core/session-manager.js";
+import { readSessionInfo, type SessionInfo, SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
@@ -34,6 +34,7 @@ import {
 	type DaemonAttachResult,
 	type DaemonCommand,
 } from "../src/modes/daemon/daemon-protocol.js";
+import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 
 describe("daemon mode helpers", () => {
 	it("preserves envelope client identity while registering prompt admission", () => {
@@ -3554,6 +3555,50 @@ describe("daemon mode helpers", () => {
 					}),
 				]),
 			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("lists passive descendants under a nonresident saved root", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-nonresident-root-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const parentManager = SessionManager.open(fixture.parentSessionFile);
+			parentManager.appendMessage({ role: "user", content: "parent task", timestamp: 0 });
+			parentManager.flushNow();
+			const parentInfo = await readSessionInfo(fixture.parentSessionFile);
+			if (!parentInfo) throw new Error("Missing parent session info");
+			const internals = fixture.daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				buildSessionListWithPassiveRlmSubagents(
+					activeSessions: ActiveSessionState[],
+					savedSessions: SessionInfo[],
+					scheduledJobs: AgentCronJob[],
+				): Promise<SessionSummary[]>;
+			};
+
+			expect(internals.sessions.size).toBe(0);
+			const sessions = await internals.buildSessionListWithPassiveRlmSubagents([], [parentInfo], []);
+			const child = sessions.find((session) => session.sessionFile === fixture.childSessionFile);
+			expect(child).toMatchObject({
+				runtimeKind: "subagent",
+				parentSessionId: fixture.parentSessionId,
+				parentSessionPath: fixture.parentSessionFile,
+				rlmChildId: fixture.childId,
+				rlmDepth: 1,
+			});
+			expect(child?.parentActiveSessionId).toBeUndefined();
+
+			const grandchild = sessions.find((session) => session.sessionFile === fixture.grandchildSessionFile);
+			expect(grandchild).toMatchObject({
+				runtimeKind: "subagent",
+				parentSessionPath: fixture.childSessionFile,
+				rlmChildId: fixture.grandchildId,
+				rlmDepth: 2,
+			});
+			expect(grandchild?.parentActiveSessionId).toBeUndefined();
+			expect(fixture.createRuntime).not.toHaveBeenCalled();
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}

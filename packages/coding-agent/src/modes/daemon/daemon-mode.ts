@@ -158,6 +158,7 @@ import { getDaemonRuntimeIdentity } from "./daemon-runtime-identity.js";
 import {
 	buildRlmChildSnapshots,
 	buildSessionList,
+	inactiveLifecycleForSession,
 	isActiveSessionBusy,
 	type SessionSummary,
 	summaryForActiveSession,
@@ -363,12 +364,15 @@ interface PersistedRlmSubagentRegistryEntry {
 	updatedAt: string;
 }
 
-interface PassiveRlmSubagent {
-	rootParentState: ActiveSessionState;
+type PassiveRlmRoot =
+	| { rootParentState: ActiveSessionState; rootInfo?: never }
+	| { rootParentState?: never; rootInfo: SessionInfo };
+
+type PassiveRlmSubagent = PassiveRlmRoot & {
 	entry: PersistedRlmSubagentRegistryEntry;
 	info: SessionInfo;
 	chain: PersistedRlmSubagentRegistryEntry[];
-}
+};
 
 class RuntimeOpenCancelledError extends Error {}
 class BoundSessionUnavailableError extends Error {}
@@ -969,11 +973,15 @@ export class AgentDaemon {
 		return join(dirname(entry.sessionDir), "session-artifacts", info.id, RLM_SUBAGENT_REGISTRY_FILE);
 	}
 
-	/** Walk each resident parent's persisted child tree once, without creating runtimes. */
-	private async listPassiveRlmSubagents(): Promise<PassiveRlmSubagent[]> {
+	private rlmSubagentRegistryPathForInfo(info: SessionInfo): string {
+		return join(dirname(dirname(info.path)), "session-artifacts", info.id, RLM_SUBAGENT_REGISTRY_FILE);
+	}
+
+	/** Walk each supplied parent's persisted child tree once, without creating runtimes. */
+	private async listPassiveRlmSubagents(savedRoots: SessionInfo[] = []): Promise<PassiveRlmSubagent[]> {
 		const passive: PassiveRlmSubagent[] = [];
 		const visit = async (
-			rootParentState: ActiveSessionState,
+			root: PassiveRlmRoot,
 			entries: PersistedRlmSubagentRegistryEntry[],
 			parentChain: PersistedRlmSubagentRegistryEntry[],
 			visited: Set<string>,
@@ -988,28 +996,45 @@ export class AgentDaemon {
 				// both duplicate rows and attributing its descendants to an ancestor.
 				if (this.findSessionBySessionFile(entry.sessionFile)) continue;
 				const chain = [...parentChain, entry];
-				passive.push({ rootParentState, entry, info, chain });
+				passive.push({ ...root, entry, info, chain });
 				await visit(
-					rootParentState,
+					root,
 					await this.readLatestRlmSubagentRegistryPath(this.rlmSubagentRegistryPathForEntry(entry, info)),
 					chain,
 					visited,
 				);
 			}
 		};
+		const residentRootPaths = new Set<string>();
 		for (const parentState of this.sessions.values()) {
 			const parentFile = parentState.runtime.session.sessionFile;
 			// An in-memory session cannot own a persisted registry.
 			if (!parentFile) continue;
-			const visited = new Set([resolve(parentFile)]);
-			await visit(parentState, await this.readLatestRlmSubagentRegistry(parentState), [], visited);
+			const parentPath = resolve(parentFile);
+			residentRootPaths.add(parentPath);
+			await visit(
+				{ rootParentState: parentState },
+				await this.readLatestRlmSubagentRegistry(parentState),
+				[],
+				new Set([parentPath]),
+			);
+		}
+		for (const rootInfo of savedRoots) {
+			const rootPath = resolve(rootInfo.path);
+			if (inactiveLifecycleForSession(rootInfo) !== "live" || residentRootPaths.has(rootPath)) continue;
+			const registryPath = this.rlmSubagentRegistryPathForInfo(rootInfo);
+			if (!existsSync(registryPath)) continue;
+			await visit({ rootInfo }, await this.readLatestRlmSubagentRegistryPath(registryPath), [], new Set([rootPath]));
 		}
 		return passive;
 	}
 
-	private async passiveRlmSubagentsByPath(): Promise<Map<string, PassiveRlmSubagent>> {
+	private async passiveRlmSubagentsByPath(savedRoots: SessionInfo[] = []): Promise<Map<string, PassiveRlmSubagent>> {
 		return new Map(
-			(await this.listPassiveRlmSubagents()).map((passive) => [resolve(passive.entry.sessionFile), passive]),
+			(await this.listPassiveRlmSubagents(savedRoots)).map((passive) => [
+				resolve(passive.entry.sessionFile),
+				passive,
+			]),
 		);
 	}
 
@@ -1018,7 +1043,7 @@ export class AgentDaemon {
 		savedSessions: SessionInfo[],
 		scheduledJobs: AgentCronJob[],
 	): Promise<SessionSummary[]> {
-		const passiveByPath = await this.passiveRlmSubagentsByPath();
+		const passiveByPath = await this.passiveRlmSubagentsByPath(savedSessions);
 		const savedByPath = new Map(savedSessions.map((session) => [resolve(session.path), session]));
 		for (const [path, passive] of passiveByPath) {
 			savedByPath.set(path, passive.info);
@@ -1030,14 +1055,18 @@ export class AgentDaemon {
 			return {
 				...summary,
 				runtimeKind: "subagent",
-				...(passive.chain.length === 1 ? { parentActiveSessionId: passive.rootParentState.activeSessionId } : {}),
+				...(passive.chain.length === 1 && passive.rootParentState
+					? { parentActiveSessionId: passive.rootParentState.activeSessionId }
+					: {}),
 				parentSessionId: passive.entry.parentSessionId,
 				parentSessionPath:
 					passive.entry.parentSessionFile ??
 					parentEntry?.sessionFile ??
-					passive.rootParentState.runtime.session.sessionFile,
+					passive.rootParentState?.runtime.session.sessionFile ??
+					passive.rootInfo?.path,
 				rlmChildId: passive.entry.childId,
 				rlmParentNodeId: passive.entry.rlmParentNodeId ?? passive.entry.childId,
+				...(!passive.rootParentState ? { rlmDepth: passive.entry.rlmDepth } : {}),
 				spawnCode: passive.entry.spawnCode,
 			};
 		});
@@ -2204,6 +2233,9 @@ export class AgentDaemon {
 
 	private async hydratePassiveRlmSubagent(passive: PassiveRlmSubagent): Promise<ActiveSessionState> {
 		let parentState = passive.rootParentState;
+		if (!parentState) {
+			throw new Error(`Cannot hydrate RLM subagent ${passive.entry.childId} without a resident root parent`);
+		}
 		for (const entry of passive.chain) {
 			parentState = await this.rehydrateCompletedRlmSubagent(parentState, entry);
 		}
@@ -4283,7 +4315,9 @@ export class AgentDaemon {
 				cwd: info.cwd,
 				isStreaming: false,
 				unfinishedActionCount: 0,
-				...(passive.chain.length === 1 ? { parentActiveSessionId: passive.rootParentState.activeSessionId } : {}),
+				...(passive.chain.length === 1 && passive.rootParentState
+					? { parentActiveSessionId: passive.rootParentState.activeSessionId }
+					: {}),
 				rlmChildId: entry.childId,
 				sessionDir: entry.sessionDir,
 			});
