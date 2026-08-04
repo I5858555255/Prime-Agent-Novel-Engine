@@ -1,0 +1,149 @@
+import { describe, expect, it } from "vitest";
+import { acpToolKind, acpUpdatesForSessionEvent, bashToolCallId } from "../src/modes/acp/acp-events.js";
+import { PRIME_AGENT_META_NAMESPACE } from "../src/modes/acp/acp-meta.js";
+import type { AgentConnectionSessionEvent } from "../src/modes/agent-connection/types.js";
+
+/** Real streaming shape: the discriminator is on the event, delta is a string. */
+function assistantDelta(type: "text_delta" | "thinking_delta", delta: string): AgentConnectionSessionEvent {
+	return {
+		type: "message_update",
+		message: { role: "assistant", content: [], usage: {} } as never,
+		assistantMessageEvent: { type, contentIndex: 0, delta, partial: {} } as never,
+	} as AgentConnectionSessionEvent;
+}
+
+describe("ACP session event mapping", () => {
+	it("maps assistant text deltas to agent_message_chunk", () => {
+		const updates = acpUpdatesForSessionEvent(assistantDelta("text_delta", "hello"));
+		expect(updates).toEqual([{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hello" } }]);
+	});
+
+	it("maps thinking deltas to agent_thought_chunk, not visible text", () => {
+		const updates = acpUpdatesForSessionEvent(assistantDelta("thinking_delta", "reasoning"));
+		expect(updates).toEqual([{ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "reasoning" } }]);
+	});
+
+	it("ignores empty deltas and non-assistant messages", () => {
+		expect(acpUpdatesForSessionEvent(assistantDelta("text_delta", ""))).toEqual([]);
+		expect(
+			acpUpdatesForSessionEvent({
+				type: "message_update",
+				message: { role: "user", content: "hi" } as never,
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: {} } as never,
+			} as AgentConnectionSessionEvent),
+		).toEqual([]);
+	});
+
+	it("treats IPython as an execute tool call carrying its cell source", () => {
+		expect(acpToolKind("ipython")).toBe("execute");
+		const updates = acpUpdatesForSessionEvent({
+			type: "tool_execution_start",
+			toolCallId: "call-1",
+			toolName: "ipython",
+			args: { code: "print(1)" },
+		} as AgentConnectionSessionEvent);
+		expect(updates).toEqual([
+			{
+				sessionUpdate: "tool_call",
+				toolCallId: "call-1",
+				title: "IPython cell",
+				kind: "execute",
+				status: "in_progress",
+				rawInput: { code: "print(1)" },
+			},
+		]);
+	});
+
+	it("carries rich IPython MIME output in namespaced _meta", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "tool_execution_end",
+			toolCallId: "call-1",
+			toolName: "ipython",
+			result: { output: "done", mimeBundle: { "image/png": "base64", "text/plain": "done" } },
+			isError: false,
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]).toMatchObject({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "call-1",
+			status: "completed",
+			content: [{ type: "content", content: { type: "text", text: "done" } }],
+		});
+		// text/plain is already the ACP content block; only non-text survives in _meta.
+		expect(updates[0]?._meta).toEqual({
+			[PRIME_AGENT_META_NAMESPACE]: { ipython: { mimeBundle: { "image/png": "base64" } } },
+		});
+	});
+
+	it("marks failed tool calls as failed", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "tool_execution_end",
+			toolCallId: "call-2",
+			toolName: "ipython",
+			result: "boom",
+			isError: true,
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]).toMatchObject({ status: "failed" });
+	});
+
+	it("gives bash a synthetic tool call with a stable id across its lifecycle", () => {
+		const start = acpUpdatesForSessionEvent({
+			type: "bash_start",
+			command: "ls",
+			excludeFromContext: false,
+			runId: "r1",
+		} as AgentConnectionSessionEvent);
+		const end = acpUpdatesForSessionEvent({
+			type: "bash_end",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			runId: "r1",
+		} as AgentConnectionSessionEvent);
+		expect(start[0]).toMatchObject({ toolCallId: bashToolCallId("r1"), kind: "execute", status: "in_progress" });
+		expect(end[0]).toMatchObject({ toolCallId: bashToolCallId("r1"), status: "completed" });
+	});
+
+	it("fails a bash tool call on a non-zero exit", () => {
+		const end = acpUpdatesForSessionEvent({
+			type: "bash_end",
+			exitCode: 1,
+			cancelled: false,
+			truncated: false,
+			runId: "r2",
+		} as AgentConnectionSessionEvent);
+		expect(end[0]).toMatchObject({ status: "failed" });
+	});
+
+	it("surfaces subagent updates as namespaced metadata", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "rlm_child_update",
+			child: { id: "sub-1", sessionName: "reviewer", status: "running", model: "openai/gpt-5.6-terra" },
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]?.sessionUpdate).toBe("session_info_update");
+		expect(updates[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: {
+				subagents: [{ id: "sub-1", sessionName: "reviewer", status: "running" }],
+			},
+		});
+	});
+
+	it("surfaces compaction as metadata rather than distorting a standard update", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "compaction_end",
+			reason: "threshold",
+			result: { summary: "compacted", tokensBefore: 1234 },
+			aborted: false,
+			willRetry: false,
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: { compaction: { tokensBefore: 1234, summary: "compacted" } },
+		});
+	});
+
+	it("emits nothing for events ACP has no place for", () => {
+		expect(acpUpdatesForSessionEvent({ type: "agent_start" } as AgentConnectionSessionEvent)).toEqual([]);
+		expect(acpUpdatesForSessionEvent({ type: "recap_update", recap: "x" } as AgentConnectionSessionEvent)).toEqual(
+			[],
+		);
+	});
+});
