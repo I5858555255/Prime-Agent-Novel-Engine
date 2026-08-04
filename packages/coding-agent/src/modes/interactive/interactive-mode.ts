@@ -180,6 +180,7 @@ import {
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
 import { ConfigurationMenuComponent, type ConfigurationMenuTab } from "./components/configuration-menu.js";
 import { formatContextTree } from "./components/context-tree-format.js";
+import { isCompactAgentMessageNeighbor } from "./components/conversation-components.js";
 import { CountdownTimer } from "./components/countdown-timer.js";
 import { CustomEditor } from "./components/custom-editor.js";
 import { CustomMessageComponent } from "./components/custom-message.js";
@@ -6184,8 +6185,9 @@ export class InteractiveMode {
 										? new MalformedCompactionOutcomeMessageComponent()
 										: isAgentSessionMessage(message)
 											? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings(), {
-													suppressLeadingSpace:
-														this.chatContainer.children.at(-1) instanceof AgentMessageComponent,
+													suppressLeadingSpace: isCompactAgentMessageNeighbor(
+														this.chatContainer.children.at(-1),
+													),
 												})
 											: isInjectedPromptMessage(message)
 												? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())

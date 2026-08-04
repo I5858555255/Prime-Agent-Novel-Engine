@@ -11,6 +11,7 @@ import {
 } from "../../../core/messages.js";
 import { AgentMessageComponent } from "./agent-message.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
+import { BashExecutionComponent } from "./bash-execution.js";
 import {
 	CompactionOutcomeMessageComponent,
 	MalformedCompactionOutcomeMessageComponent,
@@ -36,6 +37,14 @@ export interface ConversationComponentsOptions {
 	hiddenThinkingLabel?: string;
 	toolsExpanded?: boolean;
 	isRecognizedSlashCommand?: (name: string) => boolean;
+}
+
+export function isCompactAgentMessageNeighbor(component: Component | undefined): boolean {
+	return (
+		component instanceof AgentMessageComponent ||
+		component instanceof ToolExecutionComponent ||
+		component instanceof BashExecutionComponent
+	);
 }
 
 function readUserText(content: string | Array<{ type: string; text?: string }>): string {
@@ -125,7 +134,7 @@ export function buildConversationComponents(
 			);
 		} else if (isAgentSessionMessage(message) && message.display) {
 			const component = new AgentMessageComponent(message, options.markdownTheme, {
-				suppressLeadingSpace: components.at(-1) instanceof AgentMessageComponent,
+				suppressLeadingSpace: isCompactAgentMessageNeighbor(components.at(-1)),
 			});
 			component.setExpanded(expanded);
 			components.push(component);

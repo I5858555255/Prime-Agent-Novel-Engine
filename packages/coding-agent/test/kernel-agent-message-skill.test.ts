@@ -80,7 +80,11 @@ describe("agent-message skill over the kernel host bridge", () => {
 					return {
 						id: "agentmsg-test",
 						source: "agent_message",
-						target: { activeSessionId: payload.target, sessionId: "session-beta", sessionName: "Beta" },
+						target: {
+							activeSessionId: payload.receiver_name ?? payload.target,
+							sessionId: "session-beta",
+							sessionName: "Beta",
+						},
 						from: { activeSessionId: "alpha", sessionId: "session-alpha" },
 						message: payload.message,
 						deliveryStatus: "queued",
@@ -96,7 +100,7 @@ describe("agent-message skill over the kernel host bridge", () => {
 import json
 agents = await agent_message.list_agents()
 roster = await agent_message.roster()
-receipt = await agent_message.send("beta", "hello beta", mode="follow_up")
+receipt = await agent_message.send("hello beta", receiver_role="sibling", receiver_name="beta", mode="follow_up")
 print(json.dumps({"agents": agents, "roster": roster, "receipt": receipt}, sort_keys=True))
 `);
 
@@ -119,6 +123,7 @@ print(json.dumps({"agents": agents, "roster": roster, "receipt": receipt}, sort_
 				id: "agentmsg-test",
 				message: "hello beta",
 				deliveryStatus: "queued",
+				receiverRole: "sibling",
 				target: { activeSessionId: "beta", sessionId: "session-beta", sessionName: "Beta" },
 			},
 		]);
@@ -128,8 +133,9 @@ print(json.dumps({"agents": agents, "roster": roster, "receipt": receipt}, sort_
 			type: "agent_message.send",
 			payload: {
 				type: "agent_message.send",
-				target: "beta",
 				message: "hello beta",
+				receiver_role: "sibling",
+				receiver_name: "beta",
 				mode: "follow_up",
 			},
 		});
@@ -185,7 +191,11 @@ except ValueError as error:
 				"agent_message.send": async (payload) => ({
 					id: "agentmsg-background",
 					source: "agent_message",
-					target: { activeSessionId: payload.target, sessionId: "session-beta", sessionName: "Beta" },
+					target: {
+						activeSessionId: payload.receiver_name ?? payload.target,
+						sessionId: "session-beta",
+						sessionName: "Beta",
+					},
 					message: payload.message,
 					deliveryStatus: "delivered",
 					deliveredAt: "2026-07-10T00:00:00.000Z",

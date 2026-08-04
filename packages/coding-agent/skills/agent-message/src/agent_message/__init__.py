@@ -78,20 +78,23 @@ async def send(
     if mode not in ("auto", "follow_up", "steer"):
         raise ValueError('mode must be "auto", "follow_up", or "steer"')
     receipt = await host_request("agent_message.send", payload)
-    _emit_sent_message(receipt)
+    _emit_sent_message(receipt, receiver_role)
     return receipt
 
 
-def _emit_sent_message(receipt: dict[str, Any]) -> None:
+def _emit_sent_message(receipt: dict[str, Any], receiver_role: str | None = None) -> None:
     try:
         label = (
             "Agent message queued"
             if receipt.get("deliveryStatus") == "queued"
             else "Agent message sent"
         )
+        display_receipt = dict(receipt)
+        if receiver_role in ("parent", "sibling", "child"):
+            display_receipt["receiverRole"] = receiver_role
         display(
             {
-                _MESSAGE_DISPLAY_MIME: receipt,
+                _MESSAGE_DISPLAY_MIME: display_receipt,
                 "text/plain": label,
             },
             raw=True,

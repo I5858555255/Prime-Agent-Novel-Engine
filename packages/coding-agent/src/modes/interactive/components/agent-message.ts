@@ -11,13 +11,20 @@ import type { AgentSessionMessage, AgentSessionMessageDetails } from "../../../c
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
 
-function senderLabel(details: AgentSessionMessageDetails): string {
+function senderNameOrId(details: AgentSessionMessageDetails): string {
 	return (
 		details.from?.sessionName?.trim() ||
 		details.from?.activeSessionId?.trim() ||
 		details.from?.clientId?.trim() ||
+		details.from?.sessionId?.trim() ||
 		"Unknown agent"
 	);
+}
+
+function senderLabel(details: AgentSessionMessageDetails): string {
+	if (details.fromRelationship === "parent") return "parent";
+	const sender = senderNameOrId(details);
+	return details.fromRelationship ? `${details.fromRelationship}:${sender}` : sender;
 }
 
 function collapseText(text: string): string {
@@ -59,7 +66,7 @@ export class AgentMessageComponent extends Container {
 		this.content.addChild(this.header);
 		if (this.expanded) {
 			this.content.addChild(
-				new Markdown(this.message.details.message, 1, 0, this.markdownTheme, {
+				new Markdown(this.message.details.message, 2, 0, this.markdownTheme, {
 					color: (text: string) => theme.fg("customMessageText", text),
 				}),
 			);

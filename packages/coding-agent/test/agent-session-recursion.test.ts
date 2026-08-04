@@ -632,7 +632,15 @@ describe("AgentSession rlm recursion", () => {
 	});
 
 	it("runs a child session under a sub directory and returns an RLM-shaped result", async () => {
-		const root = createSession();
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({
+					current: { activeSessionId: "root-active", sessionId: "root-session" },
+					agents: [],
+				}),
+				sendAgentMessage: vi.fn(),
+			},
+		});
 		const childUpdates: Array<{
 			status: string;
 			label: string;
@@ -668,7 +676,7 @@ describe("AgentSession rlm recursion", () => {
 			details: {
 				id: `spawn:${result.rlm_child_id}`,
 				message: "summarize shard 1",
-				from: { sessionId: root.sessionId },
+				from: { sessionId: root.sessionId, activeSessionId: "root-active" },
 				fromRelationship: "parent",
 			},
 		});
@@ -1716,6 +1724,54 @@ describe("AgentSession rlm recursion", () => {
 		expect(await root.listRlmSubagents()).toEqual({ subagents: [] });
 		await Promise.resolve();
 		expect(root.getRlmChildSession(spawned.rlm_child_id)).toBeUndefined();
+	});
+
+	it("reconciles failed-delete tracking when the detached retry succeeds", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		let deleteAttempts = 0;
+		const hostedChild = createSession({
+			rlmSessionDir: join(tempDir, "detached-retry-child"),
+			streamFn: (_model, context) => {
+				const stream = createAssistantMessageEventStream();
+				childStarted = true;
+				void release.then(() => {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: assistantMessage(`child answer: ${userText(context)}`),
+					});
+				});
+				return stream;
+			},
+		});
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: hostedChild }),
+				deleteRlmSubagentRuntime: async (_id, session) => {
+					if (++deleteAttempts === 1) throw new Error("first close failed");
+					await session?.disposeAsync();
+				},
+			},
+		});
+
+		await root.runRlmChild("slow retry shard", { name: "retry-worker" });
+		await waitFor(() => childStarted);
+		await expect(root.deleteRlmSubagent("retry-worker")).rejects.toThrow("first close failed");
+		const internals = root as unknown as InspectableRlmSession;
+		expect(internals._rlmChildCleanupFailures.size).toBe(1);
+		releaseChild();
+
+		await waitFor(() => deleteAttempts === 2);
+		await waitFor(() => internals._rlmChildCleanupFailures.size === 0);
+		expect(internals._rlmChildSessions.size).toBe(0);
+		expect(internals._rlmChildUnsubscribes.size).toBe(0);
+		await expect(root.runRlmChild("replacement", { name: "retry-worker" })).resolves.toMatchObject({
+			name: "retry-worker",
+		});
 	});
 
 	it("keeps failed closure retryable without hanging or late resurrection", async () => {

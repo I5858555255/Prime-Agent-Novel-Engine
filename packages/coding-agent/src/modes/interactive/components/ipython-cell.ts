@@ -49,6 +49,7 @@ interface SentAgentMessageDisplay {
 	id: string;
 	message: string;
 	deliveryStatus: "delivered" | "queued";
+	receiverRole?: "parent" | "sibling" | "child";
 	target: {
 		activeSessionId: string;
 		sessionId: string;
@@ -177,6 +178,9 @@ function readSentAgentMessages(value: unknown): SentAgentMessageDisplay[] | unde
 				id: record.id,
 				message: record.message,
 				deliveryStatus: record.deliveryStatus,
+				...(record.receiverRole === "parent" || record.receiverRole === "sibling" || record.receiverRole === "child"
+					? { receiverRole: record.receiverRole }
+					: {}),
 				target: {
 					activeSessionId: targetRecord.activeSessionId,
 					sessionId: targetRecord.sessionId,
@@ -614,11 +618,16 @@ export class IPythonCellComponent implements Component {
 				message.target.sessionId.trim() ||
 				"Unknown agent";
 			const label = message.deliveryStatus === "delivered" ? "Agent message sent" : "Agent message queued";
+			const recipient =
+				message.receiverRole === "parent"
+					? "parent"
+					: message.receiverRole
+						? `${message.receiverRole}:${target}`
+						: target;
 			const text = message.message.replace(/\s+/g, " ").trim();
 			const line =
 				theme.fg("accent", "◆") +
-				` ${theme.fg("muted", label)}${theme.fg("dim", " · ")}` +
-				theme.fg("muted", target) +
+				` ${theme.fg("muted", `${label} to ${recipient}`)}` +
 				theme.fg("dim", " · ") +
 				theme.fg("muted", text);
 			this.addPlain(lines, truncateToWidth(line, Math.max(1, width - 1), "…"));

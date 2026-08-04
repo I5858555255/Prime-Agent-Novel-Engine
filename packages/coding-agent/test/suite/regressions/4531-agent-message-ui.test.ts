@@ -314,12 +314,15 @@ describe("ENG-4531 agent message UI", () => {
 
 		expect(components).toHaveLength(1);
 		expect(components[0]).toBeInstanceOf(AgentMessageComponent);
-		expect(render(components[0] as AgentMessageComponent)).toContain("Agent message received · Planner");
+		expect(render(components[0] as AgentMessageComponent)).toContain("Agent message received · parent");
 	});
 
-	it("suppresses leading space only between adjacent rebuilt agent messages", () => {
+	it("uses compact rebuilt spacing for agent messages next to messages and tool cells", () => {
 		const first = createAgentSessionMessage(createPayload("First notification."));
 		const second = createAgentSessionMessage({ ...createPayload("Second notification."), id: "agentmsg_4531_2" });
+		const toolCall = fauxAssistantMessage(fauxToolCall("ipython", { code: "print('ready')" }), {
+			stopReason: "toolUse",
+		});
 		const options = {
 			ui: { requestRender: () => {} } as unknown as TUI,
 			cwd: "/tmp",
@@ -332,11 +335,16 @@ describe("ENG-4531 agent message UI", () => {
 		expect(adjacent[0]?.render(120)[0]).toBe("");
 		expect(adjacent[1]?.render(120)[0]).not.toBe("");
 
-		const separated = buildConversationComponents(
-			[first, { role: "user", content: "intervening prompt", timestamp: 123 }, second] as AgentMessage[],
+		const toolThenMessage = buildConversationComponents([toolCall, second], options);
+		expect(toolThenMessage.at(-1)?.render(120)[0]).not.toBe("");
+		const messageThenTool = buildConversationComponents([first, toolCall], options);
+		expect(messageThenTool.at(-1)?.render(120)[0]).not.toBe("");
+
+		const textThenMessage = buildConversationComponents(
+			[{ role: "user", content: "intervening prompt", timestamp: 123 }, second] as AgentMessage[],
 			options,
 		);
-		expect(separated[2]?.render(120)[0]).toBe("");
+		expect(textThenMessage[1]?.render(120)[0]).toBe("");
 	});
 
 	it("suppresses leading space only between adjacent live agent messages", () => {
@@ -357,9 +365,52 @@ describe("ENG-4531 agent message UI", () => {
 		expect(chatContainer.children[0]?.render(120)[0]).toBe("");
 		expect(chatContainer.children[1]?.render(120)[0]).not.toBe("");
 
+		const toolComponents = buildConversationComponents(
+			[fauxAssistantMessage(fauxToolCall("ipython", { code: "print('ready')" }), { stopReason: "toolUse" })],
+			{
+				ui: { requestRender: () => {} } as unknown as TUI,
+				cwd: "/tmp",
+				toolOptions: {},
+				getToolDefinition: () => undefined,
+			},
+		);
+		const toolComponent = toolComponents.at(-1);
+		if (!toolComponent) throw new Error("Missing tool component");
+		chatContainer.addChild(toolComponent);
+		addMessage(second);
+		expect(chatContainer.children[3]?.render(120)[0]).not.toBe("");
+
 		chatContainer.addChild(new Container());
 		addMessage(second);
-		expect(chatContainer.children[3]?.render(120)[0]).toBe("");
+		expect(chatContainer.children[5]?.render(120)[0]).toBe("");
+	});
+
+	it("renders relationship-aware sender labels with identifier fallbacks", () => {
+		const parent = createAgentSessionMessage({ ...createPayload("From root."), fromRelationship: "parent" });
+		const sibling = createAgentSessionMessage({
+			...createPayload("From peer."),
+			from: { sessionId: "peer-session", sessionName: "Peer" },
+			fromRelationship: "sibling",
+		});
+		const childById = createAgentSessionMessage({
+			...createPayload("From child."),
+			from: { sessionId: "child-session" },
+			fromRelationship: "child",
+		});
+		const unknownRelationship = createAgentSessionMessage({
+			...createPayload("Legacy sender."),
+			from: { sessionId: "legacy-session" },
+		});
+
+		expect(render(new AgentMessageComponent(parent))).toContain("Agent message received · parent");
+		expect(render(new AgentMessageComponent(sibling))).toContain("Agent message received · sibling:Peer");
+		expect(render(new AgentMessageComponent(childById))).toContain("Agent message received · child:child-session");
+		expect(render(new AgentMessageComponent(unknownRelationship))).toContain(
+			"Agent message received · legacy-session",
+		);
+		const expanded = new AgentMessageComponent(sibling);
+		expanded.setExpanded(true);
+		expect(render(expanded)).toContain("Agent message received · sibling:Peer");
 	});
 
 	it("renders a compact subagent-style row and expands only the message body", () => {
@@ -376,6 +427,13 @@ describe("ENG-4531 agent message UI", () => {
 		component.setExpanded(true);
 		const expanded = render(component);
 		expect(expanded.replace(/\s+/g, " ")).toContain("Final instruction.");
+		expect(
+			expanded
+				.split("\n")
+				.slice(2)
+				.filter(Boolean)
+				.every((line) => line.startsWith("  ")),
+		).toBe(true);
 		expect(expanded).not.toContain("Source: agent_message");
 		expect(expanded).not.toContain("To: Worker");
 		expect(expanded).not.toContain("Message id:");
@@ -392,6 +450,7 @@ describe("ENG-4531 agent message UI", () => {
 						id: "agentmsg_4531",
 						message: "Review shard seven.",
 						deliveryStatus: "queued",
+						receiverRole: "child",
 						target: {
 							activeSessionId: "worker-active",
 							sessionId: "worker-session",
@@ -402,6 +461,7 @@ describe("ENG-4531 agent message UI", () => {
 						id: "agentmsg_4531_delivered",
 						message: "Continue with shard eight.",
 						deliveryStatus: "delivered",
+						receiverRole: "parent",
 						target: {
 							activeSessionId: "worker-active",
 							sessionId: "worker-session",
@@ -413,8 +473,8 @@ describe("ENG-4531 agent message UI", () => {
 		});
 
 		const rendered = stripAnsi(component.render(120).join("\n"));
-		expect(rendered).toContain("◆ Agent message queued · Worker · Review shard seven.");
-		expect(rendered).toContain("◆ Agent message sent · Worker · Continue with shard eight.");
+		expect(rendered).toContain("◆ Agent message queued to child:Worker · Review shard seven.");
+		expect(rendered).toContain("◆ Agent message sent to parent · Continue with shard eight.");
 		expect(rendered).not.toContain("Agent message received");
 	});
 });

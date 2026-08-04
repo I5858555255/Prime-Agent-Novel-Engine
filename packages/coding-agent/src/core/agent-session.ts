@@ -9021,6 +9021,14 @@ export class AgentSession {
 		return this._activeRlmChildRuns.get(childId)?.status;
 	}
 
+	private async _currentActiveSessionId(): Promise<string | undefined> {
+		try {
+			return (await this._agentMessageController?.listAgents())?.current?.activeSessionId;
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** Current direct-child registry for the model-facing rlm.list_subagents API. */
 	async listRlmSubagents(): Promise<RlmListSubagentsResult> {
 		return this._buildRlmSubagentList(await this._agentMessageController?.listAgents());
@@ -9716,7 +9724,11 @@ export class AgentSession {
 					details: {
 						id: `spawn:${run.id}`,
 						message: prompt,
-						from: { sessionId: this.sessionId, sessionName: this.sessionName },
+						from: {
+							sessionId: this.sessionId,
+							sessionName: this.sessionName,
+							activeSessionId: await this._currentActiveSessionId(),
+						},
 						fromRelationship: "parent",
 					},
 					timestamp: Date.now(),
@@ -9743,12 +9755,20 @@ export class AgentSession {
 				activity = undefined;
 				emitChildUpdate();
 				if (!run.detachedDeletion) {
-					if (childRuntime && this._subagentRuntimeHost) {
-						await this._subagentRuntimeHost
-							.deleteRlmSubagentRuntime(run.id, childRuntime.session)
-							.catch(() => undefined);
-					} else {
-						await childSession?.disposeAsync().catch(() => undefined);
+					try {
+						if (childRuntime && this._subagentRuntimeHost) {
+							await this._subagentRuntimeHost.deleteRlmSubagentRuntime(run.id, childRuntime.session);
+						} else if (childSession) {
+							await childSession.disposeAsync();
+						} else {
+							return;
+						}
+						if (!this._disposed && !this._disposing) {
+							this._deletedRlmChildIds.add(run.id);
+							this._removeRlmSubagentTracking(run.id);
+						}
+					} catch {
+						// A failed best-effort retry remains available through the retained cleanup maps.
 					}
 				}
 			} finally {
