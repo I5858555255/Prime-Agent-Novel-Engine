@@ -2512,7 +2512,7 @@ export class AgentDaemon {
 
 	private async waitForPassivation(sessionFile: string): Promise<void> {
 		const passivation = this.findPassivationBySessionFile(sessionFile);
-		if (passivation) await passivation;
+		if (passivation) await passivation.catch(() => {});
 	}
 
 	private async hydratePassiveRlmSubagent(passive: PassiveRlmSubagent): Promise<ActiveSessionState> {
@@ -2551,7 +2551,7 @@ export class AgentDaemon {
 			} catch (error) {
 				const passivation = this.findPassivationBySessionFile(entry.sessionFile);
 				if (error instanceof BoundSessionUnavailableError && passivation) {
-					await passivation;
+					await passivation.catch(() => {});
 					return restartAfterParentChange(hydratingParent);
 				}
 				if (isResident(hydratingParent)) throw error;

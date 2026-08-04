@@ -5509,6 +5509,7 @@ describe("daemon mode helpers", () => {
 			const passivation = passivationGate.then(() => {
 				internals.sessions.delete(closingChild.activeSessionId);
 				internals.closingSessions.delete(closingChild.activeSessionId);
+				throw new Error("passivation failed");
 			});
 			let hydrationAttempts = 0;
 			internals.rehydrateCompletedRlmSubagent = vi.fn(async () => {
@@ -5671,10 +5672,21 @@ describe("daemon mode helpers", () => {
 
 	it("re-adopts a resident child when its passivation close fails", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-passivation-close-failure-"));
+		let releaseAbort!: () => void;
+		const abortGate = new Promise<void>((resolve) => {
+			releaseAbort = resolve;
+		});
+		let markAbortStarted!: () => void;
+		const abortStarted = new Promise<void>((resolve) => {
+			markAbortStarted = resolve;
+		});
 		try {
 			const fixture = makePersistedRlmDaemonFixture(tempDir);
 			const internals = fixture.daemon as unknown as {
 				sessions: Map<string, ActiveSessionState>;
+				createAgentMessageController(
+					getCurrentState: () => ActiveSessionState | undefined,
+				): AgentSessionMessageController;
 				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
 				passivateIdleChildren(threshold: number, now: number, limit: number): Promise<number>;
 			};
@@ -5711,11 +5723,23 @@ describe("daemon mode helpers", () => {
 					throw new Error("unsubscribe failed");
 				})
 				.mockImplementation(() => undefined);
+			const childSession = childState.runtime.session as unknown as { abort: ReturnType<typeof vi.fn> };
+			childSession.abort = vi.fn(async () => {
+				markAbortStarted();
+				await abortGate;
+			});
 
-			await expect(internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1)).rejects.toThrow(
-				"unsubscribe failed",
-			);
+			const passivation = internals.passivateIdleChildren(90, Date.parse("2036-08-01T12:00:00Z"), 1);
+			await abortStarted;
+			const explicitOpen = internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
+			const delivery = internals
+				.createAgentMessageController(() => parentState)
+				.sendAgentMessage({ target: fixture.childId, message: "continue after failed passivation" });
+			releaseAbort();
 
+			await expect(passivation).rejects.toThrow("unsubscribe failed");
+			await expect(explicitOpen).resolves.toBe(childState);
+			await expect(delivery).resolves.toMatchObject({ deliveryStatus: "delivered" });
 			expect(internals.sessions.get(childState.activeSessionId)).toBe(childState);
 			expect(parentOwnsChild).toBe(true);
 			expect(parentSession.retainFinishedRlmChildSession).toHaveBeenCalledWith(
@@ -5734,6 +5758,7 @@ describe("daemon mode helpers", () => {
 			expect(parentUpdates).toEqual(["recap after failed close"]);
 			expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
 		} finally {
+			releaseAbort();
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
