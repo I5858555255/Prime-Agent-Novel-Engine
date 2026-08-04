@@ -8647,9 +8647,9 @@ export class AgentSession {
 	/** Typed handlers for host requests arriving from the IPython kernel comm bridge. */
 	private _createKernelHostHandlers(): HostRequestHandlers {
 		const handlers: HostRequestHandlers = {
-			"rlm.run": createRlmRunHostHandler(({ prompt, kwargs, cellSourceCode }) =>
-				this.runRlmChild(prompt, kwargs, cellSourceCode),
-			),
+			"rlm.run": createRlmRunHostHandler(async ({ prompt, kwargs, cellSourceCode }) => ({
+				...(await this.runRlmChild(prompt, kwargs, cellSourceCode)),
+			})),
 			"rlm.find_models": createRlmFindModelsHostHandler((query, limit) => this.findRlmModels(query, limit)),
 			"rlm.list_subagents": createRlmListSubagentsHostHandler(() => this.listRlmSubagents()),
 			"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) => this.deleteRlmSubagent(target)),
@@ -9805,7 +9805,11 @@ export class AgentSession {
 		};
 	}
 
-	async runRlmChild(prompt: string, kwargs: Record<string, unknown> = {}, spawnCode?: string): Promise<any> {
+	async runRlmChild(
+		prompt: string,
+		kwargs: Record<string, unknown> = {},
+		spawnCode?: string,
+	): Promise<RlmSpawnHandle> {
 		return this._startRlmChildRun(prompt, kwargs, spawnCode);
 	}
 
