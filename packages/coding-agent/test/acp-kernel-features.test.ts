@@ -19,6 +19,11 @@ import type { AgentConnectionSessionEvent } from "../src/modes/agent-connection/
  * show that a kernel round trip still holds state or that harness CRUD runs.
  */
 
+/** Surface the Python traceback: a bare status assertion hides the real cause. */
+function why(result: { status: string; stderr: string; error?: { traceback: string[] } }): string {
+	return [result.stderr, result.error?.traceback?.join("\n")].filter(Boolean).join("\n");
+}
+
 function bundledSkill(name: string, importName: string): PythonSkillRuntimeInfo {
 	const packagePath = join(getBundledSkillsDir(), name);
 	return { name, importName, packagePath, pyprojectPath: join(packagePath, "pyproject.toml") };
@@ -93,7 +98,7 @@ print(json.dumps({
     "skill_ref": skill.reference.get("import"),
 }, sort_keys=True))
 `);
-		expect(allKinds.status, allKinds.stderr).toBe("ok");
+		expect(allKinds.status, why(allKinds)).toBe("ok");
 		// Every editable harness kind, not just memory: skills additionally require
 		// a python reference and an argument contract.
 		expect(JSON.parse(allKinds.stdout.trim())).toMatchObject({
@@ -120,7 +125,7 @@ print(json.dumps({
     "after": after.title if after else None,
 }, sort_keys=True))
 `);
-		expect(result.status, result.stderr).toBe("ok");
+		expect(result.status, why(result)).toBe("ok");
 		const payload = JSON.parse(result.stdout.trim());
 		expect(payload.found).toBe("ACP verification memory");
 		expect(payload.listed).toContain(payload.created);
@@ -181,7 +186,7 @@ print(json.dumps({
     "removed": removed.session_name,
 }, sort_keys=True))
 `);
-		expect(result.status, result.stderr).toBe("ok");
+		expect(result.status, why(result)).toBe("ok");
 		const payload = JSON.parse(result.stdout.trim());
 		expect(payload.names).toEqual(["reviewer"]);
 		expect(payload.removed).toBe("reviewer");
@@ -230,7 +235,7 @@ print(json.dumps({
     "status": receipt["deliveryStatus"],
 }))
 `);
-		expect(result.status, result.stderr).toBe("ok");
+		expect(result.status, why(result)).toBe("ok");
 		const payload = JSON.parse(result.stdout.trim());
 		expect(payload.roster).toEqual(["reviewer"]);
 		expect(payload.status).toBe("queued");
