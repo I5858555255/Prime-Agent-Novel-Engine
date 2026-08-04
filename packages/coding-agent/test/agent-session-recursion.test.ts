@@ -880,6 +880,39 @@ describe("AgentSession rlm recursion", () => {
 		expect(root.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "stop" });
 	});
 
+	it("uses a max-depth prompt update on the next turn of the active run", async () => {
+		let releaseFirstTurn = () => {};
+		const firstTurnPending = new Promise<void>((resolve) => {
+			releaseFirstTurn = resolve;
+		});
+		const seenSystemPrompts: string[] = [];
+		const root = createSession({
+			streamFn: (_model, context) => {
+				seenSystemPrompts.push(context.systemPrompt ?? "");
+				if (seenSystemPrompts.length === 1) {
+					const stream = createAssistantMessageEventStream();
+					void firstTurnPending.then(() => {
+						stream.push({ type: "done", reason: "stop", message: assistantMessage("first turn") });
+					});
+					return stream;
+				}
+				return streamAnswer("second turn");
+			},
+		});
+
+		const promptPromise = root.prompt("start");
+		await waitFor(() => seenSystemPrompts.length === 1);
+		expect(seenSystemPrompts[0]!).toContain("A callable `rlm`");
+
+		await root.setRlmMaxDepth(0);
+		await root.steer("continue after max-depth update");
+		releaseFirstTurn();
+		await promptPromise;
+
+		expect(seenSystemPrompts).toHaveLength(2);
+		expect(seenSystemPrompts[1]!).not.toContain("A callable `rlm`");
+	});
+
 	it("rehydrates chat max depth ahead of reconstruction config", async () => {
 		const root = createSession();
 		await root.setRlmMaxDepth(3);

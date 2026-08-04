@@ -4738,8 +4738,8 @@ export class InteractiveMode {
 					return;
 				}
 				if (commandName === "rlm-max-depth") {
-					await this.handleRlmMaxDepthCommand(commandArgs);
 					this.editor.setText("");
+					await this.handleRlmMaxDepthCommand(commandArgs);
 					return;
 				}
 				if (commandName === "session" && !commandArgs) {

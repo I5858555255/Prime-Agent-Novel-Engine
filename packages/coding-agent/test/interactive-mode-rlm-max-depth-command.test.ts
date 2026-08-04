@@ -17,8 +17,16 @@ type Context = {
 	showError: (message: string) => void;
 };
 
+type SubmitContext = {
+	defaultEditor: { onSubmit?: (text: string) => Promise<void> };
+	editor: { getText: () => string; setText: (text: string) => void };
+	handleRlmMaxDepthCommand: (args: string) => Promise<void>;
+	[key: string]: unknown;
+};
+
 type Prototype = {
 	handleRlmMaxDepthCommand(this: Context, args: string): Promise<void>;
+	setupEditorSubmitHandler(this: SubmitContext): void;
 };
 
 const prototype = InteractiveMode.prototype as unknown as Prototype;
@@ -50,6 +58,39 @@ function makeContext(overrides: Partial<Context["agentConnection"]> = {}): Conte
 
 describe("InteractiveMode /rlm-max-depth", () => {
 	beforeAll(() => initTheme("dark"));
+
+	it("does not erase input typed while the command RPC is pending", async () => {
+		let editorText = "";
+		let resolveCommand = () => {};
+		const commandPending = new Promise<void>((resolve) => {
+			resolveCommand = resolve;
+		});
+		const submitContext = {
+			defaultEditor: {},
+			editor: {
+				getText: () => editorText,
+				setText: (text: string) => {
+					editorText = text;
+				},
+			},
+			handleRlmMaxDepthCommand: vi.fn(() => commandPending),
+			submittedInputBehavior: "steer",
+			inputSubmissionGeneration: 0,
+			inputSubmissionsPending: 0,
+			pendingPromptStashReleases: [],
+			promptStashState: {},
+			clearShortcutGuide: vi.fn(),
+		} as unknown as SubmitContext;
+		prototype.setupEditorSubmitHandler.call(submitContext);
+
+		const submission = submitContext.defaultEditor.onSubmit?.("/rlm-max-depth 3");
+		await vi.waitFor(() => expect(submitContext.handleRlmMaxDepthCommand).toHaveBeenCalledWith("3"));
+		editorText = "new draft";
+		resolveCommand();
+		await submission;
+
+		expect(editorText).toBe("new draft");
+	});
 
 	it("shows current state as a dim one-liner through the immediate connection API", async () => {
 		const context = makeContext();
