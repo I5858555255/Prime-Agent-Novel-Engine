@@ -1,6 +1,7 @@
 import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
 import type { AgentConnectionSessionEvent } from "../agent-connection/types.js";
-import { type PrimeAgentSessionMeta, primeAgentMeta } from "./acp-meta.js";
+import type { PrimeAgentIpythonMeta, PrimeAgentSessionMeta } from "./acp-meta.js";
+import { primeAgentMeta } from "./acp-meta.js";
 
 /**
  * Translate prime-agent session events into ACP `session/update` payloads.
@@ -83,15 +84,31 @@ function toolResultText(result: unknown): string | undefined {
 	return undefined;
 }
 
-/** Non-text IPython display data (plots, tables, JSON) has no ACP content type. */
-function ipythonMimeBundle(result: unknown): Record<string, unknown> | undefined {
+/**
+ * Rich IPython output that ACP has no content type for.
+ *
+ * The ipython tool reports media and diffs under `details` (images additionally
+ * ride along as ACP image content blocks); mirror those exact fields rather than
+ * inventing a MIME bundle the tool never produces.
+ */
+function ipythonRichOutput(result: unknown): PrimeAgentIpythonMeta | undefined {
 	if (!result || typeof result !== "object") return undefined;
-	const bundle =
-		(result as { mimeBundle?: unknown; displayData?: unknown }).mimeBundle ??
-		(result as { displayData?: unknown }).displayData;
-	if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) return undefined;
-	const entries = Object.entries(bundle as Record<string, unknown>).filter(([mime]) => mime !== "text/plain");
-	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+	const details = (result as { details?: unknown }).details;
+	if (!details || typeof details !== "object") return undefined;
+	const { attachments, diffs } = details as { attachments?: unknown; diffs?: unknown };
+	const meta: PrimeAgentIpythonMeta = {};
+	if (Array.isArray(attachments) && attachments.length > 0) {
+		meta.attachments = attachments.map((attachment) => {
+			const typed = (attachment ?? {}) as { mimeType?: unknown; path?: unknown; bytes?: unknown };
+			return {
+				...(typeof typed.mimeType === "string" ? { mimeType: typed.mimeType } : {}),
+				...(typeof typed.path === "string" ? { path: typed.path } : {}),
+				...(typeof typed.bytes === "number" ? { bytes: typed.bytes } : {}),
+			};
+		});
+	}
+	if (Array.isArray(diffs) && diffs.length > 0) meta.diffCount = diffs.length;
+	return meta.attachments || meta.diffCount !== undefined ? meta : undefined;
 }
 
 export function acpUpdatesForSessionEvent(event: AgentConnectionSessionEvent): AcpSessionUpdate[] {
@@ -116,14 +133,14 @@ export function acpUpdatesForSessionEvent(event: AgentConnectionSessionEvent): A
 
 		case "tool_execution_end": {
 			const text = toolResultText(event.result);
-			const mimeBundle = event.toolName === IPYTHON_TOOL_NAME ? ipythonMimeBundle(event.result) : undefined;
+			const rich = event.toolName === IPYTHON_TOOL_NAME ? ipythonRichOutput(event.result) : undefined;
 			return [
 				{
 					sessionUpdate: "tool_call_update",
 					toolCallId: event.toolCallId,
 					status: (event.isError ? "failed" : "completed") satisfies AcpToolStatus,
 					...(text ? { content: [{ type: "content", content: textContent(text) }] } : {}),
-					...(mimeBundle ? { _meta: primeAgentMeta({ ipython: { mimeBundle } }) } : {}),
+					...(rich ? { _meta: primeAgentMeta({ ipython: rich }) } : {}),
 				},
 			];
 		}

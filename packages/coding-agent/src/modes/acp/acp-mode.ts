@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { VERSION } from "../../config.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
@@ -38,20 +39,44 @@ export interface AcpModeOptions {
 }
 
 interface AcpSessionEntry {
+	id: string;
 	abort: AbortController | undefined;
 	unsubscribe: (() => void) | undefined;
 }
 
-/** Prompt content blocks are ACP-shaped; prime-agent takes a single string. */
-function promptText(blocks: readonly unknown[]): string {
-	return blocks
-		.map((block) => {
-			if (!block || typeof block !== "object") return "";
-			const typed = block as { type?: string; text?: string };
-			return typed.type === "text" && typeof typed.text === "string" ? typed.text : "";
-		})
-		.filter(Boolean)
-		.join("\n");
+/**
+ * Split ACP prompt blocks into the text and images prime-agent accepts.
+ *
+ * Image and embedded-resource blocks are advertised in `initialize`, so they must
+ * actually reach the model: dropping them silently would let a client believe a
+ * pasted screenshot was accepted.
+ */
+function promptContent(blocks: readonly unknown[]): { text: string; images: ImageContent[] } {
+	const texts: string[] = [];
+	const images: ImageContent[] = [];
+	for (const block of blocks) {
+		if (!block || typeof block !== "object") continue;
+		const typed = block as {
+			type?: string;
+			text?: string;
+			data?: string;
+			mimeType?: string;
+			uri?: string;
+			resource?: { text?: string; uri?: string };
+		};
+		if (typed.type === "text" && typeof typed.text === "string") {
+			texts.push(typed.text);
+		} else if (typed.type === "image" && typeof typed.data === "string" && typeof typed.mimeType === "string") {
+			images.push({ type: "image", data: typed.data, mimeType: typed.mimeType });
+		} else if (typed.type === "resource" && typeof typed.resource?.text === "string") {
+			// Embedded text resources become context the model can read.
+			const uri = typed.resource.uri ? `${typed.resource.uri}\n` : "";
+			texts.push(`${uri}${typed.resource.text}`);
+		} else if (typed.type === "resource_link" && typeof typed.uri === "string") {
+			texts.push(typed.uri);
+		}
+	}
+	return { text: texts.join("\n"), images };
 }
 
 function autonomousMeta(status: AgentAutonomousStatus | undefined): Record<string, unknown> | undefined {
@@ -84,7 +109,11 @@ export async function runAcpModeWithConnection(
 		takeOverStdout();
 	}
 
-	const sessions = new Map<string, AcpSessionEntry>();
+	// One ACP connection drives one AgentConnection, whose newSession() replaces
+	// the live session rather than creating a parallel one. Tracking a single
+	// session keeps every event unambiguously attributable; a second session/new
+	// is refused rather than silently sharing conversation state, cwd, and queues.
+	let session: AcpSessionEntry | undefined;
 	let bound = false;
 
 	const stream =
@@ -108,12 +137,20 @@ export async function runAcpModeWithConnection(
 		}))
 		.onRequest("session/new", async (ctx: any) => {
 			if (!bound) {
-				bound = true;
+				// Only latch after a successful bind: a rejected bind must not leave
+				// extensions permanently unavailable for the rest of the process.
 				await options.bindHeadlessExtensions?.();
+				bound = true;
+			}
+			if (session) {
+				throw new Error(
+					"prime-agent ACP mode hosts one session per connection; " +
+						"start another prime-agent process for a second session",
+				);
 			}
 			const sessionId = randomUUID();
-			const entry: AcpSessionEntry = { abort: undefined, unsubscribe: undefined };
-			sessions.set(sessionId, entry);
+			const entry: AcpSessionEntry = { id: sessionId, abort: undefined, unsubscribe: undefined };
+			session = entry;
 			// Subscribe for the session lifetime, not per prompt turn: prime-agent
 			// subagents are fire-and-forget and keep reporting after the spawning
 			// turn ends, so a turn-scoped subscription would drop their updates.
@@ -136,14 +173,15 @@ export async function runAcpModeWithConnection(
 		})
 		.onRequest("session/prompt", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string; prompt: readonly unknown[] };
-			const entry = sessions.get(params.sessionId);
+			const entry = session?.id === params.sessionId ? session : undefined;
 			if (!entry) throw new Error(`Unknown ACP session: ${params.sessionId}`);
 
 			const abort = new AbortController();
 			entry.abort = abort;
 
 			try {
-				await connection.promptAndWait(promptText(params.prompt));
+				const { text, images } = promptContent(params.prompt);
+				await connection.promptAndWait(text, images.length > 0 ? { images } : undefined);
 				// Autonomous gates continue inside this same prompt turn: the turn is
 				// only over once the gate loop settles.
 				const status = await connection.waitForHeadlessCompletion();
@@ -167,8 +205,11 @@ export async function runAcpModeWithConnection(
 		})
 		.onNotification("session/cancel", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string };
-			const entry = sessions.get(params.sessionId);
-			entry?.abort?.abort();
+			// Only cancel the addressed session: aborting unconditionally would kill
+			// whichever turn happens to be running, and leave the real turn's
+			// AbortController unmarked so it reports a wrong stop reason.
+			if (session?.id !== params.sessionId || !session.abort) return;
+			session.abort.abort();
 			await connection.abort().catch(() => undefined);
 		})
 		.connect(stream);

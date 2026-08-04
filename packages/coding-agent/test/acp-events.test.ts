@@ -54,12 +54,20 @@ describe("ACP session event mapping", () => {
 		]);
 	});
 
-	it("carries rich IPython MIME output in namespaced _meta", () => {
+	it("carries rich IPython output from the fields the tool actually reports", () => {
+		// The ipython tool reports media/diffs under `details`, so the mapping must
+		// read those exact fields rather than an invented MIME bundle.
 		const updates = acpUpdatesForSessionEvent({
 			type: "tool_execution_end",
 			toolCallId: "call-1",
 			toolName: "ipython",
-			result: { output: "done", mimeBundle: { "image/png": "base64", "text/plain": "done" } },
+			result: {
+				output: "done",
+				details: {
+					attachments: [{ mimeType: "image/png", path: "/tmp/plot.png", bytes: 1024 }],
+					diffs: [{ path: "a.ts" }],
+				},
+			},
 			isError: false,
 		} as AgentConnectionSessionEvent);
 		expect(updates[0]).toMatchObject({
@@ -68,10 +76,25 @@ describe("ACP session event mapping", () => {
 			status: "completed",
 			content: [{ type: "content", content: { type: "text", text: "done" } }],
 		});
-		// text/plain is already the ACP content block; only non-text survives in _meta.
 		expect(updates[0]?._meta).toEqual({
-			[PRIME_AGENT_META_NAMESPACE]: { ipython: { mimeBundle: { "image/png": "base64" } } },
+			[PRIME_AGENT_META_NAMESPACE]: {
+				ipython: {
+					attachments: [{ mimeType: "image/png", path: "/tmp/plot.png", bytes: 1024 }],
+					diffCount: 1,
+				},
+			},
 		});
+	});
+
+	it("omits IPython rich metadata when the cell produced none", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "tool_execution_end",
+			toolCallId: "call-3",
+			toolName: "ipython",
+			result: { output: "plain", details: { stdout: "plain" } },
+			isError: false,
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]).not.toHaveProperty("_meta");
 	});
 
 	it("marks failed tool calls as failed", () => {

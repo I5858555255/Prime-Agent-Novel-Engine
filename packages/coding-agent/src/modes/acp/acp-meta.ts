@@ -32,10 +32,17 @@ export interface PrimeAgentAutonomousMeta {
 	limitReason?: string;
 }
 
+export interface PrimeAgentIpythonAttachmentMeta {
+	mimeType?: string;
+	path?: string;
+	bytes?: number;
+}
+
 export interface PrimeAgentIpythonMeta {
-	/** Non-text IPython display data keyed by MIME type (images, tables, JSON). */
-	mimeBundle?: Record<string, unknown>;
-	outputTruncated?: boolean;
+	/** Media the cell loaded into context, as reported by the ipython tool. */
+	attachments?: PrimeAgentIpythonAttachmentMeta[];
+	/** Number of diffs the cell displayed. */
+	diffCount?: number;
 }
 
 export interface PrimeAgentGoalMeta {

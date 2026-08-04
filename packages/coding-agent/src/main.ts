@@ -1322,8 +1322,12 @@ export async function main(args: string[], options?: MainOptions) {
 
 		const startupModel = await resolvePreparedStartupModel({ prepared, sessionManager });
 
+		// ACP holds stdin open as a long-lived NDJSON request stream, so reading
+		// piped stdin here would block until EOF and never return.
 		let stdinContent: string | undefined;
-		stdinContent = await readPipedStdin();
+		if (appMode !== "acp") {
+			stdinContent = await readPipedStdin();
+		}
 		time("readPipedStdin");
 
 		const { initialMessage, initialImages } = await prepareInitialMessage(
@@ -1472,7 +1476,7 @@ export async function main(args: string[], options?: MainOptions) {
 	if (useDaemonClient) {
 		const settingsManager = SettingsManager.create(sessionManager.getCwd(), agentDir);
 		let stdinContent: string | undefined;
-		if (appMode !== "rpc") {
+		if (appMode !== "rpc" && appMode !== "acp") {
 			stdinContent = await readPipedStdin();
 		}
 		time("readPipedStdin");
@@ -1565,7 +1569,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	// Read piped stdin content (if any) - skip for RPC/daemon modes which use other transports
 	let stdinContent: string | undefined;
-	if (appMode !== "rpc" && appMode !== "daemon") {
+	if (appMode !== "rpc" && appMode !== "acp" && appMode !== "daemon") {
 		stdinContent = await readPipedStdin();
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";

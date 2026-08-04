@@ -194,6 +194,57 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.cleanup();
 	}, 30_000);
 
+	it("refuses a second session rather than silently sharing one conversation", async () => {
+		const harness = await createHarness();
+		const fixture = await connectAcp(harness);
+		// AgentConnection.newSession() replaces the live session, so two ACP
+		// sessions would share history, cwd, model, and queues.
+		// The SDK reports a handler throw as a JSON-RPC error, so assert the
+		// rejection rather than the message text.
+		await expect(fixture.agent.request("session/new", { cwd: harness.tempDir, mcpServers: [] })).rejects.toThrow();
+		harness.cleanup();
+	}, 30_000);
+
+	it("ignores a cancel addressed to a different session", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("done")]);
+		const fixture = await connectAcp(harness);
+
+		// A stray cancel must not abort the real session's turn.
+		await fixture.agent.notify("session/cancel", { sessionId: "some-other-session" });
+		const result = await fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [{ type: "text", text: "hello" }],
+		});
+		expect(result.stopReason).toBe("end_turn");
+		harness.cleanup();
+	}, 30_000);
+
+	it("forwards advertised image and embedded-resource prompt blocks", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("looked at it")]);
+		const fixture = await connectAcp(harness);
+
+		const result = await fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [
+				{ type: "text", text: "what is this?" },
+				{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+				{ type: "resource", resource: { uri: "file:///notes.md", text: "context line" } },
+			],
+		});
+		expect(result.stopReason).toBe("end_turn");
+
+		// initialize advertises image + embeddedContext, so both must reach the model.
+		const messages = await harness.session.messages;
+		const user = messages.find((message: any) => message.role === "user");
+		const serialized = JSON.stringify(user);
+		expect(serialized).toContain("what is this?");
+		expect(serialized).toContain("context line");
+		expect(serialized).toContain("aGVsbG8=");
+		harness.cleanup();
+	}, 30_000);
+
 	it("advertises prime-agent capabilities without polluting the ACP object root", async () => {
 		const harness = await createHarness();
 		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));
