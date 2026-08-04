@@ -140,6 +140,62 @@ describe("ACP session event mapping", () => {
 		});
 	});
 
+	it("surfaces goal state as namespaced metadata", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "goal_update",
+			goal: { status: "active", objective: "ship ACP", tokenBudget: 1000, tokensUsed: 25 },
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: {
+				goal: { status: "active", objective: "ship ACP", tokenBudget: 1000, tokensUsed: 25 },
+			},
+		});
+	});
+
+	it("surfaces continual-harness refinement outcomes, applied edits only", () => {
+		const done = acpUpdatesForSessionEvent({
+			type: "refine_complete",
+			result: {
+				summary: "persisted a memory",
+				appliedEdits: [
+					{ applied: true, action: "create", kind: "memory", id: "m1" },
+					{ applied: false, action: "create", kind: "skill", id: "s1" },
+				],
+			},
+		} as AgentConnectionSessionEvent);
+		expect(done[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: {
+				refinement: { status: "complete", summary: "persisted a memory", changes: ["create memory:m1"] },
+			},
+		});
+
+		const failed = acpUpdatesForSessionEvent({
+			type: "refine_failed",
+			error: "budget exhausted",
+		} as AgentConnectionSessionEvent);
+		expect(failed[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: { refinement: { status: "failed", error: "budget exhausted" } },
+		});
+	});
+
+	it("surfaces agent-to-agent messages sent from the kernel", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "ipython_sent_agent_message",
+			toolCallId: "cell-9",
+			message: {
+				id: "agentmsg_1",
+				message: "done",
+				deliveryStatus: "queued",
+				target: { activeSessionId: "a1", sessionId: "s1", sessionName: "reviewer" },
+			},
+		} as AgentConnectionSessionEvent);
+		expect(updates[0]?._meta).toMatchObject({
+			[PRIME_AGENT_META_NAMESPACE]: {
+				agentMessage: { toolCallId: "cell-9", target: "reviewer", deliveryStatus: "queued" },
+			},
+		});
+	});
+
 	it("emits nothing for events ACP has no place for", () => {
 		expect(acpUpdatesForSessionEvent({ type: "agent_start" } as AgentConnectionSessionEvent)).toEqual([]);
 		expect(acpUpdatesForSessionEvent({ type: "recap_update", recap: "x" } as AgentConnectionSessionEvent)).toEqual(

@@ -195,6 +195,63 @@ export function acpUpdatesForSessionEvent(event: AgentConnectionSessionEvent): A
 				},
 			];
 
+		// Goals, continual-harness refinement, and agent-to-agent messaging are
+		// prime-agent concepts with no ACP counterpart. They are still part of a
+		// turn's observable behavior, so they surface as namespaced metadata
+		// instead of being dropped.
+		case "goal_update":
+			return [
+				{
+					sessionUpdate: "session_info_update",
+					_meta: primeAgentMeta({
+						goal: {
+							status: event.goal.status,
+							objective: event.goal.objective,
+							tokenBudget: event.goal.tokenBudget,
+							tokensUsed: event.goal.tokensUsed,
+						},
+					}),
+				},
+			];
+
+		case "refine_complete":
+			return [
+				{
+					sessionUpdate: "session_info_update",
+					_meta: primeAgentMeta({
+						refinement: {
+							status: "complete",
+							summary: event.result.summary,
+							changes: event.result.appliedEdits
+								?.filter((edit) => edit.applied)
+								.map((edit) => `${edit.action} ${edit.kind}:${edit.id}`),
+						},
+					}),
+				},
+			];
+
+		case "refine_failed":
+			return [
+				{
+					sessionUpdate: "session_info_update",
+					_meta: primeAgentMeta({ refinement: { status: "failed", error: event.error } }),
+				},
+			];
+
+		case "ipython_sent_agent_message":
+			return [
+				{
+					sessionUpdate: "session_info_update",
+					_meta: primeAgentMeta({
+						agentMessage: {
+							toolCallId: event.toolCallId,
+							target: event.message.target.sessionName ?? event.message.target.sessionId,
+							deliveryStatus: event.message.deliveryStatus,
+						},
+					}),
+				},
+			];
+
 		default:
 			return [];
 	}

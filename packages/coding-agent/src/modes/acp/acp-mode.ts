@@ -39,6 +39,7 @@ export interface AcpModeOptions {
 
 interface AcpSessionEntry {
 	abort: AbortController | undefined;
+	unsubscribe: (() => void) | undefined;
 }
 
 /** Prompt content blocks are ACP-shaped; prime-agent takes a single string. */
@@ -105,13 +106,23 @@ export async function runAcpModeWithConnection(
 			// every object root for future protocol fields.
 			_meta: primeAgentMeta({}),
 		}))
-		.onRequest("session/new", async () => {
+		.onRequest("session/new", async (ctx: any) => {
 			if (!bound) {
 				bound = true;
 				await options.bindHeadlessExtensions?.();
 			}
 			const sessionId = randomUUID();
-			sessions.set(sessionId, { abort: undefined });
+			const entry: AcpSessionEntry = { abort: undefined, unsubscribe: undefined };
+			sessions.set(sessionId, entry);
+			// Subscribe for the session lifetime, not per prompt turn: prime-agent
+			// subagents are fire-and-forget and keep reporting after the spawning
+			// turn ends, so a turn-scoped subscription would drop their updates.
+			entry.unsubscribe = connection.subscribe((event) => {
+				if (event.type !== "session_event") return;
+				for (const update of acpUpdatesForSessionEvent(event.event)) {
+					void ctx.client.notify(acp.methods.client.session.update, { sessionId, update }).catch(() => undefined);
+				}
+			});
 			return { sessionId };
 		})
 		.onRequest("session/prompt", async (ctx: any) => {
@@ -121,17 +132,6 @@ export async function runAcpModeWithConnection(
 
 			const abort = new AbortController();
 			entry.abort = abort;
-
-			// Forward prime-agent events as ACP session/update notifications for the
-			// duration of this turn only.
-			const unsubscribe = connection.subscribe((event) => {
-				if (event.type !== "session_event") return;
-				for (const update of acpUpdatesForSessionEvent(event.event)) {
-					void ctx.client
-						.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update })
-						.catch(() => undefined);
-				}
-			});
 
 			try {
 				await connection.promptAndWait(promptText(params.prompt));
@@ -153,7 +153,6 @@ export async function runAcpModeWithConnection(
 				if (abort.signal.aborted) return { stopReason: "cancelled" satisfies AcpStopReason };
 				throw error;
 			} finally {
-				unsubscribe();
 				entry.abort = undefined;
 			}
 		})

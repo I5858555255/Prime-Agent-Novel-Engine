@@ -38,7 +38,30 @@ export interface PrimeAgentIpythonMeta {
 	outputTruncated?: boolean;
 }
 
+export interface PrimeAgentGoalMeta {
+	status: string;
+	objective?: string;
+	tokenBudget?: number;
+	tokensUsed?: number;
+}
+
+export interface PrimeAgentRefinementMeta {
+	status: "complete" | "failed";
+	summary?: string;
+	changes?: string[];
+	error?: string;
+}
+
+export interface PrimeAgentAgentMessageMeta {
+	toolCallId: string;
+	target?: string;
+	deliveryStatus?: string;
+}
+
 export interface PrimeAgentSessionMeta {
+	goal?: PrimeAgentGoalMeta;
+	refinement?: PrimeAgentRefinementMeta;
+	agentMessage?: PrimeAgentAgentMessageMeta;
 	sessionId?: string;
 	rlmDepth?: number;
 	rlmMaxDepth?: number;
