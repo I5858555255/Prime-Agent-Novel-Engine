@@ -4518,6 +4518,7 @@ export class AgentDaemon {
 			throw new Error("Agent messaging is paused");
 		}
 		const targetSelector = assertDirectAgentMessageTarget(options.targetSelector);
+		const message = normalizeAgentSessionMessage(options.message, DEFAULT_AGENT_MESSAGE_MAX_CHARS);
 		let targetState: ActiveSessionState;
 		try {
 			targetState = this.getBoundSessionState(targetSelector);
@@ -4541,7 +4542,7 @@ export class AgentDaemon {
 						return this.sendRemoteAgentSessionMessage(
 							options.fromState,
 							targetSelector,
-							options.message,
+							message,
 							options.deliveryMode,
 						);
 					} else {
@@ -4553,7 +4554,6 @@ export class AgentDaemon {
 		if (options.fromState?.activeSessionId === targetState.activeSessionId) {
 			throw new Error("Agent messaging cannot target the sending session");
 		}
-		const message = normalizeAgentSessionMessage(options.message, DEFAULT_AGENT_MESSAGE_MAX_CHARS);
 		const releaseQueueSlot = this.reserveAgentMessageQueueSlot(targetState);
 		const senderKey =
 			options.senderKey ?? options.fromState?.activeSessionId ?? `client:${options.clientId ?? "unknown"}`;
@@ -4613,6 +4613,7 @@ export class AgentDaemon {
 		let lastError: unknown;
 		while (Date.now() < deadline && !this.shuttingDown) {
 			const client = new DaemonClient(supervisorSocketPath);
+			let receivedResponse = false;
 			try {
 				await client.connect(1000);
 				await client.waitForHello(1000);
@@ -4626,6 +4627,7 @@ export class AgentDaemon {
 					},
 					30_000,
 				);
+				receivedResponse = true;
 				if (!response.success) {
 					throw deserializeDaemonError(response);
 				}
@@ -4634,10 +4636,10 @@ export class AgentDaemon {
 				}
 				return response.data as AgentSessionMessageReceipt;
 			} catch (error) {
-				lastError = error;
-				if (error instanceof Error && error.message.startsWith("Unknown active session:")) {
+				if (receivedResponse) {
 					throw error;
 				}
+				lastError = error;
 			} finally {
 				client.close();
 			}
