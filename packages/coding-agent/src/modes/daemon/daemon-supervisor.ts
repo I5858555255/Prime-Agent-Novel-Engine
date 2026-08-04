@@ -792,6 +792,30 @@ export class DaemonSupervisor {
 			canEvictWorker(this.workerEvictionSnapshot(worker), idleEvictionMinutes, now),
 		);
 		if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
+		// Whole-tree candidates skip child work because stopWorker releases everything.
+		await Promise.all(
+			[...refreshed]
+				.filter((worker) => !candidates.includes(worker))
+				.map(async (worker) => {
+					try {
+						const response = await worker.client?.requestWorker(
+							{
+								type: "worker_passivate_idle_children",
+								idleEvictionMinutes,
+								now,
+								limit: CHILD_PASSIVATION_PER_WORKER_CAP,
+							},
+							30_000,
+						);
+						if (response && !response.success) throw new Error(response.error);
+						await this.refreshWorkerSummaries(worker);
+					} catch (error) {
+						refreshed.delete(worker);
+						this.log(`Child passivation sweep failed for worker ${worker.descriptor.workerId}: ${String(error)}`);
+					}
+				}),
+		);
+		if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
 
 		let releaseFence: () => void = () => {};
 		const fence = new Promise<void>((resolveFence) => {
@@ -805,33 +829,6 @@ export class DaemonSupervisor {
 				"Timed out draining daemon mutations for idle eviction",
 			);
 			if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
-			// The supervisor owns the shared timer/fence; each live worker owns its
-			// per-node predicate and backgrounded runtime teardown. Whole-tree
-			// candidates skip child work because stopWorker releases everything.
-			await Promise.all(
-				[...refreshed]
-					.filter((worker) => !candidates.includes(worker))
-					.map(async (worker) => {
-						try {
-							const response = await worker.client?.requestWorker(
-								{
-									type: "worker_passivate_idle_children",
-									idleEvictionMinutes,
-									now,
-									limit: CHILD_PASSIVATION_PER_WORKER_CAP,
-								},
-								30_000,
-							);
-							if (response && !response.success) throw new Error(response.error);
-							await this.refreshWorkerSummaries(worker);
-						} catch (error) {
-							refreshed.delete(worker);
-							this.log(
-								`Child passivation sweep failed for worker ${worker.descriptor.workerId}: ${String(error)}`,
-							);
-						}
-					}),
-			);
 			await Promise.all(
 				candidates.map((worker) => this.refreshWorkerSummaries(worker).catch(() => refreshed.delete(worker))),
 			);

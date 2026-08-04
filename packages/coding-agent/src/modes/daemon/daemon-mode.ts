@@ -5390,15 +5390,30 @@ export class AgentDaemon {
 			const requestedReason = this.isStrongerCloseReason(reason, existingClose.reason)
 				? reason
 				: existingClose.reason;
-			await existingClose.promise;
-			existingClose.reasonUpgrade = (existingClose.reasonUpgrade ?? Promise.resolve()).then(() => {
+			let closeError: unknown;
+			let closeFailed = false;
+			try {
+				await existingClose.promise;
+			} catch (error) {
+				closeError = error;
+				closeFailed = true;
+			}
+			const reasonUpgrade = (existingClose.reasonUpgrade ?? Promise.resolve()).then(() => {
 				if (!this.isStrongerCloseReason(requestedReason, existingClose.reason)) return;
-				this.applyReasonUpgrade(state, existingClose.descendants, existingClose.reason, requestedReason);
-				existingClose.reason = requestedReason;
+				try {
+					this.applyReasonUpgrade(state, existingClose.descendants, existingClose.reason, requestedReason);
+				} finally {
+					existingClose.reason = requestedReason;
+				}
 			});
-			await existingClose.reasonUpgrade;
-			descendantCollector?.add(state);
-			for (const descendant of existingClose.descendants) descendantCollector?.add(descendant);
+			existingClose.reasonUpgrade = reasonUpgrade.catch(() => undefined);
+			try {
+				await reasonUpgrade;
+			} finally {
+				descendantCollector?.add(state);
+				for (const descendant of existingClose.descendants) descendantCollector?.add(descendant);
+			}
+			if (closeFailed) throw closeError;
 			return;
 		}
 		const descendants = new Set<ActiveSessionState>();
@@ -5434,10 +5449,23 @@ export class AgentDaemon {
 		from: DaemonSessionClosedReason,
 		to: DaemonSessionClosedReason,
 	): void {
+		let persistError: unknown;
+		let persistenceFailed = false;
 		for (const target of [state, ...descendants]) {
-			if (to === "killed") this.cancelScheduledJobsForSession(target);
-			if (this.closeKeepsResumeEntry(from)) this.archiveSession(target);
+			try {
+				if (to === "killed") this.cancelScheduledJobsForSession(target);
+			} catch (error) {
+				if (!persistenceFailed) persistError = error;
+				persistenceFailed = true;
+			}
+			try {
+				if (this.closeKeepsResumeEntry(from)) this.archiveSession(target);
+			} catch (error) {
+				if (!persistenceFailed) persistError = error;
+				persistenceFailed = true;
+			}
 		}
+		if (persistenceFailed) throw persistError;
 	}
 
 	private closeKeepsResumeEntry(reason: DaemonSessionClosedReason): boolean {

@@ -6585,6 +6585,131 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("applies a stronger reason after the joined close rejects", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-kill-failed-close-race-"));
+		let rejectClose!: (error: Error) => void;
+		const failedClose = new Promise<void>((_resolve, reject) => {
+			rejectClose = reject;
+		});
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const appendSessionState = vi.fn();
+			const state = makeState("active-1");
+			state.runtime = {
+				...state.runtime,
+				cwd: tempDir,
+				session: {
+					sessionId: "session-1",
+					sessionFile: join(tempDir, "session.jsonl"),
+					sessionManager: { appendSessionState },
+				},
+			} as never;
+			const existingClose = {
+				promise: failedClose,
+				reason: "shutdown" as const,
+				descendants: new Set<ActiveSessionState>(),
+			};
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				closingSessions: Map<string, typeof existingClose>;
+				closeSession(state: ActiveSessionState, reason: "killed"): Promise<void>;
+			};
+			internals.closingSessions.set(state.activeSessionId, existingClose);
+			const cron = internals.cronStore.create({
+				activeSessionId: state.activeSessionId,
+				sessionId: "session-1",
+				sessionFile: join(tempDir, "session.jsonl"),
+				cwd: tempDir,
+				scheduleText: "in 1h",
+				prompt: "scheduled work",
+			});
+
+			const kill = internals.closeSession(state, "killed");
+			rejectClose(new Error("dispose failed"));
+
+			await expect(kill).rejects.toThrow("dispose failed");
+			expect(internals.cronStore.list().find((job) => job.id === cron.id)).toMatchObject({ status: "cancelled" });
+			expect(appendSessionState).toHaveBeenCalledWith({ status: "archived" });
+			expect(existingClose.reason).toBe("killed");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("finishes a reason upgrade after one target fails to archive", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-kill-archive-failure-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const parent = makeState("parent");
+			const child = makeState("child", parent.activeSessionId);
+			const parentArchive = vi.fn(() => {
+				throw new Error("archive failed");
+			});
+			const childArchive = vi.fn();
+			for (const [state, sessionId, appendSessionState] of [
+				[parent, "session-parent", parentArchive],
+				[child, "session-child", childArchive],
+			] as const) {
+				state.runtime = {
+					...state.runtime,
+					cwd: tempDir,
+					session: {
+						sessionId,
+						sessionFile: join(tempDir, `${sessionId}.jsonl`),
+						sessionManager: { appendSessionState },
+					},
+				} as never;
+			}
+			const existingClose = {
+				promise: Promise.resolve(),
+				reason: "shutdown" as "shutdown" | "killed",
+				descendants: new Set([child]),
+			};
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				closingSessions: Map<string, typeof existingClose>;
+				closeSession(state: ActiveSessionState, reason: "killed"): Promise<void>;
+			};
+			internals.closingSessions.set(parent.activeSessionId, existingClose);
+			const jobs = [parent, child].map((state) =>
+				internals.cronStore.create({
+					activeSessionId: state.activeSessionId,
+					sessionId: state.runtime.session.sessionId,
+					sessionFile: state.runtime.session.sessionFile!,
+					cwd: tempDir,
+					scheduleText: "in 1h",
+					prompt: "scheduled work",
+				}),
+			);
+
+			await expect(internals.closeSession(parent, "killed")).rejects.toThrow("archive failed");
+
+			for (const job of jobs) {
+				expect(internals.cronStore.list().find((candidate) => candidate.id === job.id)).toMatchObject({
+					status: "cancelled",
+				});
+			}
+			expect(parentArchive).toHaveBeenCalledOnce();
+			expect(childArchive).toHaveBeenCalledWith({ status: "archived" });
+			expect(existingClose.reason).toBe("killed");
+			await expect(internals.closeSession(parent, "killed")).resolves.toBeUndefined();
+			expect(parentArchive).toHaveBeenCalledOnce();
+			expect(childArchive).toHaveBeenCalledOnce();
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("upgrades resident descendants when kill joins a parent shutdown close", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-kill-parent-shutdown-race-"));
 		let releaseParentDispose!: () => void;
