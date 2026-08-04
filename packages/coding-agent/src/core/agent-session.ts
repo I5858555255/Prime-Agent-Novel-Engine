@@ -181,6 +181,7 @@ import {
 	createCompactionOutcomeMessage,
 	createHeartbeatPromptMessage,
 	createRlmChildFailureMessage,
+	createRlmChildTerminalNoticeMessage,
 	createSessionSlashCommandMessage,
 	createSessionSlashCommandResultMessage,
 	HEARTBEAT_PROMPT_CUSTOM_TYPE,
@@ -9682,6 +9683,15 @@ export class AgentSession {
 			onSessionPublished: publishChildSession,
 		};
 
+		const injectTerminalMessage = async (message: CustomMessage): Promise<void> => {
+			await this._promptInjectedMessage(message.content as string, message, {
+				streamingBehavior: "followUp",
+				queueIfBusy: true,
+				returnAfterAccepted: true,
+				suppressAutonomousContinuation: true,
+			}).catch(() => undefined);
+		};
+
 		// Runtime startup and the task run are deliberately detached. The public
 		// spawn resolves at admission, while this task owns live tracking, usage,
 		// retention, cancellation, and late-startup cleanup.
@@ -9783,6 +9793,17 @@ export class AgentSession {
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();
+				if (!run.detachedDeletion && child._repliedToParentSinceTask !== true) {
+					const lastAssistantText = child.getLastAssistantText();
+					await injectTerminalMessage(
+						createRlmChildTerminalNoticeMessage({
+							kind: "completed_without_reply",
+							childId: run.id,
+							sessionName,
+							lastAssistantTextPreview: lastAssistantText ? compactRlmText(lastAssistantText) : undefined,
+						}),
+					);
+				}
 				if (!this.registerRlmChildSession(run.id, child)) {
 					if (childRuntime && this._subagentRuntimeHost?.releaseRlmSubagentRuntime) {
 						await this._subagentRuntimeHost
@@ -9802,18 +9823,25 @@ export class AgentSession {
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();
-				if (run.status === "error" && !run.detachedDeletion) {
-					const failureMessage = createRlmChildFailureMessage({
-						childId: run.id,
-						sessionName,
-						error: run.error ?? "unknown error",
-					});
-					await this._promptInjectedMessage(failureMessage.content as string, failureMessage, {
-						streamingBehavior: "followUp",
-						queueIfBusy: true,
-						returnAfterAccepted: true,
-						suppressAutonomousContinuation: true,
-					}).catch(() => undefined);
+				if (!run.detachedDeletion) {
+					if (run.status === "error") {
+						await injectTerminalMessage(
+							createRlmChildFailureMessage({
+								childId: run.id,
+								sessionName,
+								error: run.error ?? "unknown error",
+							}),
+						);
+					} else if (run.status === "cancelled") {
+						await injectTerminalMessage(
+							createRlmChildTerminalNoticeMessage({
+								kind: "cancelled",
+								childId: run.id,
+								sessionName,
+								reason: run.error,
+							}),
+						);
+					}
 				}
 				if (!run.detachedDeletion && childSession && this._subagentRuntimeHost?.releaseRlmSubagentRuntime) {
 					try {
