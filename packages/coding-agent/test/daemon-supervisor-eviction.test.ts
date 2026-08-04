@@ -292,6 +292,73 @@ describe("daemon supervisor whole-tree eviction", () => {
 		expect(response).toMatchObject({ success: true, id: "message-1", command: "send_message" });
 	});
 
+	it("delivers a same-worker name selector through its canonical active session id", async () => {
+		const now = Date.parse("2026-08-01T12:00:00.000Z");
+		const supervisor = makeSupervisor();
+		const sourceSummary = makeSummary("source-active", now, { sessionId: "source-session" });
+		const targetSummary = makeSummary("target-active", now, {
+			sessionId: "target-session",
+			sessionName: "Saved target",
+		});
+		const worker = makeWorker("shared", [sourceSummary, targetSummary]);
+		worker.client!.requestWorker.mockResolvedValue({
+			type: "response",
+			command: "worker_deliver_message",
+			success: true,
+			data: { deliveryStatus: "delivered" },
+		});
+		supervisor.workers.set("shared", worker);
+		const client = { id: "sender", attachedActiveSessionIds: new Set<string>() };
+
+		const response = await supervisor.handleCommand(client, {
+			id: "message-same-worker",
+			type: "send_message",
+			targetActiveSessionId: "Saved target",
+			fromActiveSessionId: "source-active",
+			message: "continue",
+		});
+
+		expect(worker.client?.requestWorker).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "worker_deliver_message",
+				targetActiveSessionId: "target-active",
+				message: "continue",
+			}),
+			24 * 60 * 60 * 1000,
+		);
+		expect(worker.client?.request).not.toHaveBeenCalled();
+		expect(response).toMatchObject({
+			success: true,
+			id: "message-same-worker",
+			command: "send_message",
+			data: { deliveryStatus: "delivered" },
+		});
+	});
+
+	it("fails an unknown agent-message selector without forwarding it back to the worker", async () => {
+		const now = Date.parse("2026-08-01T12:00:00.000Z");
+		const supervisor = makeSupervisor();
+		const source = makeWorker("source", [makeSummary("source-active", now)]);
+		supervisor.workers.set("source", source);
+		supervisor.catalog.resolve = vi.fn(async () => {
+			throw new Error("Unknown saved session: missing-target");
+		});
+		const client = { id: "sender", attachedActiveSessionIds: new Set<string>() };
+
+		await expect(
+			supervisor.handleCommand(client, {
+				id: "message-missing",
+				type: "send_message",
+				targetActiveSessionId: "missing-target",
+				fromActiveSessionId: "source-active",
+				message: "continue",
+			}),
+		).rejects.toThrow("Unknown active session: missing-target");
+		expect(source.client?.requestWorker).not.toHaveBeenCalled();
+		expect(source.client?.request).toHaveBeenCalledOnce();
+		expect(source.client?.request).toHaveBeenCalledWith({ type: "list" }, 5000);
+	});
+
 	it("propagates an ambiguous saved-session selector during a2a wake", async () => {
 		const now = Date.parse("2026-08-01T12:00:00.000Z");
 		const supervisor = makeSupervisor();

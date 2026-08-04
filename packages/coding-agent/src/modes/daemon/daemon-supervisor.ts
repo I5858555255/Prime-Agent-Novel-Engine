@@ -1764,14 +1764,18 @@ export class DaemonSupervisor {
 				if (!summary) throw new Error("Woken session worker has no target session");
 				target = { worker, summary };
 			}
-			if (source && source.worker !== target.worker) {
+			const targetActiveSessionId = target.summary.activeSessionId ?? target.summary.id;
+			if (source) {
+				if ((source.summary.activeSessionId ?? source.summary.id) === targetActiveSessionId) {
+					throw new Error("Agent messaging cannot target the sending session");
+				}
 				if (!target.worker.client) {
 					throw new Error("Target session worker is not connected");
 				}
 				const response = await target.worker.client.requestWorker(
 					{
 						type: "worker_deliver_message",
-						targetActiveSessionId: target.summary.activeSessionId ?? target.summary.id,
+						targetActiveSessionId,
 						message: command.message,
 						sender: {
 							activeSessionId: source.summary.activeSessionId ?? source.summary.id,
@@ -1786,7 +1790,7 @@ export class DaemonSupervisor {
 				);
 				return { ...response, id: command.id, command: command.type };
 			}
-			return this.forwardToWorker(target.worker, command);
+			return this.forwardToWorker(target.worker, { ...command, targetActiveSessionId });
 		}
 
 		if (!("activeSessionId" in command) || typeof command.activeSessionId !== "string") {
