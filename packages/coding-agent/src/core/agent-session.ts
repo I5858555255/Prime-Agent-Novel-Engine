@@ -925,6 +925,7 @@ const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
 const RLM_MAX_DEPTH_STATE_CUSTOM_TYPE = "rlm_max_depth_state";
 
 function noopRlmChildAbort(): void {}
+function noopRlmChildEventUnsubscribe(): void {}
 
 function isRlmChildRunCancelled(run: RlmChildRun): boolean {
 	return run.status === "cancelled";
@@ -1076,6 +1077,7 @@ export class AgentSession {
 	private readonly _queuedWorkPauses = new Set<symbol>();
 	private _sessionActionCommitTail: Promise<void> = Promise.resolve();
 	private _sessionActionCommitOwner: symbol | undefined;
+	private _pendingSessionActionFenceWaiters = 0;
 	private readonly _sessionActionCommitContext = new AsyncLocalStorage<symbol>();
 	private readonly _sessionActionCommitDisposeAbortController = new AbortController();
 	// Checkpoint and handoff waiters share lifecycle-edge notifications to avoid polling.
@@ -5222,7 +5224,11 @@ export class AgentSession {
 	}
 
 	get hasPendingAdmissionWaiters(): boolean {
-		return this._sessionActionCommitOwner !== undefined || this._sessionInputCheckpointWaiters.size > 0;
+		return (
+			this._sessionActionCommitOwner !== undefined ||
+			this._pendingSessionActionFenceWaiters > 0 ||
+			this._sessionInputCheckpointWaiters.size > 0
+		);
 	}
 
 	private _scheduleSessionInputPump(): void {
@@ -6165,9 +6171,11 @@ export class AgentSession {
 		});
 		const disposeSignal = this._sessionActionCommitDisposeAbortController.signal;
 		const waitSignal = signal ? AbortSignal.any([signal, disposeSignal]) : disposeSignal;
+		this._pendingSessionActionFenceWaiters++;
 		try {
 			await waitForPromiseOrAbort(previous, waitSignal, "Update restart preparation cancelled");
 		} catch (error) {
+			this._pendingSessionActionFenceWaiters--;
 			// A cancelled waiter remains in the FIFO chain until its predecessor releases.
 			void previous.then(resolve, resolve);
 			if (disposeSignal.aborted) {
@@ -6177,6 +6185,7 @@ export class AgentSession {
 		}
 		const owner = Symbol("session-action-commit");
 		this._sessionActionCommitOwner = owner;
+		this._pendingSessionActionFenceWaiters--;
 		let released = false;
 		return {
 			owner,
@@ -9120,7 +9129,7 @@ export class AgentSession {
 	 * the child) when the parent is already tearing down, so the caller can drop the
 	 * matching event forwarder too.
 	 */
-	retainFinishedRlmChildSession(childId: string, session: AgentSession): boolean {
+	retainFinishedRlmChildSession(childId: string, session: AgentSession, unsubscribe?: () => void): boolean {
 		// A child can finish concurrently while the parent is (or has) torn down; don't
 		// resurrect the map (it would never be disposed), just drop the child now.
 		if (this._disposed || this._disposing) {
@@ -9131,16 +9140,19 @@ export class AgentSession {
 			return false;
 		}
 		this._retainedRlmChildSessions.set(childId, session);
+		if (unsubscribe) {
+			this._retainedRlmChildUnsubscribes.set(childId, unsubscribe);
+		}
 		return true;
 	}
 
 	/** Stop retaining an idle daemon child without deleting its durable registry row. */
-	releaseFinishedRlmChildSession(childId: string, session: AgentSession): boolean {
+	releaseFinishedRlmChildSession(childId: string, session: AgentSession): (() => void) | false {
 		if (this._retainedRlmChildSessions.get(childId) !== session) return false;
-		this._retainedRlmChildUnsubscribes.get(childId)?.();
+		const unsubscribe = this._retainedRlmChildUnsubscribes.get(childId) ?? noopRlmChildEventUnsubscribe;
 		this._retainedRlmChildUnsubscribes.delete(childId);
 		this._retainedRlmChildSessions.delete(childId);
-		return true;
+		return unsubscribe;
 	}
 
 	/** True when any direct or nested subagent is still running or queued. */

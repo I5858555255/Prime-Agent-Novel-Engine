@@ -2431,11 +2431,34 @@ export class AgentDaemon {
 			if (!parentState) return;
 			const idleMinutes = Math.floor((now - snapshot.lastActivityAt) / 60_000);
 			// Detach parent tracking before the standard graceful runtime disposal. The
-			// registry/catalog rows remain the sole passive representation.
-			if (!parentState.runtime.session.releaseFinishedRlmChildSession(childId, state.runtime.session)) {
+			// registry/catalog rows remain the sole passive representation after close.
+			const unsubscribeChild = parentState.runtime.session.releaseFinishedRlmChildSession(
+				childId,
+				state.runtime.session,
+			);
+			if (!unsubscribeChild) {
 				return;
 			}
-			await this.closeSession(state, "shutdown", true, false);
+			try {
+				await this.closeSession(state, "shutdown", true, false);
+			} catch (error) {
+				// A pre-removal close failure must not strand a resident child outside its
+				// parent's ownership map or disconnect its event forwarder.
+				if (
+					this.sessions.get(state.activeSessionId) === state &&
+					this.sessions.get(parentActiveSessionId) === parentState &&
+					parentState.runtime.session.retainFinishedRlmChildSession(
+						childId,
+						state.runtime.session,
+						unsubscribeChild,
+					)
+				) {
+					throw error;
+				}
+				unsubscribeChild();
+				throw error;
+			}
+			unsubscribeChild();
 			this.log(
 				`Passivated idle child sessionId=${state.runtime.session.sessionId} name=${JSON.stringify(state.runtime.session.sessionName ?? "")} idleMinutes=${idleMinutes}`,
 			);
@@ -2697,8 +2720,17 @@ export class AgentDaemon {
 				this.sessions.get(parentState.activeSessionId) !== parentState ||
 				this.closingSessions.has(parentState.activeSessionId)
 			) {
-				parentState.runtime.session.releaseFinishedRlmChildSession(entry.childId, runtime.session);
-				await this.closeSession(state, "replaced");
+				const unsubscribeChild = parentState.runtime.session.releaseFinishedRlmChildSession(
+					entry.childId,
+					runtime.session,
+				);
+				try {
+					await this.closeSession(state, "replaced");
+				} finally {
+					if (unsubscribeChild) {
+						unsubscribeChild();
+					}
+				}
 				throw new RuntimeOpenCancelledError();
 			}
 			return state;
