@@ -594,6 +594,7 @@ export class DaemonSupervisor {
 	private readonly catalog: DaemonCatalogClient;
 	private readonly settingsManager: SettingsManager;
 	private idleEvictionTimer?: ReturnType<typeof setTimeout>;
+	private idleEvictionSweep?: Promise<void>;
 	private idleEvictionFence?: Promise<void>;
 
 	constructor(
@@ -728,13 +729,17 @@ export class DaemonSupervisor {
 	}
 
 	private scheduleIdleEvictionSweep(): void {
-		if (this.shuttingDown || this.idleEvictionTimer) return;
+		if (this.shuttingDown || this.idleEvictionTimer || this.idleEvictionSweep) return;
 		const delayMs = idleEvictionSweepIntervalMs(this.settingsManager.getIdleEvictionMinutes());
 		this.idleEvictionTimer = setTimeout(() => {
 			this.idleEvictionTimer = undefined;
-			void this.runIdleEvictionSweep()
+			const sweep = this.runIdleEvictionSweep()
 				.catch((error) => this.log(`Idle eviction sweep failed: ${String(error)}`))
-				.finally(() => this.scheduleIdleEvictionSweep());
+				.finally(() => {
+					if (this.idleEvictionSweep === sweep) this.idleEvictionSweep = undefined;
+					this.scheduleIdleEvictionSweep();
+				});
+			this.idleEvictionSweep = sweep;
 		}, delayMs);
 		this.idleEvictionTimer.unref();
 	}
@@ -767,6 +772,7 @@ export class DaemonSupervisor {
 	private async runIdleEvictionSweep(now = Date.now()): Promise<void> {
 		if (this.shuttingDown || this.updateRestartPhase !== undefined || this.idleEvictionFence) return;
 		await this.settingsManager.reload();
+		if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
 		const idleEvictionMinutes = this.settingsManager.getIdleEvictionMinutes();
 		if (idleEvictionMinutes === "off") return;
 
@@ -784,7 +790,7 @@ export class DaemonSupervisor {
 		const candidates = [...refreshed].filter((worker) =>
 			canEvictWorker(this.workerEvictionSnapshot(worker), idleEvictionMinutes, now),
 		);
-		if (candidates.length === 0 || this.updateRestartPhase !== undefined) return;
+		if (candidates.length === 0 || this.shuttingDown || this.updateRestartPhase !== undefined) return;
 
 		let releaseFence: () => void = () => {};
 		const fence = new Promise<void>((resolveFence) => {
@@ -797,10 +803,11 @@ export class DaemonSupervisor {
 				AbortSignal.timeout(IDLE_EVICTION_DRAIN_TIMEOUT_MS),
 				"Timed out draining daemon mutations for idle eviction",
 			);
-			if (this.updateRestartPhase !== undefined) return;
+			if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
 			await Promise.all(
 				candidates.map((worker) => this.refreshWorkerSummaries(worker).catch(() => refreshed.delete(worker))),
 			);
+			if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
 			const evictable = candidates.filter(
 				(worker) =>
 					refreshed.has(worker) &&
@@ -812,6 +819,7 @@ export class DaemonSupervisor {
 			// gets a clean disconnected/unknown-session error.
 			await Promise.all(
 				evictable.map(async (worker) => {
+					if (this.shuttingDown || this.updateRestartPhase !== undefined) return;
 					const snapshot = this.workerEvictionSnapshot(worker);
 					const idleMinutes = Math.floor(
 						Math.min(...snapshot.sessions.map((session) => now - session.lastActivityAt)) / 60_000,
@@ -4440,6 +4448,7 @@ export class DaemonSupervisor {
 	private async cleanupSupervisorResourcesOnce(): Promise<void> {
 		this.shuttingDown = true;
 		this.clearIdleEvictionTimer();
+		await this.idleEvictionSweep?.catch(() => undefined);
 		for (const cleanup of this.signalCleanupHandlers.splice(0)) {
 			await this.runCleanupStep("signal handler", cleanup);
 		}
@@ -4538,6 +4547,7 @@ export class DaemonSupervisor {
 		}
 		this.shuttingDown = true;
 		this.clearIdleEvictionTimer();
+		await this.idleEvictionSweep?.catch(() => undefined);
 		if (closingReason) {
 			for (const client of this.clients) {
 				this.write(client, { type: "daemon_closing", reason: closingReason });

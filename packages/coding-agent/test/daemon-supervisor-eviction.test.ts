@@ -20,6 +20,7 @@ interface WorkerFixture {
 	client?: {
 		request: ReturnType<typeof vi.fn>;
 		requestWorker: ReturnType<typeof vi.fn>;
+		close: ReturnType<typeof vi.fn>;
 	};
 	summaries: Map<string, SessionSummary>;
 	intentionalStop: boolean;
@@ -29,11 +30,13 @@ interface WorkerFixture {
 interface SupervisorInternals {
 	workers: Map<string, WorkerFixture>;
 	clients: Set<{ id: string; attachedActiveSessionIds: Set<string> }>;
-	catalog: { resolve: ReturnType<typeof vi.fn> };
+	catalog: { resolve: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> };
 	createOrReuseWorker: ReturnType<typeof vi.fn>;
 	stopWorker: ReturnType<typeof vi.fn>;
 	log: ReturnType<typeof vi.fn>;
+	scheduleIdleEvictionSweep(): void;
 	runIdleEvictionSweep(now?: number): Promise<void>;
+	shutdown(exitCode: number, stopWorkers: boolean): Promise<never>;
 	handleCommand(client: object, command: object): Promise<unknown>;
 }
 
@@ -66,6 +69,7 @@ function makeWorker(id: string, summaries: SessionSummary[]): WorkerFixture {
 	const client = {
 		request: vi.fn(async () => success(undefined, "list", { sessions: summaries })),
 		requestWorker: vi.fn(),
+		close: vi.fn(),
 	};
 	return {
 		descriptor: {
@@ -168,6 +172,46 @@ describe("daemon supervisor whole-tree eviction", () => {
 
 		expect(supervisor.stopWorker).not.toHaveBeenCalled();
 		expect(idle.client?.request).not.toHaveBeenCalled();
+	});
+
+	it("awaits an in-flight eviction sweep before shutdown tears down workers", async () => {
+		vi.useFakeTimers();
+		const now = Date.parse("2026-08-01T12:00:00.000Z");
+		vi.setSystemTime(now);
+		let resolveList: (response: ReturnType<typeof success>) => void = () => undefined;
+		const listResponse = new Promise<ReturnType<typeof success>>((resolve) => {
+			resolveList = resolve;
+		});
+		const supervisor = makeSupervisor();
+		const idle = makeWorker("idle", [makeSummary("idle-root", now)]);
+		idle.client!.request = vi.fn(() => listResponse);
+		supervisor.workers.set("idle", idle);
+		supervisor.catalog.stop = vi.fn(async () => undefined);
+		const exit = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+			throw new Error(`exit ${code}`);
+		}) as typeof process.exit);
+
+		try {
+			supervisor.scheduleIdleEvictionSweep();
+			await vi.advanceTimersByTimeAsync(5 * 60_000);
+			expect(idle.client?.request).toHaveBeenCalledOnce();
+
+			const shutdown = supervisor.shutdown(42, false).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			await Promise.resolve();
+			expect(exit).not.toHaveBeenCalled();
+			expect(supervisor.stopWorker).not.toHaveBeenCalled();
+
+			resolveList(success(undefined, "list", { sessions: [makeSummary("idle-root", now)] }));
+			await expect(shutdown).resolves.toEqual(new Error("exit 42"));
+			expect(supervisor.stopWorker).not.toHaveBeenCalled();
+			expect(exit).toHaveBeenCalledWith(42);
+		} finally {
+			exit.mockRestore();
+			vi.useRealTimers();
+		}
 	});
 
 	it("reopens an inactive saved session through the existing create path used before attach", async () => {
