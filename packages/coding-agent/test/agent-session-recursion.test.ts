@@ -735,6 +735,46 @@ describe("AgentSession rlm recursion", () => {
 		expect(child.repliedToParentSinceTask).toBe(true);
 	});
 
+	it("marks a broadcast delivery to the parent as replied without reloading the roster", async () => {
+		const roster = vi.fn(() => ({
+			current: { name: "child", id: "child-session", depth: 1 },
+			entries: [
+				{
+					relationship: "parent" as const,
+					name: "parent",
+					id: "parent-session",
+					depth: 0,
+					status: "idle" as const,
+				},
+			],
+		}));
+		const sendAgentMessage = vi.fn(async () => ({
+			id: "agentmsg-broadcast-reply",
+			source: "agent_message" as const,
+			target: { activeSessionId: "parent-active", sessionId: "parent-session" },
+			message: "status",
+			deliveryStatus: "delivered" as const,
+			deliveryMode: "auto" as const,
+		}));
+		const child = createSession({
+			depth: 1,
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster,
+				sendAgentMessage,
+			},
+		});
+		const handlers = (child as unknown as InspectableRlmSession)._createKernelHostHandlers();
+		const send = handlers["agent_message.send"];
+		if (!send) throw new Error("Missing agent_message.send host handler");
+
+		await expect(send({ target: "all", message: "status" })).resolves.toMatchObject({
+			receipts: [{ message: "status" }],
+		});
+		expect(roster).toHaveBeenCalledTimes(1);
+		expect(child.repliedToParentSinceTask).toBe(true);
+	});
+
 	it("leaves replied state unknown when a child session is rehydrated", () => {
 		const manager = SessionManager.create(tempDir, join(tempDir, "resumed-child"));
 		manager.newSession({ rlmDepth: 1 });

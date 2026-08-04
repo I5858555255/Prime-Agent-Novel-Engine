@@ -517,6 +517,29 @@ export function createAgentMessageHostHandlers(
 			let target: string;
 			if (typeof payload.target === "string") {
 				target = payload.target;
+				if (target.trim().toLowerCase() === "all") {
+					if (!controller.roster) throw new Error("agent family roster is not available in this session");
+					const roster = await controller.roster();
+					const results = await Promise.allSettled(
+						roster.entries.map((entry) =>
+							controller.sendAgentMessage({
+								target: entry.id,
+								message: payload.message as string,
+								deliveryMode: normalizeAgentSessionMessageDeliveryMode(payload.mode),
+								receiverRole: entry.relationship,
+							}),
+						),
+					);
+					const receipts = results.map((result, index) =>
+						result.status === "fulfilled"
+							? result.value
+							: {
+									target: roster.entries[index]!.id,
+									error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+								},
+					);
+					return { receipts } as unknown as Record<string, unknown>;
+				}
 			} else {
 				const role = payload.receiver_role;
 				if (role !== "parent" && role !== "sibling" && role !== "child") {
