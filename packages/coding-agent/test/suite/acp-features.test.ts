@@ -524,6 +524,45 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.cleanup();
 	}, 30_000);
 
+	it("streams a turn the client did not initiate", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("heartbeat-driven work")]);
+		const fixture = await connectAcp(harness);
+
+		// A heartbeat, cron job, or agent-to-agent message starts a turn with no
+		// session/prompt in flight. Those are the turns a long-running harness most
+		// needs to observe, so they must still stream.
+		await harness.session.prompt("out-of-band turn");
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		const text = fixture.updates
+			.filter((u) => u.update?.sessionUpdate === "agent_message_chunk")
+			.map((u) => u.update.content.text)
+			.join("");
+		expect(text, "an unsolicited turn must still reach the ACP client").toContain("heartbeat-driven work");
+		harness.cleanup();
+	}, 30_000);
+
+	it("streams an inbound agent-to-agent message and the turn it triggers", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("acknowledged the sibling")]);
+		const fixture = await connectAcp(harness);
+
+		// A2A delivery arrives as a prompt from another agent, not from the ACP
+		// client. Both the injected message and the resulting turn must be visible.
+		await harness.session.acceptAgentMessagePrompt("Agent-to-agent message received.\n\nplease ack");
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		const kinds = fixture.updates.map((u) => u.update?.sessionUpdate);
+		const text = fixture.updates
+			.filter((u) => u.update?.sessionUpdate === "agent_message_chunk")
+			.map((u) => u.update.content.text)
+			.join("");
+		expect(kinds.length, "inbound agent messages must produce ACP updates").toBeGreaterThan(0);
+		expect(text).toContain("acknowledged the sibling");
+		harness.cleanup();
+	}, 30_000);
+
 	it("advertises prime-agent capabilities without polluting the ACP object root", async () => {
 		const harness = await createHarness();
 		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));
