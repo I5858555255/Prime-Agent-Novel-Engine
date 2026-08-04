@@ -23,6 +23,7 @@ export type SessionActivity = "working" | "idle";
 // Upper bound on the spawn-code source carried in a session summary. Generous
 // enough for real spawn cells while keeping the daemon wire payload bounded.
 const SPAWN_CODE_MAX_CHARS = 4000;
+const MAX_DATE_TIMESTAMP_MS = 8.64e15;
 
 // Lightweight daemon session shape used by list, create, rename, attach, and state responses.
 export interface SessionSummary {
@@ -257,7 +258,11 @@ function latestMessageActivityAt(messages: readonly AgentMessage[]): string | un
 	for (const message of messages) {
 		// Tool results and custom messages are real session activity too. Looking at
 		// every timestamp also keeps this correct for future AgentMessage variants.
-		if (typeof message.timestamp === "number" && Number.isFinite(message.timestamp)) {
+		if (
+			typeof message.timestamp === "number" &&
+			Number.isFinite(message.timestamp) &&
+			Math.abs(message.timestamp) <= MAX_DATE_TIMESTAMP_MS
+		) {
 			latest = latest === undefined ? message.timestamp : Math.max(latest, message.timestamp);
 		}
 	}

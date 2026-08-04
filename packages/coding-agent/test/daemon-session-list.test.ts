@@ -99,6 +99,18 @@ describe("buildSessionList", () => {
 		).toBe(new Date(toolResultTimestamp).toISOString());
 	});
 
+	it("ignores message timestamps outside the valid Date range", () => {
+		const validTimestamp = Date.parse("2026-05-04T00:00:00.000Z");
+		const messages = [
+			{ role: "user", content: "valid", timestamp: validTimestamp },
+			{ role: "assistant", content: "corrupt", timestamp: 8.64e15 + 1 },
+		] as AgentMessage[];
+
+		const summary = summaryForActiveSession(makeState({ activeSessionId: "invalid-timestamp", messages }));
+
+		expect(summary.lastActivityAt).toBe(new Date(validTimestamp).toISOString());
+	});
+
 	it("keeps a session working while background subagents run", () => {
 		const oneMessage = [{ role: "user", content: "hi" }] as unknown as AgentMessage[];
 		const entries = buildSessionList(
