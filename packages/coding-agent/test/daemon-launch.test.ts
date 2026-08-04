@@ -330,7 +330,7 @@ describe("ensureInteractiveDaemonRunning", () => {
 		process.env[ENV_AGENT_DIR] = join(dir, "agent");
 		const logPath = getDaemonLogPath(socketPath);
 		mkdirSync(dirname(logPath), { recursive: true });
-		writeFileSync(logPath, "supervisor: error from an earlier run\n");
+		writeFileSync(logPath, "supervisor: error from an earlier run in /tmp/\u00fcml\u00e4ut-p\u00e4th\n");
 		writeFileSync(entrypoint, "process.exit(7);");
 		const originalEntrypoint = process.argv[1]!;
 		process.argv[1] = entrypoint;

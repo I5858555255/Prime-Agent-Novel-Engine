@@ -426,11 +426,12 @@ function readDaemonLogTail(socketPath: string, offset: number): string {
 	const logPath = getDaemonLogPath(socketPath);
 	let tail = "";
 	try {
-		const content = readFileSync(logPath, "utf8");
-		// A rotation may have shrunk the file below the pre-spawn offset.
+		const content = readFileSync(logPath);
+		// A rotation may have shrunk the file below the pre-spawn byte offset.
 		tail = content
-			.slice(content.length < offset ? 0 : offset)
-			.slice(-DAEMON_STARTUP_LOG_TAIL_BYTES)
+			.subarray(content.length < offset ? 0 : offset)
+			.subarray(-DAEMON_STARTUP_LOG_TAIL_BYTES)
+			.toString("utf8")
 			.trim();
 	} catch {
 		// Missing log means the daemon crashed before logging was set up.
