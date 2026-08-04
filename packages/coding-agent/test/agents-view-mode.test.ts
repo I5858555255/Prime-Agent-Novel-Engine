@@ -160,6 +160,56 @@ describe("AgentsViewMode persistent catalog state", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("keeps a newly pushed scope and the existing live cache when its first poll fails", async () => {
+		const root = summary();
+		const other = summary({ id: "other-active", activeSessionId: "other-active", sessionId: "other-session" });
+		const returnedRoot = { ...root, sessionName: "Updated root" };
+		const scope = { sessionId: root.sessionId, activeSessionId: root.activeSessionId };
+		let runs = 0;
+		vi.spyOn(AgentsViewMode.prototype, "run").mockImplementation(async function (this: AgentsViewMode) {
+			runs += 1;
+			const persistentState = Reflect.get(this, "persistentState") as AgentsViewPersistentState;
+			if (runs === 1) {
+				persistentState.lastSuccessfulLiveSummaries = [other];
+				persistentState.lastSuccessfulSavedSessions = [];
+				return { type: "open", summary: root, hasChildren: false };
+			}
+
+			expect(persistentState.lastSuccessfulLiveSummaries).toEqual([other, returnedRoot]);
+			Reflect.set(this, "client", {
+				isConnected: true,
+				request: vi.fn(async () => {
+					throw new Error("transient list failure");
+				}),
+			});
+			await expect(invoke("refreshSessions", this, { preserveStatusOnError: true })).resolves.toBe(false);
+			expect(persistentState.scopeFrames).toEqual([{ scope, returnChat: returnedRoot }]);
+			return { type: "exit" };
+		});
+		vi.spyOn(DaemonClient.prototype, "connect").mockResolvedValue();
+		vi.spyOn(DaemonAgentConnection, "attach").mockResolvedValue({
+			dispose: vi.fn(async () => {}),
+			onBeforeSessionInvalidate: vi.fn(),
+		} as unknown as DaemonAgentConnection);
+		vi.spyOn(InteractiveMode.prototype, "run").mockResolvedValue({
+			type: "scoped_agents_view",
+			source: {
+				activeSessionId: root.activeSessionId!,
+				sessionId: root.sessionId,
+				sessionName: returnedRoot.sessionName,
+				cwd: root.cwd,
+			},
+		});
+
+		await runAgentsViewMode({
+			config: { cwd: process.cwd() },
+			socketPath: "/tmp/agents-view-test.sock",
+			uiServices: createUiServices(),
+		});
+
+		expect(runs).toBe(2);
+	});
 });
 
 describe("agents view startup notices", () => {

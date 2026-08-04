@@ -486,6 +486,14 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 						scope: nextScope,
 						returnChat: returnedSession,
 					});
+					const cachedLiveSummaries = persistentState.lastSuccessfulLiveSummaries ?? [];
+					const cachedIndex = cachedLiveSummaries.findIndex(
+						(summary) => summary.sessionId === returnedSession.sessionId,
+					);
+					persistentState.lastSuccessfulLiveSummaries =
+						cachedIndex === -1
+							? [...cachedLiveSummaries, returnedSession]
+							: cachedLiveSummaries.map((summary, index) => (index === cachedIndex ? returnedSession : summary));
 					persistentState.query = "";
 				}
 				persistentState.backSession = returnedSession;
