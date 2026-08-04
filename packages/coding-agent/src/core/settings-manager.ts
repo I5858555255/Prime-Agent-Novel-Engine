@@ -580,6 +580,12 @@ export class SettingsManager {
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 
 		if (this.globalSettingsLoadError) {
+			this.recordError(
+				"global",
+				new Error(
+					`Global settings not saved: settings file failed to parse: ${this.globalSettingsLoadError.message}`,
+				),
+			);
 			return;
 		}
 
@@ -597,6 +603,12 @@ export class SettingsManager {
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 
 		if (this.projectSettingsLoadError) {
+			this.recordError(
+				"project",
+				new Error(
+					`Project settings not saved: settings file failed to parse: ${this.projectSettingsLoadError.message}`,
+				),
+			);
 			return;
 		}
 
