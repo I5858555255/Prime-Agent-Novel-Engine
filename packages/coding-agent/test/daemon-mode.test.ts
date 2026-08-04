@@ -1554,11 +1554,14 @@ describe("daemon mode helpers", () => {
 			).createAgentMessageController(() => state);
 
 			const rename = controller.setSessionName?.("shared-root");
+			// Workers and supervisors ship in one process tree, so no capability gate is needed; the
+			// optional field remains compatible with old supervisors because envelope parsing preserves extra fields.
 			await vi.waitFor(() =>
 				expect(receivedCommand).toMatchObject({
 					type: "set_session_name",
 					activeSessionId: "active",
 					name: "shared-root",
+					workerToken: "token",
 				}),
 			);
 			expect(setSessionName).not.toHaveBeenCalled();

@@ -5108,7 +5108,12 @@ export class AgentDaemon {
 			await client.connect(1000);
 			await client.waitForHello(1000);
 			const response = await client.request(
-				{ type: "set_session_name", activeSessionId: state.activeSessionId, name },
+				{
+					type: "set_session_name",
+					activeSessionId: state.activeSessionId,
+					name,
+					workerToken: this.options.worker.authenticationToken,
+				},
 				30_000,
 			);
 			if (!response.success) throw deserializeDaemonError(response);

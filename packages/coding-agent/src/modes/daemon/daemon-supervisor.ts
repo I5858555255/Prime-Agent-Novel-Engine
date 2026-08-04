@@ -1862,7 +1862,12 @@ export class DaemonSupervisor {
 		try {
 			throwIfAdmissionCancelled(admission);
 			const match = await waitForPromptAdmission(
-				this.findWorkerForClient(client, command.activeSessionId),
+				command.type === "set_session_name" && command.workerToken !== undefined
+					? this.findWorker(
+							command.activeSessionId,
+							(worker) => worker.descriptor.authenticationToken === command.workerToken,
+						)
+					: this.findWorkerForClient(client, command.activeSessionId),
 				admission?.controller.signal,
 			);
 			throwIfAdmissionCancelled(admission);

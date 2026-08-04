@@ -940,6 +940,8 @@ interface RlmChildRun {
 	publication: AgentMessageDeferred;
 	/** Child session, once its runtime exists. Used to cancel nested child runs. */
 	session?: AgentSession;
+	/** True once the detached run task has finished its catch and cleanup paths. */
+	settled: boolean;
 	/** Selector snapshot for a delete admitted while runtime startup was still pending. */
 	detachedDeletion?: RlmSubagentRegistryEntry;
 	/** Re-emits the run's rlm_child_update snapshot with its current status. */
@@ -9077,7 +9079,7 @@ export class AgentSession {
 		const subagents: RlmListSubagentsResult["subagents"] = [];
 		const recorded = new Set<string>();
 		for (const run of this._activeRlmChildRuns.values()) {
-			if (this._deletingRlmChildren.has(run.id) || run.status === "cancelled") {
+			if (this._deletingRlmChildren.has(run.id) || run.detachedDeletion || run.status === "cancelled") {
 				continue;
 			}
 			const daemonChild = daemonChildren.get(run.id);
@@ -9333,9 +9335,9 @@ export class AgentSession {
 				this._emitRlmSubagentRemoval(subagent);
 			}
 			const liveSession = run.session;
-			if (run.status === "error" && !liveSession) {
-				run.detachedDeletion = subagent;
+			if (run.status === "error" && !liveSession && run.settled) {
 				this._deletedRlmChildIds.add(childId);
+				this._removeRlmSubagentTracking(childId, run);
 				return { subagent };
 			}
 			if (liveSession) {
@@ -9501,7 +9503,9 @@ export class AgentSession {
 		}
 		const localConflict =
 			[...this._activeRlmChildRuns.values()].some(
-				(run) => run.session?.sessionName === name || (!run.session && run.sessionName === name),
+				(run) =>
+					!run.detachedDeletion &&
+					(run.session?.sessionName === name || (!run.session && run.sessionName === name)),
 			) ||
 			[...this._rlmChildSessions.values()].some((session) => session.sessionName === name) ||
 			[...this._rlmChildCleanupFailures.values()].some((entry) => entry.session_name === name);
@@ -9627,6 +9631,7 @@ export class AgentSession {
 			sessionName,
 			sessionDir: childSessionDir,
 			status: "queued",
+			settled: false,
 			abort: noopRlmChildAbort,
 			publication: createAgentMessageDeferred(),
 		};
@@ -9866,6 +9871,7 @@ export class AgentSession {
 						run.unsubscribe = undefined;
 					}
 				}
+				run.settled = true;
 			}
 		})().catch(() => undefined);
 

@@ -39,6 +39,8 @@ interface WorkerFixture {
 		rootActiveSessionId: string;
 		rootSessionId: string;
 		pid: number;
+		authenticationToken: string;
+		ownerClientId?: string;
 		createCommand: { config: { cwd: string } };
 	};
 	client: {
@@ -77,6 +79,7 @@ function worker(workerId: string, summaries: SessionSummary[] = []): WorkerFixtu
 			rootActiveSessionId: `${workerId}-root-active`,
 			rootSessionId: `${workerId}-root-session`,
 			pid: 1,
+			authenticationToken: `${workerId}-token`,
 			createCommand: { config: { cwd: "/tmp/project" } },
 		},
 		client: {
@@ -375,6 +378,56 @@ describe("daemon supervisor passive subagent topology", () => {
 		expect(secondWorker.client.request).not.toHaveBeenCalled();
 		releaseRename();
 		await expect(first).resolves.toMatchObject({ success: true });
+	});
+
+	it("allows only a resident worker token to rename a client-owned session", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-worker-rename-"));
+		tempDirs.push(directory);
+		const ownedSummary = summary({
+			id: "owned-active",
+			activeSessionId: "owned-active",
+			sessionId: "owned-session",
+			rlmDepth: 0,
+		});
+		const ownedWorker = worker("owned", [ownedSummary]);
+		ownedWorker.descriptor.ownerClientId = "interactive-client";
+		ownedWorker.client.request.mockResolvedValue(success(undefined, "set_session_name"));
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+		supervisor.workers.set("owned", ownedWorker);
+		Object.assign(supervisor, { catalog: { list: vi.fn(async () => []) } });
+		const workerClient = { id: "daemon-client:worker", attachedActiveSessionIds: new Set<string>() };
+
+		await expect(
+			supervisor.handleCommand(workerClient, {
+				type: "set_session_name",
+				activeSessionId: "owned-active",
+				name: "renamed-by-worker",
+				workerToken: "owned-token",
+			}),
+		).resolves.toMatchObject({ success: true });
+		expect(ownedWorker.client.request).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "set_session_name", activeSessionId: "owned-active" }),
+			expect.any(Number),
+		);
+
+		ownedWorker.client.request.mockClear();
+		for (const workerToken of [undefined, "foreign-token"]) {
+			await expect(
+				supervisor.handleCommand(workerClient, {
+					type: "set_session_name",
+					activeSessionId: "owned-active",
+					name: "unauthorized",
+					...(workerToken ? { workerToken } : {}),
+				}),
+			).rejects.toThrow("Unknown active session: owned-active");
+		}
+		expect(ownedWorker.client.request).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "set_session_name" }),
+			expect.any(Number),
+		);
 	});
 
 	it("serializes active saved-session renames until the worker commits", async () => {
