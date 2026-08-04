@@ -475,6 +475,28 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.cleanup();
 	}, 30_000);
 
+	it("stops in-flight work when a session is closed mid-turn", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("working")]);
+		const fixture = await connectAcp(harness);
+
+		// InProcessAgentConnection.abort() routes to session.requestAbort().
+		const requestAbort = vi.spyOn(harness.session, "requestAbort");
+
+		// Close while the turn is still in flight, without awaiting the prompt first.
+		const turn = fixture.agent
+			.request("session/prompt", { sessionId: fixture.sessionId, prompt: [{ type: "text", text: "go" }] })
+			.catch(() => "rejected");
+		await fixture.agent.request("session/close", { sessionId: fixture.sessionId });
+		await turn;
+		const aborted = requestAbort.mock.calls.length > 0;
+
+		// Closing must abort the underlying agent, not just drop local bookkeeping:
+		// otherwise the agent keeps burning tokens with nobody listening.
+		expect(aborted, "session/close must abort the underlying agent").toBe(true);
+		harness.cleanup();
+	}, 30_000);
+
 	it("advertises prime-agent capabilities without polluting the ACP object root", async () => {
 		const harness = await createHarness();
 		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));

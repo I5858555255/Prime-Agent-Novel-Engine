@@ -261,9 +261,16 @@ export async function runAcpModeWithConnection(
 			if (session?.id !== params.sessionId) {
 				throw new Error(`Unknown ACP session: ${params.sessionId}`);
 			}
-			session.abort?.abort();
-			session.unsubscribe?.();
+			// Stop real work, not just local bookkeeping: aborting only the local
+			// controller leaves the agent running with nobody listening, so closing
+			// must abort the connection the same way session/cancel does.
+			const closing = session;
 			session = undefined;
+			closing.unsubscribe?.();
+			if (closing.abort) {
+				closing.abort.abort();
+				await connection.abort().catch(() => undefined);
+			}
 			return {};
 		})
 		.onNotification("session/cancel", async (ctx: any) => {
