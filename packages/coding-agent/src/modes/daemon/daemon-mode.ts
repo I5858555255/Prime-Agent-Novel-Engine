@@ -5220,13 +5220,13 @@ export class AgentDaemon {
 	private agentFamilyEntry(state: ActiveSessionState): AgentFamilyCatalogEntry {
 		const metadata = state.runtime.metadata;
 		const headerParent = this.resolveHeaderParentSessionPath(state);
-		const parentSessionPath = metadata.parentSessionFile ?? headerParent;
+		const parentSessionPath = headerParent ?? metadata.parentSessionFile;
 		return {
 			id: state.runtime.session.sessionId,
 			...(state.runtime.session.sessionName ? { name: state.runtime.session.sessionName } : {}),
 			depth: state.runtime.session.rlmDepth ?? 0,
 			status: "running",
-			...(metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
+			...(!headerParent && metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
 			...(parentSessionPath ? { parentSessionPath: canonicalSessionPath(parentSessionPath) } : {}),
 			...(state.runtime.session.sessionFile
 				? { sessionPath: canonicalSessionPath(state.runtime.session.sessionFile) }

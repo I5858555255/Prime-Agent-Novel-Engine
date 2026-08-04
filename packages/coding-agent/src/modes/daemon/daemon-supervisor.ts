@@ -1748,17 +1748,21 @@ export class DaemonSupervisor {
 				const match = await this.findWorkerForClient(client, command.activeSessionId);
 				return this.forwardToWorker(match.worker, command);
 			}
-			case "rename_saved_session":
-				if (!command.activeSessionId) {
-					const target = await this.savedSessionNameReservationInput(command.sessionPath, command.name.trim());
-					return await this.withSessionNameReservation(target, async () => {
-						await this.assertSupervisorSavedSessionNameAvailable(command.sessionPath, target.name);
+			case "rename_saved_session": {
+				const target = await this.savedSessionNameReservationInput(command.sessionPath, command.name.trim());
+				return await this.withSessionNameReservation(target, async () => {
+					await this.assertSupervisorSavedSessionNameAvailable(command.sessionPath, target.name);
+					if (!command.activeSessionId) {
 						await this.catalog.rename(command.sessionPath, command.name);
 						return success(command.id, command.type);
+					}
+					const match = await this.findWorkerForClient(client, command.activeSessionId);
+					return await this.forwardToWorker(match.worker, {
+						...command,
+						activeSessionId: match.summary.activeSessionId ?? match.summary.id,
 					});
-				}
-				await this.assertSupervisorSavedSessionNameAvailable(command.sessionPath, command.name.trim());
-				break;
+				});
+			}
 			case "delete_saved_session":
 				if (!command.activeSessionId) {
 					const active = this.findWorkerBySessionFile(command.sessionPath);
@@ -2950,12 +2954,12 @@ export class DaemonSupervisor {
 		parentSessionId?: string;
 		parentSessionPath?: string;
 	}): string {
-		const parentIdentity = input.parentSessionPath
-			? `path:${canonicalSessionPath(input.parentSessionPath)}`
+		const [parentType, parentValue] = input.parentSessionPath
+			? ["path", canonicalSessionPath(input.parentSessionPath)]
 			: input.parentSessionId
-				? `id:${input.parentSessionId}`
-				: "root";
-		return `${input.depth}:${parentIdentity}:${input.name}`;
+				? ["id", input.parentSessionId]
+				: ["root", ""];
+		return JSON.stringify([input.depth, parentType, parentValue, input.name]);
 	}
 
 	private async withSessionNameReservation<T>(

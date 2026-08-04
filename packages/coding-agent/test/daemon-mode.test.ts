@@ -2463,6 +2463,47 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("uses the persisted header parent after a runtime session replacement", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-applied-family.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const originalParent = makeState("original-parent");
+		const persistedParent = makeState("persisted-parent");
+		const child = makeState("child");
+		originalParent.runtime = {
+			...originalParent.runtime,
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: { sessionId: "session-original", sessionFile: "/tmp/original-parent.jsonl" },
+		} as never;
+		persistedParent.runtime = {
+			...persistedParent.runtime,
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: { sessionId: "session-persisted", sessionFile: "/tmp/persisted-parent.jsonl" },
+		} as never;
+		child.runtime = {
+			...child.runtime,
+			metadata: {
+				kind: "subagent",
+				createdAt: 1,
+				parentSessionId: "session-original",
+				parentSessionFile: "/tmp/original-parent.jsonl",
+			},
+			session: {
+				sessionId: "session-child",
+				sessionFile: "/tmp/child.jsonl",
+				rlmDepth: 1,
+				sessionManager: { getHeader: () => ({ parentSession: "/tmp/persisted-parent.jsonl" }) },
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			assertAgentFamilyReachable(current: ActiveSessionState, target: ActiveSessionState): void;
+		};
+
+		expect(() => internals.assertAgentFamilyReachable(child, persistedParent)).not.toThrow();
+		expect(() => internals.assertAgentFamilyReachable(child, originalParent)).toThrow(AGENT_FAMILY_REACH_ERROR);
+	});
+
 	it("labels a reopened header-linked child and parent consistently with family reach", () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-header-relationship.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },

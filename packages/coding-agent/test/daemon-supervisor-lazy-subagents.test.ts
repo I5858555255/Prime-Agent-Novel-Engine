@@ -23,6 +23,12 @@ interface SupervisorInternals {
 		target: Record<string, unknown>,
 		name: string,
 	): void;
+	sessionNameReservationKey(input: {
+		name: string;
+		depth: number;
+		parentSessionId?: string;
+		parentSessionPath?: string;
+	}): string;
 	handleCommand(client: object, command: Record<string, unknown>): Promise<unknown>;
 }
 
@@ -299,6 +305,19 @@ describe("daemon supervisor passive subagent topology", () => {
 		expect(launchWorker).toHaveBeenCalledOnce();
 	});
 
+	it("uses injective structural session name reservation keys", () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-reservation-key-"));
+		tempDirs.push(directory);
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+
+		expect(supervisor.sessionNameReservationKey({ name: "b:c", depth: 1, parentSessionPath: "/a" })).not.toBe(
+			supervisor.sessionNameReservationKey({ name: "c", depth: 1, parentSessionPath: "/a:b" }),
+		);
+	});
+
 	it("holds a root rename reservation until the worker commits", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-root-rename-race-"));
 		tempDirs.push(directory);
@@ -353,6 +372,78 @@ describe("daemon supervisor passive subagent topology", () => {
 				name: "shared-root",
 			}),
 		).rejects.toThrow("an agent of that name already exists at depth 0 under this parent");
+		expect(secondWorker.client.request).not.toHaveBeenCalled();
+		releaseRename();
+		await expect(first).resolves.toMatchObject({ success: true });
+	});
+
+	it("serializes active saved-session renames until the worker commits", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-active-saved-rename-race-"));
+		tempDirs.push(directory);
+		const parentSessionPath = join(directory, "parent.jsonl");
+		const firstPath = join(directory, "first.jsonl");
+		const secondPath = join(directory, "second.jsonl");
+		const firstSummary = summary({
+			id: "first-active",
+			activeSessionId: "first-active",
+			sessionId: "first-session",
+			sessionFile: firstPath,
+			parentSessionPath,
+			rlmDepth: 1,
+		});
+		const secondSummary = summary({
+			id: "second-active",
+			activeSessionId: "second-active",
+			sessionId: "second-session",
+			sessionFile: secondPath,
+			parentSessionPath,
+			rlmDepth: 1,
+		});
+		let releaseRename: () => void = () => {};
+		const renameGate = new Promise<void>((resolve) => {
+			releaseRename = resolve;
+		});
+		const firstWorker = worker("first", [firstSummary]);
+		firstWorker.client.request.mockImplementation(async () => {
+			await renameGate;
+			return success(undefined, "rename_saved_session", firstSummary);
+		});
+		const secondWorker = worker("second", [secondSummary]);
+		secondWorker.client.request.mockResolvedValue(success(undefined, "rename_saved_session", secondSummary));
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+		supervisor.workers.set("first", firstWorker);
+		supervisor.workers.set("second", secondWorker);
+		Object.assign(supervisor, {
+			catalog: {
+				siblings: vi.fn(async () => []),
+				list: vi.fn(async () => []),
+			},
+		});
+		const client = { id: "client", attachedActiveSessionIds: new Set<string>() };
+
+		const first = supervisor.handleCommand(client, {
+			type: "rename_saved_session",
+			activeSessionId: "first-active",
+			sessionPath: firstPath,
+			name: "shared",
+		});
+		await vi.waitFor(() =>
+			expect(firstWorker.client.request).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "rename_saved_session" }),
+				expect.any(Number),
+			),
+		);
+		await expect(
+			supervisor.handleCommand(client, {
+				type: "rename_saved_session",
+				activeSessionId: "second-active",
+				sessionPath: secondPath,
+				name: "shared",
+			}),
+		).rejects.toThrow("an agent of that name already exists at depth 1 under this parent");
 		expect(secondWorker.client.request).not.toHaveBeenCalled();
 		releaseRename();
 		await expect(first).resolves.toMatchObject({ success: true });
