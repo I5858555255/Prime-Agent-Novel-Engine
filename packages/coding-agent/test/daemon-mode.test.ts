@@ -85,6 +85,51 @@ describe("daemon mode helpers", () => {
 		expect(setSessionName).toHaveBeenCalledOnce();
 	});
 
+	it("treats a depth-zero fork as a sibling of another root", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-fork-family.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const fork = makeState("fork");
+		fork.runtime = {
+			...fork.runtime,
+			metadata: {
+				kind: "top-level",
+				createdAt: 1,
+				parentSessionId: "fork-origin",
+				parentSessionFile: "/tmp/fork-origin.jsonl",
+			},
+			session: {
+				sessionId: "session-fork",
+				sessionFile: "/tmp/fork.jsonl",
+				rlmDepth: 0,
+				sessionManager: { getHeader: () => ({ parentSession: "/tmp/fork-origin.jsonl" }) },
+			},
+		} as never;
+		const root = makeState("root");
+		root.runtime = {
+			...root.runtime,
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: {
+				sessionId: "session-root",
+				sessionFile: "/tmp/root.jsonl",
+				rlmDepth: 0,
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			agentFamilyEntry(state: ActiveSessionState): {
+				parentSessionId?: string;
+				parentSessionPath?: string;
+			};
+			isAgentFamilyReachable(current: ActiveSessionState, target: ActiveSessionState): boolean;
+		};
+
+		expect(internals.agentFamilyEntry(fork)).not.toHaveProperty("parentSessionId");
+		expect(internals.agentFamilyEntry(fork)).not.toHaveProperty("parentSessionPath");
+		expect(internals.isAgentFamilyReachable(root, fork)).toBe(true);
+		expect(internals.isAgentFamilyReachable(fork, root)).toBe(true);
+	});
+
 	it("finds only direct child active sessions", () => {
 		const parent = makeState("parent");
 		const child = makeState("child", "parent");

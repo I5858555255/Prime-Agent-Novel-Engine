@@ -2943,15 +2943,20 @@ export class DaemonSupervisor {
 				(info.rlmDepth ?? (info.parentSessionPath ? -1 : 0)) === 0 &&
 				!activePaths.has(canonicalSessionPath(info.path)),
 		);
-		return [...active, ...savedRoots.map((info) => summaryForInactiveSession(info))].map((summary) => ({
-			id: summary.sessionId,
-			...(summary.sessionName ? { name: summary.sessionName } : {}),
-			depth: summary.rlmDepth ?? 0,
-			status: classifySessionRosterStatus(summary),
-			...(summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
-			...(summary.parentSessionPath ? { parentSessionPath: canonicalSessionPath(summary.parentSessionPath) } : {}),
-			...(summary.sessionFile ? { sessionPath: canonicalSessionPath(summary.sessionFile) } : {}),
-		}));
+		return [...active, ...savedRoots.map((info) => summaryForInactiveSession(info))].map((summary) => {
+			const depth = summary.rlmDepth ?? 0;
+			return {
+				id: summary.sessionId,
+				...(summary.sessionName ? { name: summary.sessionName } : {}),
+				depth,
+				status: classifySessionRosterStatus(summary),
+				...(depth > 0 && summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
+				...(depth > 0 && summary.parentSessionPath
+					? { parentSessionPath: canonicalSessionPath(summary.parentSessionPath) }
+					: {}),
+				...(summary.sessionFile ? { sessionPath: canonicalSessionPath(summary.sessionFile) } : {}),
+			};
+		});
 	}
 
 	private async withSessionNameReservation<T>(
@@ -3091,13 +3096,16 @@ export class DaemonSupervisor {
 	}
 
 	private familyCatalogEntry(summary: SessionSummary): AgentFamilyCatalogEntry {
+		const depth = summary.rlmDepth ?? 0;
 		return {
 			id: summary.sessionId,
 			...(summary.sessionName ? { name: summary.sessionName } : {}),
-			depth: summary.rlmDepth ?? 0,
+			depth,
 			status: classifySessionRosterStatus(summary),
-			...(summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
-			...(summary.parentSessionPath ? { parentSessionPath: canonicalSessionPath(summary.parentSessionPath) } : {}),
+			...(depth > 0 && summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
+			...(depth > 0 && summary.parentSessionPath
+				? { parentSessionPath: canonicalSessionPath(summary.parentSessionPath) }
+				: {}),
 			...(summary.sessionFile ? { sessionPath: canonicalSessionPath(summary.sessionFile) } : {}),
 		};
 	}

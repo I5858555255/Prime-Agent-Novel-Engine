@@ -13,6 +13,7 @@ import {
 	normalizeAgentSessionMessage,
 	parseAgentSessionMessagePromptId,
 	resolveAgentSessionMessageStreamingBehavior,
+	sessionNameReservationKey,
 } from "../src/core/agent-messages.js";
 
 describe("agent session bus", () => {
@@ -328,6 +329,19 @@ describe("agent session bus", () => {
 		expect(() => assertAgentFamilyReach(sibling, grandchild)).toThrow(
 			"Agent reach is limited to parent, siblings, and children",
 		);
+	});
+
+	it("collapses depth-zero name reservations to the root scope", () => {
+		const rootKey = sessionNameReservationKey({ name: "worker", depth: 0 });
+
+		expect(
+			sessionNameReservationKey({
+				name: "worker",
+				depth: 0,
+				parentSessionId: "fork-origin",
+				parentSessionPath: "/sessions/fork-origin.jsonl",
+			}),
+		).toBe(rootKey);
 	});
 
 	it("enforces names per sibling set across active and inactive catalog rows", () => {

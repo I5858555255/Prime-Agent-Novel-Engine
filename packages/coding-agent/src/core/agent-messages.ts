@@ -183,11 +183,14 @@ export function sessionNameReservationKey(input: {
 	parentSessionId?: string;
 	parentSessionPath?: string;
 }): string {
-	const [parentType, parentValue] = input.parentSessionPath
-		? ["path", canonicalSessionPath(input.parentSessionPath)]
-		: input.parentSessionId
-			? ["id", input.parentSessionId]
-			: ["root", ""];
+	const [parentType, parentValue] =
+		input.depth === 0
+			? ["root", ""]
+			: input.parentSessionPath
+				? ["path", canonicalSessionPath(input.parentSessionPath)]
+				: input.parentSessionId
+					? ["id", input.parentSessionId]
+					: ["root", ""];
 	return JSON.stringify([input.depth, parentType, parentValue, input.name]);
 }
 

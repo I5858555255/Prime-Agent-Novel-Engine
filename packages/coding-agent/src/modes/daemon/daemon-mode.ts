@@ -4992,10 +4992,11 @@ export class AgentDaemon {
 			);
 		const byId = new Map<string, AgentFamilyCatalogEntry>(savedRoots.map((entry) => [entry.id, entry]));
 		const addAgent = (agent: AgentSessionMessageAgentSummary) => {
+			const depth = agent.rlmDepth ?? 0;
 			byId.set(agent.sessionId, {
 				id: agent.sessionId,
 				...(agent.sessionName ? { name: agent.sessionName } : {}),
-				depth: agent.rlmDepth ?? 0,
+				depth,
 				status: agent.status ?? "idle",
 				...(agent.runtimeKind === "subagent"
 					? (() => {
@@ -5004,8 +5005,10 @@ export class AgentDaemon {
 							return repliedSinceTask === undefined ? {} : { repliedSinceTask };
 						})()
 					: {}),
-				...(agent.parentSessionId ? { parentSessionId: agent.parentSessionId } : {}),
-				...(agent.parentSessionPath ? { parentSessionPath: canonicalSessionPath(agent.parentSessionPath) } : {}),
+				...(depth > 0 && agent.parentSessionId ? { parentSessionId: agent.parentSessionId } : {}),
+				...(depth > 0 && agent.parentSessionPath
+					? { parentSessionPath: canonicalSessionPath(agent.parentSessionPath) }
+					: {}),
 				...(agent.sessionPath ? { sessionPath: canonicalSessionPath(agent.sessionPath) } : {}),
 			});
 		};
@@ -5126,13 +5129,18 @@ export class AgentDaemon {
 		}
 		const session = state.runtime.session;
 		const metadata = state.runtime.metadata;
-		const headerParent = this.resolveHeaderParentSessionPath(state);
+		const depth = session.rlmDepth ?? 0;
+		const headerParent = depth > 0 ? this.resolveHeaderParentSessionPath(state) : undefined;
 		return this.withSessionNameReservation(
 			{
 				name: normalizedName,
-				depth: session.rlmDepth ?? 0,
-				...(!headerParent && metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
-				parentSessionPath: headerParent ?? metadata.parentSessionFile,
+				depth,
+				...(depth > 0 && !headerParent && metadata.parentSessionId
+					? { parentSessionId: metadata.parentSessionId }
+					: {}),
+				...(depth > 0 && (headerParent ?? metadata.parentSessionFile)
+					? { parentSessionPath: headerParent ?? metadata.parentSessionFile }
+					: {}),
 			},
 			async () => {
 				await this.assertStateSessionNameAvailable(state, normalizedName);
@@ -5221,14 +5229,17 @@ export class AgentDaemon {
 
 	private agentFamilyEntry(state: ActiveSessionState): AgentFamilyCatalogEntry {
 		const metadata = state.runtime.metadata;
-		const headerParent = this.resolveHeaderParentSessionPath(state);
-		const parentSessionPath = headerParent ?? metadata.parentSessionFile;
+		const depth = state.runtime.session.rlmDepth ?? 0;
+		const headerParent = depth > 0 ? this.resolveHeaderParentSessionPath(state) : undefined;
+		const parentSessionPath = depth > 0 ? (headerParent ?? metadata.parentSessionFile) : undefined;
 		return {
 			id: state.runtime.session.sessionId,
 			...(state.runtime.session.sessionName ? { name: state.runtime.session.sessionName } : {}),
-			depth: state.runtime.session.rlmDepth ?? 0,
+			depth,
 			status: "running",
-			...(!headerParent && metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
+			...(depth > 0 && !headerParent && metadata.parentSessionId
+				? { parentSessionId: metadata.parentSessionId }
+				: {}),
 			...(parentSessionPath ? { parentSessionPath: canonicalSessionPath(parentSessionPath) } : {}),
 			...(state.runtime.session.sessionFile
 				? { sessionPath: canonicalSessionPath(state.runtime.session.sessionFile) }
@@ -5238,17 +5249,20 @@ export class AgentDaemon {
 
 	private passiveAgentFamilyEntry(passive: PassiveRlmSubagent): AgentFamilyCatalogEntry {
 		const entry = passive.entry;
+		const depth = passive.info.rlmDepth ?? entry.rlmDepth ?? passive.chain.length;
 		const parentSessionPath =
-			entry.parentSessionFile ??
-			passive.chain.at(-2)?.sessionFile ??
-			passive.rootParentState?.runtime.session.sessionFile ??
-			passive.rootInfo?.path;
+			depth > 0
+				? (entry.parentSessionFile ??
+					passive.chain.at(-2)?.sessionFile ??
+					passive.rootParentState?.runtime.session.sessionFile ??
+					passive.rootInfo?.path)
+				: undefined;
 		return {
 			id: passive.info.id,
 			name: passive.info.name ?? entry.sessionName,
-			depth: passive.info.rlmDepth ?? entry.rlmDepth ?? passive.chain.length,
+			depth,
 			status: "idle",
-			parentSessionId: entry.parentSessionId,
+			...(depth > 0 && entry.parentSessionId ? { parentSessionId: entry.parentSessionId } : {}),
 			...(parentSessionPath ? { parentSessionPath: canonicalSessionPath(parentSessionPath) } : {}),
 			sessionPath: canonicalSessionPath(entry.sessionFile),
 		};
