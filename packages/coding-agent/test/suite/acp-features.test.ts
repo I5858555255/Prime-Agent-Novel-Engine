@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { ENV_AGENT_DIR } from "../../src/config.js";
 import type { AgentSessionRuntime } from "../../src/core/agent-session-runtime.js";
 import { PRIME_AGENT_META_NAMESPACE } from "../../src/modes/acp/acp-meta.js";
 import { runAcpModeWithConnection } from "../../src/modes/acp/index.js";
@@ -194,6 +198,35 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.cleanup();
 	}, 30_000);
 
+	it("refuses a concurrent prompt instead of making the running turn uncancellable", async () => {
+		const harness = await createHarness();
+		// Two turns queued; the second must be rejected, not clobber the first.
+		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		const fixture = await connectAcp(harness);
+
+		const first = fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [{ type: "text", text: "one" }],
+		});
+		const second = fixture.agent
+			.request("session/prompt", { sessionId: fixture.sessionId, prompt: [{ type: "text", text: "two" }] })
+			.then(() => "accepted")
+			.catch(() => "rejected");
+
+		const [firstResult, secondOutcome] = await Promise.all([first, second]);
+		expect(firstResult.stopReason).toBe("end_turn");
+		expect(secondOutcome).toBe("rejected");
+
+		// The session stays usable for a later, sequential turn.
+		harness.appendResponses([fauxAssistantMessage("third")]);
+		const third = await fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [{ type: "text", text: "three" }],
+		});
+		expect(third.stopReason).toBe("end_turn");
+		harness.cleanup();
+	}, 30_000);
+
 	it("reports a cwd mismatch in _meta instead of failing or silently disagreeing", async () => {
 		const harness = await createHarness();
 		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));
@@ -268,6 +301,180 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.cleanup();
 	}, 30_000);
 
+	it("surfaces a real compaction to the ACP client", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi: any) => {
+					pi.on("session_before_compact", async (event: any) => ({
+						compaction: {
+							summary: "compacted for ACP",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+						},
+					}));
+				},
+			],
+		});
+		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		const fixture = await connectAcp(harness);
+
+		await fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [{ type: "text", text: "one" }],
+		});
+		// Drive a genuine compaction rather than synthesizing the event.
+		const result = await harness.session.compact();
+		expect(result.summary).toBe("compacted for ACP");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		const compaction = fixture.metaOf("compaction");
+		expect(compaction.length, "compaction must reach the ACP client").toBeGreaterThan(0);
+		expect(compaction.at(-1)).toMatchObject({ summary: "compacted for ACP" });
+		harness.cleanup();
+	}, 60_000);
+
+	it("surfaces real goal state transitions to the ACP client", async () => {
+		const harness = await createHarness({ initialGoal: { objective: "ship ACP mode" } });
+		harness.setResponses([fauxAssistantMessage("working on it")]);
+		const fixture = await connectAcp(harness);
+
+		await fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [{ type: "text", text: "start" }],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		const goals = fixture.metaOf("goal");
+		expect(goals.length, "goal state must reach the ACP client").toBeGreaterThan(0);
+		expect(goals.at(-1)).toMatchObject({ objective: "ship ACP mode" });
+		harness.cleanup();
+	}, 60_000);
+
+	it("surfaces a real /refine outcome to the ACP client", async () => {
+		// Global refinement writes under the agent dir. Use the real env var name
+		// (derived from package piConfig, so PRIME_AGENT_CODING_AGENT_DIR) rather
+		// than a hardcoded guess, and set it before the session exists: this test
+		// must never touch the developer's real harness state.
+		const previousAgentDir = process.env[ENV_AGENT_DIR];
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-acp-refine-"));
+		process.env[ENV_AGENT_DIR] = agentDir;
+		const harness = await createHarness({ persistSession: true });
+		try {
+			harness.setResponses([fauxAssistantMessage("noted")]);
+			const fixture = await connectAcp(harness);
+
+			// Stub ONLY the planner, which is the refiner's LLM call. The apply phase
+			// then runs for real: it applies the proposal, persists harness state, and
+			// emits the genuine refine_complete event this test is about.
+			const internals = harness.session as unknown as {
+				_planRefine: (...args: unknown[]) => Promise<unknown>;
+			};
+			vi.spyOn(internals, "_planRefine").mockResolvedValue({
+				id: "acp_refine_plan",
+				proposal: {
+					summary: "refined for ACP",
+					rationale: "trajectory evidence",
+					expectedOutcome: "ACP surfaces refinement",
+					edits: [
+						{
+							action: "create",
+							kind: "memory",
+							id: "acp_verification_memory",
+							title: "ACP refinement",
+							content: "ACP mode surfaces refinement outcomes.",
+						},
+					],
+				},
+			});
+
+			await fixture.agent.request("session/prompt", {
+				sessionId: fixture.sessionId,
+				prompt: [{ type: "text", text: "remember this" }],
+			});
+			await harness.session.refine({ global: true });
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const refinements = fixture.metaOf("refinement");
+			expect(refinements.length, "refinement outcome must reach the ACP client").toBeGreaterThan(0);
+			expect(refinements.at(-1)).toMatchObject({ status: "complete", summary: "refined for ACP" });
+		} finally {
+			if (previousAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = previousAgentDir;
+			rmSync(agentDir, { recursive: true, force: true });
+			harness.cleanup();
+		}
+	}, 60_000);
+
+	it("closes a session, stops forwarding events, and frees the connection", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		const fixture = await connectAcp(harness);
+
+		await fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [{ type: "text", text: "one" }],
+		});
+		const beforeClose = fixture.updates.length;
+		expect(beforeClose).toBeGreaterThan(0);
+
+		await fixture.agent.request("session/close", { sessionId: fixture.sessionId });
+
+		// After close the subscription is released, so further agent activity must
+		// not reach the client.
+		await harness.session.prompt("post-close activity");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(fixture.updates.length).toBe(beforeClose);
+
+		// Closing frees the single-session slot, so a new session is accepted.
+		const next = await fixture.agent.request("session/new", { cwd: harness.tempDir, mcpServers: [] });
+		expect(next.sessionId).toBeTruthy();
+		expect(next.sessionId).not.toBe(fixture.sessionId);
+
+		// Closing an unknown session is an error, not a silent no-op.
+		await expect(fixture.agent.request("session/close", { sessionId: "nope" })).rejects.toThrow();
+		harness.cleanup();
+	}, 30_000);
+
+	it("tears down its session when the client disconnects", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("hi")]);
+		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));
+		const toAgent = new TransformStream<Uint8Array, Uint8Array>();
+		const toClient = new TransformStream<Uint8Array, Uint8Array>();
+		const updates: any[] = [];
+
+		// Keep the promise so we can prove the mode returns instead of hanging.
+		const modeDone = runAcpModeWithConnection(connection, {
+			stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+		} as any);
+
+		const handle = acp
+			.client({ name: "disconnect" })
+			.onNotification("session/update", (ctx: any) => {
+				updates.push(ctx.params);
+			})
+			.connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+		await handle.agent.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+		await handle.agent.request("session/new", { cwd: harness.tempDir, mcpServers: [] });
+
+		// Simulate the client going away for real: EOF on the agent's input, which
+		// is what stdin closing looks like in production. With an injected transport
+		// the mode must clean up and return rather than exiting the host process.
+		handle.close();
+		await toAgent.writable.close().catch(() => undefined);
+		await expect(
+			Promise.race([modeDone, new Promise((_, reject) => setTimeout(() => reject(new Error("hung")), 5_000))]),
+		).resolves.toBeUndefined();
+
+		// Post-disconnect agent activity must not reach the released subscription.
+		const before = updates.length;
+		await harness.session.prompt("after disconnect");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(updates.length).toBe(before);
+		harness.cleanup();
+	}, 30_000);
+
 	it("advertises prime-agent capabilities without polluting the ACP object root", async () => {
 		const harness = await createHarness();
 		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));
@@ -287,6 +494,8 @@ describe("ACP mode preserves prime-agent features", () => {
 		// Namespaced only: unknown root keys are reserved for future ACP fields.
 		expect(init._meta).toHaveProperty(PRIME_AGENT_META_NAMESPACE);
 		expect(Object.keys(init.agentCapabilities ?? {})).not.toContain("subagents");
+		// close is advertised, so a client knows it may release the session slot.
+		expect(init.agentCapabilities?.sessionCapabilities?.close).toBeDefined();
 		harness.cleanup();
 	}, 30_000);
 });

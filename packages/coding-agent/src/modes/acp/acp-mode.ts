@@ -138,12 +138,16 @@ export async function runAcpModeWithConnection(
 	const stream =
 		options.stream ?? acp.ndJsonStream(rawStdoutSink(), Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>);
 
-	acp.agent({ name: "prime-agent" })
+	const handle = acp
+		.agent({ name: "prime-agent" })
 		.onRequest("initialize", async () => ({
 			protocolVersion: acp.PROTOCOL_VERSION,
 			agentCapabilities: {
 				loadSession: false,
 				promptCapabilities: { image: true, embeddedContext: true },
+				// Advertise close so a client knows it can release the session (and
+				// the single-session slot) instead of dropping the connection.
+				sessionCapabilities: { close: {} },
 			},
 			agentInfo: { name: "prime-agent", title: "Prime Agent", version: VERSION },
 			// Advertise prime-agent extras under a namespaced key: ACP reserves
@@ -180,14 +184,13 @@ export async function runAcpModeWithConnection(
 			}
 			const sessionId = randomUUID();
 			const entry: AcpSessionEntry = { id: sessionId, abort: undefined, unsubscribe: undefined };
-			session = entry;
 			// Subscribe for the session lifetime, not per prompt turn: prime-agent
-			// subagents are fire-and-forget and keep reporting after the spawning
-			// turn ends, so a turn-scoped subscription would drop their updates.
-			// One mapping state per session so streaming bash output stays correlated
-			// with the run that produced it.
+			// subagents are fire-and-forget and keep reporting after the spawning turn
+			// ends, so a turn-scoped subscription would drop their updates. One
+			// mapping state per session keeps streaming bash output correlated with
+			// the run that produced it.
 			const mappingState: AcpEventMappingState = {};
-			entry.unsubscribe = connection.subscribe((event) => {
+			const unsubscribe = connection.subscribe((event) => {
 				const notify = (update: Record<string, unknown>) =>
 					void ctx.client.notify(acp.methods.client.session.update, { sessionId, update }).catch(() => undefined);
 				// Heartbeats and cron schedules are connection-level rather than
@@ -202,6 +205,10 @@ export async function runAcpModeWithConnection(
 					notify(update);
 				}
 			});
+			// Claim the single-session slot only once the subscription exists, so a
+			// failed subscribe cannot leave the slot occupied and unusable.
+			entry.unsubscribe = unsubscribe;
+			session = entry;
 			return {
 				sessionId,
 				...(cwdMismatch ? { _meta: primeAgentMeta({ cwd: cwdMismatch }) } : {}),
@@ -212,6 +219,12 @@ export async function runAcpModeWithConnection(
 			const entry = session?.id === params.sessionId ? session : undefined;
 			if (!entry) throw new Error(`Unknown ACP session: ${params.sessionId}`);
 
+			// ACP allows one turn at a time per session. Refuse a concurrent prompt
+			// rather than overwriting the running turn's controller, which would make
+			// the live turn uncancellable and let the loser's cleanup clear it.
+			if (entry.abort) {
+				throw new Error("A prompt turn is already running for this ACP session");
+			}
 			const abort = new AbortController();
 			entry.abort = abort;
 
@@ -236,8 +249,22 @@ export async function runAcpModeWithConnection(
 				if (abort.signal.aborted) return { stopReason: "cancelled" satisfies AcpStopReason };
 				throw error;
 			} finally {
-				entry.abort = undefined;
+				// Only clear our own controller: a later turn must not be cleared by
+				// an earlier one unwinding.
+				if (entry.abort === abort) entry.abort = undefined;
 			}
+		})
+		.onRequest("session/close", async (ctx: any) => {
+			// Releasing the subscription matters: it is the only thing that stops
+			// forwarding events, and closing frees the connection for a new session.
+			const params = ctx.params as { sessionId: string };
+			if (session?.id !== params.sessionId) {
+				throw new Error(`Unknown ACP session: ${params.sessionId}`);
+			}
+			session.abort?.abort();
+			session.unsubscribe?.();
+			session = undefined;
+			return {};
 		})
 		.onNotification("session/cancel", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string };
@@ -250,5 +277,16 @@ export async function runAcpModeWithConnection(
 		})
 		.connect(stream);
 
-	return new Promise<never>(() => {});
+	// Exit when the client disconnects (stdin EOF or a closed transport). Blocking
+	// forever would leave an orphaned agent per run, which matters most for a
+	// harness that spawns many short-lived sessions.
+	await handle.closed.catch(() => undefined);
+	session?.abort?.abort();
+	session?.unsubscribe?.();
+	session = undefined;
+	await connection.dispose().catch(() => undefined);
+	// Only the real stdio entrypoint owns the process; a caller-supplied transport
+	// (tests, embedding) must never have its host exited from under it.
+	if (options.stream) return undefined as never;
+	return process.exit(0) as never;
 }
