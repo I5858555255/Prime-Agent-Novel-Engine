@@ -654,12 +654,20 @@ function nextDefaultSessionName(sessions: SessionSummary[]): string {
 	);
 	const numericNames = [...existingNames]
 		.map((name) => Number.parseInt(name, 10))
-		.filter((value) => Number.isInteger(value) && value > 0);
+		.filter((value) => Number.isSafeInteger(value) && value > 0);
 	let next = numericNames.length > 0 ? Math.max(...numericNames) + 1 : 1;
-	while (existingNames.has(String(next))) {
+	while (Number.isSafeInteger(next)) {
+		if (!existingNames.has(String(next))) {
+			return String(next);
+		}
 		next++;
 	}
-	return String(next);
+
+	let fallback = "session";
+	while (existingNames.has(fallback)) {
+		fallback += "-";
+	}
+	return fallback;
 }
 
 async function runStart(parsed: ParsedDaemonClientCommand): Promise<void> {
