@@ -174,6 +174,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"execute_bash_and_wait",
 	"abort_bash",
 	"cancel_rlm_child",
+	"delete_rlm_subagent",
 	"wait_for_idle",
 	"wait_for_headless_completion",
 	"get_session_header",

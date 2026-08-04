@@ -258,6 +258,7 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"execute_bash_and_wait",
 	"abort_bash",
 	"cancel_rlm_child",
+	"delete_rlm_subagent",
 	"wait_for_idle",
 	"wait_for_headless_completion",
 	"get_session_header",
@@ -3968,10 +3969,16 @@ export class AgentDaemon {
 			case "cancel_rlm_child": {
 				const state = this.getSessionState(command.activeSessionId);
 				const cancelled = state.runtime.session.cancelRlmChildRun(command.childId);
-				if (!cancelled) {
-					await state.runtime.session.deleteRlmSubagent(command.childId);
-				}
 				return success(command.id, "cancel_rlm_child", { cancelled });
+			}
+
+			case "delete_rlm_subagent": {
+				const state = this.getSessionState(command.activeSessionId);
+				const result = await state.runtime.session.deleteInactiveRlmSubagent(command.childId);
+				return success(command.id, "delete_rlm_subagent", {
+					deleted: result === "deleted",
+					...(result === "running" ? { reason: "running" } : {}),
+				});
 			}
 
 			case "wait_for_idle": {

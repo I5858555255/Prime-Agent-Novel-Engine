@@ -1467,6 +1467,48 @@ describe("AgentSession rlm recursion", () => {
 		expect(root.cancelRlmChildRun(childId)).toBe(false);
 	});
 
+	it("deletes only inactive RLM children through the explicit inactive path", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const retainedChild = createSession({
+			rlmSessionDir: join(tempDir, "retained-child"),
+			streamFn: () => {
+				const stream = createAssistantMessageEventStream();
+				childStarted = true;
+				void release.then(() => {
+					stream.push({ type: "done", reason: "stop", message: assistantMessage("done") });
+				});
+				return stream;
+			},
+		});
+		const deleteRuntime = vi.fn(async () => {});
+		const root = createSession({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: retainedChild }),
+				deleteRlmSubagentRuntime: deleteRuntime,
+				releaseRlmSubagentRuntime: async (runtime, options) => {
+					options.parentSession.retainFinishedRlmChildSession(options.id, runtime.session);
+				},
+			},
+		});
+
+		const runPromise = root.runRlmChild("slow child", { name: "retained-worker" });
+		await waitFor(() => childStarted);
+		const childId = [...(root as unknown as InspectableRlmSession)._activeRlmChildRuns.keys()][0]!;
+		await expect(root.deleteInactiveRlmSubagent(childId)).resolves.toBe("running");
+		expect(deleteRuntime).not.toHaveBeenCalled();
+
+		releaseChild();
+		await expect(runPromise).resolves.toMatchObject({ answer: "done" });
+		await waitFor(() => (root as unknown as InspectableRlmSession)._activeRlmChildRuns.size === 0);
+		await expect(root.deleteInactiveRlmSubagent(childId)).resolves.toBe("deleted");
+		expect(deleteRuntime).toHaveBeenCalledWith(childId, retainedChild);
+		await expect(root.deleteInactiveRlmSubagent("unknown-child")).resolves.toBe("not_found");
+	});
+
 	it("does not let completion retention resurrect a child being deleted", async () => {
 		let releaseRetention: () => void = () => {};
 		const retentionGate = new Promise<void>((resolve) => {

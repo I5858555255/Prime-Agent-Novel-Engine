@@ -6315,39 +6315,74 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
-	it("deletes a passive child without hydrating it", async () => {
-		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-delete-"));
+	it("keeps cancel pure when a retained or unknown child has no active run", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-rlm-cancel-"));
 		try {
 			const fixture = makePersistedRlmDaemonFixture(tempDir);
 			const internals = fixture.daemon as unknown as {
 				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
-				createSubagentRuntimeHost(parent: ActiveSessionState): SubagentRuntimeHost;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
 			};
-			const parentState = await internals.createRuntime({
-				type: "create",
-				sessionPath: fixture.parentSessionFile,
-			});
-
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
 			const parentSession = parentState.runtime.session as unknown as {
 				cancelRlmChildRun: ReturnType<typeof vi.fn>;
 				deleteRlmSubagent: ReturnType<typeof vi.fn>;
 			};
 			parentSession.cancelRlmChildRun = vi.fn(() => false);
-			parentSession.deleteRlmSubagent = vi.fn(async (childId: string) => {
-				await internals.createSubagentRuntimeHost(parentState).deleteRlmSubagentRuntime(childId);
-			});
-			const result = (await (
-				fixture.daemon as unknown as {
-					handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
-				}
-			).handleCommand(makeClient("client-1", parentState.activeSessionId), {
-				type: "cancel_rlm_child",
+			parentSession.deleteRlmSubagent = vi.fn();
+
+			for (const childId of [fixture.childId, "unknown-child"]) {
+				const result = (await internals.handleCommand(makeClient("client-1", parentState.activeSessionId), {
+					type: "cancel_rlm_child",
+					activeSessionId: parentState.activeSessionId,
+					childId,
+				})) as { data: { cancelled: boolean } };
+				expect(result.data.cancelled).toBe(false);
+			}
+			expect(parentSession.deleteRlmSubagent).not.toHaveBeenCalled();
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("deletes a passive child without hydrating it and treats unknown children benignly", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-delete-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const parentSession = parentState.runtime.session as unknown as {
+				deleteInactiveRlmSubagent: (childId: string) => Promise<"deleted" | "not_found">;
+			};
+			parentSession.deleteInactiveRlmSubagent = async (childId) => {
+				if (childId !== fixture.childId) return "not_found";
+				await (
+					fixture.daemon as unknown as {
+						createSubagentRuntimeHost(parent: ActiveSessionState): SubagentRuntimeHost;
+					}
+				)
+					.createSubagentRuntimeHost(parentState)
+					.deleteRlmSubagentRuntime(childId);
+				return "deleted";
+			};
+			const client = makeClient("client-1", parentState.activeSessionId);
+
+			const unknown = (await internals.handleCommand(client, {
+				type: "delete_rlm_subagent",
+				activeSessionId: parentState.activeSessionId,
+				childId: "unknown-child",
+			})) as { data: { deleted: boolean } };
+			expect(unknown.data).toEqual({ deleted: false });
+
+			const result = (await internals.handleCommand(client, {
+				type: "delete_rlm_subagent",
 				activeSessionId: parentState.activeSessionId,
 				childId: fixture.childId,
-			})) as { data: { cancelled: boolean } };
-
-			expect(result.data.cancelled).toBe(false);
-			expect(parentSession.deleteRlmSubagent).toHaveBeenCalledWith(fixture.childId);
+			})) as { data: { deleted: boolean } };
+			expect(result.data).toEqual({ deleted: true });
 			expect(fixture.createRuntime).toHaveBeenCalledOnce();
 			expect(existsSync(fixture.childSessionFile)).toBe(true);
 			const persisted = readFileSync(join(fixture.parentArtifactDir, "rlm-subagents.jsonl"), "utf8")
@@ -6359,7 +6394,6 @@ describe("daemon mode helpers", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
-
 	it("gives RLM subagents messaging controllers for their own nested children", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-nested-controller-"));
 		try {
