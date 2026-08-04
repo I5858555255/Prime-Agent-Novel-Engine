@@ -12,6 +12,7 @@ import {
 	createAgentsViewResumeConfig,
 	formatAgentsViewRelativeTime,
 	formatAgentsViewStatusLine,
+	getAgentsViewDepth,
 	resolveAgentsViewActiveSummaryForPath,
 	resolveAgentsViewOpenCwd,
 	resolveAgentsViewSessionUiServices,
@@ -1152,13 +1153,27 @@ describe("agents view state", () => {
 		const rootScope = { sessionId: "root-session", activeSessionId: "root-active" };
 		const childScope = { sessionId: "child-session", activeSessionId: "child-active" };
 
-		test("pushes and pops immutable scope frames one level at a time", () => {
+		test("pushes and pops immutable scope frames with their return chats one level at a time", () => {
 			const initial: AgentsViewScopeFrame[] = [];
-			const rootFrames = transitionAgentsViewScope(initial, { type: "push", scope: rootScope });
-			const childFrames = transitionAgentsViewScope(rootFrames, { type: "push", scope: childScope });
+			const rootChat = makeSummary({ sessionId: "root-session" });
+			const childChat = makeSummary({ sessionId: "child-session" });
+			const rootFrames = transitionAgentsViewScope(initial, {
+				type: "push",
+				scope: rootScope,
+				returnChat: rootChat,
+			});
+			const childFrames = transitionAgentsViewScope(rootFrames, {
+				type: "push",
+				scope: childScope,
+				returnChat: childChat,
+			});
 
 			expect(initial).toEqual([]);
-			expect(childFrames.map((frame) => frame.scope.sessionId)).toEqual(["root-session", "child-session"]);
+			expect(childFrames.map((frame) => [frame.scope.sessionId, frame.returnChat?.sessionId])).toEqual([
+				["root-session", "root-session"],
+				["child-session", "child-session"],
+			]);
+			expect(JSON.parse(JSON.stringify(childFrames))).toEqual(childFrames);
 			expect(transitionAgentsViewScope(childFrames, { type: "back" })).toEqual(rootFrames);
 			expect(transitionAgentsViewScope(rootFrames, { type: "back" })).toEqual([]);
 		});
@@ -1171,11 +1186,26 @@ describe("agents view state", () => {
 			expect(frames).toEqual([{ scope: { ...rootScope, activeSessionId: "root-active-2" } }]);
 		});
 
-		test("Left is a no-op globally and emits a distinct scope-back result when scoped", () => {
+		test("Left is a no-op globally and returns through a surviving scoped chat", () => {
+			const root = makeSummary({ sessionId: "root-session", activeSessionId: "root-active" });
+			const recordedChat = makeSummary({ sessionId: "root-session", activeSessionId: "stale-active" });
+
 			expect(resolveAgentsViewLeftResult(undefined)).toBeUndefined();
-			expect(resolveAgentsViewLeftResult(makeSummary({ sessionId: "root-session" }))).toMatchObject({
+			expect(resolveAgentsViewLeftResult(root, [], recordedChat)).toMatchObject({
 				type: "scope_back",
 				selection: { sessionId: "root-session" },
+				returnChat: { sessionId: "root-session", activeSessionId: "root-active" },
+			});
+		});
+
+		test("Left falls back to the parent agents view when the recorded chat is gone", () => {
+			const root = makeSummary({ sessionId: "replacement-session" });
+			const deletedChat = makeSummary({ sessionId: "deleted-session" });
+
+			expect(resolveAgentsViewLeftResult(root, ["parent-session"], deletedChat)).toEqual({
+				type: "scope_back",
+				selection: root,
+				expandedAncestorSessionIds: ["parent-session"],
 			});
 		});
 
@@ -1372,6 +1402,12 @@ describe("agents view state", () => {
 	});
 
 	describe("stored depth display", () => {
+		test("labels the global agents view as depth zero and scoped views at their child level", () => {
+			expect(getAgentsViewDepth(undefined)).toBe(0);
+			expect(getAgentsViewDepth(makeSummary({ rlmDepth: 0 }))).toBe(1);
+			expect(getAgentsViewDepth(makeSummary({ rlmDepth: 3 }))).toBe(4);
+		});
+
 		test("never infers a chat depth when the persisted field is absent", () => {
 			expect(formatAgentDepthLabel(undefined, true)).toBeUndefined();
 			expect(formatAgentDepthLabel(0, false)).toBeUndefined();

@@ -136,6 +136,7 @@ export type AgentsViewRunResult =
 			type: "scope_back";
 			selection: SessionSummary;
 			expandedAncestorSessionIds: string[];
+			returnChat?: SessionSummary;
 	  }
 	| {
 			type: "open";
@@ -237,6 +238,10 @@ export function createAgentsViewReplyHeadline(text: string | undefined): string 
 		?.split("\n")
 		.map((line) => line.replace(/\s+/g, " ").trim())
 		.find((line) => line.length > 0);
+}
+
+export function getAgentsViewDepth(scopeRoot: SessionSummary | undefined): number {
+	return scopeRoot ? (scopeRoot.rlmDepth ?? 0) + 1 : 0;
 }
 
 interface OpenedAgentsViewSession {
@@ -366,15 +371,19 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 
 	while (true) {
 		const view = new AgentsViewMode(options, persistentState);
-		const result = await view.run();
-		if (result.type === "exit") return;
-		if (result.type === "scope_back") {
+		const viewResult = await view.run();
+		if (viewResult.type === "exit") return;
+		let result: Extract<AgentsViewRunResult, { type: "open" }>;
+		if (viewResult.type === "scope_back") {
 			persistentState.scopeFrames = transitionAgentsViewScope(persistentState.scopeFrames ?? [], { type: "back" });
-			persistentState.selectedRowIdentity = getSummaryIdentity(result.selection);
-			persistentState.selectedSessionKey = getAgentsViewSelectionKey(result.selection);
-			persistentState.pendingExpandedAncestorSessionIds = result.expandedAncestorSessionIds;
+			persistentState.selectedRowIdentity = getSummaryIdentity(viewResult.selection);
+			persistentState.selectedSessionKey = getAgentsViewSelectionKey(viewResult.selection);
+			persistentState.pendingExpandedAncestorSessionIds = viewResult.expandedAncestorSessionIds;
 			persistentState.query = "";
-			continue;
+			if (!viewResult.returnChat) continue;
+			result = { type: "open", summary: viewResult.returnChat };
+		} else {
+			result = viewResult;
 		}
 
 		const selection = result.selection ?? result.summary;
@@ -424,6 +433,7 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 					persistentState.scopeFrames = transitionAgentsViewScope(persistentState.scopeFrames ?? [], {
 						type: "push",
 						scope: nextScope,
+						returnChat: returnedSession,
 					});
 					persistentState.query = "";
 				}
@@ -676,7 +686,11 @@ export class AgentsViewMode implements Component, Focusable {
 			const ancestors = this.scopeKey
 				? getUnifiedSessionAncestorSessionIds(this.unifiedRecords, this.scopeKey, this.unifiedIndex)
 				: [];
-			const result = resolveAgentsViewLeftResult(this.scopeRootSummary, ancestors);
+			const result = resolveAgentsViewLeftResult(
+				this.scopeRootSummary,
+				ancestors,
+				this.persistentState.scopeFrames?.at(-1)?.returnChat,
+			);
 			if (result) this.finish(result);
 			// Global view has no hierarchy parent: consume Left without opening chat.
 			return true;
@@ -721,7 +735,7 @@ export class AgentsViewMode implements Component, Focusable {
 					return [
 						{ label: "agents", value: this.getAgentCountsText() },
 						{ label: "scope", value: root ? getAgentsViewSessionTitle(root) : "global" },
-						...(root?.rlmDepth === undefined ? [] : [{ label: "depth", value: String(root.rlmDepth) }]),
+						{ label: "depth", value: String(getAgentsViewDepth(root)) },
 					];
 				},
 			},

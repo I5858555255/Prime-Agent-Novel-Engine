@@ -29,9 +29,13 @@ export interface AgentsViewScopeKey {
 
 export interface AgentsViewScopeFrame {
 	scope: AgentsViewScopeKey;
+	/** Chat to revisit before returning to the parent agents view. */
+	returnChat?: SessionSummary;
 }
 
-export type AgentsViewScopeAction = { type: "push"; scope: AgentsViewScopeKey } | { type: "back" };
+export type AgentsViewScopeAction =
+	| { type: "push"; scope: AgentsViewScopeKey; returnChat?: SessionSummary }
+	| { type: "back" };
 
 export interface AgentsViewScopeResolution {
 	frames: AgentsViewScopeFrame[];
@@ -43,6 +47,7 @@ export interface AgentsViewScopeBackResult {
 	type: "scope_back";
 	selection: SessionSummary;
 	expandedAncestorSessionIds: string[];
+	returnChat?: SessionSummary;
 }
 
 export interface UnattachableChildOpenResult {
@@ -276,7 +281,7 @@ export function transitionAgentsViewScope(
 	action: AgentsViewScopeAction,
 ): AgentsViewScopeFrame[] {
 	if (action.type === "back") return frames.slice(0, -1);
-	const nextFrame = { scope: action.scope };
+	const nextFrame = { scope: action.scope, ...(action.returnChat ? { returnChat: action.returnChat } : {}) };
 	if (frames.at(-1)?.scope.sessionId !== action.scope.sessionId) return [...frames, nextFrame];
 	return [...frames.slice(0, -1), nextFrame];
 }
@@ -284,9 +289,15 @@ export function transitionAgentsViewScope(
 export function resolveAgentsViewLeftResult(
 	scopeRoot: SessionSummary | undefined,
 	expandedAncestorSessionIds: string[] = [],
+	returnChat?: SessionSummary,
 ): AgentsViewScopeBackResult | undefined {
 	if (!scopeRoot) return undefined;
-	return { type: "scope_back", selection: scopeRoot, expandedAncestorSessionIds };
+	return {
+		type: "scope_back",
+		selection: scopeRoot,
+		expandedAncestorSessionIds,
+		...(returnChat?.sessionId === scopeRoot.sessionId ? { returnChat: scopeRoot } : {}),
+	};
 }
 
 export function shouldApplyScopeResolution(
