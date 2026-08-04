@@ -2266,6 +2266,11 @@ export class AgentDaemon {
 		restoreActiveSessionId?: string,
 	): Promise<ActiveSessionState> {
 		const sessionKey = resolve(entry.sessionFile);
+		const reservation = this.reservingSessionOpens.get(sessionKey);
+		if (reservation) {
+			await reservation;
+			return this.rehydrateCompletedRlmSubagent(parentState, entry, restoreActiveSessionId);
+		}
 		const pending = this.openingSessions.get(sessionKey);
 		if (pending) {
 			return pending;

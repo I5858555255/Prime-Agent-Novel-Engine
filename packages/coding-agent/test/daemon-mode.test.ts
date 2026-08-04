@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionMessageController } from "../src/core/agent-messages.js";
@@ -3916,6 +3916,68 @@ describe("daemon mode helpers", () => {
 			});
 			expect(fixture.createRuntime).toHaveBeenCalledTimes(2);
 		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("waits for an explicit open reservation before hydrating a passive child", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-reservation-race-"));
+		let releaseOpen!: () => void;
+		const openGate = new Promise<void>((resolveGate) => {
+			releaseOpen = resolveGate;
+		});
+		let markOpenStarted!: () => void;
+		const openStarted = new Promise<void>((resolveStarted) => {
+			markOpenStarted = resolveStarted;
+		});
+		const originalOpenAsync = SessionManager.openAsync;
+		let openAsyncSpy: ReturnType<typeof vi.spyOn> | undefined;
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				reservingSessionOpens: Map<string, Promise<void>>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				findPassiveRlmSubagent(target: string): Promise<unknown>;
+				hydratePassiveRlmSubagent(passive: unknown): Promise<ActiveSessionState>;
+			};
+			await internals.createRuntime({
+				type: "create",
+				sessionPath: fixture.parentSessionFile,
+			});
+			const findPassiveRlmSubagent = internals.findPassiveRlmSubagent.bind(fixture.daemon);
+			const passive = await findPassiveRlmSubagent(fixture.childId);
+			if (!passive) throw new Error("Missing passive child");
+			internals.findPassiveRlmSubagent = vi.fn(async (target: string) => {
+				if (resolve(target) === resolve(fixture.childSessionFile)) {
+					return undefined;
+				}
+				return findPassiveRlmSubagent(target);
+			});
+			openAsyncSpy = vi
+				.spyOn(SessionManager, "openAsync")
+				.mockImplementation(async (path, sessionDir, cwdOverride) => {
+					if (resolve(path) === resolve(fixture.childSessionFile)) {
+						markOpenStarted();
+						await openGate;
+					}
+					return originalOpenAsync(path, sessionDir, cwdOverride);
+				});
+
+			const explicitOpen = internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
+			await openStarted;
+			expect(internals.reservingSessionOpens.has(resolve(fixture.childSessionFile))).toBe(true);
+
+			const hydration = internals.hydratePassiveRlmSubagent(passive);
+			const joined = Promise.all([explicitOpen, hydration]);
+			releaseOpen();
+
+			const [openedState, hydratedState] = await joined;
+			expect(hydratedState).toBe(openedState);
+			expect(openedState.runtime.session.sessionFile).toBe(fixture.childSessionFile);
+			expect(fixture.createRuntime).toHaveBeenCalledTimes(2);
+		} finally {
+			releaseOpen();
+			openAsyncSpy?.mockRestore();
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
