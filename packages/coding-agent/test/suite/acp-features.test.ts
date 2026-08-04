@@ -194,6 +194,29 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.cleanup();
 	}, 30_000);
 
+	it("reports a cwd mismatch in _meta instead of failing or silently disagreeing", async () => {
+		const harness = await createHarness();
+		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));
+		const toAgent = new TransformStream<Uint8Array, Uint8Array>();
+		const toClient = new TransformStream<Uint8Array, Uint8Array>();
+		void runAcpModeWithConnection(connection, {
+			stream: acp.ndJsonStream(toClient.writable, toAgent.readable),
+		} as any);
+		const handle = acp.client({ name: "cwd" }).connect(acp.ndJsonStream(toAgent.writable, toClient.readable));
+		await handle.agent.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+
+		// The agent's cwd is fixed at startup, so a different requested cwd must be
+		// surfaced rather than silently accepted.
+		const created = await handle.agent.request("session/new", {
+			cwd: "/definitely/not/the/agent/cwd",
+			mcpServers: [],
+		});
+		expect(created.sessionId).toBeTruthy();
+		const cwdMeta = (created._meta?.[PRIME_AGENT_META_NAMESPACE] as { cwd?: unknown } | undefined)?.cwd;
+		expect(cwdMeta).toMatchObject({ requested: "/definitely/not/the/agent/cwd" });
+		harness.cleanup();
+	}, 30_000);
+
 	it("refuses a second session rather than silently sharing one conversation", async () => {
 		const harness = await createHarness();
 		const fixture = await connectAcp(harness);

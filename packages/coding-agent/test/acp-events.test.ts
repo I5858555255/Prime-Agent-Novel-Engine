@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { acpToolKind, acpUpdatesForSessionEvent, bashToolCallId } from "../src/modes/acp/acp-events.js";
+import {
+	type AcpEventMappingState,
+	acpToolKind,
+	acpUpdatesForSessionEvent,
+	bashToolCallId,
+} from "../src/modes/acp/acp-events.js";
 import { PRIME_AGENT_META_NAMESPACE } from "../src/modes/acp/acp-meta.js";
 import type { AgentConnectionSessionEvent } from "../src/modes/agent-connection/types.js";
 
@@ -64,7 +69,8 @@ describe("ACP session event mapping", () => {
 			result: {
 				output: "done",
 				details: {
-					attachments: [{ mimeType: "image/png", path: "/tmp/plot.png", bytes: 1024 }],
+					// KernelAttachment carries base64 `data`, never a `bytes` field.
+					attachments: [{ mimeType: "image/png", path: "/tmp/plot.png", data: "aGVsbG8=" }],
 					diffs: [{ path: "a.ts" }],
 				},
 			},
@@ -79,7 +85,7 @@ describe("ACP session event mapping", () => {
 		expect(updates[0]?._meta).toEqual({
 			[PRIME_AGENT_META_NAMESPACE]: {
 				ipython: {
-					attachments: [{ mimeType: "image/png", path: "/tmp/plot.png", bytes: 1024 }],
+					attachments: [{ mimeType: "image/png", path: "/tmp/plot.png", bytes: 5 }],
 					diffCount: 1,
 				},
 			},
@@ -109,19 +115,27 @@ describe("ACP session event mapping", () => {
 	});
 
 	it("gives bash a synthetic tool call with a stable id across its lifecycle", () => {
-		const start = acpUpdatesForSessionEvent({
-			type: "bash_start",
-			command: "ls",
-			excludeFromContext: false,
-			runId: "r1",
-		} as AgentConnectionSessionEvent);
-		const end = acpUpdatesForSessionEvent({
-			type: "bash_end",
-			exitCode: 0,
-			cancelled: false,
-			truncated: false,
-			runId: "r1",
-		} as AgentConnectionSessionEvent);
+		const state: AcpEventMappingState = {};
+		const start = acpUpdatesForSessionEvent(
+			{ type: "bash_start", command: "ls", excludeFromContext: false, runId: "r1" } as AgentConnectionSessionEvent,
+			state,
+		);
+		// bash_output carries no runId, so the mapping must remember the active run.
+		const mid = acpUpdatesForSessionEvent(
+			{ type: "bash_output", chunk: "a.ts\n" } as AgentConnectionSessionEvent,
+			state,
+		);
+		expect(mid[0]).toMatchObject({ toolCallId: bashToolCallId("r1") });
+		const end = acpUpdatesForSessionEvent(
+			{
+				type: "bash_end",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+				runId: "r1",
+			} as AgentConnectionSessionEvent,
+			state,
+		);
 		expect(start[0]).toMatchObject({ toolCallId: bashToolCallId("r1"), kind: "execute", status: "in_progress" });
 		expect(end[0]).toMatchObject({ toolCallId: bashToolCallId("r1"), status: "completed" });
 	});

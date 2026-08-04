@@ -65,7 +65,16 @@ export interface PrimeAgentAgentMessageMeta {
 	deliveryStatus?: string;
 }
 
+export interface PrimeAgentCwdMeta {
+	/** The cwd the client asked for. */
+	requested: string;
+	/** The cwd prime-agent is actually running in, fixed at startup. */
+	actual: string;
+}
+
 export interface PrimeAgentSessionMeta {
+	/** Present when a client-requested cwd differs from the agent's real cwd. */
+	cwd?: PrimeAgentCwdMeta;
 	/** Set when the session's heartbeat or cron schedule changed. */
 	heartbeatsChanged?: boolean;
 	goal?: PrimeAgentGoalMeta;

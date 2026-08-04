@@ -37,6 +37,12 @@ export function acpToolKind(toolName: string): AcpToolKind {
 	}
 }
 
+/** Decoded byte length of a base64 payload, without materializing it. */
+function base64ByteLength(data: string): number {
+	const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+	return Math.max(0, Math.floor((data.length * 3) / 4) - padding);
+}
+
 function textContent(text: string): { type: "text"; text: string } {
 	return { type: "text", text };
 }
@@ -99,11 +105,15 @@ function ipythonRichOutput(result: unknown): PrimeAgentIpythonMeta | undefined {
 	const meta: PrimeAgentIpythonMeta = {};
 	if (Array.isArray(attachments) && attachments.length > 0) {
 		meta.attachments = attachments.map((attachment) => {
-			const typed = (attachment ?? {}) as { mimeType?: unknown; path?: unknown; bytes?: unknown };
+			// KernelAttachment exposes mimeType, base64 `data`, and an optional path.
+			// Report the decoded size rather than a `bytes` field the kernel never
+			// sends, and never inline the payload: ACP already carries images as
+			// content blocks, so duplicating them here would bloat every update.
+			const typed = (attachment ?? {}) as { mimeType?: unknown; path?: unknown; data?: unknown };
 			return {
 				...(typeof typed.mimeType === "string" ? { mimeType: typed.mimeType } : {}),
 				...(typeof typed.path === "string" ? { path: typed.path } : {}),
-				...(typeof typed.bytes === "number" ? { bytes: typed.bytes } : {}),
+				...(typeof typed.data === "string" ? { bytes: base64ByteLength(typed.data) } : {}),
 			};
 		});
 	}
@@ -111,7 +121,21 @@ function ipythonRichOutput(result: unknown): PrimeAgentIpythonMeta | undefined {
 	return meta.attachments || meta.diffCount !== undefined ? meta : undefined;
 }
 
-export function acpUpdatesForSessionEvent(event: AgentConnectionSessionEvent): AcpSessionUpdate[] {
+/**
+ * Correlates streaming bash output with its run.
+ *
+ * `bash_output` carries no `runId`, so the id of the most recent `bash_start` is
+ * tracked here. Output would otherwise be attributed to a bare fallback id that
+ * no `bash_start` ever used, leaving the chunks unattached to any tool call.
+ */
+export interface AcpEventMappingState {
+	activeBashRunId?: string;
+}
+
+export function acpUpdatesForSessionEvent(
+	event: AgentConnectionSessionEvent,
+	state: AcpEventMappingState = {},
+): AcpSessionUpdate[] {
 	switch (event.type) {
 		case "message_update":
 			if (event.message.role !== "assistant") return [];
@@ -148,6 +172,7 @@ export function acpUpdatesForSessionEvent(event: AgentConnectionSessionEvent): A
 		// Bash runs outside the tool-call lifecycle, so it gets a synthetic tool
 		// call keyed by run id to keep incremental output addressable.
 		case "bash_start":
+			state.activeBashRunId = event.runId;
 			return [
 				{
 					sessionUpdate: "tool_call",
@@ -163,13 +188,14 @@ export function acpUpdatesForSessionEvent(event: AgentConnectionSessionEvent): A
 			return [
 				{
 					sessionUpdate: "tool_call_update",
-					toolCallId: bashToolCallId(undefined),
+					toolCallId: bashToolCallId(state.activeBashRunId),
 					status: "in_progress" satisfies AcpToolStatus,
 					content: [{ type: "content", content: textContent(event.chunk) }],
 				},
 			];
 
 		case "bash_end":
+			if (state.activeBashRunId === event.runId) state.activeBashRunId = undefined;
 			return [
 				{
 					sessionUpdate: "tool_call_update",

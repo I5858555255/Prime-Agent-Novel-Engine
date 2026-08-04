@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { Readable, Writable } from "node:stream";
+import { resolve } from "node:path";
+import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { VERSION } from "../../config.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
-import { takeOverStdout } from "../../core/output-guard.js";
+import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { InProcessAgentConnection } from "../agent-connection/in-process-agent-connection.js";
 import type { AgentConnection } from "../agent-connection/types.js";
 import { latestAutonomousGateAttempt } from "../headless-completion.js";
-import { acpUpdatesForSessionEvent } from "./acp-events.js";
+import { type AcpEventMappingState, acpUpdatesForSessionEvent } from "./acp-events.js";
 import { primeAgentMeta } from "./acp-meta.js";
 import { type AcpStopReason, acpStopReason } from "./acp-stop-reason.js";
 
@@ -25,6 +26,24 @@ import { type AcpStopReason, acpStopReason } from "./acp-stop-reason.js";
  * Capabilities ACP has no native concept for travel in a reverse-domain
  * `_meta` envelope, which vanilla ACP clients ignore.
  */
+
+/**
+ * ACP frames must reach real stdout.
+ *
+ * Startup calls `takeOverStdout()` for every non-interactive mode, which
+ * redirects `process.stdout.write` to stderr so stray logging cannot corrupt a
+ * machine-readable stream. Handing `process.stdout` to the SDK would therefore
+ * publish the whole protocol on stderr; write through the raw escape hatch the
+ * guard exposes, exactly as RPC mode does.
+ */
+function rawStdoutSink(): WritableStream<Uint8Array> {
+	const decoder = new TextDecoder();
+	return new WritableStream<Uint8Array>({
+		write(chunk) {
+			writeRawStdout(typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
+		},
+	});
+}
 
 export interface AcpModeOptions {
 	/** Bind headless extensions once the connection is live (in-process mode). */
@@ -117,11 +136,7 @@ export async function runAcpModeWithConnection(
 	let bound = false;
 
 	const stream =
-		options.stream ??
-		acp.ndJsonStream(
-			Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
-			Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
-		);
+		options.stream ?? acp.ndJsonStream(rawStdoutSink(), Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>);
 
 	acp.agent({ name: "prime-agent" })
 		.onRequest("initialize", async () => ({
@@ -148,12 +163,30 @@ export async function runAcpModeWithConnection(
 						"start another prime-agent process for a second session",
 				);
 			}
+			// prime-agent's cwd is fixed at startup by the session it was launched
+			// with, so a client-supplied cwd cannot be adopted after the fact.
+			// Report the real cwd back in `_meta` rather than failing the request or
+			// letting the client assume a directory the agent is not using.
+			const requestedCwd = (ctx.params as { cwd?: unknown } | undefined)?.cwd;
+			let cwdMismatch: { requested: string; actual: string } | undefined;
+			if (typeof requestedCwd === "string" && requestedCwd.length > 0) {
+				const actual = await connection
+					.getState()
+					.then((state) => state.cwd)
+					.catch(() => undefined);
+				if (actual && resolve(requestedCwd) !== resolve(actual)) {
+					cwdMismatch = { requested: requestedCwd, actual };
+				}
+			}
 			const sessionId = randomUUID();
 			const entry: AcpSessionEntry = { id: sessionId, abort: undefined, unsubscribe: undefined };
 			session = entry;
 			// Subscribe for the session lifetime, not per prompt turn: prime-agent
 			// subagents are fire-and-forget and keep reporting after the spawning
 			// turn ends, so a turn-scoped subscription would drop their updates.
+			// One mapping state per session so streaming bash output stays correlated
+			// with the run that produced it.
+			const mappingState: AcpEventMappingState = {};
 			entry.unsubscribe = connection.subscribe((event) => {
 				const notify = (update: Record<string, unknown>) =>
 					void ctx.client.notify(acp.methods.client.session.update, { sessionId, update }).catch(() => undefined);
@@ -165,11 +198,14 @@ export async function runAcpModeWithConnection(
 					return;
 				}
 				if (event.type !== "session_event") return;
-				for (const update of acpUpdatesForSessionEvent(event.event)) {
+				for (const update of acpUpdatesForSessionEvent(event.event, mappingState)) {
 					notify(update);
 				}
 			});
-			return { sessionId };
+			return {
+				sessionId,
+				...(cwdMismatch ? { _meta: primeAgentMeta({ cwd: cwdMismatch }) } : {}),
+			};
 		})
 		.onRequest("session/prompt", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string; prompt: readonly unknown[] };
