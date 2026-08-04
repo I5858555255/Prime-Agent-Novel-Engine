@@ -1735,7 +1735,7 @@ export class DaemonSupervisor {
 					sessionPath = await this.catalog.resolve(
 						command.targetActiveSessionId,
 						cwd,
-						this.defaultSessionConfig.sessionDir,
+						source?.worker.descriptor.createCommand.config?.sessionDir ?? this.defaultSessionConfig.sessionDir,
 					);
 				} catch (catalogError) {
 					// Preserve selector ambiguity so a2a senders can distinguish it from

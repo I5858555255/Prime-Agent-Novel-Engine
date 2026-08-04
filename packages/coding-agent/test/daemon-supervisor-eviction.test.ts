@@ -15,6 +15,7 @@ interface WorkerFixture {
 		pid: number;
 		ownerClientId?: string;
 		stopRequestedAt?: string;
+		createCommand: { type: "create"; config?: { sessionDir?: string } };
 	};
 	client?: {
 		request: ReturnType<typeof vi.fn>;
@@ -73,6 +74,7 @@ function makeWorker(id: string, summaries: SessionSummary[]): WorkerFixture {
 			rootActiveSessionId: `${id}-descriptor-root`,
 			rootSessionId: `${id}-root-session`,
 			pid: 1,
+			createCommand: { type: "create" },
 		},
 		client,
 		summaries: new Map(summaries.map((summary) => [summary.activeSessionId ?? summary.id, summary])),
@@ -198,11 +200,12 @@ describe("daemon supervisor whole-tree eviction", () => {
 		});
 	});
 
-	it("wakes a saved target before cross-worker agent-message delivery", async () => {
+	it("resolves a saved target in the source worker's create-time session directory", async () => {
 		const now = Date.parse("2026-08-01T12:00:00.000Z");
 		const supervisor = makeSupervisor();
 		const sourceSummary = makeSummary("source-active", now, { sessionId: "source-session" });
 		const source = makeWorker("source", [sourceSummary]);
+		source.descriptor.createCommand.config = { sessionDir: "/tmp/custom-sessions" };
 		source.summaries = new Map([["source-active", sourceSummary]]);
 		const targetSummary = makeSummary("target-active", now, {
 			sessionId: "target-session",
@@ -229,7 +232,7 @@ describe("daemon supervisor whole-tree eviction", () => {
 			message: "wake up",
 		});
 
-		expect(supervisor.catalog.resolve).toHaveBeenCalledWith("target-session", "/tmp/project", undefined);
+		expect(supervisor.catalog.resolve).toHaveBeenCalledWith("target-session", "/tmp/project", "/tmp/custom-sessions");
 		expect(supervisor.createOrReuseWorker).toHaveBeenCalledWith(
 			"sender",
 			expect.objectContaining({ type: "create", sessionPath: "/tmp/target.jsonl", continueRecent: false }),
