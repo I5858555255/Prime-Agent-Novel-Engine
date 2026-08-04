@@ -221,6 +221,7 @@ export { defaultDaemonSocketPath } from "./daemon-socket.js";
 const structuredLog = getLogger("coding-agent.daemon");
 const WORKER_SNAPSHOT_TERMINAL_DRAIN_TIMEOUT_MS = 1_000;
 const UPDATE_RESTART_PREPARE_TIMEOUT_MS = 90_000;
+const MAX_SESSION_SNAPSHOT_STABILIZATION_RETRIES = 3;
 
 const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"ack_result",
@@ -4371,7 +4372,11 @@ export class AgentDaemon {
 				: undefined;
 		let session = state.runtime.session;
 		let children = await this.buildRlmChildSnapshotsWithPassiveRlmSubagents(state);
-		while (state.runtime.session !== session) {
+		for (
+			let retries = 0;
+			retries < MAX_SESSION_SNAPSHOT_STABILIZATION_RETRIES && state.runtime.session !== session;
+			retries++
+		) {
 			session = state.runtime.session;
 			children = await this.buildRlmChildSnapshotsWithPassiveRlmSubagents(state);
 		}

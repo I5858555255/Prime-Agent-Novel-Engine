@@ -4596,6 +4596,38 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("bounds snapshot stabilization when every child build replaces the runtime session", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-snapshot-stabilization-bound-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createSessionSnapshot(state: ActiveSessionState): Promise<DaemonAttachResult["snapshot"]>;
+				createConnectionState: ReturnType<typeof vi.fn>;
+				buildRlmChildSnapshotsWithPassiveRlmSubagents: ReturnType<typeof vi.fn>;
+			};
+			const state = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			internals.createConnectionState = vi.fn(() => ({}));
+			let calls = 0;
+			internals.buildRlmChildSnapshotsWithPassiveRlmSubagents = vi.fn(async () => {
+				calls++;
+				const replacementSession = Object.create(state.runtime.session) as typeof state.runtime.session;
+				Object.defineProperty(replacementSession, "messages", {
+					value: [{ role: "user", content: `transcript ${calls}`, timestamp: calls }],
+				});
+				(state.runtime as unknown as { _session: typeof replacementSession })._session = replacementSession;
+				return [{ id: `child-${calls}`, status: "done", sessionDir: tempDir }];
+			});
+
+			await expect(internals.createSessionSnapshot(state)).resolves.toMatchObject({
+				children: [expect.objectContaining({ id: "child-4" })],
+			});
+			expect(internals.buildRlmChildSnapshotsWithPassiveRlmSubagents).toHaveBeenCalledTimes(4);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("hydrates a passive child on agent message and delivers to it", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-message-"));
 		try {
