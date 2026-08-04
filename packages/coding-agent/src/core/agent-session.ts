@@ -9334,8 +9334,8 @@ export class AgentSession {
 			}
 			const liveSession = run.session;
 			if (run.status === "error" && !liveSession) {
+				run.detachedDeletion = subagent;
 				this._deletedRlmChildIds.add(childId);
-				this._removeRlmSubagentTracking(childId, run);
 				return { subagent };
 			}
 			if (liveSession) {
@@ -9858,7 +9858,7 @@ export class AgentSession {
 						run.abort = noopRlmChildAbort;
 						run.unsubscribe = undefined;
 						run.session = undefined;
-					} else if (run.status !== "error") {
+					} else if (run.status !== "error" || run.detachedDeletion) {
 						this._removeRlmSubagentTracking(run.id, run);
 					} else {
 						run.unsubscribe?.();

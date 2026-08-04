@@ -2238,6 +2238,7 @@ export class AgentDaemon {
 				});
 			},
 			releaseRlmSubagentRuntime: async (runtime, options, status) => {
+				if (status === "cancelled") await this.recordRlmSubagentDeletion(parentState, options.id);
 				const state = [...this.sessions.values()].find(
 					(candidate) =>
 						candidate.runtime.metadata.kind === "subagent" &&
@@ -2821,7 +2822,7 @@ export class AgentDaemon {
 			listAgents: () => this.createAgentMessageListResult(requireCurrentState()),
 			roster: () => this.createAgentFamilyRoster(requireCurrentState()),
 			assertSessionNameAvailable: (input) => this.assertFamilySessionNameAvailable(input),
-			setSessionName: (name) => this.setStateSessionName(requireCurrentState(), name),
+			setSessionName: (name) => this.setStateSessionNameViaSupervisor(requireCurrentState(), name),
 			sendAgentMessage: (input) =>
 				this.sendAgentSessionMessage({
 					targetSelector: input.target,
@@ -5094,6 +5095,25 @@ export class AgentDaemon {
 			return await action();
 		} finally {
 			this.pendingSessionNames.delete(key);
+		}
+	}
+
+	private async setStateSessionNameViaSupervisor(state: ActiveSessionState, name: string): Promise<void> {
+		const supervisorSocketPath = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+		if (!this.options.worker || !supervisorSocketPath) {
+			return this.setStateSessionName(state, name);
+		}
+		const client = new DaemonClient(supervisorSocketPath);
+		try {
+			await client.connect(1000);
+			await client.waitForHello(1000);
+			const response = await client.request(
+				{ type: "set_session_name", activeSessionId: state.activeSessionId, name },
+				30_000,
+			);
+			if (!response.success) throw deserializeDaemonError(response);
+		} finally {
+			client.close();
 		}
 	}
 

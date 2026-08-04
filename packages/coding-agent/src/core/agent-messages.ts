@@ -292,7 +292,7 @@ export function agentFamilyRelationship(
 	if (current.id === target.id) return undefined;
 	if (isAgentFamilyParent(target, current)) return "parent";
 	if (isAgentFamilyParent(current, target)) return "child";
-	if (sameAgentFamilyParent(current, target)) return "sibling";
+	if (current.depth === target.depth && sameAgentFamilyParent(current, target, [current, target])) return "sibling";
 	return undefined;
 }
 

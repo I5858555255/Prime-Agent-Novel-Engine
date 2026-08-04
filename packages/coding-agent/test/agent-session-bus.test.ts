@@ -309,6 +309,15 @@ describe("agent session bus", () => {
 		};
 
 		expect(assertAgentFamilyReach(root, otherRoot)).toBe("sibling");
+		expect(() => assertAgentFamilyReach(root, { id: "orphan", depth: 3, status: "inactive" })).toThrow(
+			"Agent reach is limited to parent, siblings, and children",
+		);
+		expect(() =>
+			assertAgentFamilyReach(
+				{ id: "orphan-a", depth: 3, status: "inactive" },
+				{ id: "orphan-b", depth: 3, status: "inactive" },
+			),
+		).toThrow("Agent reach is limited to parent, siblings, and children");
 		expect(assertAgentFamilyReach(root, child)).toBe("child");
 		expect(assertAgentFamilyReach(child, root)).toBe("parent");
 		expect(assertAgentFamilyReach(child, sibling)).toBe("sibling");

@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { type AgentSessionMessageController, DEFAULT_AGENT_MESSAGE_MAX_CHARS } from "../src/core/agent-messages.js";
+import {
+	AGENT_FAMILY_REACH_ERROR,
+	type AgentSessionMessageController,
+	DEFAULT_AGENT_MESSAGE_MAX_CHARS,
+} from "../src/core/agent-messages.js";
 import type { AgentObserveController } from "../src/core/agent-observe.js";
 import type { CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
 import type { AgentCronJob, AgentCronJobStore } from "../src/core/cron-jobs.js";
@@ -601,7 +605,7 @@ describe("daemon mode helpers", () => {
 		expect(acceptAgentMessagePrompt.mock.calls[0]?.[0]).toContain("report current progress");
 	});
 
-	it("closes a released hosted child through daemon session bookkeeping", async () => {
+	it("closes a hosted child through the release hook and persists cancellation", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-daemon-release-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
 			createRuntime: vi.fn(),
@@ -615,7 +619,8 @@ describe("daemon mode helpers", () => {
 		});
 		let internals: {
 			sessions: Map<string, ActiveSessionState>;
-			closeSession: (state: ActiveSessionState, reason: "completed") => Promise<void>;
+			closeSession: (state: ActiveSessionState, reason: "completed" | "killed") => Promise<void>;
+			recordRlmSubagentDeletion(parentState: ActiveSessionState, childId: string): Promise<void>;
 			createSubagentRuntimeHost(parentState: ActiveSessionState): SubagentRuntimeHost;
 		};
 		const closeSession = vi.fn(async (state: ActiveSessionState) => {
@@ -625,6 +630,8 @@ describe("daemon mode helpers", () => {
 		internals.sessions.set(parentState.activeSessionId, parentState);
 		internals.sessions.set(childState.activeSessionId, childState);
 		internals.closeSession = closeSession;
+		const recordDeletion = vi.fn(async () => undefined);
+		internals.recordRlmSubagentDeletion = recordDeletion;
 
 		await internals
 			.createSubagentRuntimeHost(parentState)
@@ -634,7 +641,19 @@ describe("daemon mode helpers", () => {
 				"error",
 			);
 
+		expect(recordDeletion).not.toHaveBeenCalled();
 		expect(closeSession).toHaveBeenCalledWith(childState, "completed");
+		internals.sessions.set(childState.activeSessionId, childState);
+		await internals
+			.createSubagentRuntimeHost(parentState)
+			.releaseRlmSubagentRuntime?.(
+				{ session: childState.runtime.session },
+				{ id: "child-1" } as CreateRlmSubagentRuntimeOptions,
+				"cancelled",
+			);
+		expect(recordDeletion).toHaveBeenCalledWith(parentState, "child-1");
+		expect(recordDeletion.mock.invocationCallOrder[0]).toBeLessThan(closeSession.mock.invocationCallOrder[1]!);
+		expect(closeSession).toHaveBeenLastCalledWith(childState, "killed");
 		expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
 	});
 
@@ -1470,6 +1489,84 @@ describe("daemon mode helpers", () => {
 			} else {
 				process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = previousSupervisorSocket;
 			}
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("routes worker-local session renames through the supervisor", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pa-worker-rename-"));
+		const socketPath = join(tempDir, "s");
+		let receivedCommand: Record<string, unknown> | undefined;
+		let releaseResponse: () => void = () => {};
+		const responseGate = new Promise<void>((resolve) => {
+			releaseResponse = resolve;
+		});
+		const server = createServer((socket) => {
+			socket.write(
+				`${JSON.stringify({
+					type: "daemon_hello",
+					socketPath,
+					protocol: DAEMON_PROTOCOL_INFO,
+					schemaRevision: DAEMON_SCHEMA_REVISION,
+					serverCapabilities: [],
+					clientId: "worker-rename-test",
+				})}\n`,
+			);
+			let buffered = "";
+			socket.on("data", (chunk: Buffer) => {
+				buffered += chunk.toString("utf8");
+				const newline = buffered.indexOf("\n");
+				if (newline < 0 || receivedCommand) return;
+				const wire = JSON.parse(buffered.slice(0, newline)) as Record<string, unknown>;
+				receivedCommand = (wire.command as Record<string, unknown> | undefined) ?? wire;
+				void responseGate.then(() => {
+					socket.write(
+						`${JSON.stringify({
+							id: wire.id,
+							type: "response",
+							command: "set_session_name",
+							success: true,
+						})}\n`,
+					);
+				});
+			});
+		});
+		const previousSocketPath = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(socketPath, resolve);
+			});
+			process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = socketPath;
+			const daemon = new AgentDaemon(join(tempDir, "worker.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: vi.fn(),
+				worker: { authenticationToken: "token" },
+			});
+			const setSessionName = vi.fn((_name: string) => undefined);
+			const state = makeState("active");
+			Object.assign(state.runtime, { session: { setSessionName } });
+			const controller = (
+				daemon as unknown as {
+					createAgentMessageController(getCurrentState: () => ActiveSessionState): AgentSessionMessageController;
+				}
+			).createAgentMessageController(() => state);
+
+			const rename = controller.setSessionName?.("shared-root");
+			await vi.waitFor(() =>
+				expect(receivedCommand).toMatchObject({
+					type: "set_session_name",
+					activeSessionId: "active",
+					name: "shared-root",
+				}),
+			);
+			expect(setSessionName).not.toHaveBeenCalled();
+			releaseResponse();
+			await expect(rename).resolves.toBeUndefined();
+		} finally {
+			if (previousSocketPath === undefined) delete process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+			else process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = previousSocketPath;
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			rmSync(tempDir, { recursive: true, force: true });
 		}
