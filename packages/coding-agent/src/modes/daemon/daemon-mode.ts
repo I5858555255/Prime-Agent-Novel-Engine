@@ -432,7 +432,14 @@ export class AgentDaemon {
 	 * passivation-only close reason by the durable identity needed by hydration/opening.
 	 */
 	private readonly passivatingSessions = new Map<string, Promise<void>>();
-	private readonly closingSessions = new Map<string, Promise<void>>();
+	private readonly closingSessions = new Map<
+		string,
+		{
+			promise: Promise<void>;
+			reason: DaemonSessionClosedReason;
+			killedEffects?: Promise<void>;
+		}
+	>();
 	private readonly sideQuestionRuns = new Map<
 		string,
 		{ run: SideQuestionRun; client: DaemonSocketClient; activeSessionId: string }
@@ -2541,6 +2548,11 @@ export class AgentDaemon {
 			try {
 				hydrated = await this.rehydrateCompletedRlmSubagent(hydratingParent, entry, activeSessionId);
 			} catch (error) {
+				const passivation = this.findPassivationBySessionFile(entry.sessionFile);
+				if (error instanceof BoundSessionUnavailableError && passivation) {
+					await passivation;
+					return restartAfterParentChange(hydratingParent);
+				}
 				if (isResident(hydratingParent)) throw error;
 				return restartAfterParentChange(hydratingParent);
 			}
@@ -4412,6 +4424,7 @@ export class AgentDaemon {
 			session = state.runtime.session;
 			children = await this.buildRlmChildSnapshotsWithPassiveRlmSubagents(state);
 		}
+		session = state.runtime.session;
 		const connectionState = this.createConnectionState(state);
 		return {
 			activeSessionId: state.activeSessionId,
@@ -5372,18 +5385,36 @@ export class AgentDaemon {
 		}
 		const existingClose = this.closingSessions.get(state.activeSessionId);
 		if (existingClose) {
-			await existingClose;
+			await existingClose.promise;
+			if (reason === "killed" && this.closeKeepsResumeEntry(existingClose.reason)) {
+				existingClose.killedEffects ??= Promise.resolve().then(() => {
+					this.cancelScheduledJobsForSession(state);
+					this.archiveSession(state);
+				});
+				await existingClose.killedEffects;
+			}
 			return;
 		}
 		const closePromise = Promise.resolve().then(() =>
 			this.closeSessionOnce(state, reason, waitForAbort, cascadeChildren),
 		);
-		this.closingSessions.set(state.activeSessionId, closePromise);
+		const close = { promise: closePromise, reason };
+		this.closingSessions.set(state.activeSessionId, close);
 		try {
 			await closePromise;
 		} finally {
-			this.closingSessions.delete(state.activeSessionId);
+			if (this.closingSessions.get(state.activeSessionId) === close) {
+				this.closingSessions.delete(state.activeSessionId);
+			}
 		}
+	}
+
+	private closeKeepsResumeEntry(reason: DaemonSessionClosedReason): boolean {
+		return reason === "shutdown" || reason === "update";
+	}
+
+	private archiveSession(state: ActiveSessionState): void {
+		state.runtime.session.sessionManager.appendSessionState({ status: "archived" });
 	}
 
 	private async abortBashForClose(state: ActiveSessionState): Promise<void> {
@@ -5418,13 +5449,13 @@ export class AgentDaemon {
 		// Empty draft (no messages, config, or jobs): discard rather than persist an
 		// empty session file. Mirrors the detach-time discard so a config-bearing
 		// draft closed via kill/completed is never wiped.
-		const keepsResumeEntry = reason === "shutdown" || reason === "update";
+		const keepsResumeEntry = this.closeKeepsResumeEntry(reason);
 		const isEmptyDraftSession = !keepsResumeEntry && this.isEmptyDraftContent(state);
 		let persistError: unknown;
 		// Clean shutdown leaves the session un-archived so it stays in the resume list.
 		if (!keepsResumeEntry && !isEmptyDraftSession) {
 			try {
-				state.runtime.session.sessionManager.appendSessionState({ status: "archived" });
+				this.archiveSession(state);
 			} catch (error) {
 				persistError = error;
 			}

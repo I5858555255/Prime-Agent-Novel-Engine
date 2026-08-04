@@ -863,7 +863,7 @@ describe("daemon mode helpers", () => {
 		}
 		const internals = daemon as unknown as {
 			sessions: Map<string, ActiveSessionState>;
-			closingSessions: Map<string, Promise<void>>;
+			closingSessions: Map<string, { promise: Promise<void>; reason: "shutdown" }>;
 			createAgentMessageController(
 				getCurrentState: () => ActiveSessionState | undefined,
 			): AgentSessionMessageController;
@@ -874,7 +874,7 @@ describe("daemon mode helpers", () => {
 		};
 		internals.sessions.set(parentState.activeSessionId, parentState);
 		internals.sessions.set(childState.activeSessionId, childState);
-		internals.closingSessions.set(childState.activeSessionId, Promise.resolve());
+		internals.closingSessions.set(childState.activeSessionId, { promise: Promise.resolve(), reason: "shutdown" });
 
 		const controller = internals.createAgentMessageController(() => parentState);
 		const listed = await controller.listAgents();
@@ -902,7 +902,7 @@ describe("daemon mode helpers", () => {
 		internals.agentMessageTargetLocks.set(childState.activeSessionId, targetLock);
 		const guardedPrompt = internals.promptWithAgentMessagePreparingGuard(childState, "continue");
 		await Promise.resolve();
-		internals.closingSessions.set(childState.activeSessionId, Promise.resolve());
+		internals.closingSessions.set(childState.activeSessionId, { promise: Promise.resolve(), reason: "shutdown" });
 		releaseTargetLock();
 		await expect(guardedPrompt).rejects.toThrow("closing before prompt delivery");
 		expect(sessionPrompt).not.toHaveBeenCalled();
@@ -932,7 +932,7 @@ describe("daemon mode helpers", () => {
 		state.unsubscribe = vi.fn();
 		const internals = daemon as unknown as {
 			sessions: Map<string, ActiveSessionState>;
-			closingSessions: Map<string, Promise<void>>;
+			closingSessions: Map<string, { promise: Promise<void>; reason: "shutdown" }>;
 			closeSession(state: ActiveSessionState, reason: "killed", waitForAbort?: boolean): Promise<void>;
 			closeChildSessions: ReturnType<typeof vi.fn>;
 			isEmptyDraftContent: ReturnType<typeof vi.fn>;
@@ -4612,8 +4612,11 @@ describe("daemon mode helpers", () => {
 			internals.buildRlmChildSnapshotsWithPassiveRlmSubagents = vi.fn(async () => {
 				calls++;
 				const replacementSession = Object.create(state.runtime.session) as typeof state.runtime.session;
-				Object.defineProperty(replacementSession, "messages", {
-					value: [{ role: "user", content: `transcript ${calls}`, timestamp: calls }],
+				Object.defineProperties(replacementSession, {
+					messages: {
+						value: [{ role: "user", content: `transcript ${calls}`, timestamp: calls }],
+					},
+					sessionId: { value: `session-${calls}` },
 				});
 				(state.runtime as unknown as { _session: typeof replacementSession })._session = replacementSession;
 				return [{ id: `child-${calls}`, status: "done", sessionDir: tempDir }];
@@ -4621,6 +4624,8 @@ describe("daemon mode helpers", () => {
 
 			await expect(internals.createSessionSnapshot(state)).resolves.toMatchObject({
 				children: [expect.objectContaining({ id: "child-4" })],
+				messages: [{ content: "transcript 4" }],
+				summary: { sessionId: "session-4" },
 			});
 			expect(internals.buildRlmChildSnapshotsWithPassiveRlmSubagents).toHaveBeenCalledTimes(4);
 		} finally {
@@ -5464,6 +5469,71 @@ describe("daemon mode helpers", () => {
 				expect.anything(),
 			);
 		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("retries hydration when the target child starts passivating after the initial wait", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-child-hydration-passivation-race-"));
+		let releasePassivation!: () => void;
+		const passivationGate = new Promise<void>((resolve) => {
+			releasePassivation = resolve;
+		});
+		let markRaceStarted!: () => void;
+		const raceStarted = new Promise<void>((resolve) => {
+			markRaceStarted = resolve;
+		});
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				closingSessions: Map<string, { promise: Promise<void>; reason: "shutdown"; killedEffects?: Promise<void> }>;
+				passivatingSessions: Map<string, Promise<void>>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				findPassiveRlmSubagent(id: string): Promise<unknown>;
+				hydratePassiveRlmSubagent(passive: unknown): Promise<ActiveSessionState>;
+				rehydrateCompletedRlmSubagent(
+					parent: ActiveSessionState,
+					entry: { childId: string; sessionFile: string },
+				): Promise<ActiveSessionState>;
+				waitForBoundSession(state: ActiveSessionState): Promise<ActiveSessionState>;
+			};
+			const rootState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const passive = await internals.findPassiveRlmSubagent(fixture.childId);
+			if (!passive) throw new Error("Missing passive child");
+			const closingChild = makeState("closing-child", rootState.activeSessionId);
+			const refreshedChild = makeState("refreshed-child", rootState.activeSessionId);
+			Object.assign(closingChild.runtime, { session: { sessionFile: fixture.childSessionFile } });
+			Object.assign(refreshedChild.runtime, { session: { sessionFile: fixture.childSessionFile } });
+			const passivation = passivationGate.then(() => {
+				internals.sessions.delete(closingChild.activeSessionId);
+				internals.closingSessions.delete(closingChild.activeSessionId);
+			});
+			let hydrationAttempts = 0;
+			internals.rehydrateCompletedRlmSubagent = vi.fn(async () => {
+				if (++hydrationAttempts === 1) {
+					internals.sessions.set(closingChild.activeSessionId, closingChild);
+					internals.closingSessions.set(closingChild.activeSessionId, {
+						promise: passivation,
+						reason: "shutdown",
+					});
+					internals.passivatingSessions.set(resolve(fixture.childSessionFile), passivation);
+					markRaceStarted();
+					return internals.waitForBoundSession(closingChild);
+				}
+				internals.sessions.set(refreshedChild.activeSessionId, refreshedChild);
+				return refreshedChild;
+			});
+			internals.findPassiveRlmSubagent = vi.fn(async () => passive);
+
+			const hydration = internals.hydratePassiveRlmSubagent(passive);
+			await raceStarted;
+			releasePassivation();
+
+			await expect(hydration).resolves.toBe(refreshedChild);
+			expect(hydrationAttempts).toBe(2);
+		} finally {
+			releasePassivation();
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
@@ -6407,6 +6477,84 @@ describe("daemon mode helpers", () => {
 			expect(dispose).toHaveBeenCalledOnce();
 			expect(appendSessionState).toHaveBeenCalledWith({ status: "archived" });
 		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("applies killed effects when kill joins a passivation close", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-kill-passivation-race-"));
+		let releaseDispose!: () => void;
+		const disposeGate = new Promise<void>((resolve) => {
+			releaseDispose = resolve;
+		});
+		let markDisposeStarted!: () => void;
+		const disposeStarted = new Promise<void>((resolve) => {
+			markDisposeStarted = resolve;
+		});
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: async () => {
+					throw new Error("unexpected runtime creation");
+				},
+			});
+			const sessionFile = join(tempDir, "session.jsonl");
+			const appendSessionState = vi.fn();
+			const state = makeState("active-1");
+			state.extensionUiRequests = new Map();
+			state.runtime = {
+				metadata: { kind: "subagent", createdAt: 1 },
+				cwd: tempDir,
+				dispose: vi.fn(async () => {
+					markDisposeStarted();
+					await disposeGate;
+				}),
+				session: {
+					sessionId: "session-1",
+					sessionFile,
+					messages: ["user message"],
+					isBashRunning: false,
+					sessionManager: { appendSessionState, hasUserContent: () => true },
+					abort: vi.fn(async () => {}),
+				},
+			} as never;
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				sessions: Map<string, ActiveSessionState>;
+				closeSession(
+					state: ActiveSessionState,
+					reason: "shutdown",
+					waitForAbort: boolean,
+					cascadeChildren: boolean,
+				): Promise<void>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			internals.sessions.set(state.activeSessionId, state);
+			const cron = internals.cronStore.create({
+				activeSessionId: state.activeSessionId,
+				sessionId: "session-1",
+				sessionFile,
+				cwd: tempDir,
+				scheduleText: "in 1h",
+				prompt: "check long run",
+				now: new Date("2026-01-01T12:00:00.000Z"),
+			});
+
+			const passivationClose = internals.closeSession(state, "shutdown", true, false);
+			await disposeStarted;
+			const kill = internals.handleCommand(makeClient("client-1", state.activeSessionId), {
+				id: "command-1",
+				type: "kill",
+				activeSessionId: state.activeSessionId,
+			});
+			releaseDispose();
+
+			await expect(Promise.all([passivationClose, kill])).resolves.toBeDefined();
+			expect(internals.cronStore.list().find((job) => job.id === cron.id)).toMatchObject({ status: "cancelled" });
+			expect(appendSessionState).toHaveBeenCalledOnce();
+			expect(appendSessionState).toHaveBeenCalledWith({ status: "archived" });
+		} finally {
+			releaseDispose();
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
