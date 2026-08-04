@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed daemon startup crashes hiding their exit code and stderr until the startup timeout.
+
 ## [0.5.1] - 2026-08-04
 
 ### Fixed

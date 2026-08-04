@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -271,6 +271,26 @@ describe("ensureInteractiveDaemonRunning", () => {
 		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
 
 		await expect(probe).resolves.toMatchObject({ status: "current" });
+	});
+
+	it("reports stderr when the spawned daemon exits during startup", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pa-launch-startup-crash-"));
+		const entrypoint = join(dir, "crash.mjs");
+		const socketPath = join(dir, "d.sock");
+		writeFileSync(entrypoint, 'console.error("fatal startup failure"); process.exit(23);\n');
+		const originalEntrypoint = process.argv[1]!;
+		process.argv[1] = entrypoint;
+		const startedAt = Date.now();
+
+		try {
+			await expect(ensureInteractiveDaemonRunning(socketPath)).rejects.toThrow(
+				/Prime Agent daemon exited during startup \(code 23\):[\s\S]*fatal startup failure/,
+			);
+			expect(Date.now() - startedAt).toBeLessThan(10_000);
+		} finally {
+			process.argv[1] = originalEntrypoint;
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
