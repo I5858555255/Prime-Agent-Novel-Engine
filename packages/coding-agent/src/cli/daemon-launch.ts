@@ -376,60 +376,41 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 			stdio: ["ignore", "ignore", "pipe"],
 		},
 	);
-	let stderrTail = Buffer.alloc(0);
-	const onStderrData = (chunk: Buffer) => {
-		if (chunk.length >= DAEMON_STARTUP_STDERR_LIMIT_BYTES) {
-			stderrTail = Buffer.from(chunk.subarray(-DAEMON_STARTUP_STDERR_LIMIT_BYTES));
-			return;
-		}
-		const overflow = stderrTail.length + chunk.length - DAEMON_STARTUP_STDERR_LIMIT_BYTES;
-		stderrTail = Buffer.concat([overflow > 0 ? stderrTail.subarray(overflow) : stderrTail, chunk]);
-	};
-	child.stderr.on("data", onStderrData);
+	let stderrTail = "";
+	child.stderr.setEncoding("utf8");
+	child.stderr.on("data", (chunk: string) => {
+		stderrTail = (stderrTail + chunk).slice(-DAEMON_STARTUP_STDERR_LIMIT_BYTES);
+	});
 	let childExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
-	const onChildExit = (code: number | null, signal: NodeJS.Signals | null) => {
+	child.once("exit", (code, signal) => {
 		childExit = { code, signal };
-	};
-	child.once("exit", onChildExit);
+	});
 	child.unref();
 
-	const finishStartupCapture = () => {
-		child.off("exit", onChildExit);
-		child.stderr.off("data", onStderrData);
-		child.stderr.destroy();
-		return stderrTail.toString("utf8").trim();
-	};
-	const exitedDuringStartupError = (): Error | undefined => {
-		const exit = childExit;
-		if (!exit) {
-			return undefined;
+	const throwIfExited = () => {
+		if (!childExit) {
+			return;
 		}
-		const stderr = finishStartupCapture();
-		const signal = exit.signal ? `, signal ${exit.signal}` : "";
-		return new Error(
-			`Prime Agent daemon exited during startup (code ${exit.code ?? "unknown"}${signal})${stderr ? `: ${stderr}` : ""}`,
+		const signal = childExit.signal ? `, signal ${childExit.signal}` : "";
+		const stderr = stderrTail.trim();
+		throw new Error(
+			`Prime Agent daemon exited during startup (code ${childExit.code ?? "unknown"}${signal})${stderr ? `: ${stderr}` : ""}`,
 		);
 	};
 
 	const deadline = Date.now() + DAEMON_STARTUP_TIMEOUT_MS;
 	while (Date.now() < deadline) {
+		throwIfExited();
 		const started = await probeDaemonVersion(socketPath);
 		if (started.status === "current") {
-			finishStartupCapture();
+			child.stderr.destroy();
 			return;
-		}
-		const exitError = exitedDuringStartupError();
-		if (exitError) {
-			throw exitError;
 		}
 		await delay(25);
 	}
 
-	const exitError = exitedDuringStartupError();
-	if (exitError) {
-		throw exitError;
-	}
-	const stderr = finishStartupCapture();
+	throwIfExited();
+	const stderr = stderrTail.trim();
 	throw new Error(`Timed out waiting for daemon to start on ${socketPath}${stderr ? `: ${stderr}` : ""}`);
 }
 
