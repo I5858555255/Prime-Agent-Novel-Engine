@@ -322,6 +322,44 @@ describe("ensureInteractiveDaemonRunning", () => {
 		}
 	});
 
+	it("succeeds when the spawned child loses the race to an already-serving daemon", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pa-launch-startup-race-"));
+		const entrypoint = join(dir, "loser.mjs");
+		const socketPath = join(dir, "d.sock");
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		process.env[ENV_AGENT_DIR] = join(dir, "agent");
+		writeFileSync(entrypoint, "process.exit(7);");
+		const originalEntrypoint = process.argv[1]!;
+		process.argv[1] = entrypoint;
+		const server: Server = createServer((socket) => {
+			socket.on("error", () => undefined);
+			send(socket, {
+				type: "daemon_hello",
+				socketPath,
+				protocol: { name: "prime-agent.daemon", version: DAEMON_PROTOCOL_VERSION },
+				appVersion: VERSION,
+				schemaId: DAEMON_SCHEMA_ID,
+				clientId: "fake-client",
+				serverCapabilities: [],
+			});
+		});
+
+		try {
+			const ensurePromise = ensureInteractiveDaemonRunning(socketPath);
+			// Let the child exit first, then bring up the winning daemon inside
+			// the exit grace window.
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+			await expect(ensurePromise).resolves.toBeUndefined();
+		} finally {
+			process.argv[1] = originalEntrypoint;
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("does not attribute a previous run's log to a daemon that crashed before logging", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pa-launch-startup-stale-"));
 		const entrypoint = join(dir, "crash.mjs");

@@ -28,6 +28,7 @@ import { createCliSubprocessEnv, formatCurrentCliCommand } from "./subprocess-la
 
 const DAEMON_STARTUP_TIMEOUT_MS = 30_000;
 const DAEMON_STARTUP_LOG_TAIL_BYTES = 4 * 1024;
+const DAEMON_STARTUP_EXIT_GRACE_MS = 2_000;
 
 export function isDaemonSessionSummary(value: unknown): value is SessionSummary {
 	if (!value || typeof value !== "object") {
@@ -397,12 +398,18 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 		);
 	};
 
+	// A child exit is not immediately fatal: it may have lost the socket to a
+	// concurrent launcher whose daemon is still booting. Keep probing for a
+	// short grace window before attributing the failure to the exit.
 	const deadline = Date.now() + DAEMON_STARTUP_TIMEOUT_MS;
-	while (Date.now() < deadline) {
-		throwIfExited();
+	let exitDeadline: number | undefined;
+	while (Date.now() < Math.min(deadline, exitDeadline ?? Number.POSITIVE_INFINITY)) {
 		const started = await probeDaemonVersion(socketPath);
 		if (started.status === "current") {
 			return;
+		}
+		if (childExit) {
+			exitDeadline ??= Date.now() + DAEMON_STARTUP_EXIT_GRACE_MS;
 		}
 		await delay(25);
 	}
