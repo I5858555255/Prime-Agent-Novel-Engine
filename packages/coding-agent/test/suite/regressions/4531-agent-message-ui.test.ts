@@ -11,6 +11,7 @@ import {
 	createAgentSessionMessage,
 	createAgentSessionMessagePrompt,
 	formatAgentMessageParticipant,
+	isAgentSessionMessage,
 	isAgentSessionMessagePrompt,
 } from "../../../src/core/agent-messages.js";
 import type { KernelSentAgentMessage } from "../../../src/core/kernel/index.js";
@@ -420,6 +421,25 @@ describe("ENG-4531 agent message UI", () => {
 		chatContainer.addChild(new Container());
 		addMessage(second);
 		expect(chatContainer.children[6]?.render(120)[0]).toBe("");
+	});
+
+	it("renders persisted agent messages with a null sender", () => {
+		const persistedMessage: AgentMessage = {
+			role: "custom",
+			customType: "agent_message",
+			content: "Persisted message.",
+			display: true,
+			details: {
+				id: "agentmsg_persisted",
+				message: "Persisted message.",
+				from: null,
+			},
+			timestamp: 123,
+		};
+
+		expect(isAgentSessionMessage(persistedMessage)).toBe(true);
+		if (!isAgentSessionMessage(persistedMessage)) throw new Error("Expected an agent session message");
+		expect(render(new AgentMessageComponent(persistedMessage))).toContain("Agent message received · from unknown");
 	});
 
 	it("renders relationship-aware sender labels with identifier fallbacks", () => {

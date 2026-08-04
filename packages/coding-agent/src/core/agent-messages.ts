@@ -36,13 +36,14 @@ export type AgentMessageDirection = "received" | "sent";
 export function formatAgentMessageParticipant(
 	direction: AgentMessageDirection,
 	role: AgentFamilyRelationship | undefined,
-	endpoint: Partial<AgentSessionMessageEndpoint> & { clientId?: string } = {},
+	endpoint: (Partial<AgentSessionMessageEndpoint> & { clientId?: string }) | null = {},
 ): string {
+	const normalizedEndpoint = endpoint ?? {};
 	const nameOrId =
-		endpoint.sessionName?.trim() ||
-		endpoint.activeSessionId?.trim() ||
-		endpoint.clientId?.trim() ||
-		endpoint.sessionId?.trim() ||
+		normalizedEndpoint.sessionName?.trim() ||
+		normalizedEndpoint.activeSessionId?.trim() ||
+		normalizedEndpoint.clientId?.trim() ||
+		normalizedEndpoint.sessionId?.trim() ||
 		"unknown";
 	const participant = role ? `${role} ${nameOrId}` : nameOrId;
 	return `${direction === "received" ? "from" : "to"} ${participant}`;
