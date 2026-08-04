@@ -6345,6 +6345,59 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("refuses to delete a busy hydrated child and deletes it after it becomes idle", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-hydrated-rlm-delete-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const childState = await internals.createRuntime({ type: "create", sessionPath: fixture.childSessionFile });
+			let isStreaming = true;
+			Object.defineProperty(childState.runtime.session, "isStreaming", { get: () => isStreaming });
+			Object.defineProperty(childState.runtime.session, "unfinishedActionCount", { get: () => 0 });
+			const parentSession = parentState.runtime.session as unknown as {
+				deleteInactiveRlmSubagent: ReturnType<typeof vi.fn>;
+			};
+			const deleteSpy = vi.fn(async (childId: string, isExternallyRunning: () => boolean) => {
+				if (isExternallyRunning()) return "running" as const;
+				await (
+					fixture.daemon as unknown as {
+						createSubagentRuntimeHost(parent: ActiveSessionState): SubagentRuntimeHost;
+					}
+				)
+					.createSubagentRuntimeHost(parentState)
+					.deleteRlmSubagentRuntime(childId, childState.runtime.session);
+				return "deleted" as const;
+			});
+			parentSession.deleteInactiveRlmSubagent = deleteSpy;
+			const client = makeClient("client-1", parentState.activeSessionId);
+
+			const busy = (await internals.handleCommand(client, {
+				type: "delete_rlm_subagent",
+				activeSessionId: parentState.activeSessionId,
+				childId: fixture.childId,
+			})) as { data: { deleted: boolean; reason?: string } };
+			expect(busy.data).toEqual({ deleted: false, reason: "running" });
+			expect(deleteSpy).not.toHaveBeenCalled();
+			expect(internals.sessions.get(childState.activeSessionId)).toBe(childState);
+
+			isStreaming = false;
+			const idle = (await internals.handleCommand(client, {
+				type: "delete_rlm_subagent",
+				activeSessionId: parentState.activeSessionId,
+				childId: fixture.childId,
+			})) as { data: { deleted: boolean } };
+			expect(idle.data).toEqual({ deleted: true });
+			expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("deletes a passive child without hydrating it and treats unknown children benignly", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-delete-"));
 		try {

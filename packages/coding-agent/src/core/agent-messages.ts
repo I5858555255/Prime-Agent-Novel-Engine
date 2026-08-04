@@ -155,7 +155,7 @@ export function assertAgentSessionNameAvailable(
 			entry.id !== input.ignoreSessionId &&
 			entry.name === input.name &&
 			entry.depth === input.depth &&
-			sameAgentFamilyParent(entry, input),
+			sameAgentSessionNameParent(entry, input),
 	);
 	if (conflict) {
 		throw new Error(formatAgentSessionNameUnavailable(input.name, input.depth));
@@ -188,6 +188,13 @@ export function buildAgentFamilyRoster(
 			...children.sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((entry) => row("child", entry)),
 		],
 	};
+}
+
+function sameAgentSessionNameParent(left: AgentSessionNameScope, right: AgentSessionNameScope): boolean {
+	if (left.depth === 0 && right.depth === 0) {
+		return true;
+	}
+	return sameAgentFamilyParent(left, right);
 }
 
 function sameAgentFamilyParent(left: AgentSessionNameScope, right: AgentSessionNameScope): boolean {

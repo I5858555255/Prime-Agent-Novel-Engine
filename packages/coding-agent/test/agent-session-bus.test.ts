@@ -182,6 +182,12 @@ describe("agent session bus", () => {
 			"an agent of that name already exists at depth 0 under this parent",
 		);
 		expect(() =>
+			assertAgentSessionNameAvailable(
+				[...catalog, { id: "fork", name: "forked", depth: 0, status: "idle", parentSessionPath: "/root-a" }],
+				{ name: "beta", depth: 0, parentSessionPath: "/root-a", ignoreSessionId: "fork" },
+			),
+		).toThrow("an agent of that name already exists at depth 0 under this parent");
+		expect(() =>
 			assertAgentSessionNameAvailable(catalog, { name: "reviewer", depth: 1, parentSessionPath: "/root-a" }),
 		).toThrow("an agent of that name already exists at depth 1 under this parent");
 		expect(() =>

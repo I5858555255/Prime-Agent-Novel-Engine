@@ -1994,7 +1994,7 @@ export class DaemonSupervisor {
 				(session) => canonicalSessionPath(session.path) === canonicalSessionPath(createCommand.sessionPath!),
 			);
 			const targetSummary = target ? summaryForInactiveSession(target) : { sessionId: "new-root", rlmDepth: 0 };
-			if (target?.parentSessionPath) {
+			if (target?.parentSessionPath && (target.rlmDepth ?? 0) > 0) {
 				this.assertSavedSiblingNameAvailable(savedSiblings, target, createCommand.name);
 			} else {
 				await this.assertSupervisorSessionNameAvailable(targetSummary, createCommand.name);
@@ -2910,7 +2910,9 @@ export class DaemonSupervisor {
 			active.flatMap((summary) => (summary.sessionFile ? [canonicalSessionPath(summary.sessionFile)] : [])),
 		);
 		const savedRoots = (await this.catalog.list()).filter(
-			(info) => !info.parentSessionPath && !activePaths.has(canonicalSessionPath(info.path)),
+			(info) =>
+				(info.rlmDepth ?? (info.parentSessionPath ? -1 : 0)) === 0 &&
+				!activePaths.has(canonicalSessionPath(info.path)),
 		);
 		return [...active, ...savedRoots.map((info) => summaryForInactiveSession(info))].map((summary) => ({
 			id: summary.sessionId,
@@ -2945,7 +2947,11 @@ export class DaemonSupervisor {
 		const siblings = await this.catalog.siblings(sessionPath);
 		const saved = siblings.find((info) => canonicalSessionPath(info.path) === targetPath);
 		if (!saved) throw new Error(`Session not found: ${sessionPath}`);
-		this.assertSavedSiblingNameAvailable(siblings, saved, name);
+		if (saved.parentSessionPath && (saved.rlmDepth ?? 0) > 0) {
+			this.assertSavedSiblingNameAvailable(siblings, saved, name);
+		} else {
+			await this.assertSupervisorSessionNameAvailable(summaryForInactiveSession(saved), name);
+		}
 	}
 
 	private assertSavedSiblingNameAvailable(siblings: SessionInfo[], target: SessionInfo, name: string): void {

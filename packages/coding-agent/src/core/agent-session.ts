@@ -8944,8 +8944,11 @@ export class AgentSession {
 	}
 
 	/** Delete an inactive direct child by its registry child id without affecting active runs. */
-	async deleteInactiveRlmSubagent(childId: string): Promise<"deleted" | "not_found" | "running"> {
-		const isRunning = (): boolean => this._activeRlmChildRuns.has(childId);
+	async deleteInactiveRlmSubagent(
+		childId: string,
+		isExternallyRunning: () => boolean = () => false,
+	): Promise<"deleted" | "not_found" | "running"> {
+		const isRunning = (): boolean => this._activeRlmChildRuns.has(childId) || isExternallyRunning();
 		if (isRunning()) {
 			return "running";
 		}
@@ -8959,15 +8962,13 @@ export class AgentSession {
 		if (isRunning()) {
 			return "running";
 		}
-		let becameRunning = false;
-		await this._trackRlmSubagentDeletion(subagent, () => {
+		const result = await this._trackRlmSubagentDeletion(subagent, () => {
 			if (isRunning()) {
-				becameRunning = true;
-				return Promise.resolve({ subagent });
+				return Promise.resolve({ subagent, outcome: "skipped_running" });
 			}
 			return this._deleteResolvedRlmSubagent(subagent);
 		});
-		return becameRunning ? "running" : "deleted";
+		return result.outcome === "skipped_running" ? "running" : "deleted";
 	}
 
 	/** Delete a running, retained, or passive direct child selected from this parent session's registry. */

@@ -1467,6 +1467,48 @@ describe("AgentSession rlm recursion", () => {
 		expect(root.cancelRlmChildRun(childId)).toBe(false);
 	});
 
+	it("reports a shared running outcome to concurrent inactive-delete callers", async () => {
+		let runningChecks = 0;
+		const isExternallyRunning = () => ++runningChecks >= 5;
+		const deleteRuntime = vi.fn(async () => {});
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({
+					current: { activeSessionId: "parent-active", sessionId: "parent-session" },
+					agents: [
+						{
+							activeSessionId: "child-active",
+							sessionId: "child-session",
+							sessionName: "worker",
+							runtimeKind: "subagent",
+							cwd: tempDir,
+							isStreaming: false,
+							unfinishedActionCount: 0,
+							parentActiveSessionId: "parent-active",
+							rlmChildId: "child",
+							sessionDir: join(tempDir, "child"),
+						},
+					],
+				}),
+				sendAgentMessage: async () => {
+					throw new Error("unexpected send");
+				},
+			},
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => {
+					throw new Error("unexpected hydration");
+				},
+				deleteRlmSubagentRuntime: deleteRuntime,
+			},
+		});
+
+		const first = root.deleteInactiveRlmSubagent("child", isExternallyRunning);
+		const second = root.deleteInactiveRlmSubagent("child", isExternallyRunning);
+
+		await expect(Promise.all([first, second])).resolves.toEqual(["running", "running"]);
+		expect(deleteRuntime).not.toHaveBeenCalled();
+	});
+
 	it("deletes only inactive RLM children through the explicit inactive path", async () => {
 		let releaseChild: () => void = () => {};
 		const release = new Promise<void>((resolve) => {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionMessageAgentSummary } from "../src/core/agent-messages.js";
+import { readSessionInfo, SessionManager } from "../src/core/session-manager.js";
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
@@ -13,6 +14,7 @@ interface SupervisorInternals {
 	syncAgentPeers(): Promise<void>;
 	findSummaryInWorker(worker: WorkerFixture, selector: string): SessionSummary | undefined;
 	createOrReuseWorker(clientId: string, command: { type: "create"; name: string }): Promise<WorkerFixture>;
+	assertSupervisorSavedSessionNameAvailable(sessionPath: string, name: string): Promise<void>;
 }
 
 interface WorkerFixture {
@@ -117,6 +119,48 @@ describe("daemon supervisor passive subagent topology", () => {
 			supervisor.createOrReuseWorker("client", { type: "create", name: "duplicate-root" }),
 		).rejects.toThrow("an agent of that name already exists at depth 0 under this parent");
 		expect(launchWorker).not.toHaveBeenCalled();
+	});
+
+	it("rejects a forked root name that collides with another saved root", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "prime-supervisor-forked-root-name-"));
+		tempDirs.push(directory);
+		const sourceManager = SessionManager.create(directory, join(directory, "sessions"));
+		sourceManager.newSession({ rlmDepth: 0 });
+		sourceManager.flushNow();
+		const sourcePath = sourceManager.getSessionFile();
+		if (!sourcePath) throw new Error("Missing source session path");
+		const forkedManager = SessionManager.forkFrom(sourcePath, directory, join(directory, "sessions"));
+		const forkedPath = forkedManager.getSessionFile();
+		if (!forkedPath) throw new Error("Missing forked session path");
+		const forkedInfo = await readSessionInfo(forkedPath);
+		if (!forkedInfo) throw new Error("Missing forked session info");
+		const supervisor = new DaemonSupervisor(join(directory, "daemon.sock"), {
+			defaultSessionConfig: { agentDir: directory, cwd: directory },
+			descriptorDir: join(directory, "workers"),
+		}) as unknown as SupervisorInternals;
+		Object.assign(supervisor, {
+			catalog: {
+				siblings: vi.fn(async () => [forkedInfo]),
+				list: vi.fn(async () => [
+					{
+						id: "other-root",
+						name: "duplicate-root",
+						path: join(directory, "other.jsonl"),
+						cwd: directory,
+						created: new Date(0),
+						modified: new Date(0),
+						messageCount: 0,
+						firstMessage: "",
+						allMessagesText: "",
+						rlmDepth: 0,
+					},
+				]),
+			},
+		});
+
+		await expect(supervisor.assertSupervisorSavedSessionNameAvailable(forkedPath, "duplicate-root")).rejects.toThrow(
+			"an agent of that name already exists at depth 0 under this parent",
+		);
 	});
 
 	it("normalizes explicit root names before supervisor validation and launch", async () => {

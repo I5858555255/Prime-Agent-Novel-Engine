@@ -3617,10 +3617,11 @@ export class AgentDaemon {
 				} else {
 					const info = await readSessionInfo(command.sessionPath);
 					if (!info) throw new Error(`Session not found: ${command.sessionPath}`);
+					const depth = info.rlmDepth ?? 0;
 					await this.assertFamilySessionNameAvailable({
 						name,
-						depth: info.rlmDepth ?? 0,
-						parentSessionPath: info.parentSessionPath,
+						depth,
+						...(depth > 0 && info.parentSessionPath ? { parentSessionPath: info.parentSessionPath } : {}),
 						ignoreSessionId: info.id,
 					});
 					SessionManager.open(command.sessionPath).appendSessionInfo(name);
@@ -3974,7 +3975,21 @@ export class AgentDaemon {
 
 			case "delete_rlm_subagent": {
 				const state = this.getSessionState(command.activeSessionId);
-				const result = await state.runtime.session.deleteInactiveRlmSubagent(command.childId);
+				const isResidentChildRunning = () => {
+					const childState = [...this.sessions.values()].find(
+						(candidate) =>
+							candidate.runtime.metadata.kind === "subagent" &&
+							candidate.runtime.metadata.parentActiveSessionId === state.activeSessionId &&
+							candidate.runtime.metadata.rlmChildId === command.childId,
+					);
+					return (
+						childState !== undefined &&
+						(childState.runtime.session.isStreaming || childState.runtime.session.unfinishedActionCount > 0)
+					);
+				};
+				const result = isResidentChildRunning()
+					? "running"
+					: await state.runtime.session.deleteInactiveRlmSubagent(command.childId, isResidentChildRunning);
 				return success(command.id, "delete_rlm_subagent", {
 					deleted: result === "deleted",
 					...(result === "running" ? { reason: "running" } : {}),
@@ -4840,7 +4855,10 @@ export class AgentDaemon {
 			localAgents.flatMap((agent) => (agent.sessionPath ? [resolve(agent.sessionPath)] : [])),
 		);
 		const savedRoots = (await SessionManager.listAll(undefined, this.options.defaultSessionConfig.sessionDir))
-			.filter((info) => !info.parentSessionPath && !activePaths.has(resolve(info.path)))
+			.filter(
+				(info) =>
+					(info.rlmDepth ?? (info.parentSessionPath ? -1 : 0)) === 0 && !activePaths.has(resolve(info.path)),
+			)
 			.map(
 				(info): AgentFamilyCatalogEntry => ({
 					id: info.id,
@@ -4898,11 +4916,12 @@ export class AgentDaemon {
 	private async assertStateSessionNameAvailable(state: ActiveSessionState, name: string): Promise<void> {
 		const session = state.runtime.session;
 		const metadata = state.runtime.metadata;
+		const depth = session.rlmDepth ?? 0;
 		await this.assertFamilySessionNameAvailable({
 			name,
-			depth: session.rlmDepth ?? 0,
-			parentSessionId: metadata.parentSessionId,
-			parentSessionPath: metadata.parentSessionFile,
+			depth,
+			...(depth > 0 && metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
+			...(depth > 0 && metadata.parentSessionFile ? { parentSessionPath: metadata.parentSessionFile } : {}),
 			ignoreSessionId: session.sessionId,
 		});
 	}
