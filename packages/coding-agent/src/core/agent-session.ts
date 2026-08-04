@@ -7137,8 +7137,16 @@ export class AgentSession {
 			});
 		}
 		await this._notifyKernelStateAfterCompaction();
+		await this._reapDeletedRlmSubagentRuntimesAfterCompaction();
 
 		return { summary, firstKeptEntryId, tokensBefore, details };
+	}
+
+	private async _reapDeletedRlmSubagentRuntimesAfterCompaction(): Promise<void> {
+		const childIds = [...this._rlmChildCleanupFailures.keys()].filter(
+			(childId) => !this._activeRlmChildRuns.get(childId)?.detachedDeletion,
+		);
+		await Promise.allSettled(childIds.map((childId) => this.deleteRlmSubagent(childId)));
 	}
 
 	/**

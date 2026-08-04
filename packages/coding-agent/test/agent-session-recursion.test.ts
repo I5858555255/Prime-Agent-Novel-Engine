@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AgentSessionMessageController, isAgentSessionMessage } from "../src/core/agent-messages.js";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import type { LoadExtensionsResult } from "../src/core/extensions/index.js";
 import { type HostRequestHandlers, KernelManager } from "../src/core/kernel/index.js";
 import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -31,7 +32,7 @@ import { SettingsManager, type SettingsStorage } from "../src/core/settings-mana
 import type { Skill } from "../src/core/skills.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
 import { type ActiveSessionState, resolveActiveSessionState } from "../src/modes/daemon/active-session-state.js";
-import { createTestResourceLoader } from "./utilities.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -238,6 +239,7 @@ describe("AgentSession rlm recursion", () => {
 			rlmSessionDir?: string;
 			sessionManager?: SessionManager;
 			settingsManager?: SettingsManager;
+			extensionsResult?: LoadExtensionsResult;
 		} = {},
 	): AgentSession {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
@@ -264,6 +266,7 @@ describe("AgentSession rlm recursion", () => {
 			cwd: tempDir,
 			modelRegistry: ModelRegistry.create(authStorage, join(tempDir, "models.json")),
 			resourceLoader: createTestResourceLoader({
+				extensionsResult: options.extensionsResult,
 				skills: options.agentMessageController
 					? [
 							{
@@ -575,7 +578,7 @@ describe("AgentSession rlm recursion", () => {
 		expect(childStatuses).toEqual(["cancelled"]);
 	});
 
-	it("hides a retained child after failed deletion and keeps it selector-retryable", async () => {
+	it("retries and releases failed retained child cleanup on the next compaction", async () => {
 		const childId = "retained-retry-child";
 		const childDir = join(tempDir, childId);
 		mkdirSync(childDir, { recursive: true });
@@ -589,31 +592,44 @@ describe("AgentSession rlm recursion", () => {
 			}
 			await session.disposeAsync();
 		});
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
+		const extensionsResult = await createTestExtensionsResult([
+			(pi) => {
+				pi.on("session_before_compact", async (event) => ({
+					compaction: {
+						summary: "cleanup retry compaction",
+						firstKeptEntryId: event.preparation.firstKeptEntryId,
+						tokensBefore: event.preparation.tokensBefore,
+						details: { source: "extension" },
+					},
+				}));
+			},
+		]);
 		const root = createSession({
+			settingsManager,
+			extensionsResult,
 			subagentRuntimeHost: {
 				createRlmSubagentRuntime: async () => ({ session: child }),
 				deleteRlmSubagentRuntime: deleteRuntime,
 			},
 		});
+		root.sessionManager.appendMessage({ role: "user", content: "history before cleanup", timestamp: Date.now() });
+		root.sessionManager.appendMessage(assistantMessage("history response"));
 		expect(root.registerRlmChildSession(childId, child)).toBe(true);
-		const retainedSnapshot = (await root.listRlmSubagents()).subagents[0];
-		if (!retainedSnapshot?.session_id) {
-			throw new Error("Missing retained child session ID");
-		}
 
 		await expect(root.deleteRlmSubagent("retained-retry-worker")).rejects.toThrow("retained close failed");
-		expect(await root.listRlmSubagents()).toEqual({ subagents: [] });
-		expect((root as unknown as InspectableRlmSession)._rlmChildCleanupFailures.size).toBe(1);
-		child.setSessionName("renamed-retry-worker");
-		await expect(root.runRlmChild("reuse retry selector", { name: "retained-retry-worker" })).rejects.toThrow(
-			'Agent name "retained-retry-worker" is unavailable: an agent of that name already exists at depth 1 under this parent',
-		);
+		const internals = root as unknown as InspectableRlmSession;
+		expect(internals._rlmChildCleanupFailures.size).toBe(1);
 
-		await expect(root.deleteRlmSubagent("retained-retry-worker")).resolves.toMatchObject({
-			subagent: { rlm_child_id: childId, session_name: "retained-retry-worker" },
-		});
+		await root.compact();
+
 		expect(deleteRuntime).toHaveBeenCalledTimes(2);
-		expect((root as unknown as InspectableRlmSession)._rlmChildCleanupFailures.size).toBe(0);
+		expect(internals._rlmChildCleanupFailures.size).toBe(0);
+		expect(internals._rlmChildSessions.size).toBe(0);
+		await expect(root.runRlmChild("replacement", { name: "retained-retry-worker" })).resolves.toMatchObject({
+			name: "retained-retry-worker",
+		});
 	});
 
 	it("makes an orchestrator-chosen name override a custom runtime's preexisting name", async () => {
