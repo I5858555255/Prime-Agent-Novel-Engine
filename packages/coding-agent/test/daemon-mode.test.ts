@@ -3424,6 +3424,119 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("replaces a resident top-level RLM child when restoring its heartbeat", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-replace-child-heartbeat-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const parentManager = SessionManager.open(fixture.parentSessionFile);
+			parentManager.appendSessionState({ status: "active" });
+			const internals = fixture.daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				getOrCreateCronJobSession(
+					job: AgentCronJob,
+					requirePersistedJob: boolean,
+				): Promise<ActiveSessionState | undefined>;
+			};
+			const topLevelState = await internals.createRuntime({
+				type: "create",
+				sessionPath: fixture.childSessionFile,
+			});
+			expect(topLevelState.runtime.metadata.kind).toBe("top-level");
+			const topLevelAbort = topLevelState.runtime.session.abort as ReturnType<typeof vi.fn>;
+			const heartbeat = internals.cronStore.createRlmHeartbeat({
+				activeSessionId: "stale-child-active-id",
+				sessionId: topLevelState.runtime.session.sessionId,
+				sessionFile: fixture.childSessionFile,
+				cwd: tempDir,
+				runtimeKind: "subagent",
+				scheduleText: "every 30s",
+				prompt: "report exactly: hi",
+				now: new Date("2026-01-01T00:00:00.000Z"),
+			});
+
+			const childState = await internals.getOrCreateCronJobSession(heartbeat, true);
+
+			expect(childState).toBeDefined();
+			expect(childState).not.toBe(topLevelState);
+			expect(childState?.runtime.metadata).toMatchObject({
+				kind: "subagent",
+				rlmChildId: fixture.childId,
+			});
+			expect(topLevelAbort).toHaveBeenCalledOnce();
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "active",
+				activeSessionId: childState?.activeSessionId,
+			});
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("cancels an RLM heartbeat for a resident top-level session that is not a registered child", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-nonchild-heartbeat-"));
+		try {
+			const sessionDir = join(tempDir, "sessions");
+			const parentManager = SessionManager.create(tempDir, sessionDir);
+			parentManager.newSession();
+			parentManager.appendSessionState({ status: "active" });
+			const parentSessionFile = parentManager.getSessionFile();
+			const parentArtifactDir = parentManager.getSessionArtifactDir();
+			if (!parentSessionFile || !parentArtifactDir) {
+				throw new Error("Missing parent session paths");
+			}
+			const sessionManager = SessionManager.create(tempDir, join(parentArtifactDir, "unregistered-child"));
+			sessionManager.newSession({ parentSession: parentSessionFile });
+			const sessionFile = sessionManager.getSessionFile();
+			if (!sessionFile) {
+				throw new Error("Missing session file");
+			}
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => ({
+				session: makeRuntimeSession(options.sessionManager),
+				extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+					ReturnType<CreateAgentSessionRuntimeFactory>
+				>["extensionsResult"],
+				services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+					ReturnType<CreateAgentSessionRuntimeFactory>
+				>["services"],
+				diagnostics: [],
+			}));
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir },
+				createRuntime,
+			});
+			const internals = daemon as unknown as {
+				cronStore: AgentCronJobStore;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				getOrCreateCronJobSession(
+					job: AgentCronJob,
+					requirePersistedJob: boolean,
+				): Promise<ActiveSessionState | undefined>;
+			};
+			const topLevelState = await internals.createRuntime({ type: "create", sessionPath: sessionFile });
+			const abort = topLevelState.runtime.session.abort as ReturnType<typeof vi.fn>;
+			const heartbeat = internals.cronStore.createRlmHeartbeat({
+				activeSessionId: topLevelState.activeSessionId,
+				sessionId: sessionManager.getSessionId(),
+				sessionFile,
+				cwd: tempDir,
+				runtimeKind: "subagent",
+				scheduleText: "every 30s",
+				prompt: "report exactly: hi",
+				now: new Date("2026-01-01T00:00:00.000Z"),
+			});
+
+			await expect(internals.getOrCreateCronJobSession(heartbeat, true)).resolves.toBeUndefined();
+			expect(abort).not.toHaveBeenCalled();
+			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
+				status: "cancelled",
+			});
+			expect(createRuntime).toHaveBeenCalledOnce();
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("cancels a detached subagent heartbeat when its parent is archived", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-archived-subagent-heartbeat-"));
 		try {

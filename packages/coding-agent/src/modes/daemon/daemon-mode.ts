@@ -978,7 +978,10 @@ export class AgentDaemon {
 	}
 
 	/** Walk each supplied parent's persisted child tree once, without creating runtimes. */
-	private async listPassiveRlmSubagents(savedRoots: SessionInfo[] = []): Promise<PassiveRlmSubagent[]> {
+	private async listPassiveRlmSubagents(
+		savedRoots: SessionInfo[] = [],
+		includeResident = false,
+	): Promise<PassiveRlmSubagent[]> {
 		const passive: PassiveRlmSubagent[] = [];
 		const visit = async (
 			root: PassiveRlmRoot,
@@ -994,7 +997,7 @@ export class AgentDaemon {
 				if (!info) continue;
 				// A resident child walks its own registry as an outer root below. Avoid
 				// both duplicate rows and attributing its descendants to an ancestor.
-				if (this.findSessionBySessionFile(entry.sessionFile)) continue;
+				if (!includeResident && this.findSessionBySessionFile(entry.sessionFile)) continue;
 				const chain = [...parentChain, entry];
 				passive.push({ ...root, entry, info, chain });
 				await visit(
@@ -1029,9 +1032,12 @@ export class AgentDaemon {
 		return passive;
 	}
 
-	private async passiveRlmSubagentsByPath(savedRoots: SessionInfo[] = []): Promise<Map<string, PassiveRlmSubagent>> {
+	private async passiveRlmSubagentsByPath(
+		savedRoots: SessionInfo[] = [],
+		includeResident = false,
+	): Promise<Map<string, PassiveRlmSubagent>> {
 		return new Map(
-			(await this.listPassiveRlmSubagents(savedRoots)).map((passive) => [
+			(await this.listPassiveRlmSubagents(savedRoots, includeResident)).map((passive) => [
 				resolve(passive.entry.sessionFile),
 				passive,
 			]),
@@ -1072,8 +1078,11 @@ export class AgentDaemon {
 		});
 	}
 
-	private async findPassiveRlmSubagent(target: string): Promise<PassiveRlmSubagent | undefined> {
-		const matches = [...(await this.passiveRlmSubagentsByPath()).values()].filter(
+	private async findPassiveRlmSubagent(
+		target: string,
+		includeResident = false,
+	): Promise<PassiveRlmSubagent | undefined> {
+		const matches = [...(await this.passiveRlmSubagentsByPath([], includeResident)).values()].filter(
 			({ entry, info }) =>
 				entry.childId === target ||
 				resolve(entry.sessionFile) === resolve(target) ||
@@ -1847,9 +1856,13 @@ export class AgentDaemon {
 			(!requirePersistedJob || activeIdMatch?.runtime.session.sessionId === dueJob.sessionId
 				? activeIdMatch
 				: undefined);
+		const requiresRlmSubagentRestore =
+			dueJob.source === "rlm_heartbeat" &&
+			dueJob.runtimeKind === "subagent" &&
+			current?.runtime.metadata.kind !== "subagent";
 		// A half-bound match falls through to createRuntime, which awaits the
 		// pending create for the same session file instead of prompting mid-bind.
-		if (current && !this.bindingSessions.has(current.activeSessionId)) {
+		if (current && !this.bindingSessions.has(current.activeSessionId) && !requiresRlmSubagentRestore) {
 			this.rebindCronJobsToState(current);
 			const reboundJob = requirePersistedJob ? this.getRunnableCronJob(job.id) : dueJob;
 			return reboundJob && this.isCronJobRunnableForState(reboundJob, current, requirePersistedJob)
@@ -1896,14 +1909,16 @@ export class AgentDaemon {
 		}
 
 		try {
+			const residentChild = this.findSessionBySessionFile(job.sessionFile);
 			await this.createRuntime(
 				{ type: "create", sessionPath: parentSessionPath },
 				() => this.getRunnableCronJob(job.id) !== undefined,
 			);
-			const passiveSubagent = await this.findPassiveRlmSubagent(job.sessionFile);
-			const childState = passiveSubagent
-				? await this.hydratePassiveRlmSubagent(passiveSubagent)
-				: this.findSessionBySessionFile(job.sessionFile);
+			const passiveSubagent = await this.findPassiveRlmSubagent(
+				job.sessionFile,
+				residentChild !== undefined && residentChild.runtime.metadata.kind !== "subagent",
+			);
+			const childState = passiveSubagent ? await this.hydratePassiveRlmSubagent(passiveSubagent) : residentChild;
 			if (!childState || childState.runtime.metadata.kind !== "subagent") {
 				this.cancelRlmHeartbeat(job.id);
 				return undefined;
