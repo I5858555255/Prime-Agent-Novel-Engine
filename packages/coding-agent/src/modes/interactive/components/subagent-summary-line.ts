@@ -83,7 +83,7 @@ export class SubagentSummaryLine implements Component, Focusable {
 	render(width: number): string[] {
 		const lines = this.renderInfoLine(width);
 		if (this.counts.total === 0) return lines;
-		const summary = `${this.counts.total} subagents: ${this.counts.running} running · ${this.counts.idle} idle · ${this.counts.inactive} inactive`;
+		const summary = `${this.counts.total} subagent${this.counts.total === 1 ? "" : "s"}: ${this.counts.running} running · ${this.counts.idle} idle · ${this.counts.inactive} inactive`;
 		const openHint = this.openable
 			? `  ${keyText("tui.select.confirm")} or ${keyText("app.agents.open")} to open`
 			: "";

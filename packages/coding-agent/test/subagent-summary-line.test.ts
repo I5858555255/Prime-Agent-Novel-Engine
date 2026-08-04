@@ -24,14 +24,18 @@ describe("SubagentSummaryLine", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	it("renders no subagent line without children and one line when children exist", () => {
+	it("renders no subagent line without children and uses singular and plural labels", () => {
 		const line = new SubagentSummaryLine();
 		expect(line.render(120)).toEqual([]);
 
 		line.setSubagentCounts({ total: 1, running: 1, idle: 0, inactive: 0 });
-		const rendered = line.render(120).map(stripAnsi);
+		let rendered = line.render(120).map(stripAnsi);
 		expect(rendered).toHaveLength(1);
-		expect(rendered[0]).toContain("1 subagents: 1 running · 0 idle · 0 inactive");
+		expect(rendered[0]).toContain("1 subagent: 1 running · 0 idle · 0 inactive");
+
+		line.setSubagentCounts({ total: 2, running: 1, idle: 1, inactive: 0 });
+		rendered = line.render(120).map(stripAnsi);
+		expect(rendered[0]).toContain("2 subagents: 1 running · 1 idle · 0 inactive");
 	});
 
 	it("counts only direct children using running, idle, and inactive status projections", () => {
@@ -76,7 +80,7 @@ describe("SubagentSummaryLine", () => {
 		line.setSubagentCounts({ total: 1, running: 0, idle: 0, inactive: 1 });
 		line.setOpenable(false);
 
-		expect(stripAnsi(line.render(100).join("\n"))).toContain("1 subagents: 0 running · 0 idle · 1 inactive");
+		expect(stripAnsi(line.render(100).join("\n"))).toContain("1 subagent: 0 running · 0 idle · 1 inactive");
 		expect(line.isSelectable()).toBe(false);
 		line.handleInput("\r");
 		expect(onOpen).not.toHaveBeenCalled();
