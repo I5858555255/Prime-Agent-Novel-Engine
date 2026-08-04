@@ -659,7 +659,7 @@ function makeSessionInfo(overrides: Pick<SessionInfo, "path" | "id"> & Partial<S
 		name: overrides.name,
 		state: overrides.state,
 		parentSessionPath: overrides.parentSessionPath,
-		rlmDepth: overrides.rlmDepth,
+		rlmDepth: overrides.rlmDepth ?? 0,
 		created: new Date("2026-05-01T00:00:00.000Z"),
 		modified: new Date("2026-05-02T00:00:00.000Z"),
 		messageCount: overrides.messageCount ?? 2,

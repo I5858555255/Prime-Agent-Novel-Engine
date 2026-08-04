@@ -7,6 +7,7 @@ import {
 	loadEntriesFromFile,
 	loadEntriesFromFileAsync,
 	readSessionInfo,
+	resolveSessionRlmDepth,
 	SessionManager,
 } from "../../src/core/session-manager.js";
 
@@ -206,7 +207,7 @@ describe("session tree metadata", () => {
 		}
 	});
 
-	it("preserves unknown legacy depth across branch and fork reference edges", () => {
+	it("resolves legacy root depth across branch and fork reference edges", () => {
 		const tempDir = join(tmpdir(), `legacy-session-reference-depth-test-${Date.now()}-${Math.random()}`);
 		mkdirSync(tempDir, { recursive: true });
 		try {
@@ -217,10 +218,10 @@ describe("session tree metadata", () => {
 			const sourceFile = source.getSessionFile();
 			if (!sourceFile) throw new Error("Missing source session file");
 
-			expect(SessionManager.forkFrom(sourceFile, tempDir, tempDir).getHeader()?.rlmDepth).toBeUndefined();
+			expect(SessionManager.forkFrom(sourceFile, tempDir, tempDir).getHeader()?.rlmDepth).toBe(0);
 			const branched = SessionManager.open(sourceFile, tempDir);
 			branched.createBranchedSession(leafId);
-			expect(branched.getHeader()?.rlmDepth).toBeUndefined();
+			expect(branched.getHeader()?.rlmDepth).toBe(0);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -244,7 +245,7 @@ describe("session tree metadata", () => {
 		}
 	});
 
-	it("does not invent root depth when materializing a legacy parent edge", () => {
+	it("infers root depth when materializing a legacy fork", () => {
 		const tempDir = join(tmpdir(), `materialized-legacy-depth-test-${Date.now()}-${Math.random()}`);
 		mkdirSync(tempDir, { recursive: true });
 		try {
@@ -255,39 +256,64 @@ describe("session tree metadata", () => {
 			const sessionFile = session.materializeSessionFile(tempDir);
 			const header = JSON.parse(readFileSync(sessionFile, "utf8").split("\n")[0] ?? "{}");
 			expect(header).toMatchObject({ parentSession: parentFile });
-			expect(header.rlmDepth).toBeUndefined();
+			expect(header.rlmDepth).toBe(0);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 
-	it("defaults legacy roots to depth zero and leaves legacy children for registry fallback", async () => {
+	it("infers and backfills legacy child depth from nested subagent directories on open", async () => {
 		const tempDir = join(tmpdir(), `legacy-session-tree-test-${Date.now()}-${Math.random()}`);
-		mkdirSync(tempDir, { recursive: true });
+		const parentFile = join(tempDir, "parent.jsonl");
+		const childDir = join(tempDir, "session-artifacts", "root", "sub-1234abcd", "sub-deadbeef");
+		const childFile = join(childDir, "child.jsonl");
+		mkdirSync(childDir, { recursive: true });
 		try {
-			const parentFile = join(tempDir, "parent.jsonl");
-			const childFile = join(tempDir, "child.jsonl");
-			writeFileSync(
-				parentFile,
-				`${JSON.stringify({ type: "session", id: "parent", timestamp: "2025-01-01T00:00:00Z", cwd: tempDir })}\n`,
-			);
-			writeFileSync(
-				childFile,
-				`${JSON.stringify({
-					type: "session",
-					id: "child",
-					timestamp: "2025-01-01T00:00:01Z",
-					cwd: tempDir,
-					parentSession: parentFile,
-				})}\n`,
-			);
+			const header = {
+				type: "session" as const,
+				id: "child",
+				timestamp: "2025-01-01T00:00:01Z",
+				cwd: tempDir,
+				parentSession: parentFile,
+			};
+			writeFileSync(childFile, `${JSON.stringify(header)}\n`);
 
-			expect((await readSessionInfo(parentFile))?.rlmDepth).toBe(0);
-			expect(await readSessionInfo(childFile)).toMatchObject({ parentSessionPath: parentFile });
-			expect((await readSessionInfo(childFile))?.rlmDepth).toBeUndefined();
+			expect(resolveSessionRlmDepth(header, childFile)).toBe(2);
+			expect((await readSessionInfo(childFile))?.rlmDepth).toBe(2);
+			expect(JSON.parse(readFileSync(childFile, "utf8").split("\n")[0] ?? "{}").rlmDepth).toBeUndefined();
+
+			expect(SessionManager.open(childFile).getHeader()?.rlmDepth).toBe(2);
+			expect(JSON.parse(readFileSync(childFile, "utf8").split("\n")[0] ?? "{}").rlmDepth).toBe(2);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("treats a legacy fork in the sessions directory as a root", async () => {
+		const tempDir = join(tmpdir(), `legacy-fork-depth-test-${Date.now()}-${Math.random()}`);
+		mkdirSync(tempDir, { recursive: true });
+		try {
+			const forkFile = join(tempDir, "fork.jsonl");
+			const header = {
+				type: "session" as const,
+				id: "fork",
+				timestamp: "2025-01-01T00:00:01Z",
+				cwd: tempDir,
+				parentSession: join(tempDir, "source.jsonl"),
+			};
+			writeFileSync(forkFile, `${JSON.stringify(header)}\n`);
+
+			expect(resolveSessionRlmDepth(header, forkFile)).toBe(0);
+			expect((await readSessionInfo(forkFile))?.rlmDepth).toBe(0);
+			expect(SessionManager.open(forkFile).getHeader()?.rlmDepth).toBe(0);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("prefers a valid persisted depth over path inference", () => {
+		const sessionFile = join(tmpdir(), "sub-1234abcd", "sub-deadbeef", "session.jsonl");
+		expect(resolveSessionRlmDepth({ parentSession: "/parent.jsonl", rlmDepth: 7 }, sessionFile)).toBe(7);
 	});
 });
 

@@ -99,7 +99,12 @@ import type {
 } from "../../core/rlm-runtime.js";
 import { deleteSessionFile } from "../../core/session-file-actions.js";
 import { acquireSessionLease, type SessionLease } from "../../core/session-lease.js";
-import { readSessionInfo, type SessionInfo, SessionManager } from "../../core/session-manager.js";
+import {
+	readSessionInfo,
+	resolveSessionRlmDepth,
+	type SessionInfo,
+	SessionManager,
+} from "../../core/session-manager.js";
 import { resolveSessionPath } from "../../core/session-resolver.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
@@ -1070,7 +1075,7 @@ export class AgentDaemon {
 					parentEntry?.sessionFile ??
 					passive.rootParentState?.runtime.session.sessionFile ??
 					passive.rootInfo?.path,
-				rlmDepth: passive.info.rlmDepth ?? passive.entry.rlmDepth,
+				rlmDepth: passive.info.rlmDepth,
 				rlmChildId: passive.entry.childId,
 				rlmParentNodeId: passive.entry.rlmParentNodeId ?? passive.entry.childId,
 				spawnCode: passive.entry.spawnCode,
@@ -2372,7 +2377,9 @@ export class AgentDaemon {
 							},
 						},
 						rlmSessionDir: entry.sessionDir,
-						rlmDepth: entry.rlmDepth,
+						rlmDepth: existsSync(entry.sessionFile)
+							? resolveSessionRlmDepth(sessionManager.getHeader() ?? {}, entry.sessionFile)
+							: undefined,
 						rlmMaxDepth: entry.rlmMaxDepth ?? 1,
 						rlmParentNodeId: entry.rlmParentNodeId ?? entry.childId,
 					},

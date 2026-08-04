@@ -3818,6 +3818,33 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("rehydrates a legacy child with depth inferred from its session file path", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-legacy-rlm-depth-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const lines = readFileSync(fixture.childSessionFile, "utf8").split("\n");
+			const header = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;
+			delete header.rlmDepth;
+			lines[0] = JSON.stringify(header);
+			writeFileSync(fixture.childSessionFile, lines.join("\n"));
+			const internals = fixture.daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				createAgentMessageController(
+					getCurrentState: () => ActiveSessionState | undefined,
+				): AgentSessionMessageController;
+			};
+			const parentState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+
+			await internals
+				.createAgentMessageController(() => parentState)
+				.sendAgentMessage({ target: "renamed-worker", message: "report progress" });
+
+			expect(fixture.createRuntime.mock.calls[1]?.[0].sessionOptions?.rlmDepth).toBe(1);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("does not match a renamed passive child by its stale registry name", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-renamed-"));
 		try {
@@ -6119,7 +6146,7 @@ function makePersistedRlmDaemonFixture(
 	}
 
 	const childId = "child-1";
-	const childSessionDir = join(parentArtifactDir, childId);
+	const childSessionDir = join(parentArtifactDir, "sub-1234abcd");
 	const childManager = SessionManager.create(tempDir, childSessionDir);
 	childManager.newSession({ parentSession: parentSessionFile });
 	childManager.appendSessionInfo("spawn-worker");
@@ -6132,7 +6159,8 @@ function makePersistedRlmDaemonFixture(
 		throw new Error("Missing child session paths");
 	}
 	const grandchildId = "grandchild-1";
-	const grandchildSessionDir = join(childArtifactDir, grandchildId);
+	mkdirSync(childArtifactDir, { recursive: true });
+	const grandchildSessionDir = join(childSessionDir, "sub-deadbeef");
 	const grandchildManager = SessionManager.create(tempDir, grandchildSessionDir);
 	grandchildManager.newSession({ parentSession: childSessionFile });
 	grandchildManager.appendSessionInfo("nested-worker");
