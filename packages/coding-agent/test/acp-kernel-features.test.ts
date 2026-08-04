@@ -29,6 +29,8 @@ function bundledSkill(name: string, importName: string): PythonSkillRuntimeInfo 
 	return { name, importName, packagePath, pyprojectPath: join(packagePath, "pyproject.toml") };
 }
 
+const AGENT_MESSAGE_SKILL = bundledSkill("agent-message", "agent_message");
+
 /** Wrap kernel output the way the ipython tool result reaches the event stream. */
 function toolEndEvent(toolCallId: string, output: string, isError = false): AgentConnectionSessionEvent {
 	return {
@@ -56,7 +58,10 @@ describe("ACP mode over a real IPython kernel", () => {
 	});
 
 	it("keeps IPython state across cells and represents each cell as an ACP execute call", async () => {
-		provisioner = new IpythonKernelProvisioner(tempDir, {});
+		// Every provisioner in this file requests the same skill set: the kernel venv
+		// is shared, and a skill-less kernel here can leave a later skill-dependent
+		// test with an unsynced venv when files run concurrently.
+		provisioner = new IpythonKernelProvisioner(tempDir, { pythonSkills: [AGENT_MESSAGE_SKILL] });
 		const manager: KernelManager = await provisioner.ensure();
 
 		const first = await manager.execute("acp_state = 41\nprint('set')");
@@ -77,6 +82,7 @@ describe("ACP mode over a real IPython kernel", () => {
 
 	it("runs continual-harness CRUD in the kernel and can represent the result over ACP", async () => {
 		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [AGENT_MESSAGE_SKILL],
 			env: { RLM_GLOBAL_HARNESS_STATE_DIR: join(tempDir, "harness") },
 		});
 		const manager = await provisioner.ensure();
@@ -147,6 +153,7 @@ print(json.dumps({
 
 	it("exposes rlm depth and subagent APIs to the kernel behind the ACP front end", async () => {
 		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [AGENT_MESSAGE_SKILL],
 			env: { RLM_DEPTH: "0", RLM_MAX_DEPTH: "1" },
 			hostHandlers: {
 				"rlm.list_subagents": async () => ({
@@ -196,7 +203,7 @@ print(json.dumps({
 
 	it("sends an agent-to-agent message from the kernel and surfaces it over ACP", async () => {
 		provisioner = new IpythonKernelProvisioner(tempDir, {
-			pythonSkills: [bundledSkill("agent-message", "agent_message")],
+			pythonSkills: [AGENT_MESSAGE_SKILL],
 			hostHandlers: {
 				// Host request type on main is "agent_message.list"; the roster rename
 				// lives in an unmerged stack, so this branch targets main's API.
@@ -225,6 +232,16 @@ print(json.dumps({
 			},
 		});
 		const manager = await provisioner.ensure();
+
+		// The kernel venv is shared across test files. If a concurrently running
+		// file rebuilt it without this skill, say so plainly rather than failing
+		// later with an opaque AttributeError on the stub object.
+		const available = await manager.execute("import json; print(json.dumps({'kind': type(agent_message).__name__}))");
+		expect(available.status, why(available)).toBe("ok");
+		expect(
+			JSON.parse(available.stdout.trim()).kind,
+			"agent_message skill was not installed into the shared kernel venv",
+		).not.toBe("_PrimeAgentUnavailableSkill");
 
 		const result = await manager.execute(`
 import json
