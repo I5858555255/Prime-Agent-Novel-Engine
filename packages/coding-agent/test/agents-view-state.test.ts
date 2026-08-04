@@ -10,6 +10,8 @@ import {
 	createAgentsViewListCommand,
 	createAgentsViewReplyHeadline,
 	createAgentsViewResumeConfig,
+	createInitialAgentsViewPersistentState,
+	createInitialAgentsViewScopeFrames,
 	createScopeBackReturnChatOpenResult,
 	formatAgentsViewRelativeTime,
 	formatAgentsViewStatusLine,
@@ -1153,6 +1155,29 @@ describe("agents view state", () => {
 	describe("scoped navigation", () => {
 		const rootScope = { sessionId: "root-session", activeSessionId: "root-active" };
 		const childScope = { sessionId: "child-session", activeSessionId: "child-active" };
+
+		test("seeds handoff scope frames with the matching return chat", () => {
+			const chat = makeSummary({ sessionId: "root-session", activeSessionId: "root-active" });
+			const persistentState = createInitialAgentsViewPersistentState({
+				initialScopeKey: rootScope,
+				initialSession: chat,
+			});
+			const handoffFrame = persistentState.scopeFrames?.at(-1);
+
+			expect(handoffFrame).toEqual({ scope: rootScope, returnChat: chat });
+			expect(createInitialAgentsViewScopeFrames(rootScope, persistentState.backSession)).toEqual([handoffFrame]);
+			expect(createInitialAgentsViewScopeFrames(rootScope, makeSummary({ sessionId: "stale-session" }))).toEqual([
+				{ scope: rootScope },
+			]);
+
+			const leftResult = resolveAgentsViewLeftResult(chat, [], handoffFrame?.returnChat);
+			expect(leftResult?.type).toBe("scope_back");
+			if (leftResult?.type !== "scope_back") throw new Error("Expected scoped Left navigation");
+			expect(createScopeBackReturnChatOpenResult({ ...leftResult, hasChildren: true })).toMatchObject({
+				type: "open",
+				summary: { sessionId: "root-session", activeSessionId: "root-active" },
+			});
+		});
 
 		test("pushes and pops immutable scope frames with their return chats one level at a time", () => {
 			const initial: AgentsViewScopeFrame[] = [];

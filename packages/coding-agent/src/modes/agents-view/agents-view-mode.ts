@@ -245,6 +245,37 @@ export function getAgentsViewDepth(scopeRoot: SessionSummary | undefined): numbe
 	return scopeRoot ? (scopeRoot.rlmDepth ?? 0) + 1 : 0;
 }
 
+export function createInitialAgentsViewScopeFrames(
+	initialScopeKey: AgentsViewScopeKey | undefined,
+	returnChat: SessionSummary | undefined,
+): AgentsViewScopeFrame[] {
+	if (!initialScopeKey) return [];
+	return [
+		{
+			scope: initialScopeKey,
+			...(returnChat?.sessionId === initialScopeKey.sessionId ? { returnChat } : {}),
+		},
+	];
+}
+
+export function createInitialAgentsViewPersistentState(
+	options: Pick<AgentsViewModeOptions, "initialScopeKey" | "initialSession">,
+): AgentsViewPersistentState {
+	const initialSession = options.initialSession;
+	return {
+		...(initialSession
+			? {
+					selectedRowIdentity: getSummaryIdentity(initialSession),
+					selectedSessionKey: getAgentsViewSelectionKey(initialSession),
+					backSession: initialSession,
+				}
+			: {}),
+		...(options.initialScopeKey
+			? { scopeFrames: createInitialAgentsViewScopeFrames(options.initialScopeKey, initialSession) }
+			: {}),
+	};
+}
+
 export function createScopeBackReturnChatOpenResult(
 	result: Extract<AgentsViewRunResult, { type: "scope_back" }>,
 ): Extract<AgentsViewRunResult, { type: "open" }> | undefined {
@@ -369,17 +400,7 @@ function isUnknownActiveSessionError(error: unknown): boolean {
 }
 
 export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise<void> {
-	const initialSession = options.initialSession;
-	const persistentState: AgentsViewPersistentState = {
-		...(initialSession
-			? {
-					selectedRowIdentity: getSummaryIdentity(initialSession),
-					selectedSessionKey: getAgentsViewSelectionKey(initialSession),
-					backSession: initialSession,
-				}
-			: {}),
-		...(options.initialScopeKey ? { scopeFrames: [{ scope: options.initialScopeKey }] } : {}),
-	};
+	const persistentState = createInitialAgentsViewPersistentState(options);
 	const promptStashStore = options.promptStashStore ?? new ClientPromptStashStore();
 
 	while (true) {
@@ -637,7 +658,11 @@ export class AgentsViewMode implements Component, Focusable {
 		private readonly persistentState: AgentsViewPersistentState = {},
 	) {
 		const initialFrames =
-			persistentState.scopeFrames ?? (options.initialScopeKey ? [{ scope: options.initialScopeKey }] : []);
+			persistentState.scopeFrames ??
+			createInitialAgentsViewScopeFrames(
+				options.initialScopeKey,
+				persistentState.backSession ?? options.initialSession,
+			);
 		persistentState.scopeFrames = initialFrames;
 		this.scopeKey = initialFrames.at(-1)?.scope;
 		this.selectedRowIdentity = persistentState.selectedRowIdentity;
