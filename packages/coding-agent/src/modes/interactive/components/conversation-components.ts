@@ -124,7 +124,9 @@ export function buildConversationComponents(
 					: new MalformedCompactionOutcomeMessageComponent(),
 			);
 		} else if (isAgentSessionMessage(message) && message.display) {
-			const component = new AgentMessageComponent(message, options.markdownTheme);
+			const component = new AgentMessageComponent(message, options.markdownTheme, {
+				suppressLeadingSpace: components.at(-1) instanceof AgentMessageComponent,
+			});
 			component.setExpanded(expanded);
 			components.push(component);
 		} else if (isInjectedPromptMessage(message) && message.display) {

@@ -1,9 +1,11 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { Container, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
 	AGENT_MESSAGE_SOURCE,
+	type AgentSessionMessage,
 	type AgentSessionMessagePayload,
 	createAgentSessionMessage,
 	createAgentSessionMessagePrompt,
@@ -11,8 +13,9 @@ import {
 } from "../../../src/core/agent-messages.js";
 import type { KernelSentAgentMessage } from "../../../src/core/kernel/index.js";
 import { AgentMessageComponent } from "../../../src/modes/interactive/components/agent-message.js";
+import { buildConversationComponents } from "../../../src/modes/interactive/components/conversation-components.js";
 import { IPythonCellComponent } from "../../../src/modes/interactive/components/ipython-cell.js";
-import { formatQueuedMessagePreview } from "../../../src/modes/interactive/interactive-mode.js";
+import { formatQueuedMessagePreview, InteractiveMode } from "../../../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.js";
 import { createHarness, getMessageText, getUserTexts, type Harness } from "../harness.js";
 
@@ -285,6 +288,78 @@ describe("ENG-4531 agent message UI", () => {
 				(message) => message.role === "custom" && message.customType === "agent_message",
 			),
 		).toBe(true);
+	});
+
+	it("classifies a spawn task as an agent message component", () => {
+		const spawnMessage: AgentSessionMessage = {
+			role: "custom",
+			customType: "agent_message",
+			content: "[task from parent]\n\nReview shard seven.",
+			display: true,
+			details: {
+				id: "spawn:sub-worker",
+				message: "Review shard seven.",
+				from: { sessionId: "parent-session", sessionName: "Planner" },
+				fromRelationship: "parent",
+			},
+			timestamp: 123,
+		};
+
+		const components = buildConversationComponents([spawnMessage], {
+			ui: { requestRender: () => {} } as unknown as TUI,
+			cwd: "/tmp",
+			toolOptions: {},
+			getToolDefinition: () => undefined,
+		});
+
+		expect(components).toHaveLength(1);
+		expect(components[0]).toBeInstanceOf(AgentMessageComponent);
+		expect(render(components[0] as AgentMessageComponent)).toContain("Agent message received · Planner");
+	});
+
+	it("suppresses leading space only between adjacent rebuilt agent messages", () => {
+		const first = createAgentSessionMessage(createPayload("First notification."));
+		const second = createAgentSessionMessage({ ...createPayload("Second notification."), id: "agentmsg_4531_2" });
+		const options = {
+			ui: { requestRender: () => {} } as unknown as TUI,
+			cwd: "/tmp",
+			toolOptions: {},
+			getToolDefinition: () => undefined,
+		};
+
+		const adjacent = buildConversationComponents([first, second], options);
+		expect(adjacent).toHaveLength(2);
+		expect(adjacent[0]?.render(120)[0]).toBe("");
+		expect(adjacent[1]?.render(120)[0]).not.toBe("");
+
+		const separated = buildConversationComponents(
+			[first, { role: "user", content: "intervening prompt", timestamp: 123 }, second] as AgentMessage[],
+			options,
+		);
+		expect(separated[2]?.render(120)[0]).toBe("");
+	});
+
+	it("suppresses leading space only between adjacent live agent messages", () => {
+		const chatContainer = new Container();
+		const mode = {
+			chatContainer,
+			toolOutputExpanded: false,
+			getMarkdownThemeWithSettings: () => undefined,
+		};
+		Object.setPrototypeOf(mode, InteractiveMode.prototype);
+		const addMessage = (message: AgentMessage) =>
+			Reflect.get(InteractiveMode.prototype, "addMessageToChat").call(mode, message);
+		const first = createAgentSessionMessage(createPayload("First notification."));
+		const second = createAgentSessionMessage({ ...createPayload("Second notification."), id: "agentmsg_4531_2" });
+
+		addMessage(first);
+		addMessage(second);
+		expect(chatContainer.children[0]?.render(120)[0]).toBe("");
+		expect(chatContainer.children[1]?.render(120)[0]).not.toBe("");
+
+		chatContainer.addChild(new Container());
+		addMessage(second);
+		expect(chatContainer.children[3]?.render(120)[0]).toBe("");
 	});
 
 	it("renders a compact subagent-style row and expands only the message body", () => {

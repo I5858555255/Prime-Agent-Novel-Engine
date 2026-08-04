@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	type Context,
@@ -13,7 +13,7 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentSessionMessageController } from "../src/core/agent-messages.js";
+import { type AgentSessionMessageController, isAgentSessionMessage } from "../src/core/agent-messages.js";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { type HostRequestHandlers, KernelManager } from "../src/core/kernel/index.js";
@@ -35,10 +35,12 @@ import { createTestResourceLoader } from "./utilities.js";
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
 function userText(context: Context): string {
-	const lastMessage = context.messages[context.messages.length - 1];
-	if (!lastMessage || lastMessage.role !== "user") {
-		return "";
+	const lastMessage = context.messages[context.messages.length - 1] as AgentMessage | undefined;
+	if (!lastMessage) return "";
+	if (isAgentSessionMessage(lastMessage)) {
+		return lastMessage.content.replace(/^\[task from parent\]\n\n/, "");
 	}
+	if (lastMessage.role !== "user") return "";
 	if (typeof lastMessage.content === "string") {
 		return lastMessage.content.replace(/^\[task from parent\]\n\n/, "");
 	}
@@ -654,6 +656,19 @@ describe("AgentSession rlm recursion", () => {
 		await waitFor(() => childUpdates.some((update) => update.status === "done"));
 		const doneUpdate = [...childUpdates].reverse().find((update) => update.status === "done");
 		expect(doneUpdate?.answerPreview).toBe("child answer: summarize shard 1");
+		const child = root.getRlmChildSession(result.rlm_child_id);
+		expect(child?.messages[0]).toMatchObject({
+			role: "custom",
+			customType: "agent_message",
+			content: "[task from parent]\n\nsummarize shard 1",
+			display: true,
+			details: {
+				id: `spawn:${result.rlm_child_id}`,
+				message: "summarize shard 1",
+				from: { sessionId: root.sessionId },
+				fromRelationship: "parent",
+			},
+		});
 		// Context tokens from the child's own assistant usage (input 7 + output 3); no tools ran.
 		expect(doneUpdate?.tokenCount).toBe(10);
 		expect(doneUpdate?.toolUseCount).toBeUndefined();

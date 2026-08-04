@@ -6183,7 +6183,10 @@ export class InteractiveMode {
 									: message.customType === COMPACTION_OUTCOME_CUSTOM_TYPE
 										? new MalformedCompactionOutcomeMessageComponent()
 										: isAgentSessionMessage(message)
-											? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings())
+											? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings(), {
+													suppressLeadingSpace:
+														this.chatContainer.children.at(-1) instanceof AgentMessageComponent,
+												})
 											: isInjectedPromptMessage(message)
 												? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
 												: new CustomMessageComponent(

@@ -52,6 +52,7 @@ import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import {
+	AGENT_MESSAGE_CUSTOM_TYPE,
 	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
 	AGENT_MESSAGE_SKILL_NAME,
 	type AgentFamilyCatalogEntry,
@@ -9709,9 +9710,24 @@ export class AgentSession {
 					}
 				});
 				run.unsubscribe = unsubscribeChildEvents;
-				await child.promptAndWait(`[task from parent]\n\n${prompt}`, {
+				const content = `[task from parent]\n\n${prompt}`;
+				const spawnMessage: AgentSessionMessage = {
+					role: "custom",
+					customType: AGENT_MESSAGE_CUSTOM_TYPE,
+					content,
+					display: true,
+					details: {
+						id: `spawn:${run.id}`,
+						message: prompt,
+						from: { sessionId: this.sessionId, sessionName: this.sessionName },
+						fromRelationship: "parent",
+					},
+					timestamp: Date.now(),
+				};
+				await child.promptAndWait(content, {
 					expandPromptTemplates: false,
 					source: "extension",
+					customMessage: spawnMessage,
 				});
 				if (run.error) throw new Error(run.error);
 				run.status = "done";

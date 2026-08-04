@@ -32,9 +32,10 @@ export class AgentMessageComponent extends Container {
 	constructor(
 		private readonly message: AgentSessionMessage,
 		private readonly markdownTheme: MarkdownTheme = getMarkdownTheme(),
+		options: { suppressLeadingSpace?: boolean } = {},
 	) {
 		super();
-		this.addChild(new Spacer(1));
+		if (!options.suppressLeadingSpace) this.addChild(new Spacer(1));
 		this.addChild(this.content);
 		this.updateDisplay();
 	}
