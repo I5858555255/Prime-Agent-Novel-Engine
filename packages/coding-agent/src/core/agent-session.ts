@@ -10171,8 +10171,9 @@ export class AgentSession {
 		this.sessionManager.appendCustomEntryWithRollback(RLM_MAX_DEPTH_STATE_CUSTOM_TYPE, { maxDepth });
 		this._rlmMaxDepth = maxDepth;
 		this._rlmMaxDepthSource = "chat";
+		const oldBase = this._baseSystemPrompt;
 		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		this.agent.state.systemPrompt = this._refreshExtensionSystemPrompt(this.agent.state.systemPrompt, oldBase);
 
 		let globalError: string | undefined;
 		if (options.global) {
