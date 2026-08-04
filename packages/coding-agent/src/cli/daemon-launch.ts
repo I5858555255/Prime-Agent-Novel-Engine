@@ -6,9 +6,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { appendRotatingLog, expandTildePath, getClientErrorLogPath, VERSION } from "../config.js";
+import { appendRotatingLog, expandTildePath, getClientErrorLogPath, getDaemonLogPath, VERSION } from "../config.js";
 import { ORPHAN_PROCESS_JOURNAL_ENV } from "../core/orphan-process-journal.js";
 import { getProcessStartId, SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
 import { DaemonClient, type DaemonHello } from "../modes/daemon/daemon-client.js";
@@ -27,7 +27,7 @@ import { isHelpCommandRequest, PUBLIC_COMMAND_NAMES, REMOVED_COMMAND_NAMES } fro
 import { createCliSubprocessEnv, formatCurrentCliCommand } from "./subprocess-launch.js";
 
 const DAEMON_STARTUP_TIMEOUT_MS = 30_000;
-const DAEMON_STARTUP_STDERR_LIMIT_BYTES = 8 * 1024;
+const DAEMON_STARTUP_LOG_TAIL_BYTES = 4 * 1024;
 
 export function isDaemonSessionSummary(value: unknown): value is SessionSummary {
 	if (!value || typeof value !== "object") {
@@ -373,14 +373,12 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 			cwd: spawnCwd ?? process.cwd(),
 			detached: true,
 			env,
-			stdio: ["ignore", "ignore", "pipe"],
+			// A pipe would tie the daemon's stderr to this short-lived CLI
+			// (EPIPE once it exits); crash details come from the daemon log,
+			// which the supervisor writes to before rethrowing startup errors.
+			stdio: "ignore",
 		},
 	);
-	let stderrTail = "";
-	child.stderr.setEncoding("utf8");
-	child.stderr.on("data", (chunk: string) => {
-		stderrTail = (stderrTail + chunk).slice(-DAEMON_STARTUP_STDERR_LIMIT_BYTES);
-	});
 	let childExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
 	child.once("exit", (code, signal) => {
 		childExit = { code, signal };
@@ -392,9 +390,9 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 			return;
 		}
 		const signal = childExit.signal ? `, signal ${childExit.signal}` : "";
-		const stderr = stderrTail.trim();
+		const logTail = readDaemonLogTail(socketPath);
 		throw new Error(
-			`Prime Agent daemon exited during startup (code ${childExit.code ?? "unknown"}${signal})${stderr ? `: ${stderr}` : ""}`,
+			`Prime Agent daemon exited during startup (code ${childExit.code ?? "unknown"}${signal}).${logTail}`,
 		);
 	};
 
@@ -403,15 +401,24 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 		throwIfExited();
 		const started = await probeDaemonVersion(socketPath);
 		if (started.status === "current") {
-			child.stderr.destroy();
 			return;
 		}
 		await delay(25);
 	}
 
 	throwIfExited();
-	const stderr = stderrTail.trim();
-	throw new Error(`Timed out waiting for daemon to start on ${socketPath}${stderr ? `: ${stderr}` : ""}`);
+	throw new Error(`Timed out waiting for daemon to start on ${socketPath}.${readDaemonLogTail(socketPath)}`);
+}
+
+function readDaemonLogTail(socketPath: string): string {
+	const logPath = getDaemonLogPath(socketPath);
+	let tail = "";
+	try {
+		tail = readFileSync(logPath, "utf8").slice(-DAEMON_STARTUP_LOG_TAIL_BYTES).trim();
+	} catch {
+		// Missing log means the daemon crashed before logging was set up.
+	}
+	return tail ? ` Recent daemon log (${logPath}):\n${tail}` : ` No daemon log was written (${logPath}).`;
 }
 
 const ensurePromises = new Map<string, Promise<void>>();

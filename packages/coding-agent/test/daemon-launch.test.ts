@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	ensureInteractiveDaemonRunning,
@@ -11,7 +11,7 @@ import {
 	shouldStartDaemonEarly,
 	shutdownDaemonAndWait,
 } from "../src/cli/daemon-launch.js";
-import { VERSION } from "../src/config.js";
+import { ENV_AGENT_DIR, getDaemonLogPath, VERSION } from "../src/config.js";
 import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../src/modes/daemon/daemon-protocol.js";
 
 interface FakeDaemonOptions {
@@ -273,22 +273,51 @@ describe("ensureInteractiveDaemonRunning", () => {
 		await expect(probe).resolves.toMatchObject({ status: "current" });
 	});
 
-	it("reports stderr when the spawned daemon exits during startup", async () => {
+	it("fails fast with the daemon log tail when the spawned daemon exits during startup", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pa-launch-startup-crash-"));
 		const entrypoint = join(dir, "crash.mjs");
 		const socketPath = join(dir, "d.sock");
-		writeFileSync(entrypoint, 'console.error("fatal startup failure"); process.exit(23);\n');
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		process.env[ENV_AGENT_DIR] = join(dir, "agent");
+		const logPath = getDaemonLogPath(socketPath);
+		mkdirSync(dirname(logPath), { recursive: true });
+		const script = `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(logPath)}, "supervisor: fatal startup failure\\n"); process.exit(23);`;
+		writeFileSync(entrypoint, script);
 		const originalEntrypoint = process.argv[1]!;
 		process.argv[1] = entrypoint;
 		const startedAt = Date.now();
 
 		try {
 			await expect(ensureInteractiveDaemonRunning(socketPath)).rejects.toThrow(
-				/Prime Agent daemon exited during startup \(code 23\):[\s\S]*fatal startup failure/,
+				/Prime Agent daemon exited during startup \(code 23\)\.[\s\S]*fatal startup failure/,
 			);
 			expect(Date.now() - startedAt).toBeLessThan(10_000);
 		} finally {
 			process.argv[1] = originalEntrypoint;
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("names the missing daemon log when the daemon crashes before logging", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pa-launch-startup-silent-"));
+		const entrypoint = join(dir, "crash.mjs");
+		const socketPath = join(dir, "d.sock");
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		process.env[ENV_AGENT_DIR] = join(dir, "agent");
+		writeFileSync(entrypoint, "process.exit(7);");
+		const originalEntrypoint = process.argv[1]!;
+		process.argv[1] = entrypoint;
+
+		try {
+			await expect(ensureInteractiveDaemonRunning(socketPath)).rejects.toThrow(
+				/exited during startup \(code 7\)\. No daemon log was written/,
+			);
+		} finally {
+			process.argv[1] = originalEntrypoint;
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
