@@ -184,6 +184,26 @@ Return JSON only:
   "instructions": "optional concise instructions for /refine if shouldRefine is true"
 }`;
 
+/**
+ * Output budgets are derived from the selected model instead of fixed literals.
+ * /refine input scales with harness size (entry overview, refinement history, and
+ * the trajectory slice), so a constant output cap silently truncates exactly the
+ * large multi-edit proposals that matter most. Math.min keeps small models honest.
+ */
+const REFINEMENT_MAX_OUTPUT_TOKENS = 32_000;
+const AUTO_REFINE_REVIEW_MAX_OUTPUT_TOKENS = 4_096;
+
+const TRUNCATED_JSON_ERROR =
+	"the model stopped before completing its JSON object. This usually means the output budget was exhausted; retry with a smaller request.";
+
+function refinementMaxOutputTokens(model: Model<any>): number {
+	return Math.min(model.maxTokens, REFINEMENT_MAX_OUTPUT_TOKENS);
+}
+
+function autoRefineReviewMaxOutputTokens(model: Model<any>): number {
+	return Math.min(model.maxTokens, AUTO_REFINE_REVIEW_MAX_OUTPUT_TOKENS);
+}
+
 function now(): string {
 	return new Date().toISOString();
 }
@@ -550,10 +570,19 @@ function extractJsonObject(text: string): unknown {
 	if (fenced) {
 		return JSON.parse(fenced[1].trim());
 	}
+	// Brace slicing recovers JSON wrapped in prose. On a reply truncated inside the
+	// edits array it would otherwise slice to an earlier edit's closing brace and
+	// hand back a fragment whose JSON.parse error describes the fragment, not the
+	// truncation. Only accept a slice that actually parses.
 	const start = trimmed.indexOf("{");
 	const end = trimmed.lastIndexOf("}");
 	if (start !== -1 && end > start) {
-		return JSON.parse(trimmed.slice(start, end + 1));
+		const sliced = trimmed.slice(start, end + 1);
+		try {
+			return JSON.parse(sliced);
+		} catch {
+			throw new Error(TRUNCATED_JSON_ERROR);
+		}
 	}
 	throw new Error("Refiner did not return a JSON object");
 }
@@ -844,11 +873,14 @@ export async function planRefinement(
 			systemPrompt: REFINEMENT_SYSTEM_PROMPT,
 			messages: [{ role: "user", content: [{ type: "text", text: userPrompt }], timestamp: Date.now() }],
 		},
-		{ maxTokens: 4096, signal, apiKey, headers },
+		{ maxTokens: refinementMaxOutputTokens(model), signal, apiKey, headers },
 	);
 
 	if (response.stopReason === "error") {
 		throw new Error(`Refinement failed: ${response.errorMessage || "Unknown error"}`);
+	}
+	if (response.stopReason === "length") {
+		throw new Error(`Refinement failed: ${TRUNCATED_JSON_ERROR}`);
 	}
 
 	const text = response.content
@@ -907,10 +939,13 @@ ${conversationText}
 			systemPrompt: AUTO_REFINE_REVIEW_SYSTEM_PROMPT,
 			messages: [{ role: "user", content: [{ type: "text", text: userPrompt }], timestamp: Date.now() }],
 		},
-		{ maxTokens: 1024, signal, apiKey, headers },
+		{ maxTokens: autoRefineReviewMaxOutputTokens(model), signal, apiKey, headers },
 	);
 	if (response.stopReason === "error") {
 		throw new Error(`Auto-refine review failed: ${response.errorMessage || "Unknown error"}`);
+	}
+	if (response.stopReason === "length") {
+		throw new Error(`Auto-refine review failed: ${TRUNCATED_JSON_ERROR}`);
 	}
 	const text = response.content
 		.filter((content): content is { type: "text"; text: string } => content.type === "text")
