@@ -76,6 +76,31 @@ describe("ACP mode over a real IPython kernel", () => {
 		});
 		const manager = await provisioner.ensure();
 
+		const allKinds = await manager.execute(`
+import json
+mem = rlm.harness.create_memory(title="m", content="memory content", global_=True)
+note = rlm.harness.create_prompt_note(title="n", content="prompt note content", global_=True)
+spec = rlm.harness.create_subagent(title="s", content="subagent spec content", global_=True)
+skill = rlm.harness.create_skill(
+    title="k",
+    content="skill content",
+    reference={"type": "python", "import": "pkg.mod", "callable": "run", "call_pattern": "await run(...)"},
+    arguments={"x": {"type": "string", "required": True, "description": "input"}},
+    global_=True,
+)
+print(json.dumps({
+    "kinds": sorted([mem.kind, note.kind, spec.kind, skill.kind]),
+    "skill_ref": skill.reference.get("import"),
+}, sort_keys=True))
+`);
+		expect(allKinds.status, allKinds.stderr).toBe("ok");
+		// Every editable harness kind, not just memory: skills additionally require
+		// a python reference and an argument contract.
+		expect(JSON.parse(allKinds.stdout.trim())).toMatchObject({
+			kinds: ["memory", "prompt", "skill", "subagent"],
+			skill_ref: "pkg.mod",
+		});
+
 		const result = await manager.execute(`
 import json
 entry = rlm.harness.create_memory(
