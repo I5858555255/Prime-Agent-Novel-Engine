@@ -422,6 +422,7 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 		let result: Extract<AgentsViewRunResult, { type: "open" }>;
 		if (viewResult.type === "scope_back") {
 			persistentState.scopeFrames = transitionAgentsViewScope(persistentState.scopeFrames ?? [], { type: "back" });
+			persistentState.scopeRootSummary = undefined;
 			persistentState.selectedRowIdentity = getSummaryIdentity(viewResult.selection);
 			persistentState.selectedSessionKey = getAgentsViewSelectionKey(viewResult.selection);
 			persistentState.pendingExpandedAncestorSessionIds = viewResult.expandedAncestorSessionIds;
@@ -496,6 +497,7 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 						cachedIndex === -1
 							? [...cachedLiveSummaries, returnedSession]
 							: cachedLiveSummaries.map((summary, index) => (index === cachedIndex ? returnedSession : summary));
+					persistentState.scopeRootSummary = undefined;
 					persistentState.query = "";
 				}
 				persistentState.backSession = returnedSession;

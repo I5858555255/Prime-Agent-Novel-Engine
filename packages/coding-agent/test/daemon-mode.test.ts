@@ -5363,6 +5363,79 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("re-walks the passive chain when an intermediate parent passivates between entries", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-chain-parent-passivation-race-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				findPassiveRlmSubagent(id: string): Promise<
+					| {
+							rootParentState: ActiveSessionState;
+							entry: { childId: string; sessionFile: string };
+							chain: Array<{ childId: string; sessionFile: string }>;
+					  }
+					| undefined
+				>;
+				hydratePassiveRlmSubagent(passive: unknown): Promise<ActiveSessionState>;
+				waitForPassivation(sessionFile: string): Promise<void>;
+				rehydrateCompletedRlmSubagent(
+					parent: ActiveSessionState,
+					entry: { childId: string; sessionFile: string },
+				): Promise<ActiveSessionState>;
+			};
+			const rootState = await internals.createRuntime({ type: "create", sessionPath: fixture.parentSessionFile });
+			const passive = await internals.findPassiveRlmSubagent(fixture.grandchildId);
+			if (!passive) throw new Error("Missing passive grandchild");
+
+			const staleParent = makeState("stale-parent", rootState.activeSessionId);
+			const refreshedParent = makeState("refreshed-parent", rootState.activeSessionId);
+			const grandchild = makeState("rehydrated-grandchild", refreshedParent.activeSessionId);
+			for (const [state, sessionFile] of [
+				[staleParent, fixture.childSessionFile],
+				[refreshedParent, fixture.childSessionFile],
+				[grandchild, fixture.grandchildSessionFile],
+			] as const) {
+				Object.assign(state.runtime, { session: { sessionFile } });
+			}
+
+			let childHydrations = 0;
+			internals.rehydrateCompletedRlmSubagent = vi.fn(async (_parent, entry) => {
+				const hydrated =
+					entry.childId === fixture.childId
+						? ++childHydrations === 1
+							? staleParent
+							: refreshedParent
+						: grandchild;
+				internals.sessions.set(hydrated.activeSessionId, hydrated);
+				return hydrated;
+			});
+			let grandchildWaits = 0;
+			internals.waitForPassivation = vi.fn(async (sessionFile) => {
+				if (sessionFile === fixture.grandchildSessionFile && ++grandchildWaits === 1) {
+					internals.sessions.delete(staleParent.activeSessionId);
+				}
+			});
+			internals.findPassiveRlmSubagent = vi.fn(async () => passive);
+
+			await expect(internals.hydratePassiveRlmSubagent(passive)).resolves.toBe(grandchild);
+			expect(childHydrations).toBe(2);
+			expect(internals.rehydrateCompletedRlmSubagent).toHaveBeenCalledWith(
+				refreshedParent,
+				passive.entry,
+				expect.anything(),
+			);
+			expect(internals.rehydrateCompletedRlmSubagent).not.toHaveBeenCalledWith(
+				staleParent,
+				passive.entry,
+				expect.anything(),
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("rehydrates a passivated parent before publishing its racing child", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-parent-passivation-race-"));
 		let releaseParentDispose!: () => void;

@@ -2487,22 +2487,46 @@ export class AgentDaemon {
 		if (this.updateRestart !== undefined) {
 			throw new BoundSessionUnavailableError("Daemon is preparing an update restart");
 		}
+		const isResident = (state: ActiveSessionState): boolean =>
+			this.sessions.get(state.activeSessionId) === state && !this.closingSessions.has(state.activeSessionId);
+		const restartAfterParentChange = async (staleParent: ActiveSessionState): Promise<ActiveSessionState> => {
+			const staleParentFile = staleParent.runtime.session.sessionFile;
+			if (staleParentFile) await this.waitForPassivation(staleParentFile);
+			const refreshed = await this.findPassiveRlmSubagent(passive.entry.sessionFile);
+			if (!refreshed) throw new RuntimeOpenCancelledError();
+			return this.hydratePassiveRlmSubagent(refreshed);
+		};
 		const rootParent = passive.rootParentState;
 		if (!rootParent) {
 			throw new Error(`Cannot hydrate RLM subagent ${passive.entry.childId} without a resident root parent`);
 		}
 		const rootParentFile = rootParent.runtime.session.sessionFile;
 		if (rootParentFile) await this.waitForPassivation(rootParentFile);
-		if (this.sessions.get(rootParent.activeSessionId) !== rootParent) {
-			const refreshed = await this.findPassiveRlmSubagent(passive.entry.sessionFile);
-			if (!refreshed) throw new RuntimeOpenCancelledError();
-			return this.hydratePassiveRlmSubagent(refreshed);
+		if (!isResident(rootParent)) {
+			return restartAfterParentChange(rootParent);
 		}
 		let parentState = rootParent;
 		for (const entry of passive.chain) {
 			await this.waitForPassivation(entry.sessionFile);
+			if (!isResident(parentState)) {
+				return restartAfterParentChange(parentState);
+			}
+			const hydratingParent = parentState;
 			const activeSessionId = entry === passive.entry ? passive.info.id : undefined;
-			parentState = await this.rehydrateCompletedRlmSubagent(parentState, entry, activeSessionId);
+			let hydrated: ActiveSessionState;
+			try {
+				hydrated = await this.rehydrateCompletedRlmSubagent(hydratingParent, entry, activeSessionId);
+			} catch (error) {
+				if (isResident(hydratingParent)) throw error;
+				return restartAfterParentChange(hydratingParent);
+			}
+			if (!isResident(hydratingParent)) {
+				return restartAfterParentChange(hydratingParent);
+			}
+			if (!isResident(hydrated)) {
+				return restartAfterParentChange(hydrated);
+			}
+			parentState = hydrated;
 		}
 		return parentState;
 	}

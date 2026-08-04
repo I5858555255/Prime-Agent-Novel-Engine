@@ -139,6 +139,89 @@ describe("AgentsViewMode", () => {
 		runView.mockRestore();
 	});
 
+	it("invalidates the persisted scope root after popping a scope frame", async () => {
+		const parent = summary({ id: "parent", activeSessionId: "parent", sessionId: "parent" });
+		const child = summary({ id: "child", activeSessionId: "child", sessionId: "child" });
+		const runView = vi
+			.spyOn(AgentsViewMode.prototype, "run")
+			.mockImplementationOnce(function (this: AgentsViewMode) {
+				const state = (this as unknown as { persistentState: AgentsViewPersistentState }).persistentState;
+				state.scopeFrames = [
+					{ scope: { sessionId: parent.sessionId, activeSessionId: parent.activeSessionId } },
+					{ scope: { sessionId: child.sessionId, activeSessionId: child.activeSessionId } },
+				];
+				state.scopeRootSummary = child;
+				return Promise.resolve({
+					type: "scope_back",
+					selection: child,
+					expandedAncestorSessionIds: [],
+					hasChildren: false,
+				});
+			})
+			.mockImplementationOnce(function (this: AgentsViewMode) {
+				const state = (this as unknown as { persistentState: AgentsViewPersistentState }).persistentState;
+				expect(state.scopeFrames).toHaveLength(1);
+				expect(state.scopeRootSummary).toBeUndefined();
+				return Promise.resolve({ type: "exit" });
+			});
+
+		await runAgentsViewMode({
+			config: { cwd: "/tmp" } as never,
+			uiServices: {
+				settingsManager: settingsManager as never,
+				modelRegistry: {} as never,
+				getInitialCwd: () => "/tmp",
+				getInitialSessionName: () => undefined,
+				getThemes: () => [],
+			},
+		});
+
+		runView.mockRestore();
+	});
+
+	it("invalidates the persisted scope root after pushing a scope frame", async () => {
+		const parent = summary({ id: "parent", activeSessionId: "parent", sessionId: "parent" });
+		const child = summary({ id: "child", activeSessionId: "child", sessionId: "child" });
+		const runView = vi
+			.spyOn(AgentsViewMode.prototype, "run")
+			.mockImplementationOnce(function (this: AgentsViewMode) {
+				const state = (this as unknown as { persistentState: AgentsViewPersistentState }).persistentState;
+				state.scopeFrames = [{ scope: { sessionId: parent.sessionId, activeSessionId: parent.activeSessionId } }];
+				state.scopeRootSummary = parent;
+				return Promise.resolve({ type: "open", summary: child });
+			})
+			.mockImplementationOnce(function (this: AgentsViewMode) {
+				const state = (this as unknown as { persistentState: AgentsViewPersistentState }).persistentState;
+				expect(state.scopeFrames).toHaveLength(2);
+				expect(state.scopeRootSummary).toBeUndefined();
+				return Promise.resolve({ type: "exit" });
+			});
+		modeMocks.interactiveRun.mockResolvedValueOnce({
+			type: "scoped_agents_view",
+			source: {
+				activeSessionId: child.activeSessionId,
+				sessionFile: child.sessionFile,
+				sessionId: child.sessionId,
+				sessionName: child.sessionName,
+				cwd: child.cwd,
+			},
+		} as never);
+
+		await runAgentsViewMode({
+			socketPath: "/tmp/fake-daemon.sock",
+			config: { cwd: "/tmp" } as never,
+			uiServices: {
+				settingsManager: settingsManager as never,
+				modelRegistry: {} as never,
+				getInitialCwd: () => "/tmp",
+				getInitialSessionName: () => undefined,
+				getThemes: () => [],
+			},
+		});
+
+		runView.mockRestore();
+	});
+
 	it("does not discard scope while the saved-session refresh is in flight", async () => {
 		let finishRefresh: ((value: { success: true; data: { sessions: unknown[] } }) => void) | undefined;
 		const request = vi.fn(
