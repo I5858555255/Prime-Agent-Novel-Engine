@@ -1075,7 +1075,7 @@ export class AgentDaemon {
 					parentEntry?.sessionFile ??
 					passive.rootParentState?.runtime.session.sessionFile ??
 					passive.rootInfo?.path,
-				rlmDepth: passive.info.rlmDepth,
+				rlmDepth: passive.entry.rlmDepth ?? passive.info.rlmDepth,
 				rlmChildId: passive.entry.childId,
 				rlmParentNodeId: passive.entry.rlmParentNodeId ?? passive.entry.childId,
 				spawnCode: passive.entry.spawnCode,

@@ -311,6 +311,35 @@ describe("session tree metadata", () => {
 		}
 	});
 
+	it("does not count a matching segment outside the trailing subagent path", () => {
+		const sessionFile = join(tmpdir(), "sub-deadbeef", "sessions", "child.jsonl");
+		expect(resolveSessionRlmDepth({ parentSession: "/missing-parent.jsonl" }, sessionFile)).toBe(0);
+	});
+
+	it("prefers the parent header depth over path inference", () => {
+		const tempDir = join(tmpdir(), `parent-header-depth-test-${Date.now()}-${Math.random()}`);
+		const parentFile = join(tempDir, "parent.jsonl");
+		const childFile = join(tempDir, "sub-1234abcd", "sub-deadbeef", "child.jsonl");
+		mkdirSync(tempDir, { recursive: true });
+		try {
+			writeFileSync(
+				parentFile,
+				`${JSON.stringify({
+					type: "session",
+					id: "parent",
+					timestamp: "2025-01-01T00:00:00Z",
+					cwd: tempDir,
+					rlmDepth: 4,
+				})}
+`,
+			);
+
+			expect(resolveSessionRlmDepth({ parentSession: parentFile }, childFile)).toBe(5);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("prefers a valid persisted depth over path inference", () => {
 		const sessionFile = join(tmpdir(), "sub-1234abcd", "sub-deadbeef", "session.jsonl");
 		expect(resolveSessionRlmDepth({ parentSession: "/parent.jsonl", rlmDepth: 7 }, sessionFile)).toBe(7);

@@ -3730,6 +3730,40 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("prefers registry depth when listing a passive legacy child", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-passive-legacy-depth-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const parentManager = SessionManager.open(fixture.parentSessionFile);
+			parentManager.appendMessage({ role: "user", content: "parent task", timestamp: 0 });
+			parentManager.flushNow();
+			const lines = readFileSync(fixture.childSessionFile, "utf8").split("\n");
+			const header = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;
+			delete header.rlmDepth;
+			lines[0] = JSON.stringify(header);
+			writeFileSync(fixture.childSessionFile, lines.join("\n"));
+			const registryFile = join(fixture.parentArtifactDir, "rlm-subagents.jsonl");
+			const registryEntry = JSON.parse(readFileSync(registryFile, "utf8")) as Record<string, unknown>;
+			registryEntry.rlmDepth = 5;
+			registryEntry.rlmMaxDepth = 8;
+			writeFileSync(registryFile, `${JSON.stringify(registryEntry)}\n`);
+			const parentInfo = await readSessionInfo(fixture.parentSessionFile);
+			if (!parentInfo) throw new Error("Missing parent session info");
+			const internals = fixture.daemon as unknown as {
+				buildSessionListWithPassiveRlmSubagents(
+					activeSessions: ActiveSessionState[],
+					savedSessions: SessionInfo[],
+					scheduledJobs: AgentCronJob[],
+				): Promise<SessionSummary[]>;
+			};
+
+			const sessions = await internals.buildSessionListWithPassiveRlmSubagents([], [parentInfo], []);
+			expect(sessions.find((session) => session.sessionFile === fixture.childSessionFile)?.rlmDepth).toBe(5);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("ignores a crashed registry tail and protects a nested cycle back to the root", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-corrupt-registry-"));
 		try {

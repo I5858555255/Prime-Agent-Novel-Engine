@@ -712,9 +712,24 @@ export function resolveSessionRlmDepth(
 	if (!header.parentSession) {
 		return 0;
 	}
-	return dirname(sessionPath)
+	try {
+		const parentDepth = deriveChildRlmDepth(readSessionHeader(header.parentSession));
+		if (parentDepth !== undefined) {
+			return parentDepth;
+		}
+	} catch {
+		// Fall back to the session path for unavailable or invalid legacy parents.
+	}
+	let depth = 0;
+	for (const segment of dirname(sessionPath)
 		.split(/[\\/]+/)
-		.filter((segment) => /^sub-[0-9a-f]{8}$/.test(segment)).length;
+		.reverse()) {
+		if (!/^sub-[0-9a-f]{8}$/.test(segment)) {
+			break;
+		}
+		depth += 1;
+	}
+	return depth;
 }
 
 function deriveChildRlmDepth(parentHeader: Partial<SessionHeader> | undefined): number | undefined {
