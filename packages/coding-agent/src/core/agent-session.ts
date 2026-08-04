@@ -3090,7 +3090,7 @@ export class AgentSession {
 		| AgentObserveListResult
 		| AgentObserveAgentSnapshot
 		| AgentObserveRecentMessagesResult
-		| Promise<AgentObserveAgentSnapshot | AgentObserveRecentMessagesResult> {
+		| Promise<AgentObserveListResult | AgentObserveAgentSnapshot | AgentObserveRecentMessagesResult> {
 		const controller = this._agentObserveController;
 		if (!controller) {
 			throw new Error("agent observation is not available in this session");

@@ -14,6 +14,7 @@ import {
 	createDefaultRlmSubagentSessionName,
 	type SubagentRuntimeHost,
 } from "../src/core/rlm-runtime.js";
+import { canonicalSessionPath } from "../src/core/session-lease.js";
 import { readSessionInfo, type SessionInfo, SessionManager } from "../src/core/session-manager.js";
 import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
@@ -371,7 +372,13 @@ describe("daemon mode helpers", () => {
 				assertStateSessionNameAvailable(state: ActiveSessionState, name: string): Promise<void>;
 			};
 			internals.createAgentFamilyCatalog = vi.fn(async () => [
-				{ id: "sibling", name: "taken", depth: 1, status: "idle", parentSessionPath: resolve(parentPath) },
+				{
+					id: "sibling",
+					name: "taken",
+					depth: 1,
+					status: "idle",
+					parentSessionPath: canonicalSessionPath(parentPath),
+				},
 			]);
 
 			await expect(internals.assertStateSessionNameAvailable(state, "taken")).rejects.toThrow(
@@ -423,6 +430,82 @@ describe("daemon mode helpers", () => {
 			);
 		} finally {
 			listAll.mockRestore();
+		}
+	});
+
+	it("canonicalizes symlinked paths in the family catalog and name reservations", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-family-catalog-paths-"));
+		try {
+			const realDir = join(tempDir, "real");
+			const aliasDir = join(tempDir, "alias");
+			mkdirSync(realDir);
+			symlinkSync(realDir, aliasDir, "dir");
+			const parentPath = join(realDir, "parent.jsonl");
+			writeFileSync(parentPath, "");
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir: tempDir },
+				createRuntime: vi.fn(),
+			});
+			const parent = makeState("parent");
+			parent.runtime = {
+				...parent.runtime,
+				cwd: tempDir,
+				metadata: { kind: "top-level", createdAt: 1 },
+				session: {
+					sessionId: "session-parent",
+					sessionName: "parent",
+					sessionFile: parentPath,
+					sessionManager: { getSessionArtifactDir: () => undefined },
+					rlmDepth: 0,
+					isStreaming: false,
+					isSessionActive: false,
+					unfinishedActionCount: 0,
+					hasRunningRlmChildren: () => false,
+				},
+			} as never;
+			const child = {
+				activeSessionId: "child-active",
+				sessionId: "session-child",
+				sessionName: "child",
+				runtimeKind: "subagent",
+				cwd: tempDir,
+				isStreaming: false,
+				unfinishedActionCount: 0,
+				parentSessionPath: join(aliasDir, "parent.jsonl"),
+				rlmDepth: 1,
+				status: "idle",
+			};
+			const internals = daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				remoteAgentPeers: Map<string, typeof child>;
+				createAgentFamilyRoster(state: ActiveSessionState): Promise<{ entries: Array<{ id: string }> }>;
+				sessionNameReservationKey(input: { name: string; depth: number; parentSessionPath: string }): string;
+			};
+			internals.sessions.set(parent.activeSessionId, parent);
+			internals.remoteAgentPeers.set(child.activeSessionId, child);
+			const listAll = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
+			try {
+				expect(await internals.createAgentFamilyRoster(parent)).toMatchObject({
+					entries: [expect.objectContaining({ id: "session-child" })],
+				});
+				expect(
+					internals.sessionNameReservationKey({
+						name: "worker",
+						depth: 1,
+						parentSessionPath: parentPath,
+					}),
+				).toBe(
+					internals.sessionNameReservationKey({
+						name: "worker",
+						depth: 1,
+						parentSessionPath: join(aliasDir, "parent.jsonl"),
+					}),
+				);
+			} finally {
+				listAll.mockRestore();
+			}
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 
@@ -2147,7 +2230,7 @@ describe("daemon mode helpers", () => {
 		expect((await internals.createAgentMessageListResult(targetState)).agents[0]?.unfinishedActionCount).toBe(3);
 	});
 
-	it("reports non-streaming busy sessions as active in agent-observe summaries", () => {
+	it("reports non-streaming busy sessions as active in agent-observe summaries", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
 			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
 			createRuntime: async () => {
@@ -2182,17 +2265,17 @@ describe("daemon mode helpers", () => {
 		} as never;
 		const internals = daemon as unknown as {
 			sessions: Map<string, ActiveSessionState>;
-			createAgentObserveListResult(current: ActiveSessionState): { current: { status: string } };
+			createAgentObserveListResult(current: ActiveSessionState): Promise<{ current: { status: string } }>;
 		};
 		internals.sessions.set(targetState.activeSessionId, targetState);
 
-		expect(internals.createAgentObserveListResult(targetState).current.status).toBe("busy");
+		expect((await internals.createAgentObserveListResult(targetState)).current.status).toBe("busy");
 
 		(targetState.runtime.session as { isCompacting: boolean; unfinishedActionCount: number }).isCompacting = true;
 		(targetState.runtime.session as { isCompacting: boolean; unfinishedActionCount: number }).unfinishedActionCount =
 			0;
 
-		expect(internals.createAgentObserveListResult(targetState).current.status).toBe("compacting");
+		expect((await internals.createAgentObserveListResult(targetState)).current.status).toBe("compacting");
 	});
 
 	it("canonicalizes symlinked family paths before comparison", () => {
@@ -2230,6 +2313,50 @@ describe("daemon mode helpers", () => {
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("uses the persisted header parent for family reach after reopening a child", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-header-family.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const parent = makeState("parent");
+		const child = makeState("reopened-child");
+		const otherRoot = makeState("other-root");
+		parent.runtime = {
+			...parent.runtime,
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: {
+				sessionId: "session-parent",
+				sessionFile: "/tmp/parent.jsonl",
+				sessionManager: { getHeader: () => ({ parentSession: undefined }) },
+			},
+		} as never;
+		child.runtime = {
+			...child.runtime,
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: {
+				sessionId: "session-child",
+				sessionFile: "/tmp/child.jsonl",
+				rlmDepth: 1,
+				sessionManager: { getHeader: () => ({ parentSession: "/tmp/parent.jsonl" }) },
+			},
+		} as never;
+		otherRoot.runtime = {
+			...otherRoot.runtime,
+			metadata: { kind: "top-level", createdAt: 1 },
+			session: {
+				sessionId: "session-other",
+				sessionFile: "/tmp/other.jsonl",
+				sessionManager: { getHeader: () => ({ parentSession: undefined }) },
+			},
+		} as never;
+		const internals = daemon as unknown as {
+			assertAgentFamilyReachable(current: ActiveSessionState, target: ActiveSessionState): void;
+		};
+
+		expect(() => internals.assertAgentFamilyReachable(child, parent)).not.toThrow();
+		expect(() => internals.assertAgentFamilyReachable(child, otherRoot)).toThrow(AGENT_FAMILY_REACH_ERROR);
 	});
 
 	it("limits agent send and observation to the nuclear family", async () => {
@@ -2271,6 +2398,7 @@ describe("daemon mode helpers", () => {
 					sessionManager: {
 						getCwd: () => "/tmp",
 						getHeader: () => ({ created: new Date(0).toISOString() }),
+						getSessionArtifactDir: () => undefined,
 					},
 					runtimeKind: parentActiveSessionId ? "subagent" : "top-level",
 					rlmDepth: parentActiveSessionId
@@ -2302,7 +2430,7 @@ describe("daemon mode helpers", () => {
 		const messaging = internals.createAgentMessageController(() => child);
 		const observe = internals.createAgentObserveController(() => child);
 
-		expect(observe.listAgents().agents.map((agent) => agent.activeSessionId)).toEqual([
+		expect((await observe.listAgents()).agents.map((agent) => agent.activeSessionId)).toEqual([
 			"root",
 			"child",
 			"sibling",
@@ -4717,6 +4845,24 @@ describe("daemon mode helpers", () => {
 					rlmChildRegistryStatus: "completed",
 				}),
 			);
+			const observeController = (
+				fixture.daemon as unknown as {
+					createAgentObserveController(getCurrentState: () => ActiveSessionState): AgentObserveController;
+				}
+			).createAgentObserveController(() => parentState);
+			const observedAgents = await observeController.listAgents();
+			expect(observedAgents.agents).toContainEqual(
+				expect.objectContaining({
+					activeSessionId: expect.any(String),
+					sessionName: "renamed-worker",
+					runtimeKind: "subagent",
+					status: "idle",
+					messageCount: 1,
+					rlmChildId: fixture.childId,
+				}),
+			);
+			expect(fixture.createRuntime).toHaveBeenCalledOnce();
+
 			const messageController = internals.createAgentMessageController(() => parentState);
 			await expect(messageController.roster?.()).resolves.toMatchObject({
 				current: { id: parentState.runtime.session.sessionId, depth: 0 },

@@ -215,6 +215,17 @@ describe("agent session bus", () => {
 			],
 		});
 		expect(sendAgentMessage.mock.calls.map(([input]) => input.target)).toEqual(["root", "sibling", "child"]);
+
+		sendAgentMessage.mockClear();
+		await expect(
+			handlers["agent_message.send"]!({
+				target: "all",
+				message: "private",
+				receiver_role: "sibling",
+				receiver_name: "reviewer",
+			}),
+		).rejects.toThrow("broadcast cannot be combined with receiver_role/receiver_name");
+		expect(sendAgentMessage).not.toHaveBeenCalled();
 	});
 
 	it("rejects non-all string targets at the host boundary", async () => {

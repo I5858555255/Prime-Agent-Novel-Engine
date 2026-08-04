@@ -546,6 +546,9 @@ export function createAgentMessageHostHandlers(
 						"positional agent_message.send targets are not supported; use receiver_role and receiver_name",
 					);
 				}
+				if (payload.receiver_role !== undefined || payload.receiver_name !== undefined) {
+					throw new Error("agent_message.send broadcast cannot be combined with receiver_role/receiver_name");
+				}
 				if (!controller.roster) throw new Error("agent family roster is not available in this session");
 				const roster = await controller.roster();
 				const results = await Promise.allSettled(

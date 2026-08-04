@@ -2847,16 +2847,50 @@ export class AgentDaemon {
 		};
 	}
 
-	private createAgentObserveListResult(currentState: ActiveSessionState): AgentObserveListResult {
+	private async createAgentObserveListResult(currentState: ActiveSessionState): Promise<AgentObserveListResult> {
+		const agents = this.listTargetableSessionStates(currentState)
+			.filter(
+				(state) =>
+					state.activeSessionId === currentState.activeSessionId ||
+					this.isAgentFamilyReachable(currentState, state),
+			)
+			.map((state) => this.createAgentObserveSummary(state, currentState));
+		const residentIds = new Set(agents.map((agent) => agent.activeSessionId));
+		for (const passive of await this.listPassiveRlmSubagents()) {
+			if (residentIds.has(passive.info.id)) continue;
+			try {
+				assertAgentFamilyReach(this.agentFamilyEntry(currentState), this.passiveAgentFamilyEntry(passive));
+			} catch (error) {
+				if (error instanceof Error && error.message === AGENT_FAMILY_REACH_ERROR) continue;
+				throw error;
+			}
+			agents.push({
+				activeSessionId: passive.info.id,
+				sessionId: passive.info.id,
+				sessionName: passive.info.name ?? passive.entry.sessionName,
+				runtimeKind: "subagent",
+				cwd: passive.info.cwd,
+				status: "idle",
+				isCurrent: false,
+				isStreaming: false,
+				isCompacting: false,
+				attachedClients: 0,
+				messageCount: passive.info.messageCount,
+				queuedCount: 0,
+				isSessionActive: false,
+				...(passive.chain.length === 1 && passive.rootParentState
+					? { parentActiveSessionId: passive.rootParentState.activeSessionId }
+					: {}),
+				parentSessionId: passive.entry.parentSessionId,
+				rlmChildId: passive.entry.childId,
+				...(passive.entry.rlmParentNodeId ? { rlmParentNodeId: passive.entry.rlmParentNodeId } : {}),
+				...(passive.info.firstMessage ? { firstMessage: passive.info.firstMessage } : {}),
+			});
+			residentIds.add(passive.info.id);
+		}
 		return {
 			current: this.createAgentObserveSummary(currentState, currentState),
-			agents: this.listTargetableSessionStates(currentState)
-				.filter(
-					(state) =>
-						state.activeSessionId === currentState.activeSessionId ||
-						this.isAgentFamilyReachable(currentState, state),
-				)
-				.map((state) => this.createAgentObserveSummary(state, currentState)),
+			agents,
 		};
 	}
 
@@ -4926,12 +4960,13 @@ export class AgentDaemon {
 			? [this.createAgentMessageAgentSummary(current), ...listed.agents.filter((agent) => !remotePeers.has(agent))]
 			: listed.agents.filter((agent) => !remotePeers.has(agent));
 		const activePaths = new Set(
-			localAgents.flatMap((agent) => (agent.sessionPath ? [resolve(agent.sessionPath)] : [])),
+			localAgents.flatMap((agent) => (agent.sessionPath ? [canonicalSessionPath(agent.sessionPath)] : [])),
 		);
 		const savedRoots = (await SessionManager.listAll(undefined, this.options.defaultSessionConfig.sessionDir))
 			.filter(
 				(info) =>
-					(info.rlmDepth ?? (info.parentSessionPath ? -1 : 0)) === 0 && !activePaths.has(resolve(info.path)),
+					(info.rlmDepth ?? (info.parentSessionPath ? -1 : 0)) === 0 &&
+					!activePaths.has(canonicalSessionPath(info.path)),
 			)
 			.map(
 				(info): AgentFamilyCatalogEntry => ({
@@ -4939,7 +4974,7 @@ export class AgentDaemon {
 					...(info.name ? { name: info.name } : {}),
 					depth: info.rlmDepth ?? 0,
 					status: "inactive",
-					sessionPath: resolve(info.path),
+					sessionPath: canonicalSessionPath(info.path),
 				}),
 			);
 		const byId = new Map<string, AgentFamilyCatalogEntry>(savedRoots.map((entry) => [entry.id, entry]));
@@ -4957,19 +4992,20 @@ export class AgentDaemon {
 						})()
 					: {}),
 				...(agent.parentSessionId ? { parentSessionId: agent.parentSessionId } : {}),
-				...(agent.parentSessionPath ? { parentSessionPath: resolve(agent.parentSessionPath) } : {}),
-				...(agent.sessionPath ? { sessionPath: resolve(agent.sessionPath) } : {}),
+				...(agent.parentSessionPath ? { parentSessionPath: canonicalSessionPath(agent.parentSessionPath) } : {}),
+				...(agent.sessionPath ? { sessionPath: canonicalSessionPath(agent.sessionPath) } : {}),
 			});
 		};
 		for (const peer of this.remoteAgentPeers.values()) addAgent(peer);
 		for (const agent of localAgents) addAgent(agent);
 		for (const state of this.sessions.values()) {
 			const entry = byId.get(state.runtime.session.sessionId);
-			if (entry && state.runtime.session.sessionFile) entry.sessionPath = resolve(state.runtime.session.sessionFile);
+			if (entry && state.runtime.session.sessionFile)
+				entry.sessionPath = canonicalSessionPath(state.runtime.session.sessionFile);
 		}
 		for (const passive of await this.listPassiveRlmSubagents()) {
 			const entry = byId.get(passive.info.id);
-			if (entry) entry.sessionPath = resolve(passive.entry.sessionFile);
+			if (entry) entry.sessionPath = canonicalSessionPath(passive.entry.sessionFile);
 		}
 		return [...byId.values()];
 	}
@@ -4988,7 +5024,7 @@ export class AgentDaemon {
 		parentSessionPath?: string;
 	}): string {
 		const parentIdentity = input.parentSessionPath
-			? `path:${resolve(input.parentSessionPath)}`
+			? `path:${canonicalSessionPath(input.parentSessionPath)}`
 			: input.parentSessionId
 				? `id:${input.parentSessionId}`
 				: "root";
@@ -5011,7 +5047,7 @@ export class AgentDaemon {
 		}
 		assertAgentSessionNameAvailable(await this.createAgentFamilyCatalog(currentState), {
 			...input,
-			...(input.parentSessionPath ? { parentSessionPath: resolve(input.parentSessionPath) } : {}),
+			...(input.parentSessionPath ? { parentSessionPath: canonicalSessionPath(input.parentSessionPath) } : {}),
 		});
 	}
 
@@ -5155,13 +5191,15 @@ export class AgentDaemon {
 
 	private agentFamilyEntry(state: ActiveSessionState): AgentFamilyCatalogEntry {
 		const metadata = state.runtime.metadata;
+		const headerParent = state.runtime.session.sessionManager?.getHeader?.()?.parentSession;
+		const parentSessionPath = metadata.parentSessionFile ?? headerParent;
 		return {
 			id: state.runtime.session.sessionId,
 			...(state.runtime.session.sessionName ? { name: state.runtime.session.sessionName } : {}),
 			depth: state.runtime.session.rlmDepth ?? 0,
 			status: "running",
 			...(metadata.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
-			...(metadata.parentSessionFile ? { parentSessionPath: canonicalSessionPath(metadata.parentSessionFile) } : {}),
+			...(parentSessionPath ? { parentSessionPath: canonicalSessionPath(parentSessionPath) } : {}),
 			...(state.runtime.session.sessionFile
 				? { sessionPath: canonicalSessionPath(state.runtime.session.sessionFile) }
 				: {}),
@@ -5173,7 +5211,8 @@ export class AgentDaemon {
 		const parentSessionPath =
 			entry.parentSessionFile ??
 			passive.chain.at(-2)?.sessionFile ??
-			passive.rootParentState.runtime.session.sessionFile;
+			passive.rootParentState?.runtime.session.sessionFile ??
+			passive.rootInfo?.path;
 		return {
 			id: passive.info.id,
 			name: passive.info.name ?? entry.sessionName,

@@ -162,6 +162,27 @@ print(json.dumps(receipt, sort_keys=True))
 		]);
 	});
 
+	it("rejects broadcast combined with role selectors before reaching the host", async () => {
+		provisioner = new IpythonKernelProvisioner(tempDir, {
+			pythonSkills: [bundledAgentMessageSkill()],
+			hostHandlers: {
+				"agent_message.send": async () => {
+					throw new Error("should not reach host");
+				},
+			},
+		});
+
+		const manager = await provisioner.ensure();
+		const result = await manager.execute(`
+try:
+    await agent_message.send("all", "secret", receiver_role="sibling", receiver_name="beta")
+except TypeError as error:
+    print(f"TypeError: {error}")
+`);
+		expect(result.status).toBe("ok");
+		expect(result.stdout.trim()).toBe("TypeError: broadcast cannot be combined with receiver_role/receiver_name");
+	});
+
 	it("rejects a positional name target before reaching the host", async () => {
 		provisioner = new IpythonKernelProvisioner(tempDir, {
 			pythonSkills: [bundledAgentMessageSkill()],

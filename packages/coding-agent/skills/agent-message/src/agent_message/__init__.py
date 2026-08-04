@@ -37,6 +37,8 @@ async def send(
                 "positional agent_message.send targets are not supported; "
                 "use receiver_role and receiver_name"
             )
+        if receiver_role is not None or receiver_name is not None:
+            raise TypeError("broadcast cannot be combined with receiver_role/receiver_name")
         payload: dict[str, Any] = {
             "target": "all",
             "message": broadcast_message,
