@@ -176,6 +176,19 @@ describe("buildRlmPrompt", () => {
 		expect(withCapabilities).toContain("restricted to your parent, siblings, and direct children");
 	});
 
+	test("does not prescribe kernel-only child replies without ipython", () => {
+		const prompt = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/session.jsonl",
+			installedSkills: ["agent_message"],
+			activeTools: ["bash"],
+			depth: 1,
+		});
+
+		expect(prompt).toContain("You are a child agent");
+		expect(prompt).not.toContain("When a task calls for an answer, reply explicitly with `await agent_message.send");
+	});
+
 	test("exposes the automatic child registry independently of observation skills", () => {
 		const withoutObserve = buildRlmPrompt({
 			cwd: "/repo",

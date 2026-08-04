@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { type Api, getLogger, type Model } from "@earendil-works/pi-ai";
 import { createCliSubprocessEnv, createCliSubprocessLaunchSpec } from "../../cli/subprocess-launch.js";
 import {
@@ -47,6 +47,7 @@ import {
 	AgentSessionMessageRateLimiter,
 	type AgentSessionMessageReceipt,
 	type AgentSessionMessageSender,
+	agentFamilyRelationship,
 	assertAgentFamilyReach,
 	assertAgentMessageQueueCapacity,
 	assertAgentSessionNameAvailable,
@@ -5051,11 +5052,18 @@ export class AgentDaemon {
 		});
 	}
 
+	private resolveHeaderParentSessionPath(state: ActiveSessionState): string | undefined {
+		const session = state.runtime.session;
+		const headerParent = session.sessionManager?.getHeader?.()?.parentSession;
+		if (!headerParent || isAbsolute(headerParent)) return headerParent;
+		return session.sessionFile ? resolve(dirname(session.sessionFile), headerParent) : undefined;
+	}
+
 	private async assertStateSessionNameAvailable(state: ActiveSessionState, name: string): Promise<void> {
 		const session = state.runtime.session;
 		const metadata = state.runtime.metadata;
 		const depth = session.rlmDepth ?? 0;
-		const headerParent = depth > 0 ? session.sessionManager.getHeader()?.parentSession : undefined;
+		const headerParent = depth > 0 ? this.resolveHeaderParentSessionPath(state) : undefined;
 		await this.assertFamilySessionNameAvailable(
 			{
 				name,
@@ -5096,7 +5104,7 @@ export class AgentDaemon {
 		}
 		const session = state.runtime.session;
 		const metadata = state.runtime.metadata;
-		const headerParent = session.sessionManager.getHeader()?.parentSession;
+		const headerParent = this.resolveHeaderParentSessionPath(state);
 		return this.withSessionNameReservation(
 			{
 				name: normalizedName,
@@ -5191,7 +5199,7 @@ export class AgentDaemon {
 
 	private agentFamilyEntry(state: ActiveSessionState): AgentFamilyCatalogEntry {
 		const metadata = state.runtime.metadata;
-		const headerParent = state.runtime.session.sessionManager?.getHeader?.()?.parentSession;
+		const headerParent = this.resolveHeaderParentSessionPath(state);
 		const parentSessionPath = metadata.parentSessionFile ?? headerParent;
 		return {
 			id: state.runtime.session.sessionId,
@@ -5264,14 +5272,7 @@ export class AgentDaemon {
 		targetState: ActiveSessionState,
 	): AgentFamilyRelationship | undefined {
 		if (!fromState) return undefined;
-		const from = fromState.runtime.metadata;
-		const target = targetState.runtime.metadata;
-		const fromSessionId = fromState.runtime.session.sessionId;
-		const targetSessionId = targetState.runtime.session.sessionId;
-		if (target.parentSessionId === fromSessionId) return "parent";
-		if (from.parentSessionId === targetSessionId) return "child";
-		if (from.parentSessionId === target.parentSessionId) return "sibling";
-		return undefined;
+		return agentFamilyRelationship(this.agentFamilyEntry(fromState), this.agentFamilyEntry(targetState));
 	}
 
 	private async sendAgentSessionMessage(options: {

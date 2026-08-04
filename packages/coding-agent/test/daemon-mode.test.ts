@@ -252,7 +252,7 @@ describe("daemon mode helpers", () => {
 		expect(internals.createAgentMessageAgentSummary(state).status).toBe("running");
 	});
 
-	it("reserves a session name across concurrent async validation", async () => {
+	it("reserves a session name across equivalent session-relative parent headers", async () => {
 		const daemon = new AgentDaemon("/tmp/prime-agent-name-reservation.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
 			createRuntime: vi.fn(),
@@ -263,8 +263,9 @@ describe("daemon mode helpers", () => {
 			...first.runtime,
 			session: {
 				sessionId: "first-session",
-				rlmDepth: 0,
-				sessionManager: { getHeader: vi.fn(() => undefined) },
+				sessionFile: "/tmp/children/first.jsonl",
+				rlmDepth: 1,
+				sessionManager: { getHeader: vi.fn(() => ({ parentSession: "../parent.jsonl" })) },
 				setSessionName: vi.fn(),
 			},
 		} as never;
@@ -272,8 +273,9 @@ describe("daemon mode helpers", () => {
 			...second.runtime,
 			session: {
 				sessionId: "second-session",
-				rlmDepth: 0,
-				sessionManager: { getHeader: vi.fn(() => undefined) },
+				sessionFile: "/tmp/children/nested/second.jsonl",
+				rlmDepth: 1,
+				sessionManager: { getHeader: vi.fn(() => ({ parentSession: "../../parent.jsonl" })) },
 				setSessionName: vi.fn(),
 			},
 		} as never;
@@ -289,7 +291,7 @@ describe("daemon mode helpers", () => {
 
 		const firstRename = internals.setStateSessionName(first, "shared");
 		await expect(internals.setStateSessionName(second, "shared")).rejects.toThrow(
-			"an agent of that name already exists at depth 0 under this parent",
+			"an agent of that name already exists at depth 1 under this parent",
 		);
 		releaseValidation();
 		await expect(firstRename).resolves.toBeUndefined();
@@ -344,23 +346,23 @@ describe("daemon mode helpers", () => {
 		expect(second.runtime.session.setSessionName).toHaveBeenCalledWith("worker");
 	});
 
-	it("scopes a switched child rename from its persisted parent header", async () => {
+	it("scopes a switched child rename from its session-relative persisted parent header", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-switched-child-name-"));
 		try {
-			const parentManager = SessionManager.create(tempDir, tempDir);
-			parentManager.newSession();
-			const parentPath = parentManager.getSessionFile();
-			if (!parentPath) throw new Error("Missing parent session file");
-			const childManager = SessionManager.create(tempDir, join(tempDir, "child"));
-			childManager.newSession({ parentSession: parentPath, rlmDepth: 1 });
+			const parentPath = join(tempDir, "parent.jsonl");
+			const childDir = join(tempDir, "child");
+			const childPath = join(childDir, "child.jsonl");
+			mkdirSync(childDir);
+			writeFileSync(parentPath, "");
 			const state = makeState("switched-child");
 			state.runtime = {
 				...state.runtime,
 				metadata: { kind: "top-level", createdAt: 1 },
 				session: {
-					sessionId: childManager.getSessionId(),
+					sessionId: "session-child",
+					sessionFile: childPath,
 					rlmDepth: 1,
-					sessionManager: childManager,
+					sessionManager: { getHeader: () => ({ parentSession: "../parent.jsonl" }) },
 				},
 			} as never;
 			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
@@ -2315,14 +2317,62 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
-	it("uses the persisted header parent for family reach after reopening a child", () => {
-		const daemon = new AgentDaemon("/tmp/prime-agent-header-family.sock", {
+	it("resolves a reopened child's persisted header parent relative to its session file", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-header-family-"));
+		try {
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
+				createRuntime: vi.fn(),
+			});
+			const parent = makeState("parent");
+			const child = makeState("reopened-child");
+			const otherRoot = makeState("other-root");
+			parent.runtime = {
+				...parent.runtime,
+				metadata: { kind: "top-level", createdAt: 1 },
+				session: {
+					sessionId: "session-parent",
+					sessionFile: join(tempDir, "parent.jsonl"),
+					sessionManager: { getHeader: () => ({ parentSession: undefined }) },
+				},
+			} as never;
+			child.runtime = {
+				...child.runtime,
+				metadata: { kind: "top-level", createdAt: 1 },
+				session: {
+					sessionId: "session-child",
+					sessionFile: join(tempDir, "children", "child.jsonl"),
+					rlmDepth: 1,
+					sessionManager: { getHeader: () => ({ parentSession: "../parent.jsonl" }) },
+				},
+			} as never;
+			otherRoot.runtime = {
+				...otherRoot.runtime,
+				metadata: { kind: "top-level", createdAt: 1 },
+				session: {
+					sessionId: "session-other",
+					sessionFile: join(tempDir, "other.jsonl"),
+					sessionManager: { getHeader: () => ({ parentSession: undefined }) },
+				},
+			} as never;
+			const internals = daemon as unknown as {
+				assertAgentFamilyReachable(current: ActiveSessionState, target: ActiveSessionState): void;
+			};
+
+			expect(() => internals.assertAgentFamilyReachable(child, parent)).not.toThrow();
+			expect(() => internals.assertAgentFamilyReachable(child, otherRoot)).toThrow(AGENT_FAMILY_REACH_ERROR);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("labels a reopened header-linked child and parent consistently with family reach", () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-header-relationship.sock", {
 			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
 			createRuntime: vi.fn(),
 		});
 		const parent = makeState("parent");
 		const child = makeState("reopened-child");
-		const otherRoot = makeState("other-root");
 		parent.runtime = {
 			...parent.runtime,
 			metadata: { kind: "top-level", createdAt: 1 },
@@ -2337,26 +2387,17 @@ describe("daemon mode helpers", () => {
 			metadata: { kind: "top-level", createdAt: 1 },
 			session: {
 				sessionId: "session-child",
-				sessionFile: "/tmp/child.jsonl",
+				sessionFile: "/tmp/children/child.jsonl",
 				rlmDepth: 1,
-				sessionManager: { getHeader: () => ({ parentSession: "/tmp/parent.jsonl" }) },
-			},
-		} as never;
-		otherRoot.runtime = {
-			...otherRoot.runtime,
-			metadata: { kind: "top-level", createdAt: 1 },
-			session: {
-				sessionId: "session-other",
-				sessionFile: "/tmp/other.jsonl",
-				sessionManager: { getHeader: () => ({ parentSession: undefined }) },
+				sessionManager: { getHeader: () => ({ parentSession: "../parent.jsonl" }) },
 			},
 		} as never;
 		const internals = daemon as unknown as {
-			assertAgentFamilyReachable(current: ActiveSessionState, target: ActiveSessionState): void;
+			agentMessageRelationship(from: ActiveSessionState, target: ActiveSessionState): string | undefined;
 		};
 
-		expect(() => internals.assertAgentFamilyReachable(child, parent)).not.toThrow();
-		expect(() => internals.assertAgentFamilyReachable(child, otherRoot)).toThrow(AGENT_FAMILY_REACH_ERROR);
+		expect(internals.agentMessageRelationship(child, parent)).toBe("parent");
+		expect(internals.agentMessageRelationship(parent, child)).toBe("child");
 	});
 
 	it("limits agent send and observation to the nuclear family", async () => {
