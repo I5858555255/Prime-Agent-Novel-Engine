@@ -164,6 +164,7 @@ export type AgentsViewPersistentState = {
 	query?: string;
 	savedSessions?: AgentConnectionSavedSessionInfo[];
 	lastSuccessfulSavedSessions?: AgentConnectionSavedSessionInfo[];
+	lastSuccessfulLiveSummaries?: SessionSummary[];
 	savedCatalogGeneration?: number;
 	heartbeats?: AgentConnectionHeartbeat[];
 };
@@ -228,6 +229,13 @@ export function resolveAgentsViewActiveSummaryForPath(
 // the input, so flatten all whitespace runs to single spaces.
 export function formatAgentsViewStatusLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
+}
+
+export function combineAgentsViewStartupNotices(...notices: readonly (string | undefined)[]): string | undefined {
+	const formatted = notices
+		.map((notice) => (notice ? formatAgentsViewStatusLine(notice) : ""))
+		.filter((notice) => notice.length > 0);
+	return formatted.length > 0 ? formatted.join(" · ") : undefined;
 }
 
 export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
@@ -441,7 +449,7 @@ export async function runAgentsViewMode(options: AgentsViewModeOptions): Promise
 				bindLocalSessionExtensions: false,
 				migratedProviders: options.migratedProviders,
 				modelFallbackMessage: resolveAttachModelFallbackMessage(opened.summary, options.modelFallbackMessage),
-				startupNotice: result.statusMessage ?? opened.cwdFallbackNotice,
+				startupNotice: combineAgentsViewStartupNotices(result.statusMessage, opened.cwdFallbackNotice),
 				verbose: options.verbose,
 				returnToAgentsView: true,
 				forceFullscreen: true,
@@ -668,6 +676,7 @@ export class AgentsViewMode implements Component, Focusable {
 		this.selectedRowIdentity = persistentState.selectedRowIdentity;
 		this.selectedSessionKey = persistentState.selectedSessionKey;
 		this.selectedActiveSessionId = persistentState.selectedSessionKey?.activeSessionId;
+		this.lastListedSummaries = persistentState.lastSuccessfulLiveSummaries ?? [];
 		this.savedSessions = persistentState.savedSessions ?? [];
 		this.lastSuccessfulSavedSessions = persistentState.lastSuccessfulSavedSessions ?? this.savedSessions;
 		this.savedCatalogReady = persistentState.lastSuccessfulSavedSessions !== undefined;
@@ -2059,7 +2068,7 @@ export class AgentsViewMode implements Component, Focusable {
 				const response = await client.request(createAgentsViewListCommand());
 				if (generation !== this.liveCatalogGeneration) return false;
 				this.liveCatalogReady = true;
-				this.applySessionList(expectSessionList(requireDaemonData(response)));
+				this.applySessionList(expectSessionList(requireDaemonData(response)), true);
 				return true;
 			} catch (error) {
 				if (generation === this.liveCatalogGeneration) {
@@ -2091,8 +2100,9 @@ export class AgentsViewMode implements Component, Focusable {
 		}
 	}
 
-	private applySessionList(sessions: SessionSummary[]): void {
+	private applySessionList(sessions: SessionSummary[], successful = false): void {
 		this.lastListedSummaries = sessions;
+		if (successful) this.persistentState.lastSuccessfulLiveSummaries = sessions;
 		this.reconcileCatalogs();
 	}
 
@@ -2379,7 +2389,7 @@ export class AgentsViewMode implements Component, Focusable {
 				this.daemonShutdownReceived = false;
 				this.reconnectTimedOut = false;
 				this.setStatusMessage("Daemon reconnected", { render: false });
-				this.applySessionList(sessions);
+				this.applySessionList(sessions, true);
 				void this.refreshSavedSessions({ duringReconnect: true, preserveStatusOnError: true });
 				return;
 			} catch (error) {
