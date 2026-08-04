@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed SIGINT in print mode leaving the session active until liveness reclaim.
+
 ## [0.5.1] - 2026-08-04
 
 ### Fixed
