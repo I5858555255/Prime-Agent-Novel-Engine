@@ -3487,6 +3487,7 @@ describe("daemon mode helpers", () => {
 			}
 			const sessionManager = SessionManager.create(tempDir, join(parentArtifactDir, "unregistered-child"));
 			sessionManager.newSession({ parentSession: parentSessionFile });
+			sessionManager.appendSessionState({ status: "active" });
 			const sessionFile = sessionManager.getSessionFile();
 			if (!sessionFile) {
 				throw new Error("Missing session file");
@@ -3531,7 +3532,8 @@ describe("daemon mode helpers", () => {
 			expect(internals.cronStore.list().find((job) => job.id === heartbeat.id)).toMatchObject({
 				status: "cancelled",
 			});
-			expect(createRuntime).toHaveBeenCalledOnce();
+			expect(createRuntime).toHaveBeenCalledTimes(2);
+			expect(createRuntime.mock.calls[1]?.[0].sessionManager.getSessionFile()).toBe(parentSessionFile);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
