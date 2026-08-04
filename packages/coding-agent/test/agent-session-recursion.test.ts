@@ -1596,6 +1596,52 @@ describe("AgentSession rlm recursion", () => {
 		expect(spawned.rlm_child_id).toBe(run.id);
 	});
 
+	it("does not admit a child prompt when the parent is aborted while resolving the sender", async () => {
+		let releaseAgentList: () => void = () => {};
+		const agentListGate = new Promise<void>((resolve) => {
+			releaseAgentList = resolve;
+		});
+		let agentListStarted = false;
+		const child = createSession({ rlmSessionDir: join(tempDir, "pre-admission-child") });
+		const promptAndWait = vi.spyOn(child, "promptAndWait");
+		const root = createSession({
+			agentMessageController: {
+				assertSessionNameAvailable: () => {},
+				listAgents: async () => {
+					agentListStarted = true;
+					await agentListGate;
+					return {
+						current: { activeSessionId: "parent-active", sessionId: "parent-session" },
+						agents: [],
+					};
+				},
+				sendAgentMessage: async () => {
+					throw new Error("unexpected send");
+				},
+			},
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: child }),
+				deleteRlmSubagentRuntime: async () => {
+					await child.disposeAsync();
+				},
+			},
+		});
+
+		const spawned = await root.runRlmChild("cancel before admission", { name: "cancelled-worker" });
+		await waitFor(() => agentListStarted);
+		const runs = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
+		const run = runs.get(spawned.rlm_child_id);
+		if (!run) throw new Error("Missing running child");
+
+		await root.abort();
+		releaseAgentList();
+		await waitFor(() => !runs.has(spawned.rlm_child_id));
+
+		expect(run.status).toBe("cancelled");
+		expect(run.error).toBe("Parent session aborted");
+		expect(promptAndWait).not.toHaveBeenCalled();
+	});
+
 	it("does not cancel active rlm children when only the parent turn is interrupted", async () => {
 		let releaseChild: () => void = () => {};
 		const release = new Promise<void>((resolve) => {

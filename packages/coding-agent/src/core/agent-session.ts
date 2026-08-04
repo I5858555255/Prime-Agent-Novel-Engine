@@ -9607,6 +9607,9 @@ export class AgentSession {
 			status: "queued",
 			abort: noopRlmChildAbort,
 		};
+		const throwIfCancelled = () => {
+			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
+		};
 		this._activeRlmChildRuns.set(run.id, run);
 		const emitChildUpdate = () => {
 			const childModel = childSession?.model ?? modelSelection.model;
@@ -9662,7 +9665,7 @@ export class AgentSession {
 				const child = childRuntime.session;
 				if (child.sessionName !== sessionName) child.setSessionName(sessionName);
 				publishChildSession(child);
-				if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
+				throwIfCancelled();
 				run.status = "running";
 				emitChildUpdate();
 				const unsubscribeChildEvents = child.subscribe((event) => {
@@ -9741,6 +9744,7 @@ export class AgentSession {
 					},
 					timestamp: Date.now(),
 				};
+				throwIfCancelled();
 				await child.promptAndWait(content, {
 					expandPromptTemplates: false,
 					source: "extension",
