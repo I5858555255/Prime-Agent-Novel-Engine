@@ -1102,15 +1102,17 @@ export class AgentDaemon {
 		onStateCreated?: (state: ActiveSessionState) => void,
 		runtimeOpenGuard?: RuntimeOpenGuard,
 		onStateBound?: (state: ActiveSessionState) => void,
+		restoreActiveSessionId?: string,
 	): Promise<ActiveSessionState> {
-		const restoredActiveSessionId = runtime.metadata.kind === "top-level" ? this.restoreActiveSessionId : undefined;
-		if (restoredActiveSessionId) {
+		const desiredActiveSessionId =
+			runtime.metadata.kind === "top-level" ? this.restoreActiveSessionId : restoreActiveSessionId;
+		if (runtime.metadata.kind === "top-level" && desiredActiveSessionId) {
 			this.restoreActiveSessionId = undefined;
 		}
 		const state: ActiveSessionState = {
 			activeSessionId:
-				restoredActiveSessionId && !this.sessions.has(restoredActiveSessionId)
-					? restoredActiveSessionId
+				desiredActiveSessionId && !this.sessions.has(desiredActiveSessionId)
+					? desiredActiveSessionId
 					: createActiveSessionId(this.sessions),
 			runtime,
 			clients: new Set(),
@@ -2252,7 +2254,8 @@ export class AgentDaemon {
 			throw new Error(`Cannot hydrate RLM subagent ${passive.entry.childId} without a resident root parent`);
 		}
 		for (const entry of passive.chain) {
-			parentState = await this.rehydrateCompletedRlmSubagent(parentState, entry);
+			const activeSessionId = entry === passive.entry ? passive.info.id : undefined;
+			parentState = await this.rehydrateCompletedRlmSubagent(parentState, entry, activeSessionId);
 		}
 		return parentState;
 	}
@@ -2260,6 +2263,7 @@ export class AgentDaemon {
 	private async rehydrateCompletedRlmSubagent(
 		parentState: ActiveSessionState,
 		entry: PersistedRlmSubagentRegistryEntry,
+		restoreActiveSessionId?: string,
 	): Promise<ActiveSessionState> {
 		const sessionKey = resolve(entry.sessionFile);
 		const pending = this.openingSessions.get(sessionKey);
@@ -2274,7 +2278,7 @@ export class AgentDaemon {
 			if (existing) {
 				await this.closeSession(existing, "replaced");
 			}
-			return this.rehydrateCompletedRlmSubagentOnce(parentState, entry);
+			return this.rehydrateCompletedRlmSubagentOnce(parentState, entry, restoreActiveSessionId);
 		})();
 		// Explicit opens and all lazy triggers share this path-keyed publication,
 		// so no caller can acquire a second lease/runtime while hydration binds.
@@ -2305,6 +2309,7 @@ export class AgentDaemon {
 	private async rehydrateCompletedRlmSubagentOnce(
 		parentState: ActiveSessionState,
 		entry: PersistedRlmSubagentRegistryEntry,
+		restoreActiveSessionId?: string,
 	): Promise<ActiveSessionState> {
 		let stateRef: ActiveSessionState | undefined;
 		let runtime: AgentSessionRuntime | undefined;
@@ -2379,9 +2384,17 @@ export class AgentDaemon {
 					},
 				}),
 			);
-			const state = await this.addRuntime(runtime, undefined, parentState.clientEnv, (createdState) => {
-				stateRef = createdState;
-			});
+			const state = await this.addRuntime(
+				runtime,
+				undefined,
+				parentState.clientEnv,
+				(createdState) => {
+					stateRef = createdState;
+				},
+				undefined,
+				undefined,
+				restoreActiveSessionId,
+			);
 			// The session transcript is authoritative for mutable metadata such as a
 			// later user-assigned name; the registry value is only the spawn snapshot.
 			if (!parentState.runtime.session.retainFinishedRlmChildSession(entry.childId, runtime.session)) {

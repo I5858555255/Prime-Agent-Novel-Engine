@@ -3985,6 +3985,43 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
+	it("keeps a passive child row id when attach hydrates it", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-attach-"));
+		try {
+			const fixture = makePersistedRlmDaemonFixture(tempDir);
+			const internals = fixture.daemon as unknown as {
+				sessions: Map<string, ActiveSessionState>;
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<unknown>;
+			};
+			const parentState = await internals.createRuntime({
+				type: "create",
+				sessionPath: fixture.parentSessionFile,
+			});
+			const client = makeClient("client-1", parentState.activeSessionId);
+			client.socket.write = vi.fn(() => true);
+			const listResponse = (await internals.handleCommand(client, { type: "list" })) as {
+				data: { sessions: SessionSummary[] };
+			};
+			const passiveRow = listResponse.data.sessions.find(
+				(session) => session.sessionFile === fixture.childSessionFile,
+			);
+			if (!passiveRow) throw new Error("Missing passive child row");
+			expect(passiveRow.activeSessionId).toBeUndefined();
+
+			const attachResponse = (await internals.handleCommand(client, {
+				type: "attach",
+				activeSessionId: passiveRow.id,
+			})) as { data: DaemonAttachResult };
+
+			expect(attachResponse.data.activeSessionId).toBe(passiveRow.id);
+			expect(internals.sessions.get(passiveRow.id)?.activeSessionId).toBe(passiveRow.id);
+			expect(client.attachedActiveSessionIds).toContain(passiveRow.id);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("deletes a passive child without hydrating it", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-lazy-rlm-delete-"));
 		try {
@@ -6141,6 +6178,10 @@ function makeRuntimeSession(
 		subscribe: vi.fn(() => vi.fn()),
 		bindExtensions: vi.fn(async () => {}),
 		setExecEnvProvider: vi.fn(),
+		getAvailableThinkingLevels: vi.fn(() => []),
+		scopedModels: [],
+		getActiveToolNames: vi.fn(() => []),
+		getContextUsage: vi.fn(() => undefined),
 		setSessionName: vi.fn((name: string) => sessionManager.appendSessionInfo(name)),
 		dispose: vi.fn(),
 		disposeAsync: vi.fn(async () => {}),
