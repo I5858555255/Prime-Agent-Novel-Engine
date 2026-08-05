@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed daemon startup crashes hiding their exit status and daemon log until the startup timeout.
 - Documented the global `idleEvictionMinutes` daemon setting, including its default, valid values, and eviction/passivation behavior ([#621](https://github.com/PrimeIntellect-ai/prime-agent/issues/621)).
 
 ## [0.6.0] - 2026-08-04
