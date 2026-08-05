@@ -187,6 +187,11 @@ describe("ACP mode over a cold real CLI process", () => {
 				error !== undefined || result?.stopReason !== "end_turn",
 				`a failed turn must not report end_turn (updates=${updates}, frame=${JSON.stringify(prompt)})`,
 			).toBe(true);
+
+			// Failing loudly is only half of it: the client also has to be able to
+			// tell *why*. Assert the provider's own rejection reaches the client
+			// rather than a bare "Internal error".
+			expect(JSON.stringify(error)).toContain("unauthorized in test");
 		},
 	);
 });
