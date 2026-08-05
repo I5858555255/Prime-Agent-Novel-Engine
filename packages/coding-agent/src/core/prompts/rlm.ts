@@ -30,7 +30,7 @@ const IPYTHON_CONTROL_PROMPT = [
 	"",
 	"Terminology: continual harness names the persisted prompt, memory, skill, and subagent layer; RLM names the runtime, IPython kernel, and native call interface exposed to the model.",
 	"",
-	"RLM-native call contract: installed Python skills are pre-imported modules. Read the matching SKILL.md and call its documented function, such as `await <skill_import>.<function>(...)`; when a CLI exists, use `<skill_import> ...` from shell. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm('sub-task')`; admission returns a child handle immediately. Results arrive only through an available messaging capability or files, never as an `rlm()` return value. Do not invent non-native wrappers such as `call_skill(...)` or `run_subagent(...)`.",
+	"RLM-native call contract: installed Python skills are pre-imported modules. Read the matching SKILL.md and call its documented function, such as `await <skill_import>.<function>(...)`; when a CLI exists, use `<skill_import> ...` from shell. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm('sub-task')`; admission returns a child handle immediately. Use `await rlm.wait(handle)` when an in-cell program must branch on the child's completed, error, or cancelled outcome; detached results can instead arrive through messaging or files. Do not invent non-native wrappers such as `call_skill(...)` or `run_subagent(...)`.",
 ].join("\n");
 
 export interface ChildAgentDoctrineOptions {
@@ -126,7 +126,8 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 	if (allowRecursion && hasIpython) {
 		parts.push(
 			"",
-			"A callable `rlm` is already in your global namespace. `await rlm('sub-task')` spawns a child and returns immediately after task admission with `rlm_child_id`, `name`, `session_dir`, and `model`; it never waits for or returns the child's answer.",
+			"A callable `rlm` is already in your global namespace. `await rlm('sub-task')` spawns a child and returns immediately after task admission with `rlm_child_id`, `name`, `session_dir`, and `model`; the spawn call itself never waits for or returns the child's answer.",
+			"Use `outcome = await rlm.wait(handle)` for intentional in-cell fan-in. The outcome has `status` (`completed`, `error`, or `cancelled`), `result` (the child's final assistant text when available), and `error`. Compose multiple waits with normal Python primitives such as `asyncio.gather`; branch, retry, or cancel in code based on their outcomes.",
 			"Choose a stable child name with `await rlm('sub-task', name='api-reviewer')`; names must be unique among siblings. If omitted, the host generates a readable unique name.",
 			"A child inherits your model. If a different model is explicitly requested, use `await rlm.find_models(...)` and an exact returned selector. An unavailable requested model fails spawn; decide whether to retry or omit `model`.",
 		);
@@ -146,7 +147,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			parts.push("Inspect files a child wrote when you need to collect its work without an observation capability.");
 		}
 		parts.push(
-			"Spawn independent children in separate calls and end your turn instead of awaiting completion. Multiple replies may arrive over multiple turns. Delete a direct child explicitly with `await rlm.delete_subagent(child)` when it is no longer needed.",
+			"For detached work, spawn independent children in separate calls and end your turn; replies may arrive over multiple turns. For a programmed workflow that needs completion state or final text, call `rlm.wait` on the admitted handles. Delete a direct child explicitly with `await rlm.delete_subagent(child)` when it is no longer needed.",
 		);
 	}
 
@@ -177,7 +178,8 @@ export function buildSubagentGuidance(
 	const lines = [
 		"# Delegating to sub-agents",
 		"",
-		"Spawn independent, self-contained work with `handle = await rlm('task', name='worker')`. This returns at admission, not completion; keep the handle to stop or inspect the child later.",
+		"Spawn independent, self-contained work with `handle = await rlm('task', name='worker')`. This returns at admission, not completion; keep the handle to wait for, stop, or inspect the child later.",
+		"Use `outcome = await rlm.wait(handle)` when code must react to completion, failure, or cancellation. Multiple waits compose with `asyncio.gather`, so orchestration conditions, retries, and fallbacks can remain executable Python rather than prose plans.",
 	];
 	if (options.hasAgentMessage) {
 		lines.push(

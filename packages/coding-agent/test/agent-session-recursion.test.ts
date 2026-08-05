@@ -29,6 +29,7 @@ import {
 	createDefaultRlmSubagentSessionName,
 	createRlmDeleteSubagentHostHandler,
 	createRlmRunHostHandler,
+	createRlmWaitHostHandler,
 	type SubagentRuntimeHost,
 } from "../src/core/rlm-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -407,6 +408,75 @@ describe("AgentSession rlm recursion", () => {
 			createDefaultRlmSubagentSessionName("same task", "sub-AbCdEfGh"),
 		);
 		expect(createDefaultRlmSubagentSessionName("x".repeat(200), "sub-a1b2c3d4")).toHaveLength(64);
+	});
+
+	it("validates and normalizes rlm.wait selectors at the host seam", async () => {
+		const wait = vi.fn(async (target: string) => ({
+			rlm_child_id: "sub-worker",
+			status: "completed" as const,
+			result: target,
+			error: null,
+		}));
+		const handler = createRlmWaitHostHandler(wait);
+
+		await expect(handler({ target: "  worker  " })).resolves.toEqual({
+			outcome: {
+				rlm_child_id: "sub-worker",
+				status: "completed",
+				result: "worker",
+				error: null,
+			},
+		});
+		expect(wait).toHaveBeenCalledWith("worker");
+		await expect(handler({ target: "  " })).rejects.toThrow("rlm.wait target must be a non-empty string");
+	});
+
+	it("waits for a child outcome without changing spawn admission semantics", async () => {
+		let releaseChild: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseChild = resolve;
+		});
+		let childStarted = false;
+		const root = createSession({
+			streamFn: () => {
+				const stream = createAssistantMessageEventStream();
+				childStarted = true;
+				void release.then(() => {
+					stream.push({ type: "done", reason: "stop", message: assistantMessage("full child result") });
+				});
+				return stream;
+			},
+		});
+
+		const spawned = await root.runRlmChild("slow child", { name: "slow-worker" });
+		await waitFor(() => childStarted);
+		let settled = false;
+		const waitingById = root.waitForRlmChild(spawned.rlm_child_id).then((outcome) => {
+			settled = true;
+			return outcome;
+		});
+		const waitingByName = root.waitForRlmChild("slow-worker");
+		await sleep(10);
+		expect(settled).toBe(false);
+
+		releaseChild();
+		const expectedOutcome = {
+			rlm_child_id: spawned.rlm_child_id,
+			status: "completed" as const,
+			result: "full child result",
+			error: null,
+		};
+		await expect(waitingById).resolves.toEqual(expectedOutcome);
+		await expect(waitingByName).resolves.toEqual(expectedOutcome);
+		await expect(root.waitForRlmChild("slow-worker")).resolves.toEqual({
+			rlm_child_id: spawned.rlm_child_id,
+			status: "completed",
+			result: "full child result",
+			error: null,
+		});
+		await expect(root.waitForRlmChild("missing-worker")).rejects.toThrow(
+			'No direct RLM subagent matches "missing-worker"',
+		);
 	});
 
 	it("persists the spawned child's parent edge and derived runtime depth in its header", async () => {
@@ -1166,6 +1236,12 @@ describe("AgentSession rlm recursion", () => {
 		});
 
 		const spawned = await root.runRlmChild("start failing child", { name: "failing-worker" });
+		await expect(root.waitForRlmChild(spawned.rlm_child_id)).resolves.toEqual({
+			rlm_child_id: spawned.rlm_child_id,
+			status: "error",
+			result: null,
+			error: "kernel startup failed",
+		});
 		await vi.waitFor(async () => {
 			expect((await root.listRlmSubagents()).subagents).toContainEqual(
 				expect.objectContaining({ rlm_child_id: spawned.rlm_child_id, status: "error" }),
@@ -1204,7 +1280,14 @@ describe("AgentSession rlm recursion", () => {
 
 		const spawned = await root.runRlmChild("slow child", { name: "cancel-worker" });
 		await waitFor(() => childStarted);
+		const waiting = root.waitForRlmChild(spawned.rlm_child_id);
 		expect(root.cancelRlmChildRun(spawned.rlm_child_id)).toBe(true);
+		await expect(waiting).resolves.toEqual({
+			rlm_child_id: spawned.rlm_child_id,
+			status: "cancelled",
+			result: null,
+			error: "Cancelled by user",
+		});
 		releaseChild();
 		await vi.waitFor(() => {
 			const notices = root.messages.filter(
@@ -1578,6 +1661,18 @@ describe("AgentSession rlm recursion", () => {
 		];
 
 		expect(await root.listRlmSubagents()).toEqual({ subagents: expected });
+		await expect(root.waitForRlmChild("failed-worker")).resolves.toEqual({
+			rlm_child_id: "failed-child",
+			status: "error",
+			result: null,
+			error: null,
+		});
+		await expect(root.waitForRlmChild("finished-worker")).resolves.toEqual({
+			rlm_child_id: "finished-child",
+			status: "completed",
+			result: null,
+			error: null,
+		});
 		await expect(root.deleteRlmSubagent("finished-worker")).resolves.toEqual({ subagent: expected[1] });
 		expect(deleteRlmSubagentRuntime).toHaveBeenCalledWith("finished-child", undefined);
 		expect(await root.listRlmSubagents()).toEqual({ subagents: [expected[0]] });
@@ -2193,11 +2288,18 @@ describe("AgentSession rlm recursion", () => {
 		const runs = (root as unknown as InspectableRlmSession)._activeRlmChildRuns;
 		expect(runs.size).toBe(1);
 		const run = [...runs.values()][0];
+		const waiting = root.waitForRlmChild(spawned.rlm_child_id);
 
-		root.dispose();
+		await root.disposeAsync();
 
 		expect(run.status).toBe("cancelled");
 		expect(run.error).toBe("Parent session disposed");
+		await expect(waiting).resolves.toEqual({
+			rlm_child_id: spawned.rlm_child_id,
+			status: "cancelled",
+			result: null,
+			error: "Parent session disposed",
+		});
 		releaseChild();
 		expect(spawned.rlm_child_id).toBe(run.id);
 	});
@@ -2955,6 +3057,67 @@ describe("AgentSession rlm recursion", () => {
 				model: "test/model",
 			});
 		} finally {
+			await manager.dispose();
+		}
+	});
+
+	it("keeps parallel rlm.wait comm requests pending until completion", async () => {
+		let started = 0;
+		let releaseWaits: () => void = () => {};
+		const release = new Promise<void>((resolve) => {
+			releaseWaits = resolve;
+		});
+		const replies: CapturedCommReply[] = [];
+		const manager = new KernelManager({
+			python: process.execPath,
+			hostHandlers: {
+				"rlm.wait": createRlmWaitHostHandler(async (target) => {
+					started++;
+					await release;
+					return {
+						rlm_child_id: target,
+						status: "completed",
+						result: `result:${target}`,
+						error: null,
+					};
+				}),
+			},
+		});
+
+		try {
+			const kernel = manager as unknown as KernelCommTestApi;
+			kernel.sendCommMessage = async (commId, data) => {
+				replies.push({ commId, data });
+			};
+			kernel.handleCommMessage(rlmCommOpenData("wait-a", { type: "rlm.wait", target: "sub-a" }));
+			kernel.handleCommMessage(rlmCommOpenData("wait-b", { type: "rlm.wait", target: "sub-b" }));
+
+			await waitFor(() => started === 2);
+			expect(replies).toHaveLength(0);
+			releaseWaits();
+			await waitFor(() => replies.length === 2);
+
+			const byCommId = new Map(replies.map((reply) => [reply.commId, reply.data]));
+			expect(byCommId.get("wait-a")).toEqual({
+				status: "ok",
+				outcome: {
+					rlm_child_id: "sub-a",
+					status: "completed",
+					result: "result:sub-a",
+					error: null,
+				},
+			});
+			expect(byCommId.get("wait-b")).toEqual({
+				status: "ok",
+				outcome: {
+					rlm_child_id: "sub-b",
+					status: "completed",
+					result: "result:sub-b",
+					error: null,
+				},
+			});
+		} finally {
+			releaseWaits();
 			await manager.dispose();
 		}
 	});

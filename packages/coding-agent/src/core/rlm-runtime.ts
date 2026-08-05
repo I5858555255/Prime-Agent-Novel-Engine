@@ -18,6 +18,15 @@ export interface RlmSpawnHandle {
 	model: string;
 }
 
+export type RlmChildOutcomeStatus = "completed" | "error" | "cancelled";
+
+export interface RlmChildOutcome {
+	rlm_child_id: string;
+	status: RlmChildOutcomeStatus;
+	result: string | null;
+	error: string | null;
+}
+
 export type RlmSubagentRegistryStatus = "running" | "completed" | "error";
 
 export interface RlmSubagentRegistryEntry {
@@ -50,6 +59,7 @@ export interface RlmFindModelsResult {
 }
 
 export type RlmRunHandler = (request: RlmRunRequest) => Promise<Record<string, unknown>>;
+export type RlmWaitHandler = (target: string) => Promise<RlmChildOutcome>;
 export type RlmListSubagentsHandler = () => RlmListSubagentsResult | Promise<RlmListSubagentsResult>;
 export type RlmDeleteSubagentHandler = (target: string) => Promise<RlmDeleteSubagentResult>;
 export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindModelsResult | Promise<RlmFindModelsResult>;
@@ -184,6 +194,16 @@ export function createRlmListSubagentsHostHandler(handler: RlmListSubagentsHandl
 	return async () => {
 		const { subagents } = await handler();
 		return { subagents };
+	};
+}
+
+/** Wait for one direct child selected from the current parent session's registry. */
+export function createRlmWaitHostHandler(handler: RlmWaitHandler): HostRequestHandler {
+	return async (payload) => {
+		if (typeof payload.target !== "string" || !payload.target.trim()) {
+			throw new Error("rlm.wait target must be a non-empty string");
+		}
+		return { outcome: await handler(payload.target.trim()) };
 	};
 }
 

@@ -19,7 +19,7 @@ flowchart LR
     kernel <-->|"inspect · search · transform"| data
     kernel <-->|"call functions"| skills
     kernel -->|"spawn focused work"| children
-    children -->|"agent messages · files"| parent
+    children -->|"wait outcomes · agent messages · files"| parent
     kernel -->|"admission handle"| parent
     parent --> answer
 ```
@@ -61,7 +61,7 @@ print(handle.rlm_child_id, handle.name, handle.session_dir, handle.model)
 
 The call returns immediately after task admission with a child handle; it never waits for or returns the child's answer. The TypeScript host creates a normal child `AgentSession` with an independent context and session directory. The child inherits the parent model, provider configuration, skills, tools, retry policy, and resource loader unless the call requests another configured model.
 
-Spawn independent children in separate calls and end the turn instead of awaiting completion:
+Spawn independent children in separate calls. Either end the turn for detached work or wait programmatically when later code depends on their outcomes:
 
 ```python
 api_review = await rlm("Review the public API", name="api-reviewer")
@@ -69,11 +69,23 @@ test_review = await rlm("Review the test coverage", name="test-reviewer")
 integration_audit = await rlm("Run the slow integration audit", name="integration-audit")
 ```
 
-Results arrive only through explicit `agent_message` replies or files, never as an `rlm()` return value. Children reply when an answer is needed:
+The spawn call never contains the child's answer. For detached work, results arrive through explicit `agent_message` replies or files. Children reply when an answer is needed:
 
 ```python
 await agent_message.send(message, receiver_role="parent")
 ```
+
+For programmed fan-in, wait on the admitted handle and branch on the structured outcome:
+
+```python
+outcome = await rlm.wait(handle)
+if outcome.status == "completed":
+    use(outcome.result)
+elif outcome.status == "error":
+    retry_or_fallback(outcome.error)
+```
+
+`status` is `completed`, `error`, or `cancelled`. `result` contains the child's final assistant text when available. Multiple waits compose with ordinary Python control flow, including `asyncio.gather`, so fan-out, retries, fallbacks, and transition guards do not have to live only in conversation prose.
 
 The parent can follow up with a retained child:
 

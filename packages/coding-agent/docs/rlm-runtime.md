@@ -27,7 +27,7 @@ handle = await rlm("inspect the API", name="api-reviewer")
 print(handle.rlm_child_id, handle.name, handle.session_dir, handle.model)
 ```
 
-the call travels through a Jupyter comm target named `host.request`. `KernelManager` dispatches request type `rlm.run` to the parent `AgentSession`, which starts a child through the same TypeScript agent machinery as the parent. The call returns over the comm immediately after task admission with a child handle; it never waits for or returns the child's answer. Results arrive only through explicit `agent_message` replies or files.
+the call travels through a Jupyter comm target named `host.request`. `KernelManager` dispatches request type `rlm.run` to the parent `AgentSession`, which starts a child through the same TypeScript agent machinery as the parent. The call returns over the comm immediately after task admission with a child handle; the spawn call never waits for or returns the child's answer. Detached results arrive through explicit `agent_message` replies or files. A separate `rlm.wait` host request intentionally remains pending until that child reaches a terminal outcome, allowing Python code to implement fan-in, retries, and fallbacks.
 
 The same bridge supports other typed host requests. Bundled Python skills such as `goal` call `rlm.host_request("goal.get", ...)`; state and policy remain in the TypeScript host.
 
@@ -120,7 +120,7 @@ handle = await rlm("subtask")
 
 IPython processes shell messages serially. Sending the admission response on the shell channel would deadlock: the active `execute_request` cannot finish until the response arrives, while the kernel will not process that shell response until the request finishes.
 
-The Python shim therefore registers comm handlers on the control channel, and the host sends admission responses there. Future completion is scheduled with `loop.call_soon_threadsafe()` because the control handler may run on another thread. Child answers do not use this response path; they arrive later through explicit `agent_message` replies or files.
+The Python shim therefore registers comm handlers on the control channel, and the host sends admission responses there. Future completion is scheduled with `loop.call_soon_threadsafe()` because the control handler may run on another thread. Detached child answers do not use this response path; they arrive later through explicit `agent_message` replies or files. An explicit `rlm.wait` request uses the control-channel response path to return the child's terminal status and final assistant text.
 
 ## Python API
 
@@ -131,8 +131,10 @@ rlm
 run(prompt: str, **kwargs)
 find_models(query: str = "", limit: int = 8)
 list_subagents()
+wait(selector)
 delete_subagent(selector)
 host_request(request_type: str, payload: dict | None = None)
+RLMChildOutcome
 RLMSpawnHandle
 RLMModel
 RLMSubagent
@@ -146,7 +148,7 @@ await rlm("subtask")
 await rlm.run("subtask")
 ```
 
-`RLMSpawnHandle` contains `rlm_child_id`, `name`, `session_dir`, and `model`. It confirms admission only and never contains the child's answer.
+`RLMSpawnHandle` contains `rlm_child_id`, `name`, `session_dir`, and `model`. It confirms admission only and never contains the child's answer. `await rlm.wait(handle)` returns an `RLMChildOutcome` with `status` (`completed`, `error`, or `cancelled`), the full final assistant `result` when available, and an `error` reason when available. Child execution failures are outcomes rather than Python exceptions so orchestration code can branch explicitly; invalid selectors and host-request failures still raise. For a passive child recovered only from durable daemon registry metadata, terminal status remains available but `result` or `error` can be `None` until its session is rehydrated; use its transcript or files when full durable output is required.
 
 Supported `rlm.run` options are:
 
@@ -180,7 +182,7 @@ test_review = await rlm("review the tests", name="test-reviewer")
 audit = await rlm("slow independent audit", name="audit-reviewer")
 ```
 
-End the turn instead of waiting for completion. Children send requested answers with `await agent_message.send(message, receiver_role="parent")`, and replies arrive as ordinary agent messages over later turns. A child may instead write results to files for the parent to read. The host runs each admitted child as an independent `AgentSession`; daemon-backed children can be retained as independently addressable session workers.
+For detached work, end the turn and let children send requested answers with `await agent_message.send(message, receiver_role="parent")`; replies arrive as ordinary agent messages over later turns. A child may instead write results to files for the parent to read. When Python control flow depends on completion, compose `rlm.wait` calls with `asyncio.gather` and branch on their outcomes. The host runs each admitted child as an independent `AgentSession`; daemon-backed children can be retained as independently addressable session workers.
 
 ## Parent-Scoped Sub-Agent Registry
 
