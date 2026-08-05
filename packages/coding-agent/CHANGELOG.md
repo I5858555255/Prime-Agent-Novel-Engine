@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed fuzzy edit matching rewriting unrelated whitespace and Unicode across the whole file and omitting those changes from the reported diff ([#654](https://github.com/PrimeIntellect-ai/prime-agent/issues/654)).
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
