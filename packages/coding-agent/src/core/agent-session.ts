@@ -9046,7 +9046,7 @@ export class AgentSession {
 		);
 		if (!run) return undefined;
 		await run.publication.promise;
-		return run.id;
+		return run.session?.sessionId;
 	}
 
 	/** Current direct-child registry for the model-facing rlm.list_subagents API. */

@@ -735,7 +735,7 @@ describe("AgentSession rlm recursion", () => {
 		expect(child.repliedToParentSinceTask).toBe(true);
 	});
 
-	it("waits for a newly spawned child to be published before resolving a roled send", async () => {
+	it("resolves a spawned child handle to its published session before a roled send", async () => {
 		let publishChild: (() => void) | undefined;
 		const publicationGate = new Promise<void>((resolve) => {
 			publishChild = resolve;
@@ -749,23 +749,24 @@ describe("AgentSession rlm recursion", () => {
 			deliveryStatus: "delivered" as const,
 			deliveryMode: "auto" as const,
 		}));
+		const roster = vi.fn(() => ({
+			current: { name: "root", id: root.sessionId, depth: 0 },
+			entries: publishedChild
+				? [
+						{
+							relationship: "child" as const,
+							name: publishedChild.sessionName ?? publishedChild.sessionId,
+							id: publishedChild.sessionId,
+							depth: 1,
+							status: "running" as const,
+						},
+					]
+				: [],
+		}));
 		const root = createSession({
 			agentMessageController: {
 				listAgents: () => ({ agents: [] }),
-				roster: () => ({
-					current: { name: "root", id: root.sessionId, depth: 0 },
-					entries: publishedChild
-						? [
-								{
-									relationship: "child" as const,
-									name: publishedChild.sessionName ?? publishedChild.sessionId,
-									id: publishedChild.sessionId,
-									depth: 1,
-									status: "running" as const,
-								},
-							]
-						: [],
-				}),
+				roster,
 				sendAgentMessage,
 			},
 			subagentRuntimeHost: {
@@ -785,12 +786,18 @@ describe("AgentSession rlm recursion", () => {
 		const send = handlers["agent_message.send"];
 		if (!send) throw new Error("Missing agent_message.send host handler");
 
-		const pendingSend = send({ message: "hello", receiver_role: "child", receiver_name: spawned.name });
+		const pendingSend = send({
+			message: "hello",
+			receiver_role: "child",
+			receiver_name: spawned.rlm_child_id,
+		});
 		await sleep(0);
+		expect(roster).not.toHaveBeenCalled();
 		expect(sendAgentMessage).not.toHaveBeenCalled();
 		publishChild?.();
 
 		await expect(pendingSend).resolves.toMatchObject({ message: "hello" });
+		expect(roster).toHaveBeenCalledTimes(1);
 		expect(sendAgentMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ target: publishedChild?.sessionId, message: "hello" }),
 		);
