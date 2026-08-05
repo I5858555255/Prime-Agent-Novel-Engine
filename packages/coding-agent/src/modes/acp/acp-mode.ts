@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
@@ -44,6 +45,18 @@ function rawStdoutSink(): WritableStream<Uint8Array> {
 			writeRawStdout(typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
 		},
 	});
+}
+
+function canonicalCwd(path: string): string {
+	const resolved = resolve(path);
+	let canonical: string;
+	try {
+		canonical = realpathSync(resolved);
+	} catch {
+		// Preserve the previous lexical comparison when a path is missing or inaccessible.
+		canonical = resolved;
+	}
+	return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
 export interface AcpModeOptions {
@@ -255,7 +268,7 @@ export async function runAcpModeWithConnection(
 					.getState()
 					.then((state) => state.cwd)
 					.catch(() => undefined);
-				if (actual && resolve(requestedCwd) !== resolve(actual)) {
+				if (actual && canonicalCwd(requestedCwd) !== canonicalCwd(actual)) {
 					cwdMismatch = { requested: requestedCwd, actual };
 				}
 			}
