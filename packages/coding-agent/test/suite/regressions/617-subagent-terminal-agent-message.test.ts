@@ -41,9 +41,7 @@ describe("#617 subagent terminal agent messages", () => {
 						target: parent!.session.sessionId,
 						message: expect.stringContaining("completed without sending a reply"),
 					});
-					// No explicit deliveryMode: the notice inherits the same "auto"
-					// default as any other child-to-parent message, which steers into
-					// a busy parent instead of waiting for it to go idle.
+					// Omitted, so the daemon applies the "auto" default.
 					expect(input.deliveryMode).toBeUndefined();
 					const message = createAgentSessionMessage({
 						id: "agentmsg-terminal-completion",
@@ -99,10 +97,7 @@ describe("#617 subagent terminal agent messages", () => {
 		expect(terminalMessage(parent.session.messages)?.content).toContain(spawned.rlm_child_id);
 	});
 	it("steers a terminal notice into a busy parent instead of deferring it", async () => {
-		// The delivered mode is what the daemon derives from the child's request.
-		// Omitting deliveryMode must resolve to a steer for a streaming parent, so
-		// the notice lands at the next turn boundary rather than in the
-		// when-run-idle lane behind unrelated work.
+		// A streaming parent must resolve to a steer, not a deferred follow-up.
 		const childSessionName = "busy-parent-worker";
 		let resolvedBehavior: "steer" | "followUp" | undefined;
 		child = await createHarness({

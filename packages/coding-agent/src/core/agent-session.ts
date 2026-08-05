@@ -9694,23 +9694,16 @@ export class AgentSession {
 			const childController = childSession?._agentMessageController;
 			if (childController) {
 				try {
-					// No explicit deliveryMode: terminal notices take the same "auto"
-					// default as any other child-to-parent message, so a busy parent
-					// receives them as a steer at the next turn boundary. Forcing
-					// "follow_up" would put the one signal that a child will never
-					// report into the when-run-idle lane, which ActionStore drains
-					// only after the steer lane empties — a parent that keeps taking
-					// turns (autonomous mode, long tool chains, more children
-					// reporting) could defer it indefinitely.
+					// deliveryMode is deliberately omitted: the "auto" default steers into
+					// a busy parent, whereas "follow_up" parks a child's last signal in the
+					// when-run-idle lane, which drains only once the steer lane empties.
 					await childController.sendAgentMessage({
 						target: this.sessionId,
 						message: message.content as string,
 					});
 					return;
 				} catch {
-					// Fall through to the injected-message path: a parent that loses the
-					// terminal notice entirely is worse than one that receives it
-					// unattributed.
+					// An unattributed notice beats silence, so fall through to the injected path.
 				}
 			}
 			await this._promptInjectedMessage(message.content as string, message, {
