@@ -16615,6 +16615,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":null},
 			input: ["text", "image"],
 			cost: {
 				input: 6,
@@ -16633,7 +16634,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":null},
 			input: ["text", "image"],
 			cost: {
 				input: 6,
@@ -16652,7 +16653,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":null},
 			input: ["text", "image"],
 			cost: {
 				input: 6,
@@ -16671,7 +16672,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
 			reasoning: true,
-			thinkingLevelMap: {"xhigh":"xhigh","max":"max"},
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":null},
 			input: ["text", "image"],
 			cost: {
 				input: 6,
@@ -16690,6 +16691,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":null},
 			input: ["text", "image"],
 			cost: {
 				input: 3.75,
@@ -16727,7 +16729,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false,"requiresReasoningContentOnAssistantMessages":true,"thinkingFormat":"deepseek"},
 			reasoning: true,
-			thinkingLevelMap: {"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max"},
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max","max":null},
 			input: ["text"],
 			cost: {
 				input: 0.138,
@@ -16765,7 +16767,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false,"requiresReasoningContentOnAssistantMessages":true,"thinkingFormat":"deepseek"},
 			reasoning: true,
-			thinkingLevelMap: {"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max"},
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max","max":null},
 			input: ["text"],
 			cost: {
 				input: 1.65,
@@ -16822,6 +16824,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":null},
 			input: ["text", "image"],
 			cost: {
 				input: 0.375,
@@ -16840,6 +16843,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":null},
 			input: ["text", "image"],
 			cost: {
 				input: 1.875,
@@ -16951,6 +16955,7 @@ export const MODELS = {
 			baseUrl: "https://api.venice.ai/api/v1",
 			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_completion_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":null},
 			input: ["text", "image"],
 			cost: {
 				input: 1.42,

@@ -77,6 +77,15 @@ const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
 const VENICE_BASE_URL = "https://api.venice.ai/api/v1";
 const VENICE_INCLUDED_BETA_MODELS = new Set(["zai-org-glm-5-2"]);
+const VENICE_UNSUPPORTED_REASONING_EFFORT_MAP = {
+	off: null,
+	minimal: null,
+	low: null,
+	medium: null,
+	high: null,
+	xhigh: null,
+	max: null,
+} as const;
 const ZAI_TOOL_STREAM_UNSUPPORTED_MODELS = new Set(["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v"]);
 const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 	"github-copilot:claude-haiku-4.5",
@@ -295,30 +304,34 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("gpt-5.6")) {
 		mergeThinkingLevelMap(model, { minimal: null, max: "max" });
 	}
+	const supportsReasoningEffortMetadata =
+		model.api !== "openai-completions" || model.compat?.supportsReasoningEffort !== false;
 	// Per-family effort support per the Anthropic effort docs. Opus 4.6 / Sonnet 4.6
 	// have no xhigh; Fable 5 / Mythos 5 / Mythos Preview think every turn (off: null).
 	if (
-		model.id.includes("opus-4-6") ||
-		model.id.includes("opus-4.6") ||
-		model.id.includes("sonnet-4-6") ||
-		model.id.includes("sonnet-4.6")
+		supportsReasoningEffortMetadata &&
+		(model.id.includes("opus-4-6") ||
+			model.id.includes("opus-4.6") ||
+			model.id.includes("sonnet-4-6") ||
+			model.id.includes("sonnet-4.6"))
 	) {
 		mergeThinkingLevelMap(model, { max: "max" });
 	}
 	if (
-		model.id.includes("opus-4-7") ||
-		model.id.includes("opus-4.7") ||
-		model.id.includes("opus-4-8") ||
-		model.id.includes("opus-4.8") ||
-		model.id.includes("opus-5") ||
-		model.id.includes("sonnet-5")
+		supportsReasoningEffortMetadata &&
+		(model.id.includes("opus-4-7") ||
+			model.id.includes("opus-4.7") ||
+			model.id.includes("opus-4-8") ||
+			model.id.includes("opus-4.8") ||
+			model.id.includes("opus-5") ||
+			model.id.includes("sonnet-5"))
 	) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh", max: "max" });
 	}
-	if (model.id.includes("fable-5") || model.id.includes("mythos-5")) {
+	if (supportsReasoningEffortMetadata && (model.id.includes("fable-5") || model.id.includes("mythos-5"))) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
 	}
-	if (model.id.includes("mythos-preview")) {
+	if (supportsReasoningEffortMetadata && model.id.includes("mythos-preview")) {
 		mergeThinkingLevelMap(model, { off: null, max: "max" });
 	}
 	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
@@ -436,8 +449,10 @@ function parseVeniceModels(data: unknown): Model<"openai-completions">[] | undef
 
 		const reasoning = capabilities.supportsReasoning === true;
 		const supportsReasoningEffort = reasoning && capabilities.supportsReasoningEffort === true;
-		const thinkingLevelMap = supportsReasoningEffort
-			? getVeniceThinkingLevelMap(capabilities.reasoningEffortOptions)
+		const thinkingLevelMap = reasoning
+			? supportsReasoningEffort
+				? getVeniceThinkingLevelMap(capabilities.reasoningEffortOptions)
+				: VENICE_UNSUPPORTED_REASONING_EFFORT_MAP
 			: undefined;
 		const traits = Array.isArray(spec.traits) ? spec.traits : [];
 

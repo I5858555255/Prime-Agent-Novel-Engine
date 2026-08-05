@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.js";
-import { getModel, getModels } from "../src/models.js";
+import { getModel, getModels, getSupportedThinkingLevels } from "../src/models.js";
 
 const originalVeniceApiKey = process.env.VENICE_API_KEY;
 
@@ -62,6 +62,16 @@ describe("Venice AI models", () => {
 			xhigh: null,
 			max: null,
 		});
+	});
+
+	it("hides effort controls when Venice does not support them", () => {
+		for (const modelId of ["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"] as const) {
+			const model = getModel("venice", modelId);
+
+			expect(model.reasoning).toBe(true);
+			expect(model.compat?.supportsReasoningEffort).toBe(false);
+			expect(getSupportedThinkingLevels(model)).toEqual([]);
+		}
 	});
 
 	it("resolves VENICE_API_KEY from the environment", () => {
