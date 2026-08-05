@@ -35,7 +35,6 @@ type HandleEventThis = {
 	chatContainer: Container;
 	recapContainer: Container;
 	sessionRecap: string | undefined;
-	childAgentPanelMode: undefined;
 	hideThinkingBlock: boolean;
 	hiddenThinkingLabel: string;
 	streamingComponent: AssistantMessageComponent | undefined;
@@ -59,7 +58,7 @@ type HandleEventThis = {
 
 type HandleEvent = (this: HandleEventThis, event: AgentConnectionSessionEvent) => Promise<void>;
 type GetUserInput = (this: {
-	returnToAgentsViewRequested: boolean;
+	agentsViewRequest?: "agents_view" | "scoped_agents_view";
 	onInputCallback?: (text: string | undefined) => void;
 }) => Promise<string | undefined>;
 type HandleSubagentSummaryChatAction = (
@@ -85,7 +84,6 @@ function createFakeInteractiveModeThis(): HandleEventThis {
 		chatContainer: new Container(),
 		recapContainer: new Container(),
 		sessionRecap: "Updated files",
-		childAgentPanelMode: undefined,
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		streamingComponent: undefined,
@@ -286,7 +284,7 @@ describe("InteractiveMode streaming events", () => {
 	test("resolves input immediately after return to agents view was requested", async () => {
 		const getUserInput = (InteractiveMode.prototype as unknown as { getUserInput: GetUserInput }).getUserInput;
 
-		await expect(getUserInput.call({ returnToAgentsViewRequested: true })).resolves.toBeUndefined();
+		await expect(getUserInput.call({ agentsViewRequest: "agents_view" })).resolves.toBeUndefined();
 	});
 
 	test("forwards typed keys from focused subagent summary back to the editor", () => {
@@ -326,5 +324,30 @@ describe("InteractiveMode streaming events", () => {
 		expect(fakeThis.toggleToolOutputExpansion).toHaveBeenCalledOnce();
 		expect(fakeThis.focusEditor).not.toHaveBeenCalled();
 		expect(fakeThis.editor.handleInput).not.toHaveBeenCalled();
+	});
+
+	test("does not pulse renders for background-only subagent work", () => {
+		vi.useFakeTimers();
+		try {
+			const requestRender = vi.fn();
+			const mode = Object.create(InteractiveMode.prototype) as InteractiveMode & Record<string, unknown>;
+			Object.assign(mode, {
+				connectionState: { isStreaming: false },
+				subagentSnapshots: new Map([["worker", { id: "worker", status: "running" }]]),
+				pulseTimer: undefined,
+				ui: { requestRender },
+			});
+			const updatePulse = Reflect.get(InteractiveMode.prototype, "updateWorkingPulse") as (
+				this: typeof mode,
+			) => void;
+
+			updatePulse.call(mode);
+			vi.advanceTimersByTime(1000);
+
+			expect(requestRender).not.toHaveBeenCalled();
+			expect(Reflect.get(mode, "pulseTimer")).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

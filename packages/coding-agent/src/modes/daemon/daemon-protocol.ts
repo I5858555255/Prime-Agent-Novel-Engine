@@ -51,9 +51,13 @@ import type { SessionSummary } from "./daemon-session-list.js";
 export const DAEMON_PROTOCOL_NAME = "prime-agent.daemon";
 export const DAEMON_PROTOCOL_VERSION = 7;
 export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
-// Revision 8 publishes literal session-action queues and activity separately.
-export const DAEMON_SCHEMA_REVISION = 8;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-8-b56e29842cfa";
+// Revision 9 publishes persisted RLM spawn depth on passive session rows.
+// Revision 10 publishes persisted RLM spawn depth on all session catalog rows.
+// Revision 11 adds immediate get/set commands for active-session RLM max depth.
+// Revision 12 publishes idle-residency metadata on session summary rows.
+// Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
+export const DAEMON_SCHEMA_REVISION = 13;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-13-816309b1cd50";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -78,6 +82,7 @@ export interface DaemonPromptAdmissionCancellationResult {
 }
 export type DaemonServerCapability =
 	| DaemonClientCapability
+	| "delete_rlm_subagent"
 	| "heartbeat_catalog"
 	| "heartbeat_management"
 	| "model_catalog"
@@ -120,6 +125,7 @@ export const DAEMON_SUPPORTED_CLIENT_CAPABILITIES: readonly DaemonClientCapabili
 
 export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability[] = [
 	...DAEMON_SUPPORTED_CLIENT_CAPABILITIES,
+	"delete_rlm_subagent",
 	"heartbeat_catalog",
 	"heartbeat_management",
 	"model_catalog",
@@ -456,6 +462,8 @@ export type DaemonCommand =
 			targetActiveSessionId: string;
 			message: string;
 			fromActiveSessionId?: string;
+			/** Internal worker-origin marker; public clients remain unrestricted. */
+			agentOrigin?: boolean;
 			deliveryMode?: AgentSessionMessageDeliveryMode;
 	  }
 	| { id?: string; type: "agent_messages_status"; activeSessionId?: string }
@@ -483,6 +491,7 @@ export type DaemonCommand =
 	  }
 	| { id?: string; type: "abort_bash"; activeSessionId: string }
 	| { id?: string; type: "cancel_rlm_child"; activeSessionId: string; childId: string }
+	| { id?: string; type: "delete_rlm_subagent"; activeSessionId: string; childId: string }
 	| { id?: string; type: "wait_for_idle"; activeSessionId: string }
 	| { id?: string; type: "wait_for_headless_completion"; activeSessionId: string }
 	| { id?: string; type: "get_session_header"; activeSessionId: string }
@@ -568,7 +577,9 @@ export type DaemonCommand =
 	| { id?: string; type: "import_jsonl"; activeSessionId: string; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "export_html"; activeSessionId: string; outputPath?: string }
 	| { id?: string; type: "export_jsonl"; activeSessionId: string; outputPath?: string }
-	| { id?: string; type: "set_session_name"; activeSessionId: string; name: string }
+	| { id?: string; type: "set_session_name"; activeSessionId: string; name: string; workerToken?: string }
+	| { id?: string; type: "get_rlm_max_depth_status"; activeSessionId: string }
+	| { id?: string; type: "set_rlm_max_depth"; activeSessionId: string; maxDepth: number; global?: boolean }
 	| { id?: string; type: "rename_saved_session"; activeSessionId?: string; sessionPath: string; name: string }
 	| { id?: string; type: "delete_saved_session"; activeSessionId?: string; sessionPath: string }
 	| { id?: string; type: "get_session_context"; activeSessionId: string }
@@ -601,6 +612,7 @@ export interface DaemonCommandCompatibility {
 
 const LEGACY_DAEMON_COMMAND = { minProtocol: 7 } as const;
 const CURRENT_DAEMON_COMMAND = { minProtocol: 7 } as const;
+const RLM_MAX_DEPTH_COMMAND = { minProtocol: 7, minSchemaRevision: 11 } as const;
 const SESSION_INPUT_ADMISSION_COMMAND = {
 	minProtocol: 7,
 	capability: "session_input_admission",
@@ -613,6 +625,10 @@ const PROMPT_ADMISSION_CANCELLATION_COMMAND = {
 const CLIENT_OWNED_DAEMON_COMMAND = {
 	minProtocol: 7,
 	capability: "client_owned_sessions",
+} as const;
+const DELETE_RLM_SUBAGENT_COMMAND = {
+	minProtocol: 7,
+	capability: "delete_rlm_subagent",
 } as const;
 const FLAT_SESSION_TREE_COMMAND = { minProtocol: 7 } as const;
 
@@ -648,6 +664,7 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	execute_bash: LEGACY_DAEMON_COMMAND,
 	abort_bash: LEGACY_DAEMON_COMMAND,
 	cancel_rlm_child: LEGACY_DAEMON_COMMAND,
+	delete_rlm_subagent: DELETE_RLM_SUBAGENT_COMMAND,
 	wait_for_idle: LEGACY_DAEMON_COMMAND,
 	wait_for_headless_completion: CURRENT_DAEMON_COMMAND,
 	get_session_header: CURRENT_DAEMON_COMMAND,
@@ -697,6 +714,8 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	export_html: LEGACY_DAEMON_COMMAND,
 	export_jsonl: LEGACY_DAEMON_COMMAND,
 	set_session_name: LEGACY_DAEMON_COMMAND,
+	get_rlm_max_depth_status: RLM_MAX_DEPTH_COMMAND,
+	set_rlm_max_depth: RLM_MAX_DEPTH_COMMAND,
 	rename_saved_session: LEGACY_DAEMON_COMMAND,
 	delete_saved_session: LEGACY_DAEMON_COMMAND,
 	get_session_context: LEGACY_DAEMON_COMMAND,
@@ -779,6 +798,7 @@ export interface DaemonSavedSessionInfo {
 	name?: string;
 	state?: AgentConnectionSavedSessionState;
 	parentSessionPath?: string;
+	rlmDepth?: number;
 	created: string;
 	modified: string;
 	messageCount: number;
@@ -1010,6 +1030,7 @@ const READ_ONLY_DAEMON_COMMANDS: ReadonlySet<DaemonCommand["type"]> = new Set([
 	"get_user_messages_for_forking",
 	"get_last_assistant_text",
 	"get_system_prompt",
+	"get_rlm_max_depth_status",
 	"get_tool_definition",
 ]);
 

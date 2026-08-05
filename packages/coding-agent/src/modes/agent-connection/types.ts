@@ -21,6 +21,7 @@ import type { InputSource } from "../../core/extensions/types.js";
 import type { GoalState } from "../../core/goals.js";
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
+import type { RlmMaxDepthStatus, SetRlmMaxDepthResult } from "../../core/rlm-max-depth.js";
 import type { SessionActionSnapshot } from "../../core/session-action-store.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
@@ -60,6 +61,7 @@ export interface AgentConnectionSessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	rlmDepth?: number;
 	git?: {
 		repoUrl?: string;
 		commit?: string;
@@ -122,6 +124,7 @@ export interface AgentConnectionSavedSessionInfo {
 	name?: string;
 	state?: AgentConnectionSavedSessionState;
 	parentSessionPath?: string;
+	rlmDepth?: number;
 	created: Date;
 	modified: Date;
 	messageCount: number;
@@ -193,6 +196,7 @@ export interface AgentConnectionChildUsageAttributionEntry extends AgentConnecti
 	targetId: string;
 	childUsage: Usage;
 	aggregateUsage: Usage;
+	origin?: "spawn_task" | "agent_message" | "direct_user";
 }
 
 export interface AgentConnectionCustomMessageEntry extends AgentConnectionSessionEntryBase {
@@ -547,6 +551,7 @@ export interface AgentConnectionRlmChildAgentSnapshot {
 	status: AgentConnectionRlmChildAgentStatus;
 	durationMs?: number;
 	answerPreview?: string;
+	repliedSinceTask?: boolean;
 	/** Number of tool executions the subagent has started so far. */
 	toolUseCount?: number;
 	/** Context size (tokens) of the subagent's latest turn. */
@@ -728,6 +733,8 @@ export interface AgentConnection {
 	exportToHtml(outputPath?: string): Promise<string>;
 	exportToJsonl(outputPath?: string): Promise<string>;
 	setSessionName(name: string): Promise<void>;
+	getRlmMaxDepthStatus(): Promise<RlmMaxDepthStatus>;
+	setRlmMaxDepth(maxDepth: number, options?: { global?: boolean }): Promise<SetRlmMaxDepthResult>;
 	renameSavedSession(sessionPath: string, name: string): Promise<void>;
 	deleteSavedSession(sessionPath: string): Promise<DeleteSessionFileResult>;
 

@@ -82,6 +82,7 @@ import {
 } from "./modes/daemon/daemon-worker-protocol.js";
 import {
 	type AgentConnection,
+	type AgentsViewScopeKey,
 	ClientPromptStashStore,
 	createInteractiveModeLocalSessionHost,
 	createInteractiveModeUiServicesFromServices,
@@ -92,6 +93,8 @@ import {
 	InProcessAgentConnection,
 	InteractiveMode,
 	resolveAttachModelFallbackMessage,
+	runAcpMode,
+	runAcpModeWithConnection,
 	runAgentsViewMode,
 	runDaemonMode,
 	runDaemonSupervisorMode,
@@ -153,7 +156,7 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
-export type ClientMode = "interactive" | "print" | "json" | "rpc";
+export type ClientMode = "interactive" | "print" | "json" | "rpc" | "acp";
 /** Compatibility view of the CLI's internal daemon process entrypoint. */
 export type AppMode = ClientMode | "daemon";
 
@@ -172,6 +175,9 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
 	if (parsed.mode === "rpc") {
 		return "rpc";
 	}
+	if (parsed.mode === "acp") {
+		return "acp";
+	}
 	if (parsed.mode === "json") {
 		return "json";
 	}
@@ -181,7 +187,7 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
 	return "interactive";
 }
 
-function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc" | "daemon"> {
+function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc" | "acp" | "daemon"> {
 	return appMode === "json" ? "json" : "text";
 }
 
@@ -700,6 +706,7 @@ export function resolveRuntimeSessionOptions(
 		rlmMaxDepth: runtimeSessionOptions?.rlmMaxDepth,
 		rlmSessionDir: runtimeSessionOptions?.rlmSessionDir,
 		rlmParentNodeId: runtimeSessionOptions?.rlmParentNodeId,
+		rlmParentAgent: runtimeSessionOptions?.rlmParentAgent,
 		subagentRuntimeHost: runtimeSessionOptions?.subagentRuntimeHost,
 	};
 }
@@ -1317,8 +1324,12 @@ export async function main(args: string[], options?: MainOptions) {
 
 		const startupModel = await resolvePreparedStartupModel({ prepared, sessionManager });
 
+		// ACP holds stdin open as a long-lived NDJSON request stream, so reading
+		// piped stdin here would block until EOF and never return.
 		let stdinContent: string | undefined;
-		stdinContent = await readPipedStdin();
+		if (appMode !== "acp") {
+			stdinContent = await readPipedStdin();
+		}
 		time("readPipedStdin");
 
 		const { initialMessage, initialImages } = await prepareInitialMessage(
@@ -1355,7 +1366,7 @@ export async function main(args: string[], options?: MainOptions) {
 			services,
 			sessionManager,
 		});
-		const launchAgentsView = async (initialSession?: SessionSummary) => {
+		const launchAgentsView = async (initialSession?: SessionSummary, initialScopeKey?: AgentsViewScopeKey) => {
 			await runAgentsViewMode({
 				socketPath: daemonSocketPath,
 				config: defaultSessionConfig,
@@ -1385,6 +1396,7 @@ export async function main(args: string[], options?: MainOptions) {
 				promptStashStore,
 				startupModelId: startupModel.model?.id,
 				initialSession,
+				initialScopeKey,
 				verbose: parsed.verbose,
 			});
 		};
@@ -1449,6 +1461,11 @@ export async function main(args: string[], options?: MainOptions) {
 			// view was not rendered here, so we intentionally leave
 			// agentsViewOwnsStartupNotices unset and let the in-session fallback run.
 			returnToAgentsView: !parsed.noSession,
+			sessionDepth: summary.rlmDepth,
+			// Direct launch has only the attached summary; the live+passive+saved
+			// unified catalog index is not built until the agents view opens. Retained
+			// child snapshots augment this running-child fallback inside chat.
+			sessionHasChildren: summary.hasRunningRlmChildren === true,
 		});
 
 		await preloadCodeHighlighter();
@@ -1457,17 +1474,25 @@ export async function main(args: string[], options?: MainOptions) {
 		if (parsed.noSession) {
 			return;
 		}
-		await launchAgentsView({
+		const returnedSummary = {
 			...summary,
 			...interactiveResult.source,
 			id: interactiveResult.source.activeSessionId ?? summary.id,
-		});
+		};
+		const initialScopeKey =
+			interactiveResult.type === "scoped_agents_view"
+				? {
+						sessionId: interactiveResult.source.sessionId,
+						activeSessionId: interactiveResult.source.activeSessionId,
+					}
+				: undefined;
+		await launchAgentsView(returnedSummary, initialScopeKey);
 		return;
 	}
 	if (useDaemonClient) {
 		const settingsManager = SettingsManager.create(sessionManager.getCwd(), agentDir);
 		let stdinContent: string | undefined;
-		if (appMode !== "rpc") {
+		if (appMode !== "rpc" && appMode !== "acp") {
 			stdinContent = await readPipedStdin();
 		}
 		time("readPipedStdin");
@@ -1516,6 +1541,9 @@ export async function main(args: string[], options?: MainOptions) {
 		if (appMode === "rpc") {
 			return await runRpcModeWithConnection(connection);
 		}
+		if (appMode === "acp") {
+			return await runAcpModeWithConnection(connection);
+		}
 		const exitCode = await runPrintModeWithConnection(connection, {
 			mode: toPrintOutputMode(appMode),
 			messages: parsed.messages,
@@ -1557,7 +1585,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	// Read piped stdin content (if any) - skip for RPC/daemon modes which use other transports
 	let stdinContent: string | undefined;
-	if (appMode !== "rpc" && appMode !== "daemon") {
+	if (appMode !== "rpc" && appMode !== "acp" && appMode !== "daemon") {
 		stdinContent = await readPipedStdin();
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";
@@ -1595,6 +1623,9 @@ export async function main(args: string[], options?: MainOptions) {
 	if (appMode === "rpc") {
 		printTimings();
 		await runRpcMode(runtime);
+	} else if (appMode === "acp") {
+		printTimings();
+		await runAcpMode(runtime);
 	} else if (appMode === "interactive") {
 		if (explicitAgentsView) {
 			console.error(chalk.yellow("Warning: the agents view needs the daemon; opening a normal chat instead"));

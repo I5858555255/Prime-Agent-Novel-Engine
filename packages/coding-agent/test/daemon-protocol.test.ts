@@ -28,11 +28,18 @@ describe("daemon protocol helpers", () => {
 			source.indexOf("export type DaemonCommand ="),
 			source.indexOf("type DaemonCommandName"),
 		);
+		const savedSessionSource = source.slice(
+			source.indexOf("export interface DaemonSavedSessionInfo"),
+			source.indexOf("export type DaemonDeleteSavedSessionResult"),
+		);
 		const outboundSource = source.slice(
 			source.indexOf("export type DaemonOutbound ="),
 			source.indexOf("export const DAEMON_OUTBOUND_COMPATIBILITY"),
 		);
-		const digest = createHash("sha256").update(`${commandSource}\n${outboundSource}`).digest("hex").slice(0, 12);
+		const digest = createHash("sha256")
+			.update(`${commandSource}\n${savedSessionSource}\n${outboundSource}`)
+			.digest("hex")
+			.slice(0, 12);
 		expect(DAEMON_SCHEMA_ID).toBe(`protocol-${DAEMON_PROTOCOL_VERSION}-schema-${DAEMON_SCHEMA_REVISION}-${digest}`);
 	});
 
@@ -60,12 +67,25 @@ describe("daemon protocol helpers", () => {
 		);
 	});
 
+	it("capability-gates explicit subagent deletion instead of schema-gating it", () => {
+		expect(DAEMON_COMMAND_COMPATIBILITY.delete_rlm_subagent).toEqual({
+			minProtocol: 7,
+			capability: "delete_rlm_subagent",
+		});
+		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toContain("delete_rlm_subagent");
+	});
+
 	it("capability-gates the optional model catalog surface", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.get_model_catalog).toEqual({
 			minProtocol: 7,
 			capability: "model_catalog",
 		});
 		expect(DAEMON_DEFAULT_SERVER_CAPABILITIES).toContain("model_catalog");
+	});
+
+	it("schema-gates the RLM max depth commands at their introducing revision", () => {
+		expect(DAEMON_COMMAND_COMPATIBILITY.get_rlm_max_depth_status).toEqual({ minProtocol: 7, minSchemaRevision: 11 });
+		expect(DAEMON_COMMAND_COMPATIBILITY.set_rlm_max_depth).toEqual({ minProtocol: 7, minSchemaRevision: 11 });
 	});
 
 	it("version- and capability-gates prompt admission cancellation", () => {
