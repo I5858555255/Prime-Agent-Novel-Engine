@@ -155,7 +155,7 @@ export function assertAgentSessionNameAvailable(
 			entry.id !== input.ignoreSessionId &&
 			entry.name === input.name &&
 			entry.depth === input.depth &&
-			sameAgentSessionNameParent(entry, input),
+			sameAgentSessionNameParent(entry, input, catalog),
 	);
 	if (conflict) {
 		throw new Error(formatAgentSessionNameUnavailable(input.name, input.depth));
@@ -168,7 +168,8 @@ export function buildAgentFamilyRoster(
 ): AgentFamilyRosterResult {
 	const parent = catalog.find((entry) => isAgentFamilyParent(entry, current));
 	const siblings = catalog.filter(
-		(entry) => entry.id !== current.id && entry.depth === current.depth && sameAgentFamilyParent(entry, current),
+		(entry) =>
+			entry.id !== current.id && entry.depth === current.depth && sameAgentFamilyParent(entry, current, catalog),
 	);
 	const children = catalog.filter((entry) => entry.depth === current.depth + 1 && isAgentFamilyParent(current, entry));
 	const row = (relationship: AgentFamilyRelationship, entry: AgentFamilyCatalogEntry): AgentFamilyRosterEntry => ({
@@ -190,18 +191,54 @@ export function buildAgentFamilyRoster(
 	};
 }
 
-function sameAgentSessionNameParent(left: AgentSessionNameScope, right: AgentSessionNameScope): boolean {
+function sameAgentSessionNameParent(
+	left: AgentSessionNameScope,
+	right: AgentSessionNameScope,
+	catalog: readonly AgentFamilyCatalogEntry[],
+): boolean {
 	if (left.depth === 0 && right.depth === 0) {
 		return true;
 	}
-	return sameAgentFamilyParent(left, right);
+	return sameAgentFamilyParent(left, right, catalog);
 }
 
-function sameAgentFamilyParent(left: AgentSessionNameScope, right: AgentSessionNameScope): boolean {
-	if (left.parentSessionPath || right.parentSessionPath) {
-		return left.parentSessionPath === right.parentSessionPath;
+function sameAgentFamilyParent(
+	left: AgentSessionNameScope,
+	right: AgentSessionNameScope,
+	catalog: readonly AgentFamilyCatalogEntry[],
+): boolean {
+	if (left.parentSessionPath !== undefined && left.parentSessionPath === right.parentSessionPath) {
+		return true;
 	}
-	return left.parentSessionId === right.parentSessionId;
+	if (left.parentSessionId !== undefined && left.parentSessionId === right.parentSessionId) {
+		return true;
+	}
+	const hasCatalogParentPair = (parentSessionId: string | undefined, parentSessionPath: string | undefined) =>
+		parentSessionId !== undefined &&
+		parentSessionPath !== undefined &&
+		catalog.some(
+			(entry) =>
+				(entry.id === parentSessionId && entry.sessionPath === parentSessionPath) ||
+				(entry.parentSessionId === parentSessionId && entry.parentSessionPath === parentSessionPath),
+		);
+	if (
+		hasCatalogParentPair(left.parentSessionId, right.parentSessionPath) ||
+		hasCatalogParentPair(right.parentSessionId, left.parentSessionPath)
+	) {
+		return true;
+	}
+	if (
+		left.depth === 0 &&
+		right.depth === 0 &&
+		left.parentSessionPath === undefined &&
+		right.parentSessionPath === undefined &&
+		left.parentSessionId === undefined &&
+		right.parentSessionId === undefined
+	) {
+		return true;
+	}
+	// Unresolved mixed identifiers stay unrelated to avoid false name conflicts across families.
+	return false;
 }
 
 function isAgentFamilyParent(parent: AgentFamilyCatalogEntry, child: AgentFamilyCatalogEntry): boolean {

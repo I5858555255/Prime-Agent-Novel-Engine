@@ -203,6 +203,40 @@ describe("agent session bus", () => {
 		).not.toThrow();
 	});
 
+	it("resolves sibling parents canonically without grouping parentless non-roots", () => {
+		const catalog = [
+			{ id: "root", name: "orchestrator", depth: 0, status: "running" as const, sessionPath: "/root" },
+			{ id: "id-child", name: "reviewer", depth: 1, status: "idle" as const, parentSessionId: "root" },
+			{
+				id: "path-child",
+				name: "builder",
+				depth: 1,
+				status: "inactive" as const,
+				parentSessionPath: "/root",
+			},
+			{ id: "orphan", name: "reviewer", depth: 1, status: "inactive" as const },
+		];
+
+		expect(() =>
+			assertAgentSessionNameAvailable(catalog, { name: "reviewer", depth: 1, parentSessionPath: "/root" }),
+		).toThrow("an agent of that name already exists at depth 1 under this parent");
+		expect(() =>
+			assertAgentSessionNameAvailable(catalog, { name: "builder", depth: 1, parentSessionId: "root" }),
+		).toThrow("an agent of that name already exists at depth 1 under this parent");
+		expect(() => assertAgentSessionNameAvailable(catalog, { name: "reviewer", depth: 1 })).not.toThrow();
+		expect(() =>
+			assertAgentSessionNameAvailable(catalog, {
+				name: "reviewer",
+				depth: 1,
+				parentSessionPath: "/unknown-root",
+			}),
+		).not.toThrow();
+		expect(buildAgentFamilyRoster(catalog[1]!, catalog).entries).toEqual([
+			{ relationship: "parent", name: "orchestrator", id: "root", depth: 0, status: "running" },
+			{ relationship: "sibling", name: "builder", id: "path-child", depth: 1, status: "inactive" },
+		]);
+	});
+
 	it("builds a sorted nuclear-family roster with inactive members", () => {
 		const catalog = [
 			{ id: "root", name: "orchestrator", depth: 0, status: "running" as const, sessionPath: "/root" },
