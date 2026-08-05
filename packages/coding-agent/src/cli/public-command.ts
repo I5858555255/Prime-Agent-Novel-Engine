@@ -147,7 +147,7 @@ async function runPublicCommand(args: string[]): Promise<PublicCommandResult> {
 
 function normalizeLeadingDaemonSocketOption(args: string[]): string[] {
 	const option = args[0];
-	if (option !== "--socket" && option !== "--daemon-socket") {
+	if (option !== "--daemon-socket") {
 		return args;
 	}
 	const socketPath = args[1];
