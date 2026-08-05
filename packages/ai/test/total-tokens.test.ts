@@ -372,6 +372,21 @@ describe("totalTokens field", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.VENICE_API_KEY)("Venice AI", () => {
+		it("GLM 4.7 - should return totalTokens equal to sum of components", { retry: 3, timeout: 60000 }, async () => {
+			const llm = getModel("venice", "zai-org-glm-4.7");
+
+			console.log(`\nVenice AI / ${llm.id}:`);
+			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.VENICE_API_KEY });
+
+			logUsage("First request", first);
+			logUsage("Second request", second);
+
+			assertTotalTokensEqualsComponents(first);
+			assertTotalTokensEqualsComponents(second);
+		});
+	});
+
 	// =========================================================================
 	// z.ai
 	// =========================================================================

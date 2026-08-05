@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Venice AI models, authentication, and safe OpenAI-compatible request defaults.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

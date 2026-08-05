@@ -71,6 +71,16 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	{ provider: "openai-codex", model: "gpt-5.2-codex", label: "openai-codex-gpt-5.2-codex" },
 	// Prime Inference
 	{ provider: "prime-inference", model: "openai/gpt-5.5", label: "prime-inference-gpt-5.5" },
+	// Venice AI (representative upstream reasoning/tool-call formats)
+	{ provider: "venice", model: "zai-org-glm-4.7", label: "venice-glm-4.7" },
+	{ provider: "venice", model: "claude-fable-5", label: "venice-claude-fable-5" },
+	{ provider: "venice", model: "gemini-3-1-pro-preview", label: "venice-gemini-3.1-pro" },
+	{ provider: "venice", model: "openai-gpt-52", label: "venice-gpt-5.2" },
+	{
+		provider: "venice",
+		model: "qwen3-235b-a22b-thinking-2507",
+		label: "venice-qwen3-thinking",
+	},
 	// GitHub Copilot
 	{ provider: "github-copilot", model: "claude-sonnet-4.5", label: "copilot-claude-sonnet-4.5" },
 	{ provider: "github-copilot", model: "gpt-5.1-codex", label: "copilot-gpt-5.1-codex" },

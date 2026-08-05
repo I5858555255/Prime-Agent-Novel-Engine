@@ -61,6 +61,7 @@ prime-agent
 | Cloudflare Workers AI | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`) | `cloudflare-workers-ai` |
 | xAI | `XAI_API_KEY` | `xai` |
 | OpenRouter | `OPENROUTER_API_KEY` | `openrouter` |
+| Venice AI | `VENICE_API_KEY` | `venice` |
 | Vercel AI Gateway | `AI_GATEWAY_API_KEY` | `vercel-ai-gateway` |
 | ZAI | `ZAI_API_KEY` | `zai` |
 | OpenCode Zen | `OPENCODE_API_KEY` | `opencode` |
@@ -88,6 +89,7 @@ Store credentials in `~/.prime/agent/auth.json`:
   "prime-inference": { "type": "api_key", "key": "..." },
   "deepseek": { "type": "api_key", "key": "sk-..." },
   "google": { "type": "api_key", "key": "..." },
+  "venice": { "type": "api_key", "key": "..." },
   "opencode": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
   "xiaomi": { "type": "api_key", "key": "..." },
@@ -122,6 +124,17 @@ OAuth credentials are also stored here after `/login` and managed automatically.
 ### Prime Inference
 
 Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or store an API key for `prime-inference` via `/login`.
+
+### Venice AI
+
+Venice AI uses the OpenAI-compatible Chat Completions endpoint at `https://api.venice.ai/api/v1`. Store a key for `venice` via `/login`, or set it in Fish:
+
+```fish
+set -gx VENICE_API_KEY your-venice-api-key
+prime-agent --provider venice --model zai-org-glm-5-2
+```
+
+Prime Agent disables Venice's additional system prompt by default so Prime Agent's system instructions remain authoritative. Programmatic callers can use `onPayload` to opt back in or add Venice-only `venice_parameters`, including web search.
 
 ## Cloud Providers
 
