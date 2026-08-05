@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
@@ -34,6 +34,31 @@ function cwdMeta(created: { _meta?: Record<string, unknown> | null }): unknown {
 	return (created._meta?.[PRIME_AGENT_META_NAMESPACE] as { cwd?: unknown } | undefined)?.cwd;
 }
 
+function findExistingCaseVariant(path: string): string | undefined {
+	const originalStat = statSync(path, { bigint: true });
+	for (let index = 0; index < path.length; index++) {
+		const character = path[index];
+		if (!character || !/[A-Z]/i.test(character)) continue;
+		const toggled = character === character.toLowerCase() ? character.toUpperCase() : character.toLowerCase();
+		const candidate = path.slice(0, index) + toggled + path.slice(index + 1);
+		if (!existsSync(candidate)) continue;
+		try {
+			const candidateStat = statSync(candidate, { bigint: true });
+			if (
+				realpathSync(candidate) !== realpathSync(path) &&
+				originalStat.dev === candidateStat.dev &&
+				originalStat.ino === candidateStat.ino
+			) {
+				return candidate;
+			}
+		} catch {
+			// Try the next component when this spelling cannot be inspected.
+		}
+	}
+	return undefined;
+}
+
+const caseVariantCwd = findExistingCaseVariant(process.cwd());
 const harnesses: Harness[] = [];
 const directories: string[] = [];
 
@@ -62,6 +87,21 @@ describe("#623 ACP canonical cwd comparison", () => {
 		expect(created.sessionId).toBeTruthy();
 		expect(cwdMeta(created)).toBeUndefined();
 	}, 30_000);
+
+	it.runIf(caseVariantCwd !== undefined)(
+		"uses filesystem identity when realpath preserves different component casing",
+		async () => {
+			if (!caseVariantCwd) throw new Error("Expected a case-only cwd variant");
+			const harness = await createHarness();
+			harnesses.push(harness);
+
+			const created = await newAcpSession(harness, caseVariantCwd);
+
+			expect(created.sessionId).toBeTruthy();
+			expect(cwdMeta(created)).toBeUndefined();
+		},
+		30_000,
+	);
 
 	it("preserves mismatch metadata when canonicalization falls back", async () => {
 		const harness = await createHarness();

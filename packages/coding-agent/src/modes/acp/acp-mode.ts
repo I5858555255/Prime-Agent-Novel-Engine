@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
@@ -62,6 +62,23 @@ function canonicalCwd(path: string): string {
 		canonical = resolved;
 	}
 	return normalizeWindowsDriveLetter(canonical);
+}
+
+function sameCwd(left: string, right: string): boolean {
+	const canonicalLeft = canonicalCwd(left);
+	const canonicalRight = canonicalCwd(right);
+	if (canonicalLeft === canonicalRight) return true;
+
+	try {
+		const leftStat = statSync(canonicalLeft, { bigint: true });
+		const rightStat = statSync(canonicalRight, { bigint: true });
+		const leftIdentityMissing = leftStat.dev === 0n && leftStat.ino === 0n;
+		const rightIdentityMissing = rightStat.dev === 0n && rightStat.ino === 0n;
+		if (leftIdentityMissing || rightIdentityMissing) return false;
+		return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
+	} catch {
+		return false;
+	}
 }
 
 export interface AcpModeOptions {
@@ -273,7 +290,7 @@ export async function runAcpModeWithConnection(
 					.getState()
 					.then((state) => state.cwd)
 					.catch(() => undefined);
-				if (actual && canonicalCwd(requestedCwd) !== canonicalCwd(actual)) {
+				if (actual && !sameCwd(requestedCwd, actual)) {
 					cwdMismatch = { requested: requestedCwd, actual };
 				}
 			}
