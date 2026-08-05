@@ -9690,7 +9690,18 @@ export class AgentSession {
 			onSessionPublished: publishChildSession,
 		};
 
-		const injectTerminalMessage = async (message: CustomMessage): Promise<void> => {
+		const deliverTerminalMessageToParent = async (message: CustomMessage): Promise<void> => {
+			const childController = childSession?._agentMessageController;
+			if (childController) {
+				await childController
+					.sendAgentMessage({
+						target: this.sessionId,
+						message: message.content as string,
+						deliveryMode: "follow_up",
+					})
+					.catch(() => undefined);
+				return;
+			}
 			await this._promptInjectedMessage(message.content as string, message, {
 				streamingBehavior: "followUp",
 				queueIfBusy: true,
@@ -9803,7 +9814,7 @@ export class AgentSession {
 				emitChildUpdate();
 				if (!run.detachedDeletion && child._parentReplyCount === parentReplyCountBeforeRun) {
 					const lastAssistantText = child.getLastAssistantText();
-					await injectTerminalMessage(
+					await deliverTerminalMessageToParent(
 						createRlmChildTerminalNoticeMessage({
 							kind: "completed_without_reply",
 							childId: run.id,
@@ -9833,7 +9844,7 @@ export class AgentSession {
 				emitChildUpdate();
 				if (!run.detachedDeletion) {
 					if (run.status === "error") {
-						await injectTerminalMessage(
+						await deliverTerminalMessageToParent(
 							createRlmChildFailureMessage({
 								childId: run.id,
 								sessionName,
@@ -9841,7 +9852,7 @@ export class AgentSession {
 							}),
 						);
 					} else if (run.status === "cancelled") {
-						await injectTerminalMessage(
+						await deliverTerminalMessageToParent(
 							createRlmChildTerminalNoticeMessage({
 								kind: "cancelled",
 								childId: run.id,
