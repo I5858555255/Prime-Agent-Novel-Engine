@@ -84,6 +84,8 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	},
 	// xAI
 	{ provider: "xai", model: "grok-code-fast-1", label: "xai-grok-code-fast-1" },
+	// Ollama Cloud
+	{ provider: "ollama-cloud", model: "gpt-oss:120b", label: "ollama-cloud-gpt-oss-120b" },
 	// Cerebras
 	{ provider: "cerebras", model: "zai-glm-4.7", label: "cerebras-zai-glm-4.7" },
 	// Cloudflare Workers AI

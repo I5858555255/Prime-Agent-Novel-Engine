@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Added Ollama Cloud model support with `OLLAMA_API_KEY` authentication.
+- Added xAI SuperGrok and eligible X Premium OAuth authentication.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

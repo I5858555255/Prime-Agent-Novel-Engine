@@ -153,6 +153,14 @@ describe("Tool Call Without Result Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.OLLAMA_API_KEY)("Ollama Cloud Provider", () => {
+		const model = getModel("ollama-cloud", "gpt-oss:120b");
+
+		it("should filter out tool calls without corresponding tool results", { retry: 3, timeout: 30000 }, async () => {
+			await testToolCallWithoutResult(model);
+		});
+	});
+
 	describe.skipIf(!process.env.GROQ_API_KEY)("Groq Provider", () => {
 		const model = getModel("groq", "openai/gpt-oss-20b");
 

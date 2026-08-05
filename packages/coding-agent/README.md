@@ -80,6 +80,7 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 - Anthropic Claude Pro/Max
 - OpenAI ChatGPT Plus/Pro (Codex)
 - GitHub Copilot
+- xAI SuperGrok or X Premium
 
 **API keys:**
 - Anthropic
@@ -96,6 +97,7 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 - Cloudflare AI Gateway
 - Cloudflare Workers AI
 - xAI
+- Ollama Cloud
 - OpenRouter
 - Vercel AI Gateway
 - ZAI

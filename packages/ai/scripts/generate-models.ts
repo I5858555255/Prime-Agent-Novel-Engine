@@ -118,6 +118,14 @@ const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
+
+const OLLAMA_CLOUD_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: true,
+	maxTokensField: "max_tokens",
+	supportsStrictMode: false,
+};
 interface PrimeInferenceCatalogEntry {
 	id: string;
 	input: number;
@@ -1129,6 +1137,33 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					},
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
+				});
+			}
+		}
+
+		// Process Ollama Cloud models
+		if (data["ollama-cloud"]?.models) {
+			for (const [modelId, model] of Object.entries(data["ollama-cloud"].models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "ollama-cloud",
+					baseUrl: "https://ollama.com/v1",
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+					compat: OLLAMA_CLOUD_COMPAT,
 				});
 			}
 		}

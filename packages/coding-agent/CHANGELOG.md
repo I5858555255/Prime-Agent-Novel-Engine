@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Added Ollama Cloud API-key login and built-in model selection.
+- Added xAI SuperGrok and eligible X Premium subscription login.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

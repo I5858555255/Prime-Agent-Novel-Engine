@@ -271,7 +271,22 @@ describe("Context overflow error handling", () => {
 			logResult(result);
 
 			expect(result.stopReason).toBe("error");
-			expect(result.errorMessage).toMatch(/maximum prompt length is \d+/i);
+			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+		}, 120000);
+	});
+
+	// =============================================================================
+	// Groq
+	// Expected pattern: "reduce the length of the messages"
+	// =============================================================================
+
+	describe.skipIf(!process.env.OLLAMA_API_KEY)("Ollama Cloud", () => {
+		it("gpt-oss:120b - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("ollama-cloud", "gpt-oss:120b");
+			const result = await testContextOverflow(model, process.env.OLLAMA_API_KEY!);
+			logResult(result);
+
+			expect(result.stopReason).toBe("error");
 			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
 		}, 120000);
 	});
