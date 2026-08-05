@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed self-updates to report the previous and new Prime Agent versions.
+
 ## [0.6.1] - 2026-08-05
 
 - Added reverse tab navigation to the `/login` configuration menu and moved the model scope shortcut to `Alt+S`.
