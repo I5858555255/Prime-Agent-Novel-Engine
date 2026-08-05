@@ -9055,7 +9055,8 @@ export class AgentSession {
 	private async _awaitPendingRlmChildPublication(selector: string): Promise<string | undefined> {
 		const run = [...this._activeRlmChildRuns.values()].find(
 			(candidate) =>
-				(candidate.status === "queued" || candidate.status === "running") &&
+				(candidate.status === "queued" || candidate.status === "running" || candidate.status === "done") &&
+				!candidate.detachedDeletion &&
 				(candidate.id === selector || candidate.sessionName === selector),
 		);
 		if (!run) return undefined;

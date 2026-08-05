@@ -821,6 +821,63 @@ describe("AgentSession rlm recursion", () => {
 		);
 	});
 
+	it("delivers an id-addressed send while a completed child's terminal injection is pending", async () => {
+		let releaseTerminalInjection: () => void = () => {};
+		const terminalInjectionGate = new Promise<void>((resolve) => {
+			releaseTerminalInjection = resolve;
+		});
+		const child = createSession({ rlmSessionDir: join(tempDir, "completed-child") });
+		const sendAgentMessage = vi.fn(async (input: { target: string; message: string }) => ({
+			id: "agentmsg-completed-child",
+			source: "agent_message" as const,
+			target: { activeSessionId: "child-active", sessionId: input.target },
+			message: input.message,
+			deliveryStatus: "delivered" as const,
+			deliveryMode: "auto" as const,
+		}));
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster: () => ({
+					current: { name: "root", id: root.sessionId, depth: 0 },
+					entries: [
+						{
+							relationship: "child" as const,
+							name: child.sessionName ?? child.sessionId,
+							id: child.sessionId,
+							depth: 1,
+							status: "idle" as const,
+						},
+					],
+				}),
+				sendAgentMessage,
+			},
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: child }),
+				deleteRlmSubagentRuntime: async (_id, session) => session?.disposeAsync(),
+			},
+		});
+		const promptInjectedMessage = vi.fn(async () => terminalInjectionGate);
+		(root as unknown as { _promptInjectedMessage: typeof promptInjectedMessage })._promptInjectedMessage =
+			promptInjectedMessage;
+		const spawned = await root.runRlmChild("completed task", { name: "completed-worker" });
+		const internals = root as unknown as InspectableRlmSession;
+		await waitFor(() => internals._activeRlmChildRuns.get(spawned.rlm_child_id)?.status === "done");
+		await waitFor(() => promptInjectedMessage.mock.calls.length === 1);
+		const send = internals._createKernelHostHandlers()["agent_message.send"];
+		if (!send) throw new Error("Missing agent_message.send host handler");
+
+		await expect(
+			send({ message: "follow-up", receiver_role: "child", receiver_name: spawned.rlm_child_id }),
+		).resolves.toMatchObject({ message: "follow-up" });
+		expect(sendAgentMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ target: child.sessionId, message: "follow-up" }),
+		);
+
+		releaseTerminalInjection();
+		await waitFor(() => !internals._activeRlmChildRuns.has(spawned.rlm_child_id));
+	});
+
 	it("propagates pending child startup failure to an immediate roled send", async () => {
 		let rejectStartup: ((error: Error) => void) | undefined;
 		const startupGate = new Promise<never>((_resolve, reject) => {
