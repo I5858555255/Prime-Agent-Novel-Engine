@@ -108,6 +108,20 @@ describe("AssistantMessageComponent", () => {
 		expect(raw).toContain(theme.getFgAnsi("error"));
 	});
 
+	test("renders content arrays that arrived from the daemon with gaps", () => {
+		initTheme("dark");
+
+		const gapped: AssistantMessage["content"] = [];
+		gapped[1] = { type: "text", text: "recovered" };
+		// A hole becomes null once the daemon serializes the message for clients.
+		const message = JSON.parse(JSON.stringify(createAssistantMessage(gapped))) as AssistantMessage;
+		expect(message.content[0]).toBeNull();
+
+		const rendered = stripAnsi(new AssistantMessageComponent(message).render(40).join("\n"));
+
+		expect(rendered).toContain("recovered");
+	});
+
 	test("renders collapsed multiline assistant errors as errors", () => {
 		initTheme("dark");
 

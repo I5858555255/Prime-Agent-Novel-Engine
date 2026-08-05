@@ -105,7 +105,9 @@ export class CompactAssistantStreamReconstructor {
 		const event = delta.assistantMessageEvent;
 		switch (event.type) {
 			case "text_start":
-				partial.content[event.contentIndex] = delta.contentStart ?? { type: "text", text: "" };
+				if (!this.setContent(partial, event.contentIndex, delta.contentStart ?? { type: "text", text: "" })) {
+					return undefined;
+				}
 				break;
 			case "text_delta": {
 				const content = partial.content[event.contentIndex];
@@ -124,7 +126,11 @@ export class CompactAssistantStreamReconstructor {
 				break;
 			}
 			case "thinking_start":
-				partial.content[event.contentIndex] = delta.contentStart ?? { type: "thinking", thinking: "" };
+				if (
+					!this.setContent(partial, event.contentIndex, delta.contentStart ?? { type: "thinking", thinking: "" })
+				) {
+					return undefined;
+				}
 				break;
 			case "thinking_delta": {
 				const content = partial.content[event.contentIndex];
@@ -146,7 +152,9 @@ export class CompactAssistantStreamReconstructor {
 				if (!delta.contentStart || delta.contentStart.type !== "toolCall") {
 					return undefined;
 				}
-				partial.content[event.contentIndex] = delta.contentStart;
+				if (!this.setContent(partial, event.contentIndex, delta.contentStart)) {
+					return undefined;
+				}
 				this.toolCallJson.set(this.toolCallKey(delta.activeSessionId, event.contentIndex), "");
 				break;
 			case "toolcall_delta": {
@@ -165,7 +173,9 @@ export class CompactAssistantStreamReconstructor {
 				break;
 			}
 			case "toolcall_end":
-				partial.content[event.contentIndex] = event.toolCall;
+				if (!this.setContent(partial, event.contentIndex, event.toolCall)) {
+					return undefined;
+				}
 				this.toolCallJson.delete(this.toolCallKey(delta.activeSessionId, event.contentIndex));
 				break;
 			case "start":
@@ -192,6 +202,23 @@ export class CompactAssistantStreamReconstructor {
 				this.toolCallJson.delete(key);
 			}
 		}
+	}
+
+	/**
+	 * Content blocks arrive addressed by absolute index. Writing past the end
+	 * leaves holes that serialize to null for clients, so a gap is treated as
+	 * lost start frames: the caller drops the delta and resyncs instead.
+	 */
+	private setContent(
+		partial: AssistantMessage,
+		contentIndex: number,
+		content: AssistantMessage["content"][number],
+	): boolean {
+		if (contentIndex < 0 || contentIndex > partial.content.length) {
+			return false;
+		}
+		partial.content[contentIndex] = content;
+		return true;
 	}
 
 	private toolCallKey(activeSessionId: string, contentIndex: number): string {
