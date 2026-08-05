@@ -57,6 +57,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `tui.input.newLine` | `shift+enter` | Insert new line |
 | `tui.input.submit` | `enter` | Submit input |
 | `tui.input.tab` | `tab` | Tab / autocomplete |
+| `tui.input.shiftTab` | `shift+tab` | Reverse tab navigation |
 
 ### TUI Kill Ring
 
@@ -118,7 +119,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 
 ### Configuration Menu
 
-Use `tab` to cycle through Providers, Models, and MCP Connections, and `escape` to close the menu. Left and right move the cursor in the active search field.
+Use `tab` to cycle forward and `shift+tab` to cycle backward through Providers, Models, and MCP Connections. Use `escape` to close the menu. Left and right move the cursor in the active search field.
 
 ### Display and Message Queue
 
