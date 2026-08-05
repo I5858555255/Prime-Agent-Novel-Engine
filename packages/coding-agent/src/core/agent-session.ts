@@ -9693,14 +9693,18 @@ export class AgentSession {
 		const deliverTerminalMessageToParent = async (message: CustomMessage): Promise<void> => {
 			const childController = childSession?._agentMessageController;
 			if (childController) {
-				await childController
-					.sendAgentMessage({
+				try {
+					await childController.sendAgentMessage({
 						target: this.sessionId,
 						message: message.content as string,
 						deliveryMode: "follow_up",
-					})
-					.catch(() => undefined);
-				return;
+					});
+					return;
+				} catch {
+					// Fall through to the injected-message path: a parent that loses the
+					// terminal notice entirely is worse than one that receives it
+					// unattributed.
+				}
 			}
 			await this._promptInjectedMessage(message.content as string, message, {
 				streamingBehavior: "followUp",

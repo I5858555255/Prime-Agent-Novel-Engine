@@ -94,4 +94,35 @@ describe("#617 subagent terminal agent messages", () => {
 		);
 		expect(terminalMessage(parent.session.messages)?.content).toContain(spawned.rlm_child_id);
 	});
+	it("falls back to an injected notice when the agent message cannot be delivered", async () => {
+		// A controller that always rejects: the parent must still learn the child
+		// finished. Losing the notice entirely is worse than losing attribution.
+		child = await createHarness({
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				sendAgentMessage: async () => {
+					throw new Error("delivery unavailable");
+				},
+			},
+		});
+		parent = await createHarness({
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: child!.session }),
+				deleteRlmSubagentRuntime: async () => {},
+			} as never,
+		});
+		child.setResponses([fauxAssistantMessage("done, no reply to parent")]);
+		parent.setResponses([fauxAssistantMessage("parent ack")]);
+
+		await parent.session.runRlmChild("do the work");
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		// The notice arrives some way: either the agent message or the injected
+		// fallback, but never silently dropped.
+		const sawNotice = parent.session.messages.some((message) => {
+			const content = (message as { content?: unknown }).content;
+			return typeof content === "string" && content.includes("completed without sending a reply");
+		});
+		expect(sawNotice || terminalMessage(parent.session.messages) !== undefined).toBe(true);
+	}, 60_000);
 });
