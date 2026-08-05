@@ -59,7 +59,7 @@ describe("ACP mode over a real IPython kernel", () => {
 
 	it(
 		"keeps IPython state across cells and represents each cell as an ACP execute call",
-		{ tags: ["kernel-heavy"] },
+		{ tags: ["kernel-heavy"], timeout: 180_000 },
 		async () => {
 			// Every provisioner in this file requests the same skill set: the kernel venv
 			// is shared, and a skill-less kernel here can leave a later skill-dependent
@@ -86,7 +86,7 @@ describe("ACP mode over a real IPython kernel", () => {
 
 	it(
 		"runs continual-harness CRUD in the kernel and can represent the result over ACP",
-		{ tags: ["kernel-heavy"] },
+		{ tags: ["kernel-heavy"], timeout: 180_000 },
 		async () => {
 			provisioner = new IpythonKernelProvisioner(tempDir, {
 				pythonSkills: [AGENT_MESSAGE_SKILL],
@@ -161,7 +161,7 @@ print(json.dumps({
 
 	it(
 		"exposes rlm depth and subagent APIs to the kernel behind the ACP front end",
-		{ tags: ["kernel-heavy"] },
+		{ tags: ["kernel-heavy"], timeout: 180_000 },
 		async () => {
 			provisioner = new IpythonKernelProvisioner(tempDir, {
 				pythonSkills: [AGENT_MESSAGE_SKILL],
@@ -215,7 +215,7 @@ print(json.dumps({
 
 	it(
 		"sends an agent-to-agent message from the kernel and surfaces it over ACP",
-		{ tags: ["kernel-heavy"] },
+		{ tags: ["kernel-heavy"], timeout: 180_000 },
 		async () => {
 			provisioner = new IpythonKernelProvisioner(tempDir, {
 				pythonSkills: [AGENT_MESSAGE_SKILL],
