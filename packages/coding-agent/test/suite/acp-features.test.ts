@@ -353,11 +353,14 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.setResponses([fauxAssistantMessage("working on it")]);
 		const fixture = await connectAcp(harness);
 
-		await fixture.agent.request("session/prompt", {
-			sessionId: fixture.sessionId,
-			prompt: [{ type: "text", text: "start" }],
-		});
+		// A seeded goal keeps requesting continuations, so this turn eventually
+		// exhausts the faux queue and fails. The assertion is that goal state
+		// reaches the client, which happens on the first turn either way.
+		const turn = fixture.agent
+			.request("session/prompt", { sessionId: fixture.sessionId, prompt: [{ type: "text", text: "start" }] })
+			.catch(() => undefined);
 		await waitFor(() => fixture.metaOf("goal").length > 0);
+		await turn;
 
 		const goals = fixture.metaOf("goal");
 		expect(goals.length, "goal state must reach the ACP client").toBeGreaterThan(0);
@@ -580,6 +583,22 @@ describe("ACP mode preserves prime-agent features", () => {
 
 		expect(fixture.updates.length, "inbound agent messages must produce ACP updates").toBeGreaterThan(0);
 		expect(streamedText()).toContain("acknowledged the sibling");
+		harness.cleanup();
+	}, 30_000);
+
+	it("fails the prompt turn instead of reporting end_turn when the model errors", async () => {
+		const harness = await createHarness();
+		// A provider failure is the shape verifiers hit in a container: the turn
+		// resolves, streams nothing, and previously answered a clean end_turn.
+		harness.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "Connection error." })]);
+		const fixture = await connectAcp(harness);
+
+		await expect(
+			fixture.agent.request("session/prompt", {
+				sessionId: fixture.sessionId,
+				prompt: [{ type: "text", text: "say hi" }],
+			}),
+		).rejects.toThrow();
 		harness.cleanup();
 	}, 30_000);
 

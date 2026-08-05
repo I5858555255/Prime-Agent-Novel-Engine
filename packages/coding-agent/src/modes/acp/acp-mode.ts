@@ -112,6 +112,25 @@ function autonomousMeta(status: AgentAutonomousStatus | undefined): Record<strin
 	});
 }
 
+/**
+ * Error text from the turn's final assistant message, when it failed.
+ *
+ * `promptAndWait` resolves for a failed turn just as it does for a successful
+ * one, so the outcome has to be read off the transcript. Returns undefined when
+ * the turn ended normally.
+ */
+async function lastAssistantFailure(connection: AgentConnection): Promise<string | undefined> {
+	const messages = await connection.getMessages().catch(() => []);
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		const assistant = message as { stopReason?: string; errorMessage?: string };
+		if (assistant.stopReason !== "error") return undefined;
+		return assistant.errorMessage || "the model request failed";
+	}
+	return undefined;
+}
+
 export async function runAcpMode(runtimeHost: AgentSessionRuntime): Promise<never> {
 	const connection = new InProcessAgentConnection(runtimeHost);
 	return runAcpModeWithConnection(connection, {
@@ -242,6 +261,15 @@ export async function runAcpModeWithConnection(
 							update: { sessionUpdate: "session_info_update", _meta: meta },
 						})
 						.catch(() => undefined);
+				}
+				// A turn that failed (provider error, auth, no usable model) must not be
+				// reported as a clean end_turn. Print mode surfaces
+				// `stopReason: "error"` with its errorMessage; ACP previously dropped
+				// that and answered end_turn with no updates at all, which reads to a
+				// client as a successful but empty turn.
+				const failure = await lastAssistantFailure(connection);
+				if (failure && !abort.signal.aborted) {
+					throw new Error(`prime-agent turn failed: ${failure}`);
 				}
 				return { stopReason: acpStopReason({ cancelled: abort.signal.aborted, autonomous: status }) };
 			} catch (error) {
