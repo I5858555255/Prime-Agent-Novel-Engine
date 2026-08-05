@@ -381,20 +381,29 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 			stdio: "ignore",
 		},
 	);
-	let childExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+	let childFailure:
+		| { type: "error"; error: Error }
+		| { type: "exit"; code: number | null; signal: NodeJS.Signals | null }
+		| undefined;
+	child.once("error", (error) => {
+		childFailure ??= { type: "error", error };
+	});
 	child.once("exit", (code, signal) => {
-		childExit = { code, signal };
+		childFailure ??= { type: "exit", code, signal };
 	});
 	child.unref();
 
-	const throwIfExited = () => {
-		if (!childExit) {
+	const throwIfFailed = () => {
+		if (!childFailure) {
 			return;
 		}
-		const signal = childExit.signal ? `, signal ${childExit.signal}` : "";
 		const logTail = readDaemonLogTail(socketPath, logOffset);
+		if (childFailure.type === "error") {
+			throw new Error(`Failed to spawn Prime Agent daemon: ${childFailure.error.message}.${logTail}`);
+		}
+		const signal = childFailure.signal ? `, signal ${childFailure.signal}` : "";
 		throw new Error(
-			`Prime Agent daemon exited during startup (code ${childExit.code ?? "unknown"}${signal}).${logTail}`,
+			`Prime Agent daemon exited during startup (code ${childFailure.code ?? "unknown"}${signal}).${logTail}`,
 		);
 	};
 
@@ -408,13 +417,13 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 		if (started.status === "current") {
 			return;
 		}
-		if (childExit) {
+		if (childFailure) {
 			exitDeadline ??= Date.now() + DAEMON_STARTUP_EXIT_GRACE_MS;
 		}
 		await delay(25);
 	}
 
-	throwIfExited();
+	throwIfFailed();
 	throw new Error(
 		`Timed out waiting for daemon to start on ${socketPath}.${readDaemonLogTail(socketPath, logOffset)}`,
 	);

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed daemon startup crashes hiding their exit status and daemon log until the startup timeout.
+
 ## [0.6.0] - 2026-08-04
 
 ### Breaking Changes
@@ -33,7 +35,6 @@
 - Fixed `stop` and `rename` rejecting custom daemon socket options.
 - Fixed SIGINT in print mode leaving the session active until liveness reclaim.
 - Fixed daemon startup failing permanently when an interrupted supervisor owner directory contained only stray files.
-- Fixed daemon startup crashes hiding their exit code and stderr until the startup timeout.
 - Fixed agents-view fallback notices and scoped live sessions surviving transient refresh failures across chat returns.
 - Fixed stopping completed subagents deleting their retained sessions.
 - Fixed silent or cancelled RLM children leaving parents without a terminal status notice.

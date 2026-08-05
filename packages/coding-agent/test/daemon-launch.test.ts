@@ -322,6 +322,23 @@ describe("ensureInteractiveDaemonRunning", () => {
 		}
 	});
 
+	it("surfaces a spawn error when the child never emits exit", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pa-launch-spawn-error-"));
+		const socketPath = join(dir, "d.sock");
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		process.env[ENV_AGENT_DIR] = join(dir, "agent");
+
+		try {
+			await expect(ensureInteractiveDaemonRunning(socketPath, join(dir, "missing-cwd"))).rejects.toThrow(
+				/Failed to spawn Prime Agent daemon: .*ENOENT/,
+			);
+		} finally {
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("succeeds when the spawned child loses the race to an already-serving daemon", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pa-launch-startup-race-"));
 		const entrypoint = join(dir, "loser.mjs");
