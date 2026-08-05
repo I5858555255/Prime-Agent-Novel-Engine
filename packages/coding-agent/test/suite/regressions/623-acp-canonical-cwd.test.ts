@@ -92,6 +92,11 @@ describe("#623 ACP canonical cwd comparison", () => {
 		"uses filesystem identity when realpath preserves different component casing",
 		async () => {
 			if (!caseVariantCwd) throw new Error("Expected a case-only cwd variant");
+			const originalStat = statSync(process.cwd(), { bigint: true });
+			const variantStat = statSync(caseVariantCwd, { bigint: true });
+			expect(realpathSync(caseVariantCwd)).not.toBe(realpathSync(process.cwd()));
+			expect([variantStat.dev, variantStat.ino]).toEqual([originalStat.dev, originalStat.ino]);
+
 			const harness = await createHarness();
 			harnesses.push(harness);
 
