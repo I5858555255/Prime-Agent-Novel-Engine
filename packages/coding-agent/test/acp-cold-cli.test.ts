@@ -159,7 +159,23 @@ async function driveAcpTurn(baseUrl: string): Promise<AcpResult> {
 			new Promise<void>((_, reject) => setTimeout(() => reject(new Error("ACP turn timed out")), 150_000)),
 		]);
 	} finally {
-		child.kill("SIGKILL");
+		// SIGKILL alone would strand whatever the CLI started for this socket (a
+		// daemon supervisor, a Python kernel). Close stdin so the agent sees EOF and
+		// unwinds its own children, then escalate only if it does not exit.
+		child.stdin.end();
+		const exited = new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+		const exitedInTime = await Promise.race([
+			exited.then(() => true),
+			new Promise<boolean>((resolveTimeout) => setTimeout(() => resolveTimeout(false), 10_000)),
+		]);
+		if (!exitedInTime) {
+			child.kill("SIGTERM");
+			const stoppedInTime = await Promise.race([
+				exited.then(() => true),
+				new Promise<boolean>((resolveTimeout) => setTimeout(() => resolveTimeout(false), 5_000)),
+			]);
+			if (!stoppedInTime) child.kill("SIGKILL");
+		}
 	}
 	return { responses, updates };
 }
