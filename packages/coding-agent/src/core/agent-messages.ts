@@ -154,6 +154,7 @@ export interface AgentSessionMessageSendInput {
 export interface AgentSessionMessageController {
 	listAgents(): AgentSessionMessageListResult | Promise<AgentSessionMessageListResult>;
 	roster?(): AgentFamilyRosterResult | Promise<AgentFamilyRosterResult>;
+	awaitPendingChildPublication?(selector: string): Promise<string | undefined>;
 	assertSessionNameAvailable?(input: AgentSessionNameAvailabilityInput): void | Promise<void>;
 	setSessionName?(name: string): void | Promise<void>;
 	sendAgentMessage(input: AgentSessionMessageSendInput): Promise<AgentSessionMessageReceipt>;
@@ -554,12 +555,16 @@ export function createAgentMessageHostHandlers(
 					throw new Error("agent_message.send receiver_name is required for sibling and child messages");
 				}
 				if (!controller.roster) throw new Error("agent family roster is not available in this session");
-				const roster = await controller.roster();
 				const selector = typeof receiverName === "string" ? receiverName.trim() : undefined;
+				const publishedId =
+					role === "child" && selector && controller.awaitPendingChildPublication
+						? await controller.awaitPendingChildPublication(selector)
+						: undefined;
+				const roster = await controller.roster();
 				const matches = roster.entries.filter(
 					(entry) =>
 						entry.relationship === role &&
-						(role === "parent" || entry.name === selector || entry.id === selector),
+						(role === "parent" || entry.name === selector || entry.id === selector || entry.id === publishedId),
 				);
 				if (matches.length !== 1) {
 					throw new Error(

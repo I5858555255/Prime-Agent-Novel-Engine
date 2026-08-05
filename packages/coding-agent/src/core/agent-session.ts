@@ -936,6 +936,7 @@ interface RlmChildRun {
 	status: RlmChildAgentStatus;
 	error?: string;
 	abort: () => void;
+	publication: AgentMessageDeferred;
 	/** Child session, once its runtime exists. Used to cancel nested child runs. */
 	session?: AgentSession;
 	/** Selector snapshot for a delete admitted while runtime startup was still pending. */
@@ -8705,6 +8706,7 @@ export class AgentSession {
 						(await this.handleAgentMessageHostRequest("agent_message.list")) as AgentSessionMessageListResult,
 					roster: async () =>
 						(await this.handleAgentMessageHostRequest("agent_message.roster")) as AgentFamilyRosterResult,
+					awaitPendingChildPublication: (selector) => this._awaitPendingRlmChildPublication(selector),
 					sendAgentMessage: async (input) => {
 						const receipt = (await this.handleAgentMessageHostRequest("agent_message.send", {
 							target: input.target,
@@ -9016,6 +9018,7 @@ export class AgentSession {
 		}
 		run.status = "cancelled";
 		run.error = reason;
+		run.publication.reject(new Error(reason));
 		run.abort();
 		// Surface the cancellation immediately; the run's own terminal update is
 		// delayed indefinitely when the child is stuck mid-stream, which is
@@ -9035,6 +9038,15 @@ export class AgentSession {
 		} catch {
 			return undefined;
 		}
+	}
+
+	private async _awaitPendingRlmChildPublication(selector: string): Promise<string | undefined> {
+		const run = [...this._activeRlmChildRuns.values()].find(
+			(candidate) => candidate.id === selector || candidate.sessionName === selector,
+		);
+		if (!run) return undefined;
+		await run.publication.promise;
+		return run.id;
 	}
 
 	/** Current direct-child registry for the model-facing rlm.list_subagents API. */
@@ -9606,6 +9618,7 @@ export class AgentSession {
 			sessionDir: childSessionDir,
 			status: "queued",
 			abort: noopRlmChildAbort,
+			publication: createAgentMessageDeferred(),
 		};
 		const throwIfCancelled = () => {
 			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
@@ -9642,6 +9655,7 @@ export class AgentSession {
 			if (this._activeRlmChildRuns.get(run.id) !== run) return;
 			run.session = child;
 			run.abort = () => void child.abort();
+			run.publication.resolve();
 		};
 		const subagentOptions: CreateRlmSubagentRuntimeOptions = {
 			...this._createRlmSubagentRuntimeOptions({
@@ -9765,9 +9779,11 @@ export class AgentSession {
 					}
 				}
 			} catch (error) {
+				const runError = error instanceof Error ? error : new Error(String(error));
+				run.publication.reject(runError);
 				if (run.status !== "cancelled") {
 					run.status = "error";
-					run.error = error instanceof Error ? error.message : String(error);
+					run.error = runError.message;
 				}
 				durationMs = Date.now() - startedAt;
 				activity = undefined;

@@ -735,6 +735,99 @@ describe("AgentSession rlm recursion", () => {
 		expect(child.repliedToParentSinceTask).toBe(true);
 	});
 
+	it("waits for a newly spawned child to be published before resolving a roled send", async () => {
+		let publishChild: (() => void) | undefined;
+		const publicationGate = new Promise<void>((resolve) => {
+			publishChild = resolve;
+		});
+		let publishedChild: AgentSession | undefined;
+		const sendAgentMessage = vi.fn(async (input: { target: string; message: string }) => ({
+			id: "agentmsg-child",
+			source: "agent_message" as const,
+			target: { activeSessionId: "child-active", sessionId: input.target },
+			message: input.message,
+			deliveryStatus: "delivered" as const,
+			deliveryMode: "auto" as const,
+		}));
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster: () => ({
+					current: { name: "root", id: root.sessionId, depth: 0 },
+					entries: publishedChild
+						? [
+								{
+									relationship: "child" as const,
+									name: publishedChild.sessionName ?? publishedChild.sessionId,
+									id: publishedChild.sessionId,
+									depth: 1,
+									status: "running" as const,
+								},
+							]
+						: [],
+				}),
+				sendAgentMessage,
+			},
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async (options) => {
+					await publicationGate;
+					const child = createSession({ rlmSessionDir: options.sessionDir });
+					child.setSessionName(options.sessionName);
+					publishedChild = child;
+					options.onSessionPublished?.(child);
+					return { session: child };
+				},
+				deleteRlmSubagentRuntime: async (_id, child) => child?.disposeAsync(),
+			},
+		});
+		const spawned = await root.runRlmChild("pending task", { name: "pending-child" });
+		const handlers = (root as unknown as InspectableRlmSession)._createKernelHostHandlers();
+		const send = handlers["agent_message.send"];
+		if (!send) throw new Error("Missing agent_message.send host handler");
+
+		const pendingSend = send({ message: "hello", receiver_role: "child", receiver_name: spawned.name });
+		await sleep(0);
+		expect(sendAgentMessage).not.toHaveBeenCalled();
+		publishChild?.();
+
+		await expect(pendingSend).resolves.toMatchObject({ message: "hello" });
+		expect(sendAgentMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ target: publishedChild?.sessionId, message: "hello" }),
+		);
+	});
+
+	it("propagates pending child startup failure to an immediate roled send", async () => {
+		let rejectStartup: ((error: Error) => void) | undefined;
+		const startupGate = new Promise<never>((_resolve, reject) => {
+			rejectStartup = reject;
+		});
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster: () => ({
+					current: { name: "root", id: root.sessionId, depth: 0 },
+					entries: [],
+				}),
+				sendAgentMessage: async () => {
+					throw new Error("unexpected send");
+				},
+			},
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: () => startupGate,
+				deleteRlmSubagentRuntime: async () => {},
+			},
+		});
+		const spawned = await root.runRlmChild("pending task", { name: "failing-child" });
+		const handlers = (root as unknown as InspectableRlmSession)._createKernelHostHandlers();
+		const send = handlers["agent_message.send"];
+		if (!send) throw new Error("Missing agent_message.send host handler");
+
+		const pendingSend = send({ message: "hello", receiver_role: "child", receiver_name: spawned.name });
+		rejectStartup?.(new Error("child startup failed"));
+
+		await expect(pendingSend).rejects.toThrow("child startup failed");
+	});
+
 	it("marks a broadcast delivery to the parent as replied without reloading the roster", async () => {
 		const roster = vi.fn(() => ({
 			current: { name: "child", id: "child-session", depth: 1 },
