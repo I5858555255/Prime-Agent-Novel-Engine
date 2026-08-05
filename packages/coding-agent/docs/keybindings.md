@@ -57,7 +57,6 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `tui.input.newLine` | `shift+enter` | Insert new line |
 | `tui.input.submit` | `enter` | Submit input |
 | `tui.input.tab` | `tab` | Tab / autocomplete |
-| `tui.input.shiftTab` | `shift+tab` | Reverse tab navigation |
 
 ### TUI Kill Ring
 
@@ -114,12 +113,16 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
 | `app.model.select` | `ctrl+l` | Open model selector |
-| `app.model.toggleScope` | `shift+tab` | Toggle between all and scoped models |
+| `app.model.toggleScope` | `alt+s` | Toggle between all and scoped models |
 | `app.thinking.toggle` | `ctrl+t` | Collapse or expand thinking blocks |
 
 ### Configuration Menu
 
 Use `tab` to cycle forward and `shift+tab` to cycle backward through Providers, Models, and MCP Connections. Use `escape` to close the menu. Left and right move the cursor in the active search field.
+
+| Keybinding id | Default | Description |
+|--------|---------|-------------|
+| `app.configuration.previousTab` | `shift+tab` | Select the previous configuration tab |
 
 ### Display and Message Queue
 

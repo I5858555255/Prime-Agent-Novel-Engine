@@ -75,7 +75,7 @@ class ConfigurationMenuTabBar implements Component {
 			safeWidth,
 		);
 		const tabKey = keyText("tui.input.tab", { primaryOnly: true });
-		const shiftTabKey = keyText("tui.input.shiftTab", { primaryOnly: true });
+		const shiftTabKey = keyText("app.configuration.previousTab", { primaryOnly: true });
 		const closeKey = keyText("tui.select.cancel", { primaryOnly: true });
 		const hint = `${theme.fg("dim", `${tabKey}/${shiftTabKey}`)}${theme.fg("muted", " switch tabs · ")}${theme.fg("dim", closeKey)}${theme.fg("muted", " close")}`;
 		return [...lines, ...wrapTextWithAnsi(hint, safeWidth)];
@@ -232,7 +232,7 @@ export class ConfigurationMenuComponent extends Container implements Focusable {
 			this.switchTab(1);
 			return;
 		}
-		if (kb.matches(keyData, "tui.input.shiftTab")) {
+		if (kb.matches(keyData, "app.configuration.previousTab")) {
 			this.switchTab(-1);
 			return;
 		}
