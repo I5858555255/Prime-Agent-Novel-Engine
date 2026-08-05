@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added reverse tab navigation to the `/login` configuration menu.
+- Fixed daemon startup crashes hiding their exit status and daemon log until the startup timeout.
 
 ## [0.6.0] - 2026-08-04
 
