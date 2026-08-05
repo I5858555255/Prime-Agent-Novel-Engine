@@ -381,6 +381,43 @@ describe("session tree metadata", () => {
 		}
 	});
 
+	it("resolves relative parent paths from each legacy session directory", () => {
+		const tempDir = join(tmpdir(), `relative-parent-depth-test-${Date.now()}-${Math.random()}`);
+		const grandparentFile = join(tempDir, "grandparent.jsonl");
+		const parentFile = join(tempDir, "parent.jsonl");
+		const childDir = join(tempDir, "sub-1234abcd");
+		const childFile = join(childDir, "child.jsonl");
+		mkdirSync(childDir, { recursive: true });
+		try {
+			writeFileSync(
+				grandparentFile,
+				`${JSON.stringify({
+					type: "session",
+					id: "grandparent",
+					timestamp: "2025-01-01T00:00:00Z",
+					cwd: tempDir,
+					rlmDepth: 4,
+				})}
+`,
+			);
+			writeFileSync(
+				parentFile,
+				`${JSON.stringify({
+					type: "session",
+					id: "parent",
+					timestamp: "2025-01-01T00:00:01Z",
+					cwd: tempDir,
+					parentSession: "grandparent.jsonl",
+				})}
+`,
+			);
+
+			expect(resolveSessionRlmDepth({ parentSession: "../parent.jsonl" }, childFile)).toBe(5);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("prefers a valid persisted depth over path inference", () => {
 		const sessionFile = join(tmpdir(), "sub-1234abcd", "sub-deadbeef", "session.jsonl");
 		expect(resolveSessionRlmDepth({ parentSession: "/parent.jsonl", rlmDepth: 7 }, sessionFile)).toBe(7);

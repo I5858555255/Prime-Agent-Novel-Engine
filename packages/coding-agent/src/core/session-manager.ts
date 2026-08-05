@@ -728,10 +728,11 @@ function resolveLegacySessionRlmDepth(
 	visitedPaths.add(resolvedSessionPath);
 
 	const pathDepth = legacyChildDepthFromPath(sessionPath);
+	const parentSessionPath = resolve(dirname(sessionPath), header.parentSession);
 	try {
-		const parentHeader = readSessionHeader(header.parentSession);
+		const parentHeader = readSessionHeader(parentSessionPath);
 		if (parentHeader) {
-			const parentDepth = resolveLegacySessionRlmDepth(parentHeader, header.parentSession, visitedPaths);
+			const parentDepth = resolveLegacySessionRlmDepth(parentHeader, parentSessionPath, visitedPaths);
 			if (parentDepth !== undefined) {
 				return pathDepth > 0 ? parentDepth + 1 : parentDepth;
 			}
