@@ -33,6 +33,7 @@ import {
 	createDaemonCommandEnvelope,
 	type DaemonAttachResult,
 	type DaemonCommand,
+	type DaemonOutbound,
 } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 
@@ -3400,6 +3401,57 @@ describe("daemon mode helpers", () => {
 			expect(streamWorkerSnapshot).not.toHaveBeenCalled();
 		},
 	);
+
+	it("drains queued catch-up after replacement snapshot preparation outlives its session", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-test.sock", {
+			defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
+			createRuntime: async () => {
+				throw new Error("unexpected runtime creation");
+			},
+		});
+		const state = makeState("closing");
+		state.eventGeneration = "generation-1";
+		const otherState = makeState("queued");
+		const client = makeClient("client-1", state.activeSessionId);
+		client.transport = "private-framed";
+		setDaemonClientSessionCapabilities(client, state.activeSessionId, new Set(["chunked_snapshot"]));
+		state.clients.add(client);
+		let resolveAttach: (result: DaemonAttachResult) => void = () => {};
+		const pendingAttach = new Promise<DaemonAttachResult>((resolve) => {
+			resolveAttach = resolve;
+		});
+		const catchUpBackpressuredClient = vi.fn(async (target: DaemonSocketClient) => {
+			target.catchupActiveSessionIds?.clear();
+		});
+		const internals = daemon as unknown as {
+			sessions: Map<string, ActiveSessionState>;
+			createAttachResult: ReturnType<typeof vi.fn>;
+			catchUpBackpressuredClient: typeof catchUpBackpressuredClient;
+			broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void;
+		};
+		internals.sessions.set(state.activeSessionId, state);
+		internals.sessions.set(otherState.activeSessionId, otherState);
+		internals.createAttachResult = vi.fn(() => pendingAttach);
+		internals.catchUpBackpressuredClient = catchUpBackpressuredClient;
+
+		internals.broadcastToSession(state, {
+			type: "session_replaced",
+			activeSessionId: state.activeSessionId,
+			state: {},
+			messages: [],
+		} as unknown as DaemonOutbound);
+		client.catchupActiveSessionIds = new Set([otherState.activeSessionId]);
+		internals.sessions.delete(state.activeSessionId);
+		resolveAttach({
+			activeSessionId: state.activeSessionId,
+			snapshot: { summary: {}, state: {}, messages: [] },
+			lastEventSequence: 0,
+		} as unknown as DaemonAttachResult);
+
+		await vi.waitFor(() => expect(catchUpBackpressuredClient).toHaveBeenCalledWith(client));
+		expect(client.snapshotStreaming).toBe(false);
+		expect(client.catchupActiveSessionIds).toEqual(new Set());
+	});
 
 	it.each([
 		["explicit session file", (sessionPath: string) => ({ type: "create" as const, sessionPath })],

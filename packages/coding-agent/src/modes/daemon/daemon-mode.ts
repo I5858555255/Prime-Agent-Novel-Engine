@@ -5293,6 +5293,11 @@ export class AgentDaemon {
 		});
 		if (this.sessions.get(state.activeSessionId) !== state) {
 			finishClientSnapshotStreaming(client, state.activeSessionId);
+			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
+				void this.catchUpBackpressuredClient(client).catch((catchupError) =>
+					this.log(`could not catch up replacement snapshot: ${String(catchupError)}`),
+				);
+			}
 			return;
 		}
 		const transcript = createSnapshotTranscriptChunks({
