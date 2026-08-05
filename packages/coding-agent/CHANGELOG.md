@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Added Alibaba Cloud Model Studio Token Plan providers (`alibaba-token-plan` for Singapore, `alibaba-token-plan-cn` for China), with `qwen3.8-max` as the default model for both.
+- Added Alibaba Cloud Model Studio Token Plan providers (`alibaba-token-plan` for Singapore, `alibaba-token-plan-cn` for China), with `qwen3.8-max` as the default model for both. ([#642](https://github.com/PrimeIntellect-ai/prime-agent/pull/642) by [@jiffies64](https://github.com/jiffies64))
 
 ## [0.7.0] - 2026-08-05
 

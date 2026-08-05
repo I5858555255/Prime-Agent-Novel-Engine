@@ -2,9 +2,9 @@
 
 ## [Unreleased]
 
-- Added Alibaba Cloud Model Studio Token Plan providers with per-region env vars: `alibaba-token-plan` (`ALIBABA_TOKEN_PLAN_API_KEY`, Singapore) and `alibaba-token-plan-cn` (`ALIBABA_TOKEN_PLAN_CN_API_KEY`, China). Token Plan keys start with `sk-sp-` and are not interchangeable with pay-as-you-go or Coding Plan keys.
-- Added `preserveThinking` compat flag to `openai-completions`, sending `preserve_thinking: true` so DashScope Qwen models re-inject prior reasoning into multi-turn tool flows.
-- Switched the anthropic abort test from the delisted `claude-opus-4-1-20250805` to `claude-sonnet-4-5` after the generated model catalog refresh dropped the old model.
+- Added Alibaba Cloud Model Studio Token Plan providers with per-region env vars: `alibaba-token-plan` (`ALIBABA_TOKEN_PLAN_API_KEY`, Singapore) and `alibaba-token-plan-cn` (`ALIBABA_TOKEN_PLAN_CN_API_KEY`, China). Token Plan keys start with `sk-sp-` and are not interchangeable with pay-as-you-go or Coding Plan keys. ([#642](https://github.com/PrimeIntellect-ai/prime-agent/pull/642) by [@jiffies64](https://github.com/jiffies64))
+- Added `preserveThinking` compat flag to `openai-completions`, sending `preserve_thinking: true` so DashScope Qwen models re-inject prior reasoning into multi-turn tool flows. ([#642](https://github.com/PrimeIntellect-ai/prime-agent/pull/642) by [@jiffies64](https://github.com/jiffies64))
+- Switched the anthropic abort test from the delisted `claude-opus-4-1-20250805` to `claude-sonnet-4-5` after the generated model catalog refresh dropped the old model. ([#642](https://github.com/PrimeIntellect-ai/prime-agent/pull/642) by [@jiffies64](https://github.com/jiffies64))
 
 ## [0.7.0] - 2026-08-05
 
