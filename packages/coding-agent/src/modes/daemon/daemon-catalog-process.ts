@@ -70,7 +70,8 @@ export async function listSavedSessionSiblings(sessionPath: string): Promise<Ses
 	const target = await readSessionInfo(sessionPath);
 	if (!target) throw new Error(`Session not found: ${sessionPath}`);
 	if (!target.parentSessionPath) return [target];
-	const parent = await readSessionInfo(target.parentSessionPath);
+	const parentPath = resolve(dirname(target.path), target.parentSessionPath);
+	const parent = await readSessionInfo(parentPath);
 	if (!parent) return [target];
 	const registryPath = join(dirname(dirname(parent.path)), "session-artifacts", parent.id, "rlm-subagents.jsonl");
 	let contents: string;
@@ -96,10 +97,11 @@ export async function listSavedSessionSiblings(sessionPath: string): Promise<Ses
 			siblingPaths.add(resolve(entry.sessionFile));
 	}
 	const siblings = await Promise.all([...siblingPaths].map((path) => readSessionInfo(path)));
-	const parentPath = resolve(target.parentSessionPath);
 	return siblings.filter(
 		(info): info is SessionInfo =>
-			info !== null && info.parentSessionPath !== undefined && resolve(info.parentSessionPath) === parentPath,
+			info !== null &&
+			info.parentSessionPath !== undefined &&
+			resolve(dirname(info.path), info.parentSessionPath) === parentPath,
 	);
 }
 
