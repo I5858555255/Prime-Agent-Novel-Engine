@@ -323,4 +323,44 @@ describe("openai-responses provider defaults", () => {
 		expect(result.usage.cost.output).toBe(model.cost.output * multiplier);
 		expect(result.usage.cost.total).toBe((model.cost.input + model.cost.output) * multiplier);
 	});
+
+	it("does not apply service-tier pricing when the tier was not sent", async () => {
+		const model = getModel("github-copilot", "gpt-5.6-luna");
+		const sse = `${[
+			`data: ${JSON.stringify({
+				type: "response.completed",
+				response: {
+					status: "completed",
+					usage: {
+						input_tokens: 1000000,
+						output_tokens: 1000000,
+						total_tokens: 2000000,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			})}`,
+		].join("\n\n")}\n\n`;
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(sse, {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			}),
+		);
+
+		const stream = streamOpenAIResponses(
+			model,
+			{
+				systemPrompt: "sys",
+				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+			},
+			{ apiKey: "test-key", serviceTier: "priority" },
+		);
+
+		const result = await stream.result();
+
+		expect(result.usage.cost.input).toBe(model.cost.input);
+		expect(result.usage.cost.output).toBe(model.cost.output);
+		expect(result.usage.cost.total).toBe(model.cost.input + model.cost.output);
+	});
 });

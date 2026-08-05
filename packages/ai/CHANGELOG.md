@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Fixed GitHub Copilot Responses models failing with `service_tier is not supported` by omitting `service_tier` for that provider.
+- Fixed GitHub Copilot Responses models failing with `service_tier is not supported` by omitting `service_tier` for that provider ([#645](https://github.com/PrimeIntellect-ai/prime-agent/issues/645)).
 
 ## [0.7.0] - 2026-08-05
 
