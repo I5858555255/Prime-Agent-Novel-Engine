@@ -72,8 +72,11 @@ function sameCwd(left: string, right: string): boolean {
 	try {
 		const leftStat = statSync(canonicalLeft, { bigint: true });
 		const rightStat = statSync(canonicalRight, { bigint: true });
-		const leftIdentityMissing = leftStat.dev === 0n && leftStat.ino === 0n;
-		const rightIdentityMissing = rightStat.dev === 0n && rightStat.ino === 0n;
+		// Either half being zero makes the pair untrustworthy: Windows path-based
+		// stat can report dev 0 with a real ino, and comparing ino alone would match
+		// distinct directories on different volumes, since file IDs are volume-local.
+		const leftIdentityMissing = leftStat.dev === 0n || leftStat.ino === 0n;
+		const rightIdentityMissing = rightStat.dev === 0n || rightStat.ino === 0n;
 		if (leftIdentityMissing || rightIdentityMissing) return false;
 		return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
 	} catch {
