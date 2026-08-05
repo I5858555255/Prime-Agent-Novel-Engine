@@ -37,6 +37,7 @@ const compat: Required<OpenAICompletionsCompat> = {
 	cacheControlFormat: "anthropic",
 	sendSessionAffinityHeaders: false,
 	supportsLongCacheRetention: true,
+	preserveThinking: false,
 };
 
 function buildToolResult(toolCallId: string, timestamp: number): ToolResultMessage {

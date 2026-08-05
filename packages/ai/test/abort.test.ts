@@ -156,7 +156,7 @@ describe("AI Providers Abort Tests", () => {
 	});
 
 	describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("Anthropic Provider Abort", () => {
-		const llm = getModel("anthropic", "claude-opus-4-1-20250805");
+		const llm = getModel("anthropic", "claude-sonnet-4-5");
 
 		it("should abort mid-stream", { retry: 3 }, async () => {
 			await testAbortSignal(llm, { thinkingEnabled: true, thinkingBudgetTokens: 2048 });
@@ -229,6 +229,30 @@ describe("AI Providers Abort Tests", () => {
 
 	describe.skipIf(!process.env.XIAOMI_TOKEN_PLAN_SGP_API_KEY)("Xiaomi MiMo Token Plan (SGP) Provider Abort", () => {
 		const llm = getModel("xiaomi-token-plan-sgp", "mimo-v2.5-pro");
+
+		it("should abort mid-stream", { retry: 3 }, async () => {
+			await testAbortSignal(llm);
+		});
+
+		it("should handle immediate abort", { retry: 3 }, async () => {
+			await testImmediateAbort(llm);
+		});
+	});
+
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_API_KEY)("Alibaba Token Plan (Singapore) Provider Abort", () => {
+		const llm = getModel("alibaba-token-plan", "qwen3.8-max");
+
+		it("should abort mid-stream", { retry: 3 }, async () => {
+			await testAbortSignal(llm);
+		});
+
+		it("should handle immediate abort", { retry: 3 }, async () => {
+			await testImmediateAbort(llm);
+		});
+	});
+
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_CN_API_KEY)("Alibaba Token Plan (China) Provider Abort", () => {
+		const llm = getModel("alibaba-token-plan-cn", "qwen3.8-max");
 
 		it("should abort mid-stream", { retry: 3 }, async () => {
 			await testAbortSignal(llm);

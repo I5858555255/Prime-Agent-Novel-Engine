@@ -30,4 +30,6 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 	"xiaomi-token-plan-cn": "Xiaomi MiMo Token Plan (China)",
 	"xiaomi-token-plan-ams": "Xiaomi MiMo Token Plan (Amsterdam)",
 	"xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan (Singapore)",
+	"alibaba-token-plan": "Alibaba Token Plan (Singapore)",
+	"alibaba-token-plan-cn": "Alibaba Token Plan (China)",
 };

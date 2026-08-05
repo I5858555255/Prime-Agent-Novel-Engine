@@ -59,6 +59,8 @@ if [[ "$NO_ENV" == "true" ]]; then
   unset AZURE_OPENAI_API_KEY
   unset AZURE_OPENAI_BASE_URL
   unset AZURE_OPENAI_RESOURCE_NAME
+  unset ALIBABA_TOKEN_PLAN_API_KEY
+  unset ALIBABA_TOKEN_PLAN_CN_API_KEY
   echo "Running Prime Agent without API keys..."
 fi
 

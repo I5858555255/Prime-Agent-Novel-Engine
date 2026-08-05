@@ -596,6 +596,10 @@ function buildParams(
 		}
 	}
 
+	if (compat.preserveThinking && model.reasoning && options?.reasoningEffort) {
+		(params as any).preserve_thinking = true;
+	}
+
 	// OpenRouter provider routing preferences
 	if (model.baseUrl.includes("openrouter.ai") && model.compat?.openRouterRouting) {
 		(params as any).provider = model.compat.openRouterRouting;
@@ -1113,6 +1117,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		requiresAssistantAfterToolResult: false,
 		requiresThinkingAsText: false,
 		requiresReasoningContentOnAssistantMessages: isDeepSeek,
+		preserveThinking: false,
 		thinkingFormat: isDeepSeek
 			? "deepseek"
 			: isZai
@@ -1151,6 +1156,7 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		requiresReasoningContentOnAssistantMessages:
 			model.compat.requiresReasoningContentOnAssistantMessages ??
 			detected.requiresReasoningContentOnAssistantMessages,
+		preserveThinking: model.compat.preserveThinking ?? detected.preserveThinking,
 		thinkingFormat: model.compat.thinkingFormat ?? detected.thinkingFormat,
 		openRouterRouting: model.compat.openRouterRouting ?? {},
 		vercelGatewayRouting: model.compat.vercelGatewayRouting ?? detected.vercelGatewayRouting,

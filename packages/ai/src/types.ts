@@ -48,7 +48,9 @@ export type KnownProvider =
 	| "xiaomi"
 	| "xiaomi-token-plan-cn"
 	| "xiaomi-token-plan-ams"
-	| "xiaomi-token-plan-sgp";
+	| "xiaomi-token-plan-sgp"
+	| "alibaba-token-plan"
+	| "alibaba-token-plan-cn";
 export type Provider = KnownProvider | string;
 
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -308,6 +310,8 @@ export interface OpenAICompletionsCompat {
 	requiresThinkingAsText?: boolean;
 	/** Whether all replayed assistant messages must include an empty reasoning_content field when reasoning is enabled. Default: auto-detected from URL. */
 	requiresReasoningContentOnAssistantMessages?: boolean;
+	/** Whether to send top-level `preserve_thinking: true` so the server re-injects prior reasoning_content into the next input (DashScope Qwen/GLM/Kimi hybrid thinking models). Only sent when reasoning is enabled. Default: false. */
+	preserveThinking?: boolean;
 	/** Format for reasoning/thinking parameter. "openai" uses reasoning_effort, "openrouter" uses reasoning: { effort }, "deepseek" uses thinking: { type } plus reasoning_effort, "zai" uses top-level enable_thinking: boolean, "qwen" uses top-level enable_thinking: boolean, and "qwen-chat-template" uses chat_template_kwargs.enable_thinking. Default: "openai". */
 	thinkingFormat?: "openai" | "openrouter" | "deepseek" | "zai" | "qwen" | "qwen-chat-template";
 	/** OpenRouter-specific routing preferences. Only used when baseUrl points to OpenRouter. */

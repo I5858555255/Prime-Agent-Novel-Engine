@@ -118,6 +118,67 @@ const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
+
+// DashScope Token Plan endpoint quirks: no `store`, no developer role,
+// max_tokens instead of max_completion_tokens, no reliable strict mode
+// across the mixed third-party catalog. Thinking controls are per model
+// family (verified against official DashScope docs and the live endpoint):
+// - qwen3.8-max(-preview), glm-5.2: reasoning_effort with
+//   none/minimal/low/medium/high/xhigh/max (server-enforced allowlist)
+// - qwen3.6/qwen3.7: reasoning_effort with none..xhigh (max rejected by
+//   the endpoint; reasoning_effort alone toggles thinking, verified live)
+// - glm-5.1, glm-5, deepseek-v3.2, kimi-k2.5/k2.6, kimi-k2.7-code: hybrid
+//   thinking toggled via enable_thinking (kimi-k2.7-code is thinking-only)
+// - deepseek-v4-*: thinking { type } + reasoning_effort high/max
+// - MiniMax-M2.5: interleaved thinking always on, no off switch
+function getAlibabaTokenPlanCompat(modelId: string): OpenAICompletionsCompat {
+	const compat: OpenAICompletionsCompat = {
+		supportsStore: false,
+		supportsDeveloperRole: false,
+		maxTokensField: "max_tokens",
+		supportsStrictMode: false,
+	};
+	if (
+		modelId.startsWith("qwen3.8-max") ||
+		modelId.startsWith("qwen3.7") ||
+		modelId.startsWith("qwen3.6") ||
+		modelId === "glm-5.2"
+	) {
+		compat.supportsReasoningEffort = true;
+	} else if (
+		modelId === "glm-5.1" ||
+		modelId === "glm-5" ||
+		modelId === "deepseek-v3.2" ||
+		modelId === "kimi-k2.5" ||
+		modelId === "kimi-k2.6" ||
+		modelId === "kimi-k2.7-code"
+	) {
+		compat.supportsReasoningEffort = false;
+		compat.thinkingFormat = "qwen";
+	} else if (modelId.startsWith("deepseek-v4")) {
+		Object.assign(compat, DEEPSEEK_V4_COMPAT);
+	} else {
+		// MiniMax-M2.5: interleaved thinking is always on and cannot be
+		// disabled; no thinking params needed, but reasoning must be replayed.
+		compat.supportsReasoningEffort = false;
+		if (modelId === "MiniMax-M2.5") {
+			compat.requiresReasoningContentOnAssistantMessages = true;
+		}
+	}
+	// Multi-turn tool flows degrade without prior reasoning context;
+	// preserve_thinking is supported by qwen3.8-max(-preview), qwen3.7-max,
+	// qwen3.7-plus and qwen3.6-plus on this endpoint.
+	if (
+		modelId.startsWith("qwen3.8-max") ||
+		modelId === "qwen3.7-max" ||
+		modelId === "qwen3.7-plus" ||
+		modelId === "qwen3.6-plus"
+	) {
+		compat.preserveThinking = true;
+		compat.requiresReasoningContentOnAssistantMessages = true;
+	}
+	return compat;
+}
 interface PrimeInferenceCatalogEntry {
 	id: string;
 	input: number;
@@ -324,6 +385,27 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	}
 	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
 		mergeThinkingLevelMap(model, DEEPSEEK_V4_THINKING_LEVEL_MAP);
+	}
+	if (
+		model.api === "openai-completions" &&
+		(model.provider === "alibaba-token-plan" || model.provider === "alibaba-token-plan-cn")
+	) {
+		if (model.id.startsWith("qwen3.8-max")) {
+			// Documented reasoning_effort levels are low/medium/xhigh (default
+			// xhigh); "none" disables thinking. The endpoint's allowlist is
+			// wider, but only documented levels are exposed.
+			mergeThinkingLevelMap(model, { off: "none", minimal: null, high: null, max: null, xhigh: "xhigh" });
+		} else if (model.id === "glm-5.2") {
+			// glm-5.2 documents the full none..max reasoning_effort range.
+			mergeThinkingLevelMap(model, { off: "none", xhigh: "xhigh", max: "max" });
+		} else if (model.id.startsWith("qwen3.7") || model.id.startsWith("qwen3.6")) {
+			// Endpoint allowlist is none/minimal/low/medium/high/xhigh;
+			// max is rejected.
+			mergeThinkingLevelMap(model, { off: "none", xhigh: "xhigh", max: null });
+		} else if (model.id === "kimi-k2.7-code" || model.id === "MiniMax-M2.5") {
+			// Thinking-only models: cannot be disabled.
+			mergeThinkingLevelMap(model, { off: null });
+		}
 	}
 	const kimiK3Id = model.id.toLowerCase();
 	if (/^k3(-|$)/.test(kimiK3Id) || /(^|\/)kimi-k3(-|$)/.test(kimiK3Id)) {
@@ -1534,6 +1616,52 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						maxTokens: m.limit?.output || 4096,
 					});
 				}
+			}
+		}
+
+		// Process Alibaba Cloud Model Studio Token Plan models (credits-based
+		// subscriptions, API keys start with `sk-sp-`). `alibaba-token-plan` is
+		// the international edition (Singapore), `alibaba-token-plan-cn` the
+		// China (Beijing) edition. Model access depends on the subscribed
+		// edition/seat; the catalog lists the union of both.
+		const alibabaTokenPlanVariants = [
+			{
+				key: "alibaba-token-plan",
+				provider: "alibaba-token-plan",
+				baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+			},
+			{
+				key: "alibaba-token-plan-cn",
+				provider: "alibaba-token-plan-cn",
+				baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+			},
+		] as const;
+
+		for (const { key, provider, baseUrl } of alibabaTokenPlanVariants) {
+			if (!data[key]?.models) continue;
+
+			for (const [modelId, model] of Object.entries(data[key].models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider,
+					baseUrl,
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					compat: getAlibabaTokenPlanCompat(modelId),
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+				});
 			}
 		}
 
