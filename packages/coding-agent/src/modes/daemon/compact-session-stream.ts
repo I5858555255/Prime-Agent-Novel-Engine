@@ -214,7 +214,7 @@ export class CompactAssistantStreamReconstructor {
 		contentIndex: number,
 		content: AssistantMessage["content"][number],
 	): boolean {
-		if (contentIndex < 0 || contentIndex > partial.content.length) {
+		if (!Number.isInteger(contentIndex) || contentIndex < 0 || contentIndex > partial.content.length) {
 			return false;
 		}
 		partial.content[contentIndex] = content;
