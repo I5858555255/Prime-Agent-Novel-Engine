@@ -11,7 +11,7 @@
 ### Fixed
 
 - Fixed daemon startup crashes hiding their exit status and daemon log until the startup timeout.
-- Fixed subagent terminal notices arriving as anonymous follow-up prompts instead of attributed agent messages, so a parent can now tell which child reported completion, failure, or cancellation ([#617](https://github.com/PrimeIntellect-ai/prime-agent/issues/617)).
+- Fixed subagent terminal notices arriving as anonymous follow-up prompts instead of attributed agent messages, so a parent can now tell which child reported completion, failure, or cancellation, and a busy parent is steered at the next turn boundary rather than waiting to go idle ([#617](https://github.com/PrimeIntellect-ai/prime-agent/issues/617)).
 
 
 ## [0.6.0] - 2026-08-04

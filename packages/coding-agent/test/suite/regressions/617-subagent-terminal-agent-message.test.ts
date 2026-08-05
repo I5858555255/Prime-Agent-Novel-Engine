@@ -4,6 +4,7 @@ import {
 	AGENT_MESSAGE_CUSTOM_TYPE,
 	type AgentSessionMessage,
 	createAgentSessionMessage,
+	resolveAgentSessionMessageStreamingBehavior,
 } from "../../../src/core/agent-messages.js";
 import { createHarness, type Harness } from "../harness.js";
 
@@ -38,9 +39,12 @@ describe("#617 subagent terminal agent messages", () => {
 				sendAgentMessage: async (input) => {
 					expect(input).toMatchObject({
 						target: parent!.session.sessionId,
-						deliveryMode: "follow_up",
 						message: expect.stringContaining("completed without sending a reply"),
 					});
+					// No explicit deliveryMode: the notice inherits the same "auto"
+					// default as any other child-to-parent message, which steers into
+					// a busy parent instead of waiting for it to go idle.
+					expect(input.deliveryMode).toBeUndefined();
 					const message = createAgentSessionMessage({
 						id: "agentmsg-terminal-completion",
 						source: "agent_message",
@@ -94,6 +98,58 @@ describe("#617 subagent terminal agent messages", () => {
 		);
 		expect(terminalMessage(parent.session.messages)?.content).toContain(spawned.rlm_child_id);
 	});
+	it("steers a terminal notice into a busy parent instead of deferring it", async () => {
+		// The delivered mode is what the daemon derives from the child's request.
+		// Omitting deliveryMode must resolve to a steer for a streaming parent, so
+		// the notice lands at the next turn boundary rather than in the
+		// when-run-idle lane behind unrelated work.
+		const childSessionName = "busy-parent-worker";
+		let resolvedBehavior: "steer" | "followUp" | undefined;
+		child = await createHarness({
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				sendAgentMessage: async (input) => {
+					expect(input.deliveryMode).toBeUndefined();
+					resolvedBehavior = resolveAgentSessionMessageStreamingBehavior(true, input.deliveryMode);
+					const message = createAgentSessionMessage({
+						id: "agentmsg-terminal-busy",
+						source: "agent_message",
+						message: input.message,
+						from: {
+							activeSessionId: "child-active",
+							sessionId: child!.session.sessionId,
+							sessionName: childSessionName,
+						},
+						fromRelationship: "child",
+						target: { activeSessionId: "parent-active", sessionId: parent!.session.sessionId },
+						deliveryMode: input.deliveryMode ?? "auto",
+					});
+					return {
+						id: message.details.id,
+						source: "agent_message",
+						target: { activeSessionId: "parent-active", sessionId: parent!.session.sessionId },
+						message: input.message,
+						deliveryStatus: "delivered",
+						deliveryMode: input.deliveryMode ?? "auto",
+					};
+				},
+			},
+		});
+		parent = await createHarness({
+			rlmDepth: 0,
+			rlmMaxDepth: 1,
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => ({ session: child!.session }),
+				deleteRlmSubagentRuntime: async () => {},
+			},
+		});
+		child.setResponses([fauxAssistantMessage("child completed")]);
+
+		await parent.session.runRlmChild("finish without replying", { name: childSessionName });
+
+		await expect.poll(() => resolvedBehavior).toBe("steer");
+	});
+
 	it("falls back to an injected notice when the agent message cannot be delivered", async () => {
 		// A controller that always rejects: the parent must still learn the child
 		// finished. Losing the notice entirely is worse than losing attribution.
