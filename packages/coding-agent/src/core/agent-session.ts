@@ -1209,6 +1209,7 @@ export class AgentSession {
 	private _rlmParentNodeId?: string;
 	private _rlmParentAgent?: string;
 	private _repliedToParentSinceTask: boolean | undefined;
+	private _parentReplyCount = 0;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
 	private _pendingRlmSubagentSessionNames = new Set<string>();
@@ -8731,7 +8732,10 @@ export class AgentSession {
 									addressedParent = false;
 								}
 							}
-							if (addressedParent) this._repliedToParentSinceTask = true;
+							if (addressedParent) {
+								this._repliedToParentSinceTask = true;
+								this._parentReplyCount += 1;
+							}
 						}
 						return receipt;
 					},
@@ -9783,6 +9787,7 @@ export class AgentSession {
 					timestamp: Date.now(),
 				};
 				throwIfCancelled();
+				const parentReplyCountBeforeRun = child._parentReplyCount;
 				await child.promptAndWait(content, {
 					expandPromptTemplates: false,
 					source: "extension",
@@ -9793,7 +9798,7 @@ export class AgentSession {
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();
-				if (!run.detachedDeletion && child._repliedToParentSinceTask !== true) {
+				if (!run.detachedDeletion && child._parentReplyCount === parentReplyCountBeforeRun) {
 					const lastAssistantText = child.getLastAssistantText();
 					await injectTerminalMessage(
 						createRlmChildTerminalNoticeMessage({

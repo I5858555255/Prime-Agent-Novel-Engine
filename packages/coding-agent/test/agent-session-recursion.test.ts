@@ -1093,10 +1093,40 @@ describe("AgentSession rlm recursion", () => {
 		});
 	});
 
-	it("does not inject a terminal notice when the child replies before completing", async () => {
-		const child = createSession({ depth: 1, rlmSessionDir: join(tempDir, "replying-child") });
+	it("does not inject a terminal notice when a parent follow-up resets reply state after a reply", async () => {
+		const child = createSession({
+			depth: 1,
+			rlmSessionDir: join(tempDir, "replying-child"),
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster: () => ({
+					current: { name: "reply-worker", id: child.sessionId, depth: 1 },
+					entries: [{ relationship: "parent", name: "parent", id: "parent-session", depth: 0, status: "idle" }],
+				}),
+				sendAgentMessage: async () => ({
+					id: "agentmsg-reply-before-follow-up",
+					source: "agent_message",
+					target: { activeSessionId: "parent-active", sessionId: "parent-session" },
+					message: "done",
+					deliveryStatus: "delivered",
+					deliveryMode: "auto",
+				}),
+			},
+		});
 		vi.spyOn(child, "promptAndWait").mockImplementation(async () => {
-			(child as unknown as { _repliedToParentSinceTask: boolean })._repliedToParentSinceTask = true;
+			const send = (child as unknown as InspectableRlmSession)._createKernelHostHandlers()["agent_message.send"];
+			if (!send) throw new Error("Missing agent_message.send host handler");
+			await send({ message: "done", receiver_role: "parent" });
+			const followUp = createAgentSessionMessage({
+				id: "agentmsg-parent-follow-up-after-reply",
+				source: "agent_message",
+				message: "continue cleanup",
+				fromRelationship: "parent",
+				target: { activeSessionId: "child-active", sessionId: child.sessionId },
+				deliveryMode: "follow_up",
+			});
+			await child.queueAgentMessagePrompt(followUp.content as string, "followUp", followUp);
+			expect(child.repliedToParentSinceTask).toBe(false);
 		});
 		const root = createSession({
 			subagentRuntimeHost: {
