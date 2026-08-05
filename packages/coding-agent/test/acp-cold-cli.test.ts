@@ -163,7 +163,12 @@ async function driveAcpTurn(baseUrl: string): Promise<AcpResult> {
 		// daemon supervisor, a Python kernel). Close stdin so the agent sees EOF and
 		// unwinds its own children, then escalate only if it does not exit.
 		child.stdin.end();
-		const exited = new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+		// An already-dead child never emits "exit" again, so waiting on the event
+		// alone would burn the full escalation budget after a crash.
+		const alreadyExited = child.exitCode !== null || child.signalCode !== null;
+		const exited = alreadyExited
+			? Promise.resolve()
+			: new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
 		const exitedInTime = await Promise.race([
 			exited.then(() => true),
 			new Promise<boolean>((resolveTimeout) => setTimeout(() => resolveTimeout(false), 10_000)),
