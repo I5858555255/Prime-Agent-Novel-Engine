@@ -48,6 +48,9 @@ import { buildBaseOptions } from "./simple-options.js";
 // ============================================================================
 
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
+/** Codex CLI compatibility identity used by ChatGPT backend requests. */
+export const OPENAI_CODEX_CLIENT_VERSION = "0.144.6";
+
 const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;

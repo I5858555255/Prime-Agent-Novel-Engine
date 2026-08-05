@@ -77,20 +77,21 @@ describe("ENG-4649 subagent model selection", () => {
 			provider: codexProvider,
 			models: [{ id: "parent-model" }, { id: "unsupported-model" }],
 		});
-		const fetchModels = vi.fn(
-			async () =>
-				new Response(JSON.stringify({ models: [{ slug: "parent-model" }] }), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				}),
-		);
+		const fetchModels = vi.fn(async (input: string | URL | Request) => {
+			const url = new URL(input instanceof Request ? input.url : input.toString());
+			const models = url.searchParams.get("client_version") === "0.144.6" ? [{ slug: "parent-model" }] : [];
+			return new Response(JSON.stringify({ models }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
 		vi.stubGlobal("fetch", fetchModels);
 		try {
 			harness.authStorage.setRuntimeApiKey(codexProvider, openAICodexToken("account-1"));
 			const discovered = await harness.session.findRlmModels("", 20);
 			expect(discovered.models.map((model) => model.selector)).toEqual([`${codexProvider}/parent-model`]);
 			expect(fetchModels).toHaveBeenCalledWith(
-				expect.stringMatching(/\/codex\/models\?client_version=/),
+				expect.stringMatching(/\/codex\/models\?client_version=0\.144\.6$/),
 				expect.objectContaining({
 					headers: expect.objectContaining({ "chatgpt-account-id": "account-1" }),
 				}),
