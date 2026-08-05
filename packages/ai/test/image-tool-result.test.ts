@@ -369,6 +369,36 @@ describe("Tool Results with Images", () => {
 		},
 	);
 
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_API_KEY)(
+		"Alibaba Token Plan (Singapore) Provider (qwen3.8-max)",
+		() => {
+			const llm = getModel("alibaba-token-plan", "qwen3.8-max");
+
+			it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
+				await handleToolWithImageResult(llm);
+			});
+
+			it("should handle tool result with text and image", { retry: 3, timeout: 30000 }, async () => {
+				await handleToolWithTextAndImageResult(llm);
+			});
+		},
+	);
+
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_CN_API_KEY)(
+		"Alibaba Token Plan (China) Provider (qwen3.8-max)",
+		() => {
+			const llm = getModel("alibaba-token-plan-cn", "qwen3.8-max");
+
+			it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
+				await handleToolWithImageResult(llm);
+			});
+
+			it("should handle tool result with text and image", { retry: 3, timeout: 30000 }, async () => {
+				await handleToolWithTextAndImageResult(llm);
+			});
+		},
+	);
+
 	describe.skipIf(!process.env.KIMI_API_KEY)("Kimi For Coding Provider (image-capable model)", () => {
 		const llm = getKimiCodingTestModel({ image: true });
 

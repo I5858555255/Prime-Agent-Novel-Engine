@@ -265,6 +265,22 @@ describe("Token Statistics on Abort", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_API_KEY)("Alibaba Token Plan (Singapore) Provider", () => {
+		const llm = getModel("alibaba-token-plan", "qwen3.8-max");
+
+		it("should include token stats when aborted mid-stream", { retry: 3, timeout: 30000 }, async () => {
+			await testTokensOnAbort(llm);
+		});
+	});
+
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_CN_API_KEY)("Alibaba Token Plan (China) Provider", () => {
+		const llm = getModel("alibaba-token-plan-cn", "qwen3.8-max");
+
+		it("should include token stats when aborted mid-stream", { retry: 3, timeout: 30000 }, async () => {
+			await testTokensOnAbort(llm);
+		});
+	});
+
 	// =========================================================================
 	// OAuth-based providers (credentials from ~/.pi/agent/oauth.json)
 	// =========================================================================

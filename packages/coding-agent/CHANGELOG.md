@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Alibaba Cloud Model Studio Token Plan providers (`alibaba-token-plan` for Singapore, `alibaba-token-plan-cn` for China), with `qwen3.8-max` as the default model for both.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

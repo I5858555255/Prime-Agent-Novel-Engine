@@ -1138,6 +1138,68 @@ describe("Generate E2E Tests", () => {
 		},
 	);
 
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_API_KEY)(
+		"Alibaba Token Plan Provider (Qwen3.8-Max via OpenAI Completions, Singapore region)",
+		() => {
+			const llm = getModel("alibaba-token-plan", "qwen3.8-max");
+			const thinkingOptions = {
+				thinkingEnabled: true,
+				reasoningEffort: "xhigh",
+			} satisfies StreamOptionsWithExtras;
+
+			it("should complete basic text generation", { retry: 3 }, async () => {
+				await basicTextGeneration(llm);
+			});
+
+			it("should handle tool calling", { retry: 3 }, async () => {
+				await handleToolCall(llm);
+			});
+
+			it("should handle streaming", { retry: 3 }, async () => {
+				await handleStreaming(llm);
+			});
+
+			it("should handle thinking mode", { retry: 3 }, async () => {
+				await handleThinking(llm, thinkingOptions);
+			});
+
+			it("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
+				await multiTurn(llm, thinkingOptions);
+			});
+		},
+	);
+
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_CN_API_KEY)(
+		"Alibaba Token Plan Provider (Qwen3.8-Max via OpenAI Completions, China region)",
+		() => {
+			const llm = getModel("alibaba-token-plan-cn", "qwen3.8-max");
+			const thinkingOptions = {
+				thinkingEnabled: true,
+				reasoningEffort: "xhigh",
+			} satisfies StreamOptionsWithExtras;
+
+			it("should complete basic text generation", { retry: 3 }, async () => {
+				await basicTextGeneration(llm);
+			});
+
+			it("should handle tool calling", { retry: 3 }, async () => {
+				await handleToolCall(llm);
+			});
+
+			it("should handle streaming", { retry: 3 }, async () => {
+				await handleStreaming(llm);
+			});
+
+			it("should handle thinking mode", { retry: 3 }, async () => {
+				await handleThinking(llm, thinkingOptions);
+			});
+
+			it("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
+				await multiTurn(llm, thinkingOptions);
+			});
+		},
+	);
+
 	// =========================================================================
 	// OAuth-based providers (credentials from ~/.pi/agent/oauth.json)
 	// Tokens are resolved at module level (see oauthTokens above)

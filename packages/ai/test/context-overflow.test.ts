@@ -446,6 +446,33 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 	});
 
+	// Warning: qwen3.8-max has a 1M context window, so this test sends ~1M
+	// input tokens. Running it consumes a significant amount of Token Plan
+	// credits.
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_API_KEY)("Alibaba Token Plan (Singapore)", () => {
+		it("qwen3.8-max - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("alibaba-token-plan", "qwen3.8-max");
+			const result = await testContextOverflow(model, process.env.ALIBABA_TOKEN_PLAN_API_KEY!);
+			logResult(result);
+
+			expect(result.stopReason).toBe("length");
+			expect(result.usage.output).toBe(0);
+			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+		}, 120000);
+	});
+
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_CN_API_KEY)("Alibaba Token Plan (China)", () => {
+		it("qwen3.8-max - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("alibaba-token-plan-cn", "qwen3.8-max");
+			const result = await testContextOverflow(model, process.env.ALIBABA_TOKEN_PLAN_CN_API_KEY!);
+			logResult(result);
+
+			expect(result.stopReason).toBe("length");
+			expect(result.usage.output).toBe(0);
+			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+		}, 120000);
+	});
+
 	// =============================================================================
 	// Kimi For Coding
 	// =============================================================================

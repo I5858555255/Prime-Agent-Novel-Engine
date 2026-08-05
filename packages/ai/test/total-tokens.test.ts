@@ -536,6 +536,56 @@ describe("totalTokens field", () => {
 	});
 
 	// =========================================================================
+	// Alibaba Token Plan (Singapore)
+	// =========================================================================
+
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_API_KEY)("Alibaba Token Plan (Singapore)", () => {
+		it(
+			"qwen3.8-max - should return totalTokens equal to sum of components",
+			{ retry: 3, timeout: 60000 },
+			async () => {
+				const llm = getModel("alibaba-token-plan", "qwen3.8-max");
+
+				console.log(`\nAlibaba Token Plan Singapore / ${llm.id}:`);
+				const { first, second } = await testTotalTokensWithCache(llm, {
+					apiKey: process.env.ALIBABA_TOKEN_PLAN_API_KEY,
+				});
+
+				logUsage("First request", first);
+				logUsage("Second request", second);
+
+				assertTotalTokensEqualsComponents(first);
+				assertTotalTokensEqualsComponents(second);
+			},
+		);
+	});
+
+	// =========================================================================
+	// Alibaba Token Plan (China)
+	// =========================================================================
+
+	describe.skipIf(!process.env.ALIBABA_TOKEN_PLAN_CN_API_KEY)("Alibaba Token Plan (China)", () => {
+		it(
+			"qwen3.8-max - should return totalTokens equal to sum of components",
+			{ retry: 3, timeout: 60000 },
+			async () => {
+				const llm = getModel("alibaba-token-plan-cn", "qwen3.8-max");
+
+				console.log(`\nAlibaba Token Plan China / ${llm.id}:`);
+				const { first, second } = await testTotalTokensWithCache(llm, {
+					apiKey: process.env.ALIBABA_TOKEN_PLAN_CN_API_KEY,
+				});
+
+				logUsage("First request", first);
+				logUsage("Second request", second);
+
+				assertTotalTokensEqualsComponents(first);
+				assertTotalTokensEqualsComponents(second);
+			},
+		);
+	});
+
+	// =========================================================================
 	// Kimi For Coding
 	// =========================================================================
 

@@ -132,6 +132,9 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	{ provider: "xiaomi-token-plan-cn", model: "mimo-v2.5-pro", label: "xiaomi-token-plan-cn-mimo-v2.5-pro" },
 	{ provider: "xiaomi-token-plan-ams", model: "mimo-v2.5-pro", label: "xiaomi-token-plan-ams-mimo-v2.5-pro" },
 	{ provider: "xiaomi-token-plan-sgp", model: "mimo-v2.5-pro", label: "xiaomi-token-plan-sgp-mimo-v2.5-pro" },
+	// Alibaba Token Plan
+	{ provider: "alibaba-token-plan", model: "qwen3.8-max", label: "alibaba-token-plan-qwen3.8-max" },
+	{ provider: "alibaba-token-plan-cn", model: "qwen3.8-max", label: "alibaba-token-plan-cn-qwen3.8-max" },
 ];
 
 // Cached context structure
