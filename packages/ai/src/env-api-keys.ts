@@ -124,6 +124,7 @@ function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
 		fireworks: "FIREWORKS_API_KEY",
 		opencode: "OPENCODE_API_KEY",
 		"opencode-go": "OPENCODE_API_KEY",
+		"ollama-cloud": "OLLAMA_API_KEY",
 		"kimi-coding": "KIMI_API_KEY",
 		"cloudflare-workers-ai": "CLOUDFLARE_API_KEY",
 		"cloudflare-ai-gateway": "CLOUDFLARE_API_KEY",

@@ -142,6 +142,14 @@ describe("Token Statistics on Abort", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.OLLAMA_API_KEY)("Ollama Cloud Provider", () => {
+		const llm = getModel("ollama-cloud", "gpt-oss:120b");
+
+		it("should include token stats when aborted mid-stream", { retry: 3, timeout: 30000 }, async () => {
+			await testTokensOnAbort(llm);
+		});
+	});
+
 	describe.skipIf(!process.env.GROQ_API_KEY)("Groq Provider", () => {
 		const llm = getModel("groq", "openai/gpt-oss-20b");
 

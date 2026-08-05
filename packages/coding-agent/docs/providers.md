@@ -18,6 +18,7 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- xAI SuperGrok or X Premium
 
 Use `/logout` to clear credentials. Tokens are stored in `~/.prime/agent/auth.json` and auto-refresh when expired.
 
@@ -34,6 +35,10 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+
+### xAI SuperGrok
+
+Select xAI SuperGrok in `/login`, open the displayed xAI device page, and enter the code. SuperGrok and eligible X Premium subscriptions are supported. OAuth and API-key credentials share the `xai` auth slot, so signing in with one replaces a stored credential for the other.
 
 ## API Keys
 
@@ -60,6 +65,7 @@ prime-agent
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`) | `cloudflare-ai-gateway` |
 | Cloudflare Workers AI | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`) | `cloudflare-workers-ai` |
 | xAI | `XAI_API_KEY` | `xai` |
+| Ollama Cloud | `OLLAMA_API_KEY` | `ollama-cloud` |
 | OpenRouter | `OPENROUTER_API_KEY` | `openrouter` |
 | Vercel AI Gateway | `AI_GATEWAY_API_KEY` | `vercel-ai-gateway` |
 | ZAI | `ZAI_API_KEY` | `zai` |
@@ -90,6 +96,7 @@ Store credentials in `~/.prime/agent/auth.json`:
   "google": { "type": "api_key", "key": "..." },
   "opencode": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
+  "ollama-cloud": { "type": "api_key", "key": "..." },
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },
@@ -124,6 +131,12 @@ OAuth credentials are also stored here after `/login` and managed automatically.
 Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or store an API key for `prime-inference` via `/login`.
 
 ## Cloud Providers
+
+### Ollama Cloud
+
+Create an API key at [ollama.com/settings/keys](https://ollama.com/settings/keys), then use `/login` or set `OLLAMA_API_KEY`. Prime Agent connects directly to Ollama Cloud at `https://ollama.com/v1`; model IDs do not use the local `-cloud` suffix.
+
+See the [Ollama Cloud documentation](https://docs.ollama.com/cloud) for account and API details.
 
 ### Azure OpenAI
 

@@ -76,6 +76,7 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 - **Cloudflare AI Gateway**
 - **Cloudflare Workers AI**
 - **xAI**
+- **Ollama Cloud** (direct cloud API via `OLLAMA_API_KEY`)
 - **OpenRouter**
 - **Vercel AI Gateway**
 - **MiniMax**
@@ -1101,6 +1102,7 @@ Several providers require OAuth authentication instead of static API keys:
 - **Anthropic** (Claude Pro/Max subscription)
 - **OpenAI Codex** (ChatGPT Plus/Pro subscription, access to GPT-5.x Codex models)
 - **GitHub Copilot** (Copilot subscription)
+- **xAI** (SuperGrok or eligible X Premium subscription)
 
 For paid Cloud Code Assist subscriptions, set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` to your project ID.
 
@@ -1167,6 +1169,7 @@ import {
   loginAnthropic,
   loginOpenAICodex,
   loginGitHubCopilot,
+  loginXai,
   loginGeminiCli,
 
   // Token management
@@ -1231,6 +1234,10 @@ const response = await complete(model, {
 ### Provider Notes
 
 **OpenAI Codex**: Requires a ChatGPT Plus or Pro subscription. Provides access to GPT-5.x Codex models with extended context windows and reasoning capabilities. The library automatically handles session-based prompt caching when `sessionId` is provided in stream options. You can set `transport` in stream options to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. When using WebSocket with a `sessionId`, connections are reused per session and expire after 5 minutes of inactivity.
+
+**xAI**: Use `loginXai` for the SuperGrok/X Premium device flow, or set `XAI_API_KEY`. Both credential types use the `xai` provider ID.
+
+**Ollama Cloud**: Uses the OpenAI-compatible API at `https://ollama.com/v1`. Set `OLLAMA_API_KEY`; direct cloud model IDs such as `gpt-oss:120b` do not use the local `-cloud` suffix.
 
 **Prime Inference**: Uses the OpenAI-compatible API at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or pass an API key explicitly.
 

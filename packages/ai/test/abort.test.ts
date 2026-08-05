@@ -156,7 +156,7 @@ describe("AI Providers Abort Tests", () => {
 	});
 
 	describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("Anthropic Provider Abort", () => {
-		const llm = getModel("anthropic", "claude-opus-4-1-20250805");
+		const llm = getModel("anthropic", "claude-opus-4-5");
 
 		it("should abort mid-stream", { retry: 3 }, async () => {
 			await testAbortSignal(llm, { thinkingEnabled: true, thinkingBudgetTokens: 2048 });
@@ -164,6 +164,18 @@ describe("AI Providers Abort Tests", () => {
 
 		it("should handle immediate abort", { retry: 3 }, async () => {
 			await testImmediateAbort(llm, { thinkingEnabled: true, thinkingBudgetTokens: 2048 });
+		});
+	});
+
+	describe.skipIf(!process.env.OLLAMA_API_KEY)("Ollama Cloud Provider Abort", () => {
+		const llm = getModel("ollama-cloud", "gpt-oss:120b");
+
+		it("should abort mid-stream", { retry: 3 }, async () => {
+			await testAbortSignal(llm);
+		});
+
+		it("should handle immediate abort", { retry: 3 }, async () => {
+			await testImmediateAbort(llm);
 		});
 	});
 

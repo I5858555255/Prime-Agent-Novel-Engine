@@ -42,6 +42,7 @@ export type KnownProvider =
 	| "fireworks"
 	| "opencode"
 	| "opencode-go"
+	| "ollama-cloud"
 	| "kimi-coding"
 	| "cloudflare-workers-ai"
 	| "cloudflare-ai-gateway"
