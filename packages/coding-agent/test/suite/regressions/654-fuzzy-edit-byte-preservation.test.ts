@@ -309,4 +309,48 @@ describe("edit tool fuzzy byte preservation", () => {
 
 		expect(readFileSync(testFile, "utf-8")).toBe(`${prefix}end = 'r';${suffix}`);
 	});
+
+	it("keeps preceding trailing whitespace when a fuzzy match starts with a newline", async () => {
+		const harness = await createHarness({ tools: [editTool] });
+		harnesses.push(harness);
+		const testFile = join(harness.tempDir, "newline-start-fuzzy.txt");
+		const prefix = "header   ";
+		writeFileSync(testFile, `${prefix}\nfoo \u2018x\u2019;\n`);
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("edit", {
+					path: testFile,
+					edits: [{ oldText: "\nfoo 'x';", newText: "\nfoo 'y';" }],
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("apply the edit");
+
+		expect(readFileSync(testFile, "utf-8")).toBe(`${prefix}\nfoo 'y';\n`);
+	});
+
+	it("keeps preceding trailing whitespace when a fuzzy oldText opens with a whitespace-only line", async () => {
+		const harness = await createHarness({ tools: [editTool] });
+		harnesses.push(harness);
+		const testFile = join(harness.tempDir, "ws-line-start-fuzzy.txt");
+		const prefix = "header\t ";
+		writeFileSync(testFile, `${prefix}\nbar \u201Cy\u201D;\n`);
+
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("edit", {
+					path: testFile,
+					edits: [{ oldText: '  \nbar "y";', newText: '\nbar "z";' }],
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("apply the edit");
+
+		expect(readFileSync(testFile, "utf-8")).toBe(`${prefix}\nbar "z";\n`);
+	});
 });

@@ -120,6 +120,7 @@ function mapNormalizedBoundaryToOriginal(
 	normalizedLines: string[],
 	originalLineStarts: number[],
 	normalizedOffset: number,
+	kind: "start" | "end",
 ): number | undefined {
 	const boundary = getTextBoundary(normalizedLines, normalizedOffset);
 	if (boundary === undefined) return undefined;
@@ -127,6 +128,14 @@ function mapNormalizedBoundaryToOriginal(
 	const originalLine = originalLines[boundary.lineIndex];
 	const normalizedLine = normalizedLines[boundary.lineIndex];
 	if (!isCodePointBoundary(normalizedLine, boundary.column)) return undefined;
+
+	// Trailing whitespace adjacent to a span edge stays outside the span: a span
+	// STARTING at a normalized line end starts at the actual newline (past the
+	// line's trimmed trailing whitespace), while a span ENDING there stops before
+	// it (the earliest verified column below).
+	if (kind === "start" && boundary.column === normalizedLine.length) {
+		return originalLineStarts[boundary.lineIndex] + originalLine.length;
+	}
 
 	// Prefix comparisons must not trim: a boundary after interior whitespace
 	// (e.g. indentation) would never satisfy equality against the trimmed form.
@@ -224,12 +233,14 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 		normalizedLines,
 		originalLineStarts,
 		fuzzyIndex,
+		"start",
 	);
 	const originalEnd = mapNormalizedBoundaryToOriginal(
 		originalLines,
 		normalizedLines,
 		originalLineStarts,
 		fuzzyIndex + fuzzyOldText.length,
+		"end",
 	);
 	if (
 		originalStart === undefined ||
