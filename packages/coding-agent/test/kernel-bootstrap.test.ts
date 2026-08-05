@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_RLM_EXTRA_IMPORT_NAMES,
@@ -98,13 +98,15 @@ function writeFakePython(filePath: string, importableModules: readonly string[])
 	);
 }
 
-function installFakeUv(): string {
+function installFakeUv(win32 = false): string {
 	const binDir = join(tempDir, "bin");
 	mkdirSync(binDir, { recursive: true });
 	const logPath = join(tempDir, "uv.log");
 	const extraImportCases = DEFAULT_RLM_EXTRA_IMPORT_NAMES.map((moduleName) => `    "import ${moduleName}") exit 0 ;;`);
+	const venvBin = win32 ? "Scripts" : "bin";
+	const venvPython = win32 ? "python.exe" : "python";
 	process.env.UV_LOG = logPath;
-	process.env.PATH = `${binDir}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
+	process.env.PATH = `${binDir}${process.env.PATH ? `${delimiter}${process.env.PATH}` : ""}`;
 	writeExecutable(
 		join(binDir, "uv"),
 		[
@@ -116,8 +118,8 @@ function installFakeUv(): string {
 			"fi",
 			'if [ "$1" = "venv" ]; then',
 			'  venv="$2"',
-			'  mkdir -p "$venv/bin"',
-			"  cat > \"$venv/bin/python\" <<'PY'",
+			`  mkdir -p "$venv/${venvBin}"`,
+			`  cat > "$venv/${venvBin}/${venvPython}" <<'PY'`,
 			"#!/bin/sh",
 			'if [ "$1" = "-c" ]; then',
 			'  case "$2" in',
@@ -129,7 +131,7 @@ function installFakeUv(): string {
 			"fi",
 			"exit 0",
 			"PY",
-			'  chmod +x "$venv/bin/python"',
+			`  chmod +x "$venv/${venvBin}/${venvPython}"`,
 			"  exit 0",
 			"fi",
 			'if [ "$1" = "pip" ]; then',
@@ -200,6 +202,26 @@ describe("kernel bootstrap", () => {
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 			pythonSkills: [],
 		});
+		expect(version.runtime).toMatch(/^sha256:/);
+	});
+
+	it("bootstraps a missing venv with the Windows venv layout on win32", async () => {
+		const logPath = installFakeUv(true);
+		const venv = join(tempDir, "kernel-venv");
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+		const originalPlatform = process.platform;
+		Object.defineProperty(process, "platform", { value: "win32" });
+
+		try {
+			await expect(ensureKernelPython()).resolves.toBe(join(venv, "Scripts", "python.exe"));
+		} finally {
+			Object.defineProperty(process, "platform", { value: originalPlatform });
+		}
+
+		const log = readFileSync(logPath, "utf8");
+		expect(log).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(log).toContain("pip install --python");
+		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version.runtime).toMatch(/^sha256:/);
 	});
 
