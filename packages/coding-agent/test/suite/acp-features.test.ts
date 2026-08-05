@@ -602,6 +602,30 @@ describe("ACP mode preserves prime-agent features", () => {
 		harness.cleanup();
 	}, 30_000);
 
+	it("does not let an earlier failed turn reject a later one", async () => {
+		const harness = await createHarness();
+		harness.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "Connection error." })]);
+		const fixture = await connectAcp(harness);
+
+		// First turn fails and must be reported as a failure.
+		await expect(
+			fixture.agent.request("session/prompt", {
+				sessionId: fixture.sessionId,
+				prompt: [{ type: "text", text: "first" }],
+			}),
+		).rejects.toThrow();
+
+		// A slash command is handled without calling the model, so it appends no
+		// assistant message. Scanning the whole transcript would surface the earlier
+		// turn's error and wrongly reject this one.
+		const second = await fixture.agent.request("session/prompt", {
+			sessionId: fixture.sessionId,
+			prompt: [{ type: "text", text: "/compact" }],
+		});
+		expect(second.stopReason).toBe("end_turn");
+		harness.cleanup();
+	}, 30_000);
+
 	it("advertises prime-agent capabilities without polluting the ACP object root", async () => {
 		const harness = await createHarness();
 		const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));

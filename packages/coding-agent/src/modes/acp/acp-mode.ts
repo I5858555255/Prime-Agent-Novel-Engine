@@ -113,15 +113,20 @@ function autonomousMeta(status: AgentAutonomousStatus | undefined): Record<strin
 }
 
 /**
- * Error text from the turn's final assistant message, when it failed.
+ * Error text from an assistant message this turn produced, when it failed.
  *
  * `promptAndWait` resolves for a failed turn just as it does for a successful
- * one, so the outcome has to be read off the transcript. Returns undefined when
- * the turn ended normally.
+ * one, so the outcome has to be read off the transcript. Only messages appended
+ * at or after `sinceIndex` are considered: scanning the whole transcript would
+ * let an earlier failed turn reject a later turn that never called the model
+ * (a handled slash command, say), reporting a stale error.
+ *
+ * A transcript read that fails is not treated as success — that would restore
+ * the silent-success behavior this exists to prevent.
  */
-async function lastAssistantFailure(connection: AgentConnection): Promise<string | undefined> {
-	const messages = await connection.getMessages().catch(() => []);
-	for (let index = messages.length - 1; index >= 0; index--) {
+async function turnFailure(connection: AgentConnection, sinceIndex: number): Promise<string | undefined> {
+	const messages = await connection.getMessages();
+	for (let index = messages.length - 1; index >= sinceIndex; index--) {
 		const message = messages[index];
 		if (message?.role !== "assistant") continue;
 		const assistant = message as { stopReason?: string; errorMessage?: string };
@@ -249,6 +254,8 @@ export async function runAcpModeWithConnection(
 
 			try {
 				const { text, images } = promptContent(params.prompt);
+				// Only this turn's messages may decide its outcome.
+				const priorMessageCount = (await connection.getMessages()).length;
 				await connection.promptAndWait(text, images.length > 0 ? { images } : undefined);
 				// Autonomous gates continue inside this same prompt turn: the turn is
 				// only over once the gate loop settles.
@@ -267,7 +274,7 @@ export async function runAcpModeWithConnection(
 				// `stopReason: "error"` with its errorMessage; ACP previously dropped
 				// that and answered end_turn with no updates at all, which reads to a
 				// client as a successful but empty turn.
-				const failure = await lastAssistantFailure(connection);
+				const failure = await turnFailure(connection, priorMessageCount);
 				if (failure && !abort.signal.aborted) {
 					throw new Error(`prime-agent turn failed: ${failure}`);
 				}
