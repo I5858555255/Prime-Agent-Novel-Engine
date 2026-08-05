@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed GitHub Copilot Responses models failing with `service_tier is not supported` by omitting `service_tier` for that provider.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

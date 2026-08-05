@@ -46,6 +46,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 	return {
 		sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+		supportsServiceTier: model.compat?.supportsServiceTier ?? model.provider !== "github-copilot",
 	};
 }
 
@@ -244,7 +245,7 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		params.temperature = options?.temperature;
 	}
 
-	if (options?.serviceTier !== undefined) {
+	if (options?.serviceTier !== undefined && compat.supportsServiceTier) {
 		params.service_tier = options.serviceTier;
 	}
 
