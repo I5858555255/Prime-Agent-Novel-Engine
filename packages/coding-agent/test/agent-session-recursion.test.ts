@@ -853,6 +853,106 @@ describe("AgentSession rlm recursion", () => {
 		await expect(pendingSend).rejects.toThrow("child startup failed");
 	});
 
+	it("falls through a retained failed child name to a healthy roster child", async () => {
+		let releaseFailureInjection: () => void = () => {};
+		const failureInjectionGate = new Promise<void>((resolve) => {
+			releaseFailureInjection = resolve;
+		});
+		const sendAgentMessage = vi.fn(async (input: { target: string; message: string }) => ({
+			id: "agentmsg-healthy-child",
+			source: "agent_message" as const,
+			target: { activeSessionId: "healthy-active", sessionId: input.target },
+			message: input.message,
+			deliveryStatus: "delivered" as const,
+			deliveryMode: "auto" as const,
+		}));
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster: () => ({
+					current: { name: "root", id: root.sessionId, depth: 0 },
+					entries: [
+						{
+							relationship: "child" as const,
+							name: "shared-child",
+							id: "healthy-child-session",
+							depth: 1,
+							status: "idle" as const,
+						},
+					],
+				}),
+				sendAgentMessage,
+			},
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => {
+					throw new Error("child startup failed");
+				},
+				deleteRlmSubagentRuntime: async () => {},
+			},
+		});
+		const promptInjectedMessage = vi.fn(async () => failureInjectionGate);
+		(root as unknown as { _promptInjectedMessage: typeof promptInjectedMessage })._promptInjectedMessage =
+			promptInjectedMessage;
+		await root.runRlmChild("failing task", { name: "shared-child" });
+		await waitFor(() =>
+			[...(root as unknown as InspectableRlmSession)._activeRlmChildRuns.values()].some(
+				(run) => run.status === "error",
+			),
+		);
+		const handlers = (root as unknown as InspectableRlmSession)._createKernelHostHandlers();
+		const send = handlers["agent_message.send"];
+		if (!send) throw new Error("Missing agent_message.send host handler");
+
+		await expect(
+			send({ message: "hello", receiver_role: "child", receiver_name: "shared-child" }),
+		).resolves.toMatchObject({ message: "hello" });
+		expect(sendAgentMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ target: "healthy-child-session", message: "hello" }),
+		);
+		releaseFailureInjection();
+	});
+
+	it("falls through a delete-before-startup tombstone during a roled send", async () => {
+		let releaseRuntimeCreation: () => void = () => {};
+		const runtimeCreationGate = new Promise<void>((resolve) => {
+			releaseRuntimeCreation = resolve;
+		});
+		let runtimeCreationStarted = false;
+		const hostedChild = createSession();
+		const root = createSession({
+			agentMessageController: {
+				listAgents: () => ({ agents: [] }),
+				roster: () => ({
+					current: { name: "root", id: root.sessionId, depth: 0 },
+					entries: [],
+				}),
+				sendAgentMessage: async () => {
+					throw new Error("unexpected send");
+				},
+			},
+			subagentRuntimeHost: {
+				createRlmSubagentRuntime: async () => {
+					runtimeCreationStarted = true;
+					await runtimeCreationGate;
+					return { session: hostedChild };
+				},
+				deleteRlmSubagentRuntime: async (_id, child) => child?.disposeAsync(),
+			},
+		});
+		await root.runRlmChild("blocked startup", { name: "deleted-child" });
+		await waitFor(() => runtimeCreationStarted);
+		await root.deleteRlmSubagent("deleted-child");
+		const handlers = (root as unknown as InspectableRlmSession)._createKernelHostHandlers();
+		const send = handlers["agent_message.send"];
+		if (!send) throw new Error("Missing agent_message.send host handler");
+
+		await expect(send({ message: "hello", receiver_role: "child", receiver_name: "deleted-child" })).rejects.toThrow(
+			'No child matches "deleted-child"',
+		);
+		releaseRuntimeCreation();
+		await waitFor(() => (root as unknown as InspectableRlmSession)._activeRlmChildRuns.size === 0);
+	});
+
 	it("marks a broadcast delivery to the parent as replied without reloading the roster", async () => {
 		const roster = vi.fn(() => ({
 			current: { name: "child", id: "child-session", depth: 1 },
