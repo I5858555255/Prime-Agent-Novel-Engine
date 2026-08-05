@@ -47,6 +47,11 @@ function rawStdoutSink(): WritableStream<Uint8Array> {
 	});
 }
 
+function normalizeWindowsDriveLetter(path: string): string {
+	if (process.platform !== "win32" || !/^[A-Z]:/i.test(path)) return path;
+	return path.slice(0, 1).toLowerCase() + path.slice(1);
+}
+
 function canonicalCwd(path: string): string {
 	const resolved = resolve(path);
 	let canonical: string;
@@ -56,7 +61,7 @@ function canonicalCwd(path: string): string {
 		// Preserve the previous lexical comparison when a path is missing or inaccessible.
 		canonical = resolved;
 	}
-	return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+	return normalizeWindowsDriveLetter(canonical);
 }
 
 export interface AcpModeOptions {
