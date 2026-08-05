@@ -36,6 +36,20 @@ interface AcpFixture {
 	metaOf: (key: string) => any[];
 }
 
+/**
+ * Poll until `predicate` holds. Some turns are admitted rather than awaited
+ * (agent-message delivery returns at admission), so a fixed sleep would race the
+ * turn on a loaded machine.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	throw new Error("timed out waiting for the expected ACP updates");
+}
+
 async function connectAcp(harness: Harness): Promise<AcpFixture> {
 	const connection = new InProcessAgentConnection(runtimeHostFor(harness.session));
 	const toAgent = new TransformStream<Uint8Array, Uint8Array>();
@@ -189,12 +203,12 @@ describe("ACP mode preserves prime-agent features", () => {
 
 		// heartbeats_changed is connection-level; a session-event-only filter drops it.
 		await (connection as any).emit({ type: "heartbeats_changed" });
-		await new Promise((resolve) => setTimeout(resolve, 50));
-
-		const flags = updates
-			.map((u) => u.update?._meta?.[PRIME_AGENT_META_NAMESPACE]?.heartbeatsChanged)
-			.filter((value) => value !== undefined);
-		expect(flags, "heartbeat changes must reach the ACP client").toContain(true);
+		const flags = () =>
+			updates
+				.map((u) => u.update?._meta?.[PRIME_AGENT_META_NAMESPACE]?.heartbeatsChanged)
+				.filter((value) => value !== undefined);
+		await waitFor(() => flags().includes(true));
+		expect(flags(), "heartbeat changes must reach the ACP client").toContain(true);
 		harness.cleanup();
 	}, 30_000);
 
@@ -326,7 +340,7 @@ describe("ACP mode preserves prime-agent features", () => {
 		// Drive a genuine compaction rather than synthesizing the event.
 		const result = await harness.session.compact();
 		expect(result.summary).toBe("compacted for ACP");
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await waitFor(() => fixture.metaOf("compaction").length > 0);
 
 		const compaction = fixture.metaOf("compaction");
 		expect(compaction.length, "compaction must reach the ACP client").toBeGreaterThan(0);
@@ -343,7 +357,7 @@ describe("ACP mode preserves prime-agent features", () => {
 			sessionId: fixture.sessionId,
 			prompt: [{ type: "text", text: "start" }],
 		});
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await waitFor(() => fixture.metaOf("goal").length > 0);
 
 		const goals = fixture.metaOf("goal");
 		expect(goals.length, "goal state must reach the ACP client").toBeGreaterThan(0);
@@ -393,7 +407,7 @@ describe("ACP mode preserves prime-agent features", () => {
 				prompt: [{ type: "text", text: "remember this" }],
 			});
 			await harness.session.refine({ global: true });
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await waitFor(() => fixture.metaOf("refinement").length > 0);
 
 			const refinements = fixture.metaOf("refinement");
 			expect(refinements.length, "refinement outcome must reach the ACP client").toBeGreaterThan(0);
@@ -533,7 +547,11 @@ describe("ACP mode preserves prime-agent features", () => {
 		// session/prompt in flight. Those are the turns a long-running harness most
 		// needs to observe, so they must still stream.
 		await harness.session.prompt("out-of-band turn");
-		await new Promise((resolve) => setTimeout(resolve, 80));
+		await waitFor(() =>
+			fixture.updates.some(
+				(u) => u.update?.sessionUpdate === "agent_message_chunk" && String(u.update.content?.text ?? "").length > 0,
+			),
+		);
 
 		const text = fixture.updates
 			.filter((u) => u.update?.sessionUpdate === "agent_message_chunk")
@@ -550,16 +568,18 @@ describe("ACP mode preserves prime-agent features", () => {
 
 		// A2A delivery arrives as a prompt from another agent, not from the ACP
 		// client. Both the injected message and the resulting turn must be visible.
+		// Delivery resolves at admission, not at turn completion, so wait for the
+		// streamed result instead of assuming it lands inside a fixed sleep.
 		await harness.session.acceptAgentMessagePrompt("Agent-to-agent message received.\n\nplease ack");
-		await new Promise((resolve) => setTimeout(resolve, 80));
+		const streamedText = () =>
+			fixture.updates
+				.filter((u) => u.update?.sessionUpdate === "agent_message_chunk")
+				.map((u) => u.update.content.text)
+				.join("");
+		await waitFor(() => streamedText().includes("acknowledged the sibling"));
 
-		const kinds = fixture.updates.map((u) => u.update?.sessionUpdate);
-		const text = fixture.updates
-			.filter((u) => u.update?.sessionUpdate === "agent_message_chunk")
-			.map((u) => u.update.content.text)
-			.join("");
-		expect(kinds.length, "inbound agent messages must produce ACP updates").toBeGreaterThan(0);
-		expect(text).toContain("acknowledged the sibling");
+		expect(fixture.updates.length, "inbound agent messages must produce ACP updates").toBeGreaterThan(0);
+		expect(streamedText()).toContain("acknowledged the sibling");
 		harness.cleanup();
 	}, 30_000);
 
