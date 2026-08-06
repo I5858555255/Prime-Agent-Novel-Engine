@@ -493,9 +493,13 @@ function createClient(
 				}
 			: headers;
 
+	const alibabaTokenPlanBaseUrl =
+		typeof process !== "undefined" ? process.env.ALIBABA_TOKEN_PLAN_BASE_URL?.trim().replace(/\/+$/, "") : undefined;
+	const baseUrl = model.provider === "alibaba-token-plan" ? alibabaTokenPlanBaseUrl || model.baseUrl : model.baseUrl;
+
 	return new OpenAI({
 		apiKey,
-		baseURL: isCloudflareProvider(model.provider) ? resolveCloudflareBaseUrl(model) : model.baseUrl,
+		baseURL: isCloudflareProvider(model.provider) ? resolveCloudflareBaseUrl(model) : baseUrl,
 		dangerouslyAllowBrowser: true,
 		defaultHeaders,
 	});

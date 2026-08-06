@@ -1070,6 +1070,9 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` |
+| ClinePass (Cline API) | `CLINE_API_KEY` |
+| Meta Model API | `MODEL_API_KEY` |
+| Alibaba Cloud Model Studio Token Plan | `ALIBABA_TOKEN_PLAN_API_KEY`; optional `ALIBABA_TOKEN_PLAN_BASE_URL` |
 | GitHub Copilot | `COPILOT_GITHUB_TOKEN` or `GH_TOKEN` or `GITHUB_TOKEN` |
 
 When set, the library automatically uses these keys:
@@ -1235,6 +1238,13 @@ const response = await complete(model, {
 **Prime Inference**: Uses the OpenAI-compatible API at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or pass an API key explicitly.
 
 **Azure OpenAI (Responses)**: Uses the Responses API only. Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` supports both `https://<resource>.openai.azure.com` and `https://<resource>.cognitiveservices.azure.com`; root endpoints are normalized to `.../openai/v1` automatically. Use `AZURE_OPENAI_API_VERSION` (defaults to `v1`) to override the API version if needed. Deployment names are treated as model IDs by default, override with `azureDeploymentName` or `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` using comma-separated `model-id=deployment` pairs (for example `gpt-4o-mini=my-deployment,gpt-4o=prod`). Legacy deployment-based URLs are intentionally unsupported.
+
+**ClinePass**: Uses OpenAI-compatible Chat Completions at `https://api.cline.bot/api/v1` with full `cline-pass/...` model slugs. The catalog follows Cline's maintained ClinePass allowlist in models.dev.
+
+**Meta Model API**: Uses the Responses API at `https://api.meta.ai/v1` so encrypted reasoning can be replayed across tool-call turns. Requests are stateless (`store: false`) and Muse Spark reasoning cannot be disabled. The contributor-tier model may use prompts and completions for model improvement.
+
+**Alibaba Cloud Model Studio Token Plan**: Uses the Singapore Token Plan OpenAI-compatible endpoint with a dedicated `sk-sp-` credential. It is separate from pay-as-you-go and Coding Plan. `ALIBABA_TOKEN_PLAN_BASE_URL` overrides the endpoint. Qwen reasoning levels map to `enable_thinking`; prepaid Credit billing is represented with unknown zero cost rather than pay-as-you-go prices.
+
 
 **GitHub Copilot**: If you get "The requested model is not supported" error, enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click "Enable".
 

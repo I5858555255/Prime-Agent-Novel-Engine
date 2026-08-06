@@ -109,6 +109,9 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 - Xiaomi MiMo Token Plan (China)
 - Xiaomi MiMo Token Plan (Amsterdam)
 - Xiaomi MiMo Token Plan (Singapore)
+- ClinePass (Cline API)
+- Meta Model API
+- Alibaba Cloud Model Studio Token Plan
 
 See [docs/providers.md](docs/providers.md) for detailed setup instructions.
 
@@ -677,6 +680,10 @@ prime-agent --thinking high "Solve this complex problem"
 | `PRIME_AGENT_DOWNLOAD_BASE_URL` | Override the Prime Agent release manifest and tarball base URL |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
 | `PRIME_API_KEY` | Prime Inference API key; also used for trace sharing if it has `agent_traces` scope |
+| `CLINE_API_KEY` | Cline API key for the `cline-pass` provider |
+| `MODEL_API_KEY` | Meta Model API key for the `meta` provider |
+| `ALIBABA_TOKEN_PLAN_API_KEY` | Dedicated Alibaba Model Studio Token Plan key for `alibaba-token-plan` |
+| `ALIBABA_TOKEN_PLAN_BASE_URL` | Optional Alibaba Token Plan OpenAI-compatible base URL override |
 | `PRIME_AGENT_TRACES_API_KEY` | Prime API key used only for opt-in trace sharing |
 | `PRIME_AGENT_TRACES_BASE_URL` | Override the Prime Agent trace upload API base URL |
 | `PRIME_AGENT_KERNEL_PYTHON` | Use an existing Python environment with `ipykernel` instead of auto-bootstrapping `~/.prime/agent/kernel-venv` |
