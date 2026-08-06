@@ -57,6 +57,7 @@ beforeEach(() => {
 	vi.stubEnv("SSH_CONNECTION", "");
 	vi.stubEnv("SSH_CLIENT", "");
 	vi.stubEnv("MOSH_CONNECTION", "");
+	vi.stubEnv("HERDR_ENV", "");
 	stdoutWrites = [];
 	nativeResolved = false;
 	mocks.clipboard.setText.mockReset();
@@ -103,6 +104,16 @@ describe("copyToClipboard", () => {
 			expect(osc52Writes()).toHaveLength(0);
 			nativeResolved = true;
 		});
+
+		await copyToClipboard("hello");
+
+		expect(nativeResolved).toBe(true);
+		expect(osc52Writes()).toHaveLength(1);
+		expect(mockedExecSync).not.toHaveBeenCalled();
+	});
+
+	test("Herdr session emits OSC 52 after native write", async () => {
+		vi.stubEnv("HERDR_ENV", "1");
 
 		await copyToClipboard("hello");
 

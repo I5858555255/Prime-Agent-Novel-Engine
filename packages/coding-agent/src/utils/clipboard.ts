@@ -20,7 +20,7 @@ function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
 const MAX_OSC52_ENCODED_LENGTH = 100_000;
 
 function isRemoteSession(env: NodeJS.ProcessEnv = process.env): boolean {
-	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION);
+	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION || env.HERDR_ENV === "1");
 }
 
 function emitOsc52(text: string): boolean {
