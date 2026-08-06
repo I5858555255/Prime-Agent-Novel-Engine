@@ -3900,6 +3900,17 @@ describe("InteractiveMode tray location label", () => {
 
 		expect(getTrayLocationLabel.call(fakeThis)).toBe("cwd ~/workspace/prime-agent  GPT-5.6 Sol • medium");
 	});
+
+	test("preserves existing tray labels around the current session cwd", () => {
+		const fakeThis = createHarness("/tmp/project");
+		fakeThis.options = { sessionDepth: 2, sessionHasChildren: true };
+		fakeThis.getAgentsViewTrayHint = () => "agents/resume";
+		fakeThis.getShortcutsTrayHint = () => "shortcuts";
+
+		expect(getTrayLocationLabel.call(fakeThis)).toBe(
+			"agents/resume  cwd /tmp/project  depth 2  GPT-5.6 Sol • medium  shortcuts",
+		);
+	});
 });
 
 describe("InteractiveMode goal status announcements", () => {
