@@ -38,6 +38,8 @@ function colorStatus(status: DaemonStatus, value: string): string {
 			return chalk.green(value);
 		case "stale":
 			return chalk.yellow(value);
+		case "broken-runtime":
+			return chalk.red(value);
 		case "unreachable":
 			return chalk.red(value);
 		case "orphan-file":

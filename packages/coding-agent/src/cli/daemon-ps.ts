@@ -36,7 +36,7 @@ import { promptYesNo } from "./daemon-stop-confirm.js";
  * older build (a new protocol command would not).
  */
 
-export type DaemonStatus = "current" | "stale" | "unreachable" | "orphan-file";
+export type DaemonStatus = "current" | "stale" | "broken-runtime" | "unreachable" | "orphan-file";
 
 export interface DiscoveredDaemonProcess {
 	pid: number;
@@ -62,9 +62,10 @@ export interface DaemonInfo {
 
 const STATUS_ORDER: Record<DaemonStatus, number> = {
 	current: 0,
-	stale: 1,
-	unreachable: 2,
-	"orphan-file": 3,
+	"broken-runtime": 1,
+	stale: 2,
+	unreachable: 3,
+	"orphan-file": 4,
 };
 const SHUTDOWN_QUIET_PERIOD_MS = 1000;
 const SHUTDOWN_CONVERGENCE_TIMEOUT_MS = 10_000;
@@ -318,6 +319,31 @@ function classifyReachable(probe: ProbeResult): DaemonStatus {
 	return "stale";
 }
 
+/**
+ * A reachable daemon spawns every session worker with its own cached
+ * `process.execPath` and entrypoint (see createCliSubprocessLaunchSpec). When
+ * either path was removed from disk after the daemon started — a Homebrew
+ * Node upgrade deletes the old Cellar binary — the daemon still answers
+ * status queries while every worker spawn fails with ENOENT (#704). Surface
+ * that as "broken-runtime" instead of reporting the daemon healthy.
+ */
+export function classifyRuntimeHealth(
+	status: DaemonStatus,
+	runtime: { executablePath?: string; entrypointPath?: string } | undefined,
+	pathExists: (path: string) => boolean = existsSync,
+): DaemonStatus {
+	if (status !== "current" && status !== "stale") {
+		return status;
+	}
+	const spawnPaths = [runtime?.executablePath, runtime?.entrypointPath].filter(
+		(path): path is string => typeof path === "string" && path.length > 0,
+	);
+	if (spawnPaths.length === 0) {
+		return status;
+	}
+	return spawnPaths.every((path) => pathExists(path)) ? status : "broken-runtime";
+}
+
 export function verifyHelloSupervisorPid(
 	pid: number | undefined,
 	expectedProcessStartId: string | undefined,
@@ -368,7 +394,7 @@ export async function discoverDaemons(): Promise<DaemonInfo[]> {
 			const pid = proc?.pid ?? verifyHelloSupervisorPid(probe.supervisorPid, probe.supervisorProcessStartId);
 			const hasTrackedWorkers = workerSockets.has(socketPath);
 			const status: DaemonStatus = probe.reachable
-				? classifyReachable(probe)
+				? classifyRuntimeHealth(classifyReachable(probe), probe.runtime)
 				: proc || hasTrackedWorkers
 					? "unreachable"
 					: "orphan-file";
