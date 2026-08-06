@@ -452,6 +452,15 @@ export class SettingsManager {
 			delete retrySettings.maxDelayMs;
 		}
 
+		if (typeof settings.telemetry === "boolean") {
+			settings.telemetry = { enabled: settings.telemetry };
+		} else if (
+			settings.telemetry !== undefined &&
+			(typeof settings.telemetry !== "object" || settings.telemetry === null || Array.isArray(settings.telemetry))
+		) {
+			delete settings.telemetry;
+		}
+
 		return settings as Settings;
 	}
 
@@ -822,11 +831,16 @@ export class SettingsManager {
 		return this.settings.telemetry?.enabled ?? true;
 	}
 
-	setTelemetryEnabled(enabled: boolean): void {
-		if (!this.globalSettings.telemetry) {
+	private getOrCreateGlobalTelemetrySettings(): TelemetrySettings {
+		const telemetry = this.globalSettings.telemetry;
+		if (typeof telemetry !== "object" || telemetry === null || Array.isArray(telemetry)) {
 			this.globalSettings.telemetry = {};
 		}
-		this.globalSettings.telemetry.enabled = enabled;
+		return this.globalSettings.telemetry!;
+	}
+
+	setTelemetryEnabled(enabled: boolean): void {
+		this.getOrCreateGlobalTelemetrySettings().enabled = enabled;
 		this.markModified("telemetry", "enabled");
 		this.save();
 	}
@@ -836,10 +850,7 @@ export class SettingsManager {
 	}
 
 	setTelemetryNoticeShown(shown: boolean): void {
-		if (!this.globalSettings.telemetry) {
-			this.globalSettings.telemetry = {};
-		}
-		this.globalSettings.telemetry.noticeShown = shown;
+		this.getOrCreateGlobalTelemetrySettings().noticeShown = shown;
 		this.markModified("telemetry", "noticeShown");
 		this.save();
 	}

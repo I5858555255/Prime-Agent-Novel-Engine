@@ -211,11 +211,7 @@ export async function createAgentSessionServices(
 	await resourceLoader.reload();
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
-	if (
-		!options.noBuiltinHerdrReporter &&
-		isTelemetryEnabled(settingsManager) &&
-		!settingsManager.getTelemetryNoticeShown()
-	) {
+	if (isTelemetryEnabled(settingsManager) && !settingsManager.getTelemetryNoticeShown()) {
 		diagnostics.push({
 			type: "info",
 			message:
@@ -299,7 +295,7 @@ export async function createAgentSessionFromServices(
 		serializedRefine: options.serializedRefine,
 		initialGoal: options.initialGoal,
 	});
-	if ((options.rlmDepth ?? 0) === 0) {
+	if (result.session.rlmDepth === 0) {
 		installAgentTelemetry(result.session, {
 			agentDir: options.services.agentDir,
 			settingsManager: options.services.settingsManager,

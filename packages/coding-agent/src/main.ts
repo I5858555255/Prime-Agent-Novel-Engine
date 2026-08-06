@@ -1066,7 +1066,7 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 	}
 	time("parseArgs");
-	let appMode = resolveAppMode(parsed, process.stdin.isTTY);
+	const appMode = resolveAppMode(parsed, process.stdin.isTTY);
 
 	if (shouldRejectNonInteractiveAttach(publicCommand.attachAgent, appMode)) {
 		console.error(chalk.red("Error: attach requires an interactive terminal"));
@@ -1327,12 +1327,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 		const startupModel = await resolvePreparedStartupModel({ prepared, sessionManager });
 
-		// ACP holds stdin open as a long-lived NDJSON request stream, so reading
-		// piped stdin here would block until EOF and never return.
-		let stdinContent: string | undefined;
-		if (appMode !== "acp") {
-			stdinContent = await readPipedStdin();
-		}
+		const stdinContent = await readPipedStdin();
 		time("readPipedStdin");
 
 		const { initialMessage, initialImages } = await prepareInitialMessage(
@@ -1590,9 +1585,6 @@ export async function main(args: string[], options?: MainOptions) {
 	let stdinContent: string | undefined;
 	if (appMode !== "rpc" && appMode !== "acp" && appMode !== "daemon") {
 		stdinContent = await readPipedStdin();
-		if (stdinContent !== undefined && appMode === "interactive") {
-			appMode = "print";
-		}
 	}
 	time("readPipedStdin");
 

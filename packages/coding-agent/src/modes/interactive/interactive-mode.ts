@@ -124,7 +124,11 @@ import {
 	parseSlashCommand,
 	resolveBuiltinSlashCommandName,
 } from "../../core/slash-commands.js";
-import { captureOnboardingCompleted, type TelemetryOnboardingOutcome } from "../../core/telemetry.js";
+import {
+	captureAgentCommandUsed,
+	captureOnboardingCompleted,
+	type TelemetryOnboardingOutcome,
+} from "../../core/telemetry.js";
 import { type TruncationResult, truncateTail } from "../../core/tools/truncate.js";
 import { PRIME_BUTTERFLY_LOGO } from "../../themes/prime-logo.js";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog.js";
@@ -4612,6 +4616,13 @@ export class InteractiveMode {
 					});
 					this.ui.requestRender();
 					return;
+				}
+				if (commandName) {
+					void captureAgentCommandUsed({
+						agentDir: getAgentDir(),
+						settingsManager: this.settingsManager,
+						commandName,
+					}).catch(() => {});
 				}
 
 				// Handle commands

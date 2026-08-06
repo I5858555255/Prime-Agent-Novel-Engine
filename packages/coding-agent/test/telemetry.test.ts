@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession, AgentSessionEvent } from "../src/core/agent-session.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import {
+	captureAgentCommandUsed,
 	captureOnboardingCompleted,
 	getOrCreateTelemetryInstallationId,
 	installAgentTelemetry,
@@ -111,6 +112,21 @@ describe("telemetry identity and transport", () => {
 		expect(statSync(path).mode & 0o777).toBe(0o600);
 	});
 
+	it("replaces invalid persisted installation state", () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "prime-agent-telemetry-"));
+		const path = join(agentDir, "telemetry.json");
+		writeFileSync(path, "not-json");
+		const randomId = uuidGenerator();
+
+		const installationId = getOrCreateTelemetryInstallationId(agentDir, randomId);
+
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+			version: 1,
+			installationId,
+		});
+		expect(getOrCreateTelemetryInstallationId(agentDir, randomId)).toBe(installationId);
+	});
+
 	it("batches events through the configured Prime endpoint", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "prime-agent-telemetry-"));
 		const requests: Array<{ url: string; init: RequestInit }> = [];
@@ -164,6 +180,28 @@ describe("telemetry identity and transport", () => {
 		await expect(client.flush()).resolves.toBeUndefined();
 	});
 
+	it("drains every queued batch before flush resolves", async () => {
+		const batchSizes: number[] = [];
+		const client = new TelemetryClient({
+			agentDir: mkdtempSync(join(tmpdir(), "prime-agent-telemetry-")),
+			fetch: async (_input, init) => {
+				const body = JSON.parse(String(init?.body)) as { events: TelemetryEvent[] };
+				batchSizes.push(body.events.length);
+				return new Response(null, { status: 204 });
+			},
+			randomId: uuidGenerator(),
+			batchSize: 2,
+		});
+
+		for (let index = 0; index < 5; index++) {
+			client.capture("agent started", { index });
+		}
+		await client.flush();
+
+		expect(batchSizes.reduce((total, size) => total + size, 0)).toBe(5);
+		expect(batchSizes.every((size) => size <= 2)).toBe(true);
+	});
+
 	it("never throws when the local telemetry state cannot be written", async () => {
 		const parent = mkdtempSync(join(tmpdir(), "prime-agent-telemetry-"));
 		const agentDir = join(parent, "not-a-directory");
@@ -201,9 +239,51 @@ describe("telemetry controls", () => {
 		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
 		expect(isTelemetryEnabled(settings)).toBe(true);
 	});
+
+	it("normalizes malformed telemetry settings before updating them", async () => {
+		const settings = SettingsManager.inMemory({ telemetry: true as never });
+		const disabledSettings = SettingsManager.inMemory({ telemetry: false as never });
+
+		expect(disabledSettings.getTelemetryEnabled()).toBe(false);
+		expect(() => settings.setTelemetryNoticeShown(true)).not.toThrow();
+		expect(() => settings.setTelemetryEnabled(false)).not.toThrow();
+		await settings.flush();
+
+		expect(settings.getGlobalSettings().telemetry).toEqual({
+			noticeShown: true,
+			enabled: false,
+		});
+	});
 });
 
 describe("agent telemetry aggregation", () => {
+	it("captures only allowlisted built-in command names", async () => {
+		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
+		const sink = new FakeTelemetrySink();
+
+		await captureAgentCommandUsed({
+			agentDir: "/not-used",
+			settingsManager: SettingsManager.inMemory(),
+			commandName: "model",
+			sink,
+		});
+		await captureAgentCommandUsed({
+			agentDir: "/not-used",
+			settingsManager: SettingsManager.inMemory(),
+			commandName: "private-extension-command",
+			sink,
+		});
+
+		expect(sink.events).toContainEqual({
+			name: "agent command used",
+			properties: expect.objectContaining({
+				execution_mode: "interactive",
+				command_name: "model",
+			}),
+		});
+		expect(sink.events).toHaveLength(1);
+	});
+
 	it("captures onboarding completion with categorized auth and provider data", async () => {
 		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
 		const sink = new FakeTelemetrySink();

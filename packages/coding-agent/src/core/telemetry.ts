@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
@@ -8,6 +8,7 @@ import type { AgentSession, AgentSessionEvent } from "./agent-session.js";
 import type { AgentExecutionMode } from "./agent-session-config.js";
 import type { AuthCredential, AuthStatus } from "./auth-storage.js";
 import type { SettingsManager } from "./settings-manager.js";
+import { isBuiltinSlashCommandName, resolveBuiltinSlashCommandName } from "./slash-commands.js";
 
 const DEFAULT_TELEMETRY_ENDPOINT = "https://api.primeintellect.ai/api/v1/agent-analytics/events";
 const TELEMETRY_STATE_FILE = "telemetry.json";
@@ -22,6 +23,7 @@ type TelemetryProperties = Record<string, TelemetryPrimitive>;
 export type TelemetryEventName =
 	| "agent started"
 	| "onboarding completed"
+	| "agent command used"
 	| "agent run completed"
 	| "agent session ended";
 
@@ -89,6 +91,15 @@ export interface CaptureOnboardingCompletedOptions {
 	provider?: string;
 	authSource?: AuthStatus["source"];
 	storedCredentialType?: AuthCredential["type"];
+	sink?: TelemetrySink;
+	now?: () => number;
+	randomId?: () => string;
+}
+
+export interface CaptureAgentCommandUsedOptions {
+	agentDir: string;
+	settingsManager: SettingsManager;
+	commandName: string;
 	sink?: TelemetrySink;
 	now?: () => number;
 	randomId?: () => string;
@@ -226,11 +237,13 @@ function readInstallationId(path: string): string | undefined {
 
 export function getOrCreateTelemetryInstallationId(agentDir: string, randomId: () => string = randomUUID): string {
 	const path = join(agentDir, TELEMETRY_STATE_FILE);
+	let replaceInvalidState = false;
 	if (existsSync(path)) {
 		const existing = readInstallationId(path);
 		if (existing) {
 			return existing;
 		}
+		replaceInvalidState = true;
 	}
 
 	const installationId = randomId();
@@ -245,9 +258,10 @@ export function getOrCreateTelemetryInstallationId(agentDir: string, randomId: (
 	try {
 		writeFileSync(path, JSON.stringify(state, null, 2), {
 			encoding: "utf8",
-			flag: "wx",
+			flag: replaceInvalidState ? "w" : "wx",
 			mode: 0o600,
 		});
+		chmodSync(path, 0o600);
 		return installationId;
 	} catch (error) {
 		const code =
@@ -327,22 +341,37 @@ export class TelemetryClient implements TelemetrySink {
 		}
 		if (this.flushInFlight) {
 			await this.flushInFlight;
+			if (this.queue.length > 0) {
+				await this.flush();
+			}
+			return;
 		}
 		if (this.queue.length === 0 || !this.installationId) {
 			return;
 		}
 
-		const events = this.queue.splice(0, this.batchSize);
-		const batch: TelemetryBatch = {
-			installation_id: this.installationId,
-			events,
-		};
-		this.flushInFlight = this.send(batch).finally(() => {
-			this.flushInFlight = undefined;
-		});
-		await this.flushInFlight;
+		const drain = this.drainQueue();
+		this.flushInFlight = drain;
+		try {
+			await drain;
+		} finally {
+			if (this.flushInFlight === drain) {
+				this.flushInFlight = undefined;
+			}
+		}
 		if (this.queue.length > 0) {
-			this.scheduleFlush();
+			await this.flush();
+		}
+	}
+
+	private async drainQueue(): Promise<void> {
+		while (this.queue.length > 0 && this.installationId) {
+			const events = this.queue.splice(0, this.batchSize);
+			const batch: TelemetryBatch = {
+				installation_id: this.installationId,
+				events,
+			};
+			await this.send(batch);
 		}
 	}
 
@@ -457,6 +486,28 @@ export async function captureOnboardingCompleted(options: CaptureOnboardingCompl
 		outcome: options.outcome,
 		auth_category: telemetryAuthCategory(options.authSource, options.storedCredentialType),
 		provider_category: telemetryProviderCategory(options.provider),
+	});
+	await sink.flush();
+}
+
+export async function captureAgentCommandUsed(options: CaptureAgentCommandUsedOptions): Promise<void> {
+	if (!isBuiltinSlashCommandName(options.commandName) || !isTelemetryEnabled(options.settingsManager)) {
+		return;
+	}
+	const commandName = resolveBuiltinSlashCommandName(options.commandName);
+
+	const now = options.now ?? Date.now;
+	const randomId = options.randomId ?? randomUUID;
+	const sink =
+		options.sink ??
+		new TelemetryClient({
+			agentDir: options.agentDir,
+			now,
+			randomId,
+		});
+	sink.capture("agent command used", {
+		...baseProperties("interactive"),
+		command_name: commandName,
 	});
 	await sink.flush();
 }
