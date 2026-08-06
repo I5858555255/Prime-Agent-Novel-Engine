@@ -1101,6 +1101,7 @@ Several providers require OAuth authentication instead of static API keys:
 - **Anthropic** (Claude Pro/Max subscription)
 - **OpenAI Codex** (ChatGPT Plus/Pro subscription, access to GPT-5.x Codex models)
 - **GitHub Copilot** (Copilot subscription)
+- **xAI SuperGrok** (SuperGrok / X Premium subscription, device login)
 
 For paid Cloud Code Assist subscriptions, set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` to your project ID.
 
@@ -1167,6 +1168,7 @@ import {
   loginAnthropic,
   loginOpenAICodex,
   loginGitHubCopilot,
+  loginXai,
   loginGeminiCli,
 
   // Token management

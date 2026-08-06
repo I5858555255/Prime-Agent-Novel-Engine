@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Added SuperGrok / X Premium OAuth device login for the xAI provider.
+- Changed the default xAI model to `grok-4.5`.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
