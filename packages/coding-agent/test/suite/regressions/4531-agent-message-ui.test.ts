@@ -581,6 +581,70 @@ describe("ENG-4531 agent message UI", () => {
 		expect(stripAnsi(component.render(120).join("\n"))).not.toContain("· Continue with shard eight.");
 	});
 
+	it("keeps broadcast receipt lists with failed deliveries visible next to sent messages", () => {
+		const receipts =
+			"{'receipts': [{'id': 'agentmsg_4531_broadcast',\n" +
+			"   'deliveryStatus': 'delivered',\n" +
+			"   'message': 'Status check.'},\n" +
+			"  {'target': 'worker-two', 'error': 'session is inactive'}]}";
+		const component = new IPythonCellComponent({
+			code: 'await agent_message.send("all", "Status check.")',
+			executionStarted: true,
+			argsComplete: true,
+			expanded: true,
+			details: {
+				status: "ok",
+				result: receipts,
+				sentAgentMessages: [
+					{
+						id: "agentmsg_4531_broadcast",
+						message: "Status check.",
+						deliveryStatus: "delivered",
+						receiverRole: "child",
+						target: {
+							activeSessionId: "worker-active",
+							sessionId: "worker-session",
+							sessionName: "Worker",
+						},
+					},
+				],
+			},
+		});
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain(" ◆ Agent message sent · to child Worker");
+		expect(rendered).toContain("'error': 'session is inactive'");
+	});
+
+	it("keeps results that merely mention a sent-message id visible", () => {
+		const component = new IPythonCellComponent({
+			code: "record_reply()",
+			executionStarted: true,
+			argsComplete: true,
+			expanded: true,
+			details: {
+				status: "ok",
+				result: "{'referenced_message': 'agentmsg_4531_ref', 'answer': 42}",
+				sentAgentMessages: [
+					{
+						id: "agentmsg_4531_ref",
+						message: "Ping.",
+						deliveryStatus: "delivered",
+						receiverRole: "parent",
+						target: {
+							activeSessionId: "worker-active",
+							sessionId: "worker-session",
+							sessionName: "Worker",
+						},
+					},
+				],
+			},
+		});
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("'answer': 42");
+	});
+
 	it("keeps unrelated results visible next to sent messages", () => {
 		const component = new IPythonCellComponent({
 			code: 'await agent_message.send("Ping.", receiver_role="parent")\n"done"',
