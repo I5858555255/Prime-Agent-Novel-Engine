@@ -8,6 +8,18 @@ describe("keybinding hint formatting", () => {
 		expect(formatKeyText("shift+ctrl+p/alt+up", "darwin")).toBe("Shift+Ctrl+P/Option+↑");
 	});
 
+	it("labels the Command key as Cmd on macOS", () => {
+		expect(formatKeyText("super+v", "darwin")).toBe("Cmd+V");
+		expect(formatKeyText("super+shift+v", "darwin")).toBe("Cmd+Shift+V");
+		expect(formatKeyText("ctrl+super+p", "darwin")).toBe("Ctrl+Cmd+P");
+	});
+
+	it("keeps the Super modifier literal on linux and Windows", () => {
+		expect(formatKeyText("super+v", "linux")).toBe("Super+V");
+		expect(formatKeyText("super+v", "win32")).toBe("Super+V");
+		expect(formatKeyText("super+shift+v", "linux")).toBe("Super+Shift+V");
+	});
+
 	it("keeps canonical modifier names on linux", () => {
 		expect(formatKeyText("ctrl+p", "linux")).toBe("Ctrl+P");
 		expect(formatKeyText("alt+enter", "linux")).toBe("Alt+Enter");

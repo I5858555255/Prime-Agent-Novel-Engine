@@ -1,7 +1,7 @@
 import type { AutocompleteProvider, EditorTheme, OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import { CURSOR_MARKER, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.js";
+import { defaultPasteImageKeys, KeybindingsManager } from "../src/core/keybindings.js";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.js";
 
 const passthrough = (text: string) => text;
@@ -90,6 +90,26 @@ describe("CustomEditor", () => {
 		editor.handleInput("\x1b");
 
 		expect(editor.isShowingAutocomplete()).toBe(false);
+		expect(handler).toHaveBeenCalledTimes(1);
+	});
+
+	it("triggers clipboard image paste on the platform-default paste key", () => {
+		const editor = new CustomEditor(fakeTui, editorTheme, new KeybindingsManager());
+		const handler = vi.fn();
+		editor.onPasteImage = handler;
+
+		const pasteKey = defaultPasteImageKeys();
+		if (pasteKey === "super+v") {
+			// macOS: Command+V arrives as a Kitty CSI-u sequence with the super modifier.
+			editor.handleInput("\x1b[118;9u");
+			// Control+V must no longer trigger image paste on macOS.
+			editor.handleInput("\x16");
+		} else if (pasteKey === "ctrl+v") {
+			editor.handleInput("\x16");
+		} else {
+			editor.handleInput("\x1b[118;3u"); // Windows: alt+v
+		}
+
 		expect(handler).toHaveBeenCalledTimes(1);
 	});
 

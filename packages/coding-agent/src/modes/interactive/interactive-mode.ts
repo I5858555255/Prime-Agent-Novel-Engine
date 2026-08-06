@@ -4141,7 +4141,7 @@ export class InteractiveMode {
 			}
 		};
 
-		// Handle clipboard image paste (triggered on Ctrl+V)
+		// Handle clipboard image paste (triggered on Command+V on macOS, Ctrl+V elsewhere)
 		this.defaultEditor.onPasteImage = () => {
 			this.handleClipboardImagePaste();
 		};

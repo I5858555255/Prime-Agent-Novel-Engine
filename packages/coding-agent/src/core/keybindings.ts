@@ -63,6 +63,17 @@ export interface AppKeybindings {
 
 export type AppKeybinding = keyof AppKeybindings;
 
+/**
+ * Default key for pasting from the clipboard. macOS uses Command-V (the
+ * platform paste convention); Linux keeps Control-V and native Windows uses
+ * Alt-V so the binding does not collide with the terminal's paste shortcut.
+ */
+export function defaultPasteImageKeys(platform: NodeJS.Platform = process.platform): KeyId {
+	if (platform === "win32") return "alt+v";
+	if (platform === "darwin") return "super+v";
+	return "ctrl+v";
+}
+
 declare module "@earendil-works/pi-tui" {
 	interface Keybindings extends AppKeybindings {}
 }
@@ -115,7 +126,7 @@ export const KEYBINDINGS = {
 		description: "Restore queued messages",
 	},
 	"app.clipboard.pasteImage": {
-		defaultKeys: process.platform === "win32" ? "alt+v" : "ctrl+v",
+		defaultKeys: defaultPasteImageKeys(),
 		description: "Paste image from clipboard",
 	},
 	"app.session.new": { defaultKeys: [], description: "Start a new session" },

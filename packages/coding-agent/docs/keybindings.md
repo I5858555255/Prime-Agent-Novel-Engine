@@ -10,7 +10,9 @@ After editing `keybindings.json`, run `/reload` in Prime Agent to apply the chan
 
 ## Key Format
 
-`modifier+key` where modifiers are `ctrl`, `shift`, `alt` (combinable) and keys are:
+`modifier+key` where modifiers are `ctrl`, `shift`, `alt`, `super` (combinable) and keys are:
+
+`super` is the Command key on macOS (e.g. `super+v` for Cmd+V). It is only delivered by terminals that report it (e.g. via the Kitty keyboard protocol); terminals that handle Cmd+V themselves paste the clipboard directly instead.
 
 - **Letters:** `a-z`
 - **Digits:** `0-9`
@@ -97,7 +99,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
-| `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image from clipboard |
+| `app.clipboard.pasteImage` | `super+v` (Cmd+V) on macOS, `ctrl+v` on Linux (`alt+v` on Windows) | Paste image from clipboard |
 
 ### Sessions
 

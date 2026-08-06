@@ -117,7 +117,7 @@ prime-agent @README.md "Summarize this"
 prime-agent @src/app.ts @src/app.test.ts "Review these together"
 ```
 
-Images can be pasted with Ctrl+V (Alt+V on Windows) or dragged into supported terminals.
+Images can be pasted with Cmd+V on macOS, Ctrl+V on Linux (Alt+V on Windows), or dragged into supported terminals.
 
 ### Run Shell Commands
 
