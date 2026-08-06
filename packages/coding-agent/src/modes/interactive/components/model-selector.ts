@@ -369,11 +369,13 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 			const isConfigured = this.isProviderConfigured(item);
-			const meta = isConfigured
+			const authMeta = isConfigured
 				? isCurrent
 					? theme.fg("success", "current")
 					: undefined
 				: theme.fg("warning", isCurrent ? "current · sign in" : "sign in");
+			const freeMeta = item.model.free ? theme.fg("success", "free") : undefined;
+			const meta = authMeta && freeMeta ? `${authMeta}${theme.fg("dim", " · ")}${freeMeta}` : (authMeta ?? freeMeta);
 
 			this.listContainer.addChild(
 				new MenuRow({

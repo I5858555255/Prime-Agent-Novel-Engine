@@ -117,6 +117,32 @@ describe("ENG-4575 model authentication", () => {
 		expect(row).not.toContain("sign in");
 	});
 
+	test("marks provider-reported free models in the picker", async () => {
+		const harness = await createHarness({
+			models: [{ id: "base", name: "Base", reasoning: true }],
+		});
+		harnesses.push(harness);
+		const model = { ...harness.getModel("base")!, id: "zero-cost-model", free: true };
+		const selector = new ModelSelectorComponent(
+			{ requestRender: () => {} } as unknown as TUI,
+			undefined,
+			harness.session.modelRegistry,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			{
+				availableModels: [model],
+				configuredProviders: new Set([model.provider]),
+			},
+		);
+
+		const row = stripAnsi(selector.render(120).join("\n"))
+			.split("\n")
+			.find((line) => line.includes(model.id));
+		expect(row).toContain("free");
+	});
+
 	test("refetches configured providers after authentication changes", async () => {
 		const harness = await createHarness({ models: [{ id: "base", name: "Base", reasoning: true }] });
 		harnesses.push(harness);

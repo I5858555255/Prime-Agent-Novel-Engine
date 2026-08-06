@@ -20,6 +20,7 @@ import {
 	resetApiProviders,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { fetchDevinModels } from "@earendil-works/pi-ai/devin-models";
 import { registerBuiltinMcpOAuthProviders } from "@earendil-works/pi-ai/mcp";
 import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
@@ -404,6 +405,14 @@ function readOpenAICodexModelIds(value: unknown): Set<string> {
 const PRIVATE_PRIME_AUTHORIZATION_CACHE_FILE = "prime-inference-private-models.json";
 const PRIVATE_PRIME_AUTHORIZATION_CACHE_TTL_MS = 5 * 60_000;
 const PRIVATE_PRIME_BACKGROUND_REFRESH_TIMEOUT_MS = 3_000;
+const DEVIN_PROVIDER_ID = "devin";
+const DEVIN_MODEL_CACHE_TTL_MS = 300_000;
+
+interface DevinModelsCache {
+	authFingerprint: string;
+	models: Model<"devin-agent">[];
+	refreshedAt: number;
+}
 
 interface PrivatePrimeAuthorizationCache {
 	fingerprint: string;
@@ -435,6 +444,7 @@ export class ModelRegistry {
 	private authorizedPrivatePrimeInferenceTeamId: string | undefined;
 	private explicitPrivatePrimeInferenceModelIds = new Set<string>();
 	private openAICodexModelsCache: { authFingerprint: string; modelIds: Set<string>; refreshedAt: number } | undefined;
+	private devinModelsCache: DevinModelsCache | undefined;
 	private backgroundPrivatePrimeAuthorization: { fingerprint: string; promise: Promise<void> } | undefined;
 	private loadError: string | undefined = undefined;
 
@@ -782,8 +792,45 @@ export class ModelRegistry {
 		const previousPrivateModelIds = new Set(this.authorizedPrivatePrimeInferenceModelIds);
 		const previousTeamId = this.authorizedPrivatePrimeInferenceTeamId;
 		this.refresh();
-		await this.refreshPrivatePrimeInferenceAuthorization(previousPrivateModelIds, previousTeamId);
+		await Promise.all([
+			this.refreshPrivatePrimeInferenceAuthorization(previousPrivateModelIds, previousTeamId),
+			this.refreshDevinModels(),
+		]);
 		return this.getAvailable();
+	}
+
+	private async refreshDevinModels(): Promise<void> {
+		const staticModels = this.models.filter(
+			(model): model is Model<"devin-agent"> => model.provider === DEVIN_PROVIDER_ID && model.api === "devin-agent",
+		);
+		if (staticModels.length === 0) return;
+
+		const apiKey = await this.authStorage.getApiKey(DEVIN_PROVIDER_ID);
+		if (!apiKey) return;
+
+		const baseUrl = staticModels[0]!.baseUrl;
+		const authFingerprint = createHash("sha256").update(apiKey).update("\0").update(baseUrl).digest("hex");
+		const cached = this.devinModelsCache;
+		if (
+			cached?.authFingerprint === authFingerprint &&
+			(Date.now() - cached.refreshedAt < DEVIN_MODEL_CACHE_TTL_MS || isOfflineModeEnabled())
+		) {
+			this.replaceDevinModels(cached.models);
+			return;
+		}
+		if (isOfflineModeEnabled()) return;
+
+		const discovered = await fetchDevinModels({ apiKey, baseUrl });
+		if (discovered !== null) {
+			this.devinModelsCache = { authFingerprint, models: discovered, refreshedAt: Date.now() };
+			this.replaceDevinModels(discovered);
+		} else if (cached?.authFingerprint === authFingerprint) {
+			this.replaceDevinModels(cached.models);
+		}
+	}
+
+	private replaceDevinModels(models: Model<"devin-agent">[]): void {
+		this.models = [...this.models.filter((model) => model.provider !== DEVIN_PROVIDER_ID), ...models];
 	}
 
 	private async refreshPrivatePrimeInferenceAuthorization(
@@ -966,7 +1013,7 @@ export class ModelRegistry {
 	}
 
 	async getExecutableModels(): Promise<Model<Api>[]> {
-		await this.refreshPrivatePrimeInferenceAuthorization();
+		await Promise.all([this.refreshPrivatePrimeInferenceAuthorization(), this.refreshDevinModels()]);
 		const availableModels = this.getAvailable();
 		const codexModels = availableModels.filter((model) => model.provider === "openai-codex");
 		if (codexModels.length === 0) {

@@ -18,6 +18,7 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- Devin
 
 Use `/logout` to clear credentials. Tokens are stored in `~/.prime/agent/auth.json` and auto-refresh when expired.
 
@@ -34,6 +35,14 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+
+### Devin
+
+- Requires a Devin account
+- Opens Devin's CLI authorization flow in the browser and handles the localhost callback automatically
+- If the callback cannot reach Prime Agent, paste the redirect URL into the login dialog
+- `/model` lists the models currently enabled for the authenticated Devin account and marks models Devin reports as free
+- `prime-agent model list` exposes the same status in its `free` column
 
 ## API Keys
 

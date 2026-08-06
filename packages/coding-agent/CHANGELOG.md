@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Devin to the built-in `/login` providers with dynamic discovery of every model enabled for the authenticated account and free-model labels in model lists.
+
+### Fixed
+
+- Fixed the bundled CLI failing to load the Devin streaming provider after model selection.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
