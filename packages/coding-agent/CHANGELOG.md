@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed authenticated Codex models being hidden when live model discovery returns no models or is unavailable.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

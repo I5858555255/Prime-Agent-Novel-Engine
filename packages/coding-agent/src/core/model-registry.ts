@@ -1001,6 +1001,9 @@ export class ModelRegistry {
 				throw new Error(`OpenAI Codex model discovery failed with HTTP ${response.status}`);
 			}
 			const modelIds = readOpenAICodexModelIds(await response.json());
+			if (modelIds.size === 0) {
+				return availableModels;
+			}
 			this.openAICodexModelsCache = { authFingerprint, modelIds, refreshedAt: Date.now() };
 			return availableModels.filter((model) => model.provider !== "openai-codex" || modelIds.has(model.id));
 		} catch {
@@ -1009,7 +1012,7 @@ export class ModelRegistry {
 					(model) => model.provider !== "openai-codex" || cached.modelIds.has(model.id),
 				);
 			}
-			return availableModels.filter((model) => model.provider !== "openai-codex");
+			return availableModels;
 		}
 	}
 
