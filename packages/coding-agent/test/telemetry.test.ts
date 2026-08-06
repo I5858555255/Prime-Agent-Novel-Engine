@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession, AgentSessionEvent } from "../src/core/agent-session.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import {
+	captureOnboardingCompleted,
 	getOrCreateTelemetryInstallationId,
 	installAgentTelemetry,
 	isTelemetryEnabled,
@@ -13,6 +14,7 @@ import {
 	type TelemetryEvent,
 	type TelemetryEventName,
 	type TelemetrySink,
+	telemetryAuthCategory,
 } from "../src/core/telemetry.js";
 
 function uuidGenerator(): () => string {
@@ -161,6 +163,16 @@ describe("telemetry identity and transport", () => {
 		client.capture("agent started", {});
 		await expect(client.flush()).resolves.toBeUndefined();
 	});
+
+	it("never throws when the local telemetry state cannot be written", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "prime-agent-telemetry-"));
+		const agentDir = join(parent, "not-a-directory");
+		writeFileSync(agentDir, "occupied");
+		const client = new TelemetryClient({ agentDir, randomId: uuidGenerator() });
+
+		expect(() => client.capture("agent started", {})).not.toThrow();
+		await expect(client.flush()).resolves.toBeUndefined();
+	});
 });
 
 describe("telemetry controls", () => {
@@ -192,6 +204,35 @@ describe("telemetry controls", () => {
 });
 
 describe("agent telemetry aggregation", () => {
+	it("captures onboarding completion with categorized auth and provider data", async () => {
+		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
+		const sink = new FakeTelemetrySink();
+
+		await captureOnboardingCompleted({
+			agentDir: "/not-used",
+			settingsManager: SettingsManager.inMemory(),
+			durationMs: 250,
+			outcome: "success",
+			provider: "prime",
+			authSource: "stored",
+			storedCredentialType: "oauth",
+			sink,
+		});
+
+		expect(sink.events).toContainEqual({
+			name: "onboarding completed",
+			properties: expect.objectContaining({
+				execution_mode: "interactive",
+				duration_ms: 250,
+				outcome: "success",
+				auth_category: "oauth",
+				provider_category: "prime",
+			}),
+		});
+		expect(sink.flushCount).toBe(1);
+		expect(telemetryAuthCategory("models_json_command")).toBe("models_json");
+	});
+
 	it("emits aggregate metrics without message or tool content", () => {
 		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
 		let timestamp = 1_000;
@@ -203,6 +244,7 @@ describe("agent telemetry aggregation", () => {
 		installAgentTelemetry(fakeSession as unknown as AgentSession, {
 			agentDir: "/not-used",
 			settingsManager: SettingsManager.inMemory(),
+			executionMode: "interactive",
 			sink,
 			now,
 			randomId,
@@ -247,6 +289,7 @@ describe("agent telemetry aggregation", () => {
 
 		const run = sink.events.find((event) => event.name === "agent run completed");
 		expect(run?.properties).toMatchObject({
+			execution_mode: "interactive",
 			outcome: "success",
 			duration_ms: 125,
 			visible_ttft_ms: 25,

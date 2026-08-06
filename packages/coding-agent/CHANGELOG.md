@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Added privacy-safe anonymous product analytics for run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
+- Added privacy-safe pseudonymous product analytics for onboarding, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 
 ## [0.7.0] - 2026-08-05
 

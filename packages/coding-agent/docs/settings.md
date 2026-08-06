@@ -64,15 +64,15 @@ The stable `latest.json` and beta `beta.json` manifests use the same JSON shape:
 
 `version` is required. `package` is optional and may also be named `packageName`; it defaults to the current package name. `tarball` is optional; when present, Prime Agent installs that tarball instead of the package name. Relative tarball paths resolve against `PRIME_AGENT_DOWNLOAD_BASE_URL`.
 
-### Anonymous usage analytics
+### Pseudonymous usage analytics
 
-Prime Agent sends anonymous, aggregate usage and performance events to Prime Intellect. These events include version and operating-system category, run outcomes, TTFT and latency, prompt and turn counts, token usage, tool success counts, retries, and compactions.
+Prime Agent sends pseudonymous, aggregate usage and performance events to Prime Intellect. These events include version and operating-system category, onboarding outcome and duration, execution mode (`interactive`, `print`, `json`, `rpc`, or `acp`), run outcomes, TTFT and latency, prompt and turn counts, token usage, tool success counts, retries, and compactions.
 
 Prime Agent does not send prompts, responses, thinking, tool arguments or results, command text, filenames, paths, repository information, environment variables, credentials, raw error messages, hostnames, usernames, emails, or hardware identifiers. A random installation ID is stored in `~/.prime/agent/telemetry.json`.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `telemetry.enabled` | boolean | `true` | Send anonymous aggregate usage and performance events |
+| `telemetry.enabled` | boolean | `true` | Send pseudonymous aggregate usage and performance events |
 
 Disable analytics with any of:
 

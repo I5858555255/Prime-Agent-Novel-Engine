@@ -35,6 +35,7 @@ import {
 } from "./cli/session-resolver.js";
 import { APP_NAME, expandTildePath, getAgentDir, getSessionDirEnvOverride, VERSION } from "./config.js";
 import {
+	type AgentExecutionMode,
 	type AgentSessionRuntimeConfig,
 	mergeAgentSessionRuntimeConfig,
 	mergeAutonomousConfig,
@@ -156,7 +157,7 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
-export type ClientMode = "interactive" | "print" | "json" | "rpc" | "acp";
+export type ClientMode = AgentExecutionMode;
 /** Compatibility view of the CLI's internal daemon process entrypoint. */
 export type AppMode = ClientMode | "daemon";
 
@@ -658,6 +659,7 @@ function runtimeConfigFromArgs(
 		noContextFiles: parsed.noContextFiles,
 		autonomous: runtimeAutonomousConfigFromArgs(parsed),
 		extensionFlagValues: parsed.unknownFlags.size > 0 ? Object.fromEntries(parsed.unknownFlags.entries()) : undefined,
+		executionMode: appMode === "daemon" ? undefined : appMode,
 		// Serialized refine for print/json/rpc: the client's appMode is NOT
 		// "daemon" here — it's "print", "json", or "rpc". The daemon worker
 		// receives this flag via AgentSessionRuntimeConfig and uses it
@@ -1272,6 +1274,7 @@ export async function main(args: string[], options?: MainOptions) {
 			// from the JSON/print client through AgentSessionRuntimeConfig)
 			// so it survives the daemon worker's appMode="daemon" context.
 			serializedRefine: config.serializedRefine ?? false,
+			executionMode: config.executionMode,
 			// Only seed initial goal for top-level sessions (rlmDepth 0).
 			initialGoal: (runtimeSessionOptions?.rlmDepth ?? 0) === 0 ? config.initialGoal : undefined,
 		});
