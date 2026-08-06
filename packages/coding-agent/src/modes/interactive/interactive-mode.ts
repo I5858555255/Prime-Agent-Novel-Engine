@@ -983,6 +983,13 @@ export class InteractiveMode {
 
 	// Session-owned queued messages mirrored from connection events.
 	private connectionQueue: AgentConnectionQueueState = { steering: [], followUp: [] };
+	/**
+	 * Live-event keys for user/custom messages included in the last transcript
+	 * rebuild. A queued message consumed right after compaction can be part of
+	 * the rebuild snapshot while its message_start event is still in flight;
+	 * replaying that event would render the message twice (#698).
+	 */
+	private rebuildRenderedLiveMessageKeys = new Set<string>();
 
 	// Shutdown state
 	private shutdownRequested = false;
@@ -5386,11 +5393,10 @@ export class InteractiveMode {
 			}
 
 			case "message_start":
-				if (event.message.role === "custom") {
-					this.addMessageToChat(event.message);
-					this.ui.requestRender();
-				} else if (event.message.role === "user") {
-					this.addMessageToChat(event.message);
+				if (event.message.role === "custom" || event.message.role === "user") {
+					if (!this.consumeRebuildRenderedMessage(event.message)) {
+						this.addMessageToChat(event.message);
+					}
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
 					this.startAssistantStreamingMessage(event.message);
@@ -6369,6 +6375,7 @@ export class InteractiveMode {
 
 		if (options.clearChat) {
 			this.chatContainer.clear();
+			this.recordRebuildRenderedMessages(messagesToRender);
 		}
 
 		if (options.updateFooter) {
@@ -6521,6 +6528,33 @@ export class InteractiveMode {
 				resolve(text);
 			};
 		});
+	}
+
+	private static liveTranscriptMessageKey(message: AgentMessage): string | undefined {
+		if (message.role !== "user" && message.role !== "custom") return undefined;
+		const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+		return `${message.role}:${message.timestamp}:${content.slice(0, 200)}`;
+	}
+
+	/** Remember which live-event-rendered messages the rebuild snapshot already covers. */
+	private recordRebuildRenderedMessages(messages: readonly AgentMessage[]): void {
+		this.rebuildRenderedLiveMessageKeys.clear();
+		for (const message of messages) {
+			const key = InteractiveMode.liveTranscriptMessageKey(message);
+			if (key !== undefined) this.rebuildRenderedLiveMessageKeys.add(key);
+		}
+	}
+
+	/**
+	 * True when the last transcript rebuild already rendered this message, so
+	 * its in-flight message_start event must not render it again (#698). Each
+	 * key is consumed once so later messages are unaffected.
+	 */
+	private consumeRebuildRenderedMessage(message: AgentMessage): boolean {
+		const key = InteractiveMode.liveTranscriptMessageKey(message);
+		if (key === undefined || !this.rebuildRenderedLiveMessageKeys.has(key)) return false;
+		this.rebuildRenderedLiveMessageKeys.delete(key);
+		return true;
 	}
 
 	private async rebuildChatFromMessages(): Promise<void> {
