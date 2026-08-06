@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const installerSource = readFileSync("install.sh", "utf-8");
+const installerShell = resolveInstallerShell();
 const mainCall = '\nmain "$@"';
 const mainCallIndex = installerSource.lastIndexOf(mainCall);
 const ansiPattern = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -164,10 +165,14 @@ if (failures.length > 0) {
 console.log("Installer render check passed.");
 
 function runCase(name, initialCols, initialRows, resizedCols, resizedRows) {
-	const result = spawnSync("sh", [harnessPath, String(initialCols), String(initialRows), String(resizedCols), String(resizedRows)], {
-		detached: true,
-		encoding: "utf-8",
-	});
+	const result = spawnSync(
+		installerShell,
+		[harnessPath, String(initialCols), String(initialRows), String(resizedCols), String(resizedRows)],
+		{
+			detached: true,
+			encoding: "utf-8",
+		},
+	);
 	if (result.status !== 0) {
 		failures.push(`${name}: harness exited with ${result.status ?? "unknown"}\n${result.stderr}${result.stdout}`);
 		return emptyParsedCase();
@@ -180,6 +185,16 @@ function runCase(name, initialCols, initialRows, resizedCols, resizedRows) {
 	assertScreenFrame(name, "first", parsed, initialCols, initialRows);
 	assertScreenFrame(name, "second", parsed, resizedCols, resizedRows);
 	return parsed;
+}
+
+function resolveInstallerShell() {
+	if (process.platform !== "win32") return "sh";
+
+	const candidates = [
+		process.env.ProgramFiles && join(process.env.ProgramFiles, "Git", "bin", "sh.exe"),
+		process.env["ProgramFiles(x86)"] && join(process.env["ProgramFiles(x86)"], "Git", "bin", "sh.exe"),
+	];
+	return candidates.find((candidate) => candidate && existsSync(candidate)) ?? "sh";
 }
 
 function parseRenderOutput(output) {

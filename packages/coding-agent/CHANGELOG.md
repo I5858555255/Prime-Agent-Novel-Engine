@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added native Windows PowerShell installation and source launchers.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
