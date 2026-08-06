@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added an optional `thinking` option to `rlm(...)` so child agents can use reasoning levels independent of their parents ([#798](https://github.com/PrimeIntellect-ai/prime-agent/pull/798) by [@ixmxvii-hash](https://github.com/ixmxvii-hash)).
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
