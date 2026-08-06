@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added OpenRouter to `/login` as a subscription provider, alongside the existing API-key entry ([#775](https://github.com/PrimeIntellect-ai/prime-agent/pull/775) by [@andrew-scott-fischer](https://github.com/andrew-scott-fischer)).
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
