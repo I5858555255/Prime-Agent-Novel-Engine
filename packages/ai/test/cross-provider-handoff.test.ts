@@ -110,6 +110,18 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	{ provider: "groq", model: "openai/gpt-oss-120b", label: "groq-gpt-oss-120b" },
 	// Hugging Face
 	{ provider: "huggingface", model: "moonshotai/Kimi-K2.5", label: "huggingface-kimi-k2.5" },
+	// Nebius Token Factory (one pair per distinct model family)
+	{ provider: "nebius", model: "moonshotai/Kimi-K2.7-Code", label: "nebius-kimi-k2.7-code" },
+	{ provider: "nebius", model: "deepseek-ai/DeepSeek-V4-Pro", label: "nebius-deepseek-v4-pro" },
+	{ provider: "nebius", model: "zai-org/GLM-5.2", label: "nebius-glm-5.2" },
+	{ provider: "nebius", model: "Qwen/Qwen3.5-397B-A17B", label: "nebius-qwen3.5" },
+	{ provider: "nebius", model: "MiniMaxAI/MiniMax-M3", label: "nebius-minimax-m3" },
+	{ provider: "nebius", model: "nvidia/nemotron-3-super-120b-a12b", label: "nebius-nemotron-3-super" },
+	{ provider: "nebius", model: "google/gemma-3-27b-it", label: "nebius-gemma-3" },
+	{ provider: "nebius", model: "openai/gpt-oss-120b", label: "nebius-gpt-oss-120b" },
+	{ provider: "nebius", model: "meta-llama/Llama-3.3-70B-Instruct", label: "nebius-llama-3.3" },
+	{ provider: "nebius", model: "NousResearch/Hermes-4-70B", label: "nebius-hermes-4" },
+	{ provider: "nebius", model: "PrimeIntellect/INTELLECT-3", label: "nebius-intellect-3" },
 	// Kimi For Coding
 	{ provider: "kimi-coding", model: getKimiCodingTestModel().id, label: "kimi-coding" },
 	// Mistral

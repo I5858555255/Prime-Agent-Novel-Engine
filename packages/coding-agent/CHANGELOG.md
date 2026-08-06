@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Nebius Token Factory to API-key login and model selection.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

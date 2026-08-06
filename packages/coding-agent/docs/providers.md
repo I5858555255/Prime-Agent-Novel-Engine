@@ -66,6 +66,7 @@ prime-agent
 | OpenCode Zen | `OPENCODE_API_KEY` | `opencode` |
 | OpenCode Go | `OPENCODE_API_KEY` | `opencode-go` |
 | Hugging Face | `HF_TOKEN` | `huggingface` |
+| Nebius Token Factory | `NEBIUS_API_KEY` | `nebius` |
 | Fireworks | `FIREWORKS_API_KEY` | `fireworks` |
 | Kimi For Coding | `KIMI_API_KEY` | `kimi-coding` |
 | MiniMax | `MINIMAX_API_KEY` | `minimax` |
@@ -122,6 +123,15 @@ OAuth credentials are also stored here after `/login` and managed automatically.
 ### Prime Inference
 
 Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or store an API key for `prime-inference` via `/login`.
+
+### Nebius Token Factory
+
+Nebius Token Factory uses the OpenAI-compatible endpoint at `https://api.tokenfactory.nebius.com/v1`. Set `NEBIUS_API_KEY` or store an API key for `nebius` via `/login`.
+
+```bash
+export NEBIUS_API_KEY=...
+prime-agent --provider nebius --model moonshotai/Kimi-K2.7-Code
+```
 
 ## Cloud Providers
 

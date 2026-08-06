@@ -439,6 +439,10 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
 	});
 
+	test("Nebius defaults to its coding model", () => {
+		expect(defaultModelPerProvider.nebius).toBe("moonshotai/Kimi-K2.7-Code");
+	});
+
 	test("findInitialModel accepts explicit provider custom model ids", async () => {
 		const registry = {
 			getAll: () => allModels,
