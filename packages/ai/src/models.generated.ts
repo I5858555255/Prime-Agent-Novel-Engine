@@ -7595,7 +7595,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7613,7 +7613,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7631,7 +7631,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7649,7 +7649,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7667,7 +7667,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7685,7 +7685,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text"],
 			cost: {
@@ -7703,7 +7703,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text", "image"],
 			cost: {
@@ -7721,7 +7721,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text"],
 			cost: {
@@ -7739,7 +7739,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7757,7 +7757,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text"],
 			cost: {
@@ -7775,7 +7775,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text"],
 			cost: {
@@ -7793,7 +7793,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7811,7 +7811,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7829,7 +7829,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7847,7 +7847,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7865,7 +7865,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7883,7 +7883,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -7901,7 +7901,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false,"requiresReasoningContentOnAssistantMessages":true,"thinkingFormat":"deepseek"},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false,"requiresReasoningContentOnAssistantMessages":true,"thinkingFormat":"deepseek"},
 			reasoning: true,
 			thinkingLevelMap: {"minimal":null,"low":null,"medium":null,"high":"high","xhigh":"max"},
 			input: ["text"],
@@ -7920,7 +7920,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text", "image"],
 			cost: {
@@ -7938,7 +7938,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text"],
 			cost: {
@@ -7956,7 +7956,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
@@ -7974,7 +7974,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
@@ -7992,7 +7992,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -8010,7 +8010,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":"max"},
 			input: ["text"],
@@ -8029,7 +8029,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text"],
 			cost: {
@@ -8047,7 +8047,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: false,
 			input: ["text"],
 			cost: {
@@ -8065,7 +8065,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -8083,7 +8083,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -8101,7 +8101,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -8119,7 +8119,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -8137,7 +8137,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -8155,7 +8155,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "nebius",
 			baseUrl: "https://api.tokenfactory.nebius.com/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			input: ["text"],
 			cost: {

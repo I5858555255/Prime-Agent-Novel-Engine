@@ -126,7 +126,7 @@ Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.a
 
 ### Nebius Token Factory
 
-Nebius Token Factory uses the OpenAI-compatible endpoint at `https://api.tokenfactory.nebius.com/v1`. Set `NEBIUS_API_KEY` or store an API key for `nebius` via `/login`.
+Nebius Token Factory uses the OpenAI-compatible endpoint at `https://api.tokenfactory.nebius.com/v1`. Create a key using the [Nebius Token Factory quickstart](https://docs.tokenfactory.nebius.com/quickstart), then set `NEBIUS_API_KEY` or store it for `nebius` via `/login`.
 
 ```bash
 export NEBIUS_API_KEY=...

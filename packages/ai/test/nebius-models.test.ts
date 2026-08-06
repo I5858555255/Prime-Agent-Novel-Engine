@@ -24,11 +24,13 @@ describe("Nebius Token Factory models", () => {
 		expect(model.contextWindow).toBe(262144);
 		expect(model.maxTokens).toBe(8000);
 		expect(model.compat).toEqual({
-			supportsStore: false,
+			supportsStore: true,
 			supportsDeveloperRole: false,
 			supportsReasoningEffort: true,
+			supportsUsageInStreaming: true,
 			maxTokensField: "max_tokens",
-			supportsStrictMode: false,
+			supportsStrictMode: true,
+			supportsLongCacheRetention: false,
 		});
 	});
 

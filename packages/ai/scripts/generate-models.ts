@@ -111,12 +111,17 @@ const ZAI_THINKING_COMPAT: OpenAICompletionsCompat = {
 };
 
 const NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1";
+// https://api.tokenfactory.nebius.com/openapi.json
+// ChatCompletionRequest supports store, max_tokens, reasoning_effort, stream usage, and strict tools;
+// ChatMessageRole omits developer, and Chat Completions does not expose OpenAI's 24h cache controls.
 const NEBIUS_COMPAT: OpenAICompletionsCompat = {
-	supportsStore: false,
+	supportsStore: true,
 	supportsDeveloperRole: false,
 	supportsReasoningEffort: true,
+	supportsUsageInStreaming: true,
 	maxTokensField: "max_tokens",
-	supportsStrictMode: false,
+	supportsStrictMode: true,
+	supportsLongCacheRetention: false,
 };
 
 const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
