@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed reconnecting to long sessions replaying the entire transcript and making the UI unresponsive ([#774](https://github.com/PrimeIntellect-ai/prime-agent/issues/774)).
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

@@ -1482,7 +1482,11 @@ describe("InteractiveMode connection events", () => {
 		expect((fakeThis as unknown as { activeBashComponent: unknown }).activeBashComponent).toBe(activeBashComponent);
 		expect(
 			(fakeThis as unknown as { renderSessionContext: ReturnType<typeof vi.fn> }).renderSessionContext,
-		).toHaveBeenCalledWith(expect.anything(), { clearChat: true, updateFooter: true });
+		).toHaveBeenCalledWith(expect.anything(), {
+			clearChat: true,
+			limitTranscript: true,
+			updateFooter: true,
+		});
 		expect(startAssistantStreamingMessage).toHaveBeenCalledWith(streamingMessage);
 		expect(refreshCommandCatalogForCurrentSession).not.toHaveBeenCalled();
 	});
