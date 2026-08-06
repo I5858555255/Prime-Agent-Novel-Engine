@@ -215,6 +215,19 @@ function withLeaseGuard<T>(directory: string, action: () => T): T {
 	}
 }
 
+export function isRenameTargetExistsError(
+	code: string | undefined,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	if (code === "EEXIST" || code === "ENOTEMPTY") {
+		return true;
+	}
+	// Windows rejects a renameSync onto an existing non-empty directory with
+	// EPERM or EACCES instead of the POSIX EEXIST/ENOTEMPTY, so a stale lease
+	// would otherwise rethrow here and permanently block session recovery.
+	return platform === "win32" && (code === "EPERM" || code === "EACCES");
+}
+
 function reclaimStaleLease(directory: string): boolean {
 	const stalePath = `${directory}.stale-${process.pid}-${randomUUID()}`;
 	try {
@@ -265,7 +278,7 @@ export function acquireSessionLease(
 			} catch (error) {
 				rmSync(candidateDirectory, { recursive: true, force: true });
 				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+				if (!isRenameTargetExistsError(code)) {
 					throw error;
 				}
 				const existingOwner = readLeaseOwner(directory);
