@@ -336,33 +336,52 @@ describe("agentLoop with AgentMessage", () => {
 				},
 			],
 		};
+		const preflighted: string[] = [];
 		const config: AgentLoopConfig = {
 			model: createModel(),
 			convertToLlm: identityConverter,
-			beforeToolCall: async () => {
+			toolExecution: "parallel",
+			beforeToolCall: async ({ toolCall }) => {
+				preflighted.push(toolCall.id);
 				controller.abort();
 				return undefined;
 			},
 		};
 		const assistantMessage = createAssistantMessage(
-			[{ type: "toolCall", id: "tool_1", name: "wait", arguments: {} }],
+			[
+				{ type: "toolCall", id: "tool_1", name: "wait", arguments: {} },
+				{ type: "toolCall", id: "tool_2", name: "wait", arguments: {} },
+			],
 			"toolUse",
 		);
-		const streamFn = () => {
+		const streamFn = vi.fn(() => {
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
 				stream.push({ type: "done", reason: "toolUse", message: assistantMessage });
 			});
 			return stream;
-		};
+		});
 
+		const events: AgentEvent[] = [];
 		const stream = agentLoop([createUserMessage("Hello")], context, config, controller.signal, streamFn);
-		for await (const _event of stream) {
-			// consume
+		for await (const event of stream) {
+			events.push(event);
 		}
 		await stream.result();
 
+		const toolStartIds = events.flatMap((event) => (event.type === "tool_execution_start" ? [event.toolCallId] : []));
+		const toolEndIds = events.flatMap((event) => (event.type === "tool_execution_end" ? [event.toolCallId] : []));
+		const toolResultIds = events.flatMap((event) =>
+			event.type === "message_end" && event.message.role === "toolResult" ? [event.message.toolCallId] : [],
+		);
+
 		expect(toolExecute).not.toHaveBeenCalled();
+		expect(preflighted).toEqual(["tool_1"]);
+		expect(toolStartIds).toEqual(["tool_1"]);
+		expect(toolEndIds).toEqual(["tool_1"]);
+		expect(toolResultIds).toEqual(["tool_1"]);
+		expect(streamFn).toHaveBeenCalledTimes(1);
+		expect(events.some((event) => event.type === "agent_end")).toBe(true);
 	});
 
 	it("should stop a sequential tool batch after aborting a tool call", async () => {
