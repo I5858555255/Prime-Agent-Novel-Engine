@@ -3,7 +3,7 @@
 Install the latest stable release from PowerShell:
 
 ```powershell
-irm https://app.primeintellect.ai/prime-agent/install.ps1 | iex
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install.ps1)))
 ```
 
 The installer verifies the release checksum, installs Prime Agent with npm, and can install Node.js LTS and Git for Windows through `winget` when needed.

@@ -13,7 +13,7 @@ curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 On Windows, run from PowerShell:
 
 ```powershell
-irm https://app.primeintellect.ai/prime-agent/install.ps1 | iex
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install.ps1)))
 ```
 
 Then run it in a project directory:

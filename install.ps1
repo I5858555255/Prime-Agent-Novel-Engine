@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -508,12 +508,8 @@ function Invoke-InstallerNativeCommand {
         [Parameter(Mandatory)][string[]]$Arguments
     )
 
-    if (-not $script:InstallerScreenEnabled) {
-        Write-InstallerMessage "$Status..."
-        & $FilePath @Arguments 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "$Status failed with exit code $LASTEXITCODE." }
-        return
-    }
+    $plainMode = -not $script:InstallerScreenEnabled
+    if ($plainMode) { Write-InstallerMessage "$Status..." }
 
     $argumentLine = ($Arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join " "
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -537,17 +533,28 @@ function Invoke-InstallerNativeCommand {
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $script:InstallerAnimationFrame = 0
-        while (-not $process.WaitForExit(180)) {
-            $script:InstallerAnimationFrame += 1
-            Show-InstallerScreen -Title "$Title$(Get-InstallerPulse)" -Detail (Get-InstallerAnimationDetail $Details)
+        if ($plainMode) {
+            $process.WaitForExit()
         }
-        $process.WaitForExit()
+        else {
+            while (-not $process.WaitForExit(180)) {
+                $script:InstallerAnimationFrame += 1
+                Show-InstallerScreen -Title "$Title$(Get-InstallerPulse)" -Detail (Get-InstallerAnimationDetail $Details)
+            }
+            $process.WaitForExit()
+        }
         $stdout = $stdoutTask.GetAwaiter().GetResult()
         $stderr = $stderrTask.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) {
-            Restore-InstallerTerminal
-            if ($stdout) { [Console]::Error.Write($stdout) }
+        if ($plainMode) {
+            if ($stdout) { [Console]::Out.Write($stdout) }
             if ($stderr) { [Console]::Error.Write($stderr) }
+        }
+        if ($process.ExitCode -ne 0) {
+            if (-not $plainMode) {
+                Restore-InstallerTerminal
+                if ($stdout) { [Console]::Error.Write($stdout) }
+                if ($stderr) { [Console]::Error.Write($stderr) }
+            }
             throw "$Status failed with exit code $($process.ExitCode)."
         }
     }

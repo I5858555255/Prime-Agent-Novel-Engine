@@ -54,7 +54,7 @@ curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 On Windows, run from PowerShell:
 
 ```powershell
-irm https://app.primeintellect.ai/prime-agent/install.ps1 | iex
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install.ps1)))
 ```
 
 The installer downloads a versioned release, verifies its SHA-256 checksum, installs the `prime-agent` command, and can prepare the IPython runtime used by the agent. Windows also requires Git Bash, Cygwin, MSYS2, or WSL; the PowerShell installer can install Git for Windows when needed.

@@ -13,7 +13,7 @@ curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 On Windows, run from PowerShell:
 
 ```powershell
-irm https://app.primeintellect.ai/prime-agent/install.ps1 | iex
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install.ps1)))
 ```
 
 To try the latest beta built from `main`:
@@ -23,7 +23,7 @@ curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh -s -- beta
 ```
 
 ```powershell
-irm https://app.primeintellect.ai/prime-agent/install-beta.ps1 | iex
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install-beta.ps1)))
 ```
 
 These commands fetch versioned Prime Agent release artifacts and install the `prime-agent` command. The inherited npm workspace identifiers in the source tree are not the public install path.

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-const source = readFileSync("install.ps1", "utf8").replace(/^\uFEFF/, "");
+const source = readFileSync("install.ps1", "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
 const shellSource = readFileSync("install.sh", "utf8");
 const baseUrlPlaceholder = "__PRIME_AGENT_DOWNLOAD_BASE_URL__";
 const channelPlaceholder = "__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__";
@@ -279,6 +279,18 @@ async function runEndToEndCheck(command) {
 				installerPath,
 				Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(renderedInstaller)]),
 			);
+			const wrapperPath = join(tempDir, "invoke-installer.ps1");
+			const escapedInstallerPath = installerPath.replaceAll("'", "''");
+			const wrapper = `$beforeErrorActionPreference = $ErrorActionPreference
+$beforeProgressPreference = $ProgressPreference
+$installer = Get-Content -LiteralPath '${escapedInstallerPath}' -Raw
+& ([scriptblock]::Create($installer))
+if ($ErrorActionPreference -ne $beforeErrorActionPreference) { throw "Installer changed ErrorActionPreference." }
+if ($ProgressPreference -ne $beforeProgressPreference) { throw "Installer changed ProgressPreference." }
+if (Get-Command Invoke-PrimeAgentInstaller -CommandType Function -ErrorAction SilentlyContinue) { throw "Installer functions leaked into caller scope." }
+try { $null = $primeAgentUndefinedStrictModeProbe } catch { throw "Installer enabled strict mode in caller scope." }
+`;
+			writeFileSync(wrapperPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(wrapper)]));
 			const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 			const env = {
 				...process.env,
@@ -292,7 +304,7 @@ async function runEndToEndCheck(command) {
 			delete env.PRIME_AGENT_DOWNLOAD_BASE_URL;
 			delete env.PRIME_AGENT_RELEASE_CHANNEL;
 			delete env.PRIME_AGENT_VERSION;
-			const result = await run(command, ["-NoProfile", "-File", installerPath], env, "y\n");
+			const result = await run(command, ["-NoProfile", "-File", wrapperPath], env, "y\n");
 			check(result.code === 0, `installer execution exited with ${result.code}\n${result.stderr}${result.stdout}`);
 			if (result.code === 0) {
 				check(!result.stdout.includes("\u001b[?2026h"), "redirected installer must not emit terminal control sequences");
@@ -300,7 +312,8 @@ async function runEndToEndCheck(command) {
 				check(npmInvocation.includes("install -g"), `installer did not run npm install -g: ${npmInvocation}`);
 				check(npmInvocation.includes(tarballName), `installer did not pass downloaded tarball to npm: ${npmInvocation}`);
 				check(npmInvocation.includes("TOOLS=1"), `installer did not bootstrap required tools: ${npmInvocation}`);
-				check(npmInvocation.includes("KERNEL="), `installer unexpectedly bootstrapped kernel: ${npmInvocation}`);
+				check(/(?:^|[|\r\n])KERNEL=0(?:\r?\n|$)/.test(npmInvocation), `installer unexpectedly bootstrapped kernel: ${npmInvocation}`);
+				check(result.stderr.includes("simulated npm stderr"), "plain installer must preserve successful native stderr output");
 			}
 		} finally {
 			await new Promise((resolve) => server.close(resolve));
@@ -315,7 +328,7 @@ function writeFakeCommands(binDir, npmLog) {
 		writeFileSync(join(binDir, "node.cmd"), "@echo off\r\necho v22.8.0\r\n");
 		writeFileSync(
 			join(binDir, "npm.cmd"),
-			`@echo off\r\n>"${npmLog}" echo %*\r\n>>"${npmLog}" echo TOOLS=%PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL%\r\n>>"${npmLog}" echo KERNEL=%PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL%\r\n`,
+			`@echo off\r\n>"${npmLog}" echo %*\r\n>>"${npmLog}" echo TOOLS=%PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL%\r\n>>"${npmLog}" echo KERNEL=%PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL%\r\n>&2 echo simulated npm stderr\r\n`,
 		);
 		return;
 	}
@@ -325,7 +338,7 @@ function writeFakeCommands(binDir, npmLog) {
 	writeFileSync(nodePath, "#!/bin/sh\nprintf 'v22.8.0\\n'\n");
 	writeFileSync(
 		npmPath,
-		`#!/bin/sh\nprintf '%s|TOOLS=%s|KERNEL=%s\\n' "$*" "$PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL" "$PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL" > "${npmLog}"\n`,
+		`#!/bin/sh\nprintf '%s|TOOLS=%s|KERNEL=%s\\n' "$*" "$PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL" "$PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL" > "${npmLog}"\nprintf 'simulated npm stderr\\n' >&2\n`,
 	);
 	chmodSync(nodePath, 0o755);
 	chmodSync(npmPath, 0o755);
