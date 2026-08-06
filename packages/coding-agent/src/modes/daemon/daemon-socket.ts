@@ -211,9 +211,26 @@ function assertSocketLease(socketPath: string, lease: DaemonSocketPathLease): vo
 	}
 }
 
+// Longest socket filename created inside the daemon socket dir:
+// "worker-" + 12-hex descriptor key + "-" + 12-char worker id + ".sock".
+const LONGEST_SOCKET_NAME_LENGTH = 37;
+// sun_path allows 104 bytes on macOS/BSD and 108 on Linux, including the
+// terminating NUL.
+const UNIX_SOCKET_PATH_LIMIT = process.platform === "darwin" ? 103 : 107;
+
 export function defaultDaemonSocketDir(): string {
 	const suffix = typeof process.getuid === "function" ? String(process.getuid()) : "user";
-	return join(tmpdir(), `prime-agent-${suffix}`);
+	const dirName = `prime-agent-${suffix}`;
+	const candidate = join(tmpdir(), dirName);
+	if (process.platform !== "win32" && candidate.length + 1 + LONGEST_SOCKET_NAME_LENGTH > UNIX_SOCKET_PATH_LIMIT) {
+		// A long TMPDIR (macOS /var/folders/...) plus a long numeric uid pushes
+		// worker socket paths past the sun_path limit; bind then fails and
+		// session creation times out after 30s (#669). Fall back to /tmp — the
+		// per-uid directory name and the 0700 ownership checks in
+		// ensureDefaultDaemonSocketDir apply to it unchanged.
+		return join("/tmp", dirName);
+	}
+	return candidate;
 }
 
 function ensureDefaultDaemonSocketDir(socketPath: string): void {
