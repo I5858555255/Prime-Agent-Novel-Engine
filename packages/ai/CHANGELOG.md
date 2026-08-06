@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added SuperGrok / X Premium OAuth device login for the existing xAI provider.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
