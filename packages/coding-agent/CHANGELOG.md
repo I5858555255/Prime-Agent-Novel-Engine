@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed extension `belowEditor` widgets rendering above the prompt editor in fullscreen mode ([#697](https://github.com/PrimeIntellect-ai/prime-agent/issues/697)).
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

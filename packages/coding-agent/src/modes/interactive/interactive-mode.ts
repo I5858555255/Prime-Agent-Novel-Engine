@@ -6899,7 +6899,7 @@ export class InteractiveMode {
 	}
 
 	private getPromptDockComponents(): Component[] {
-		return [this.editorContainer, this.subagentSummaryLine, this.footerSlot];
+		return [this.editorContainer, this.subagentSummaryLine, this.widgetContainerBelow, this.footerSlot];
 	}
 
 	/** Enter or leave fullscreen rendering without touching the persisted setting. */
@@ -6912,7 +6912,6 @@ export class InteractiveMode {
 					this.mainViewContainer,
 					this.widgetContainerAbove,
 					...this.getPromptContextContainers(),
-					this.widgetContainerBelow,
 				],
 				dock: this.promptDock,
 				mouse: this.settingsManager.getFullscreenMouse(),
