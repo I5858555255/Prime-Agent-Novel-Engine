@@ -698,6 +698,10 @@ async function executeToolCallsParallel(
 	const finalizedCalls: FinalizedToolCallEntry[] = [];
 
 	for (const toolCall of toolCalls) {
+		if (signal?.aborted) {
+			break;
+		}
+
 		await emit({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
