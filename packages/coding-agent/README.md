@@ -323,7 +323,7 @@ issues = await linear.list_issues(team="Engineering")   # tools auto-discovered 
 help(linear.list_issues)                                 # description + argument schema
 ```
 
-Built-in integrations for Linear and Notion ship disabled. **Logging in enables them**: open `/login`, switch to **MCP Connections**, pick the integration, and complete OAuth in the browser. The integration's skill then becomes visible and is auto-imported into the kernel. `/mcp` opens the same tab, while its subcommands support direct management:
+Built-in integrations for Linear, Notion, and Tavily ship disabled. **Logging in enables them**: open `/login`, switch to **MCP Connections**, pick the integration, and complete OAuth in the browser. The integration's skill then becomes visible and is auto-imported into the kernel. `/mcp` opens the same tab, while its subcommands support direct management:
 
 ```
 /mcp                 list integrations and connection status

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Tavily to the built-in OAuth MCP catalog.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

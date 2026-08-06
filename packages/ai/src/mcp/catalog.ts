@@ -8,6 +8,7 @@ export interface McpCatalogEntry {
 	server: string;
 	label: string;
 	url: string;
+	headers?: Record<string, string>;
 	oauth?: Omit<McpOAuthConfig, "server" | "url"> & { kind: "oauth" };
 }
 
@@ -23,6 +24,13 @@ export const BUILTIN_MCP_CATALOG: readonly McpCatalogEntry[] = [
 		label: "Notion",
 		url: "https://mcp.notion.com/mcp",
 		oauth: { kind: "oauth", label: "Notion" },
+	},
+	{
+		server: "tavily",
+		label: "Tavily",
+		url: "https://mcp.tavily.com/mcp",
+		headers: { "X-Client-Name": "prime-agent" },
+		oauth: { kind: "oauth", label: "Tavily" },
 	},
 ];
 
