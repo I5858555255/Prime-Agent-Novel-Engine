@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed clipboard writes from Herdr panes reaching the foreground remote client.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
