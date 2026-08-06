@@ -354,10 +354,10 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.UNEXPECTED_TOOL_CALL:
 		case FinishReason.NO_IMAGE:
 			return "error";
-		default: {
-			const _exhaustive: never = reason;
-			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
-		}
+		default:
+			// Google may add finish reasons before the SDK enum is updated. Treat
+			// those values as structured failures; callers preserve the raw reason.
+			return "error";
 	}
 }
 

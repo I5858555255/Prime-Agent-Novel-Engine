@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Fixed Anthropic, Google/Vertex, OpenAI Responses/Azure, and Mistral to map unknown provider stop/status values to `error` instead of throwing or reporting success, preserving the raw value in `stopReasonRaw` and routing through the existing `StreamFailureError` path.
+- Fixed provider stop/status normalization across Anthropic, Google/Vertex, OpenAI Responses/Azure/Codex, and Mistral ([#707](https://github.com/PrimeIntellect-ai/prime-agent/issues/707)). Unknown values now map to `error` instead of throwing or reporting success, preserve the raw value in `stopReasonRaw`, and use the existing structured failure path.
 
 ## [0.7.0] - 2026-08-05
 

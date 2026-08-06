@@ -1,4 +1,3 @@
-import type OpenAI from "openai";
 import type {
 	Tool as OpenAITool,
 	ResponseCreateParamsStreaming,
@@ -540,7 +539,7 @@ export async function processResponsesStream<TApi extends Api>(
 	}
 }
 
-function mapStopReason(status: OpenAI.Responses.ResponseStatus | undefined): StopReason {
+function mapStopReason(status: string | undefined): StopReason {
 	if (!status) return "stop";
 	switch (status) {
 		case "completed":

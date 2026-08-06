@@ -40,6 +40,7 @@ import {
 } from "../utils/diagnostics.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
+import { streamFailureFromStopReason } from "../utils/stream-failure.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
@@ -196,6 +197,9 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 
 					if (options?.signal?.aborted) {
 						throw new Error("Request was aborted");
+					}
+					if (output.stopReason === "error") {
+						throw streamFailureFromStopReason(output.stopReasonRaw);
 					}
 					stream.push({
 						type: "done",
@@ -523,9 +527,9 @@ async function* mapCodexEvents(events: AsyncIterable<Record<string, unknown>>): 
 	}
 }
 
-function normalizeCodexStatus(status: unknown): CodexResponseStatus | undefined {
+function normalizeCodexStatus(status: unknown): CodexResponseStatus | string | undefined {
 	if (typeof status !== "string") return undefined;
-	return CODEX_RESPONSE_STATUSES.has(status as CodexResponseStatus) ? (status as CodexResponseStatus) : undefined;
+	return CODEX_RESPONSE_STATUSES.has(status as CodexResponseStatus) ? (status as CodexResponseStatus) : status;
 }
 
 // ============================================================================
@@ -1197,6 +1201,8 @@ async function processWebSocketStream(
 		);
 		if (options?.signal?.aborted) {
 			keepConnection = false;
+		} else if (output.stopReason === "error") {
+			throw streamFailureFromStopReason(output.stopReasonRaw);
 		} else if (useCachedContext && entry && output.responseId) {
 			const responseItems = convertResponsesMessages(model, { messages: [output] }, CODEX_TOOL_CALL_PROVIDERS, {
 				includeSystemPrompt: false,
