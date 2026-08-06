@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-const source = readFileSync("install.ps1", "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+const rawSource = readFileSync("install.ps1", "utf8");
+const source = rawSource.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
 const shellSource = readFileSync("install.sh", "utf8");
 const baseUrlPlaceholder = "__PRIME_AGENT_DOWNLOAD_BASE_URL__";
 const channelPlaceholder = "__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__";
@@ -16,6 +17,7 @@ const shellMainCallIndex = shellSource.lastIndexOf(shellMainCall);
 const ansiPattern = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const failures = [];
 
+check(!rawSource.startsWith("\uFEFF"), "installer must not start with a UTF-8 BOM");
 check(source.includes(baseUrlPlaceholder), "missing download base URL placeholder");
 check(source.includes(channelPlaceholder), "missing default release channel placeholder");
 check(source.includes("Security.Cryptography.SHA256"), "installer must verify downloads with SHA-256");
@@ -275,15 +277,12 @@ async function runEndToEndCheck(command) {
 			const renderedInstaller = source
 				.replaceAll(baseUrlPlaceholder, testBaseUrl)
 				.replaceAll(channelPlaceholder, "stable");
-			writeFileSync(
-				installerPath,
-				Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(renderedInstaller)]),
-			);
+			writeFileSync(installerPath, renderedInstaller);
 			const wrapperPath = join(tempDir, "invoke-installer.ps1");
 			const escapedInstallerPath = installerPath.replaceAll("'", "''");
 			const wrapper = `$beforeErrorActionPreference = $ErrorActionPreference
 $beforeProgressPreference = $ProgressPreference
-$installer = Get-Content -LiteralPath '${escapedInstallerPath}' -Raw
+$installer = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('${escapedInstallerPath}'))
 & ([scriptblock]::Create($installer))
 if ($ErrorActionPreference -ne $beforeErrorActionPreference) { throw "Installer changed ErrorActionPreference." }
 if ($ProgressPreference -ne $beforeProgressPreference) { throw "Installer changed ProgressPreference." }
