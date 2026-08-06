@@ -135,9 +135,10 @@ main() {
 The $prime_agent_cmd command was installed, but it is not on your PATH yet.
 Check npm's global bin directory with:
 
-  npm bin -g
+  echo "\$(npm prefix -g)/bin"
 
 Then add that directory to your shell PATH.
+(npm 10 removed the old "npm bin -g" command.)
 EOF
 	fi
 }

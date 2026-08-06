@@ -671,6 +671,37 @@ function getPayloadWorkingIndicatorOptions(
 	};
 }
 
+/**
+ * Translate legacy `/update` package arguments into the `package update`
+ * CLI surface. The standalone `update` command hard-rejects package targets
+ * ("Package updates moved to the package command"), but the TUI kept
+ * spawning `update --extensions`, so the advertised flow always exited 1
+ * (#738). `--extensions` means "all packages" (the default), `--extension
+ * <source>` and positional sources name one package, and daemon-socket
+ * plumbing belongs only to self-updates.
+ */
+export function translatePackageUpdateArgs(args: readonly string[]): string[] {
+	const translated: string[] = [];
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--extensions" || arg === "--self") {
+			continue;
+		}
+		if (arg === "--extension" || arg === "--daemon-socket") {
+			const value = args[index + 1];
+			index++;
+			if (arg === "--extension" && value !== undefined) {
+				translated.push(value);
+			}
+			continue;
+		}
+		if (arg !== undefined) {
+			translated.push(arg);
+		}
+	}
+	return translated;
+}
+
 export function updateArgsIncludeSelf(args: readonly string[]): boolean {
 	let selfFlag = false;
 	let extensionsOnlyFlag = false;
@@ -8388,7 +8419,10 @@ export class InteractiveMode {
 			updateArgs,
 			resolveDaemonUpdateRestartSocketPath(this.options.daemonSocketPath),
 		);
-		const updateChildArgs = includesSelf ? buildUpdateChildArgs(updateArgs, daemonSocketPath) : updateArgs;
+		const updateChildArgs = includesSelf
+			? buildUpdateChildArgs(updateArgs, daemonSocketPath)
+			: translatePackageUpdateArgs(updateArgs);
+		const updateChildCommand = includesSelf ? ["update"] : ["package", "update"];
 		this.stopWorkingLoader();
 		await this.ui.terminal.drainInput(1000).catch(() => undefined);
 		this.ui.stop();
@@ -8396,7 +8430,7 @@ export class InteractiveMode {
 		const updateEnv = includesSelf ? { ...process.env, [SELF_UPDATE_INTERACTIVE_CHILD_ENV]: "1" } : process.env;
 		const updateResult = spawnSync(
 			process.execPath,
-			[...process.execArgv, entrypoint, "update", ...updateChildArgs],
+			[...process.execArgv, entrypoint, ...updateChildCommand, ...updateChildArgs],
 			{
 				stdio: "inherit",
 				cwd: updateCwd,
