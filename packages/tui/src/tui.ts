@@ -1013,8 +1013,16 @@ export class TUI extends Container {
 		overlayHeight: number,
 		termWidth: number,
 		termHeight: number,
+		railWidth = 0,
 	): { width: number; row: number; col: number; maxHeight: number | undefined } {
 		const opt = options ?? {};
+
+		// A persistent left rail reserves the left `railWidth` columns for the
+		// sidebar. Overlays are laid out within the remaining content area
+		// (width `contentTermWidth`, shifted right by `railWidth`) so they never
+		// render underneath the rail.
+		const rail = Math.max(0, railWidth);
+		const contentTermWidth = Math.max(rail + 1, termWidth);
 
 		// Parse margin (clamp to non-negative)
 		const margin =
@@ -1026,12 +1034,13 @@ export class TUI extends Container {
 		const marginBottom = Math.max(0, margin.bottom ?? 0);
 		const marginLeft = Math.max(0, margin.left ?? 0);
 
-		// Available space after margins
-		const availWidth = Math.max(1, termWidth - marginLeft - marginRight);
+		// Available space after margins — measured within the content area
+		// (i.e. past the left rail) so anchors/clamps stay consistent.
+		const availWidth = Math.max(1, contentTermWidth - marginLeft - marginRight);
 		const availHeight = Math.max(1, termHeight - marginTop - marginBottom);
 
 		// === Resolve width ===
-		let width = parseSizeValue(opt.width, termWidth) ?? Math.min(80, availWidth);
+		let width = parseSizeValue(opt.width, contentTermWidth) ?? Math.min(80, availWidth);
 		// Apply minWidth
 		if (opt.minWidth !== undefined) {
 			width = Math.max(width, opt.minWidth);
@@ -1101,9 +1110,10 @@ export class TUI extends Container {
 		if (opt.offsetY !== undefined) row += opt.offsetY;
 		if (opt.offsetX !== undefined) col += opt.offsetX;
 
-		// Clamp to terminal bounds (respecting margins)
+		// Clamp to terminal bounds (respecting margins). Overlays are shifted
+		// right by the left-rail width so they stay within the content area.
 		row = Math.max(marginTop, Math.min(row, termHeight - marginBottom - effectiveHeight));
-		col = Math.max(marginLeft, Math.min(col, termWidth - marginRight - width));
+		col = Math.max(marginLeft + rail, Math.min(col + rail, termWidth - marginRight - width));
 
 		return { width, row, col, maxHeight };
 	}
@@ -1184,7 +1194,13 @@ export class TUI extends Container {
 
 			// Get layout with height=0 first to determine width and maxHeight
 			// (width and maxHeight don't depend on overlay height)
-			const { width, maxHeight } = this.resolveOverlayLayout(options, 0, termWidth, termHeight);
+			const { width, maxHeight } = this.resolveOverlayLayout(
+				options,
+				0,
+				termWidth,
+				termHeight,
+				this.getLeftRailWidth(),
+			);
 
 			// Render component at calculated width
 			let overlayLines = component.render(width);
@@ -1195,7 +1211,13 @@ export class TUI extends Container {
 			}
 
 			// Get final row/col with actual overlay height
-			const { row, col } = this.resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
+			const { row, col } = this.resolveOverlayLayout(
+				options,
+				overlayLines.length,
+				termWidth,
+				termHeight,
+				this.getLeftRailWidth(),
+			);
 
 			rendered.push({ component, overlayLines, row, col, w: width, scrollback, aboveMarker });
 			if (!aboveMarker) {
@@ -1232,7 +1254,7 @@ export class TUI extends Container {
 					overlayLines = overlayLines.slice(overlayLines.length - markerRow);
 				}
 				row = markerRow - overlayLines.length;
-				col = Math.max(0, Math.min(aboveMarker.col, termWidth - w));
+				col = Math.max(this.getLeftRailWidth(), Math.min(aboveMarker.col, termWidth - w));
 			}
 
 			const overlayStart =
