@@ -137,6 +137,42 @@ describe("xAI OAuth device flow", () => {
 		});
 	});
 
+	it("increases the poll interval by at least 5s on slow_down even when the server echoes the same interval", async () => {
+		vi.useFakeTimers();
+		const startTime = new Date("2026-07-09T20:00:00Z");
+		vi.setSystemTime(startTime);
+		const pollTimes: number[] = [];
+		const tokenReplies = [jsonResponse({ error: "slow_down", interval: 5 }, 400), jsonResponse(tokenResponse())];
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown) => {
+				const url = requestUrl(input);
+				if (url === "https://auth.x.ai/oauth2/device/code") {
+					return jsonResponse(deviceCodeResponse({ interval: 5 }));
+				}
+				if (url === "https://auth.x.ai/oauth2/token") {
+					pollTimes.push(Date.now());
+					const reply = tokenReplies.shift();
+					if (!reply) throw new Error("Unexpected token poll");
+					return reply;
+				}
+				throw new Error(`Unexpected request: ${url}`);
+			}),
+		);
+
+		const loginPromise = loginXaiForTest({ onAuth: () => {} });
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(pollTimes).toEqual([startTime.getTime() + 5000]);
+		// First poll returned slow_down with the same interval; next wait must be +5s (RFC 8628 §3.5).
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(pollTimes).toEqual([startTime.getTime() + 5000]);
+		await vi.advanceTimersByTimeAsync(5000);
+		const credentials = await loginPromise;
+		expect(pollTimes).toEqual([startTime.getTime() + 5000, startTime.getTime() + 15_000]);
+		expect(credentials.access).toBe("access-token");
+	});
+
 	it("falls back to the RFC default poll interval when the server reports interval 0", async () => {
 		vi.useFakeTimers();
 		const startTime = new Date("2026-07-09T20:00:00Z");

@@ -183,11 +183,14 @@ async function pollForTokens(device: XaiDeviceCode, signal?: AbortSignal): Promi
 		const error = response.body.error;
 		if (error === "authorization_pending") continue;
 		if (error === "slow_down") {
+			// RFC 8628 §3.5: interval MUST increase by at least 5 seconds on slow_down.
+			// Honor a larger server-provided interval when present.
 			const serverInterval = response.body.interval;
+			const minIncreased = intervalSeconds + 5;
 			intervalSeconds =
 				typeof serverInterval === "number" && Number.isFinite(serverInterval) && serverInterval > 0
-					? serverInterval
-					: intervalSeconds + 5;
+					? Math.max(serverInterval, minIncreased)
+					: minIncreased;
 			continue;
 		}
 		if (error === "access_denied" || error === "authorization_denied") {

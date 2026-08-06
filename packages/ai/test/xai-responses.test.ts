@@ -89,9 +89,10 @@ describe("xAI Responses routing", () => {
 			store: false,
 			stream: true,
 			prompt_cache_key: "prime-session-123",
-			reasoning: { effort: "medium" },
 			include: ["reasoning.encrypted_content"],
 		});
+		// Exact shape: xAI accepts reasoning.summary (live-checked); keep intentional OpenAI-compat default.
+		expect(captured.body.reasoning).toEqual({ effort: "medium", summary: "auto" });
 		expect(captured.body).not.toHaveProperty("prompt_cache_retention");
 		expect(captured.body.input).toEqual(
 			expect.arrayContaining([

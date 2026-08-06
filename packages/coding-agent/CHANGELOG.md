@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added xAI OAuth device-code authentication for SuperGrok and X Premium subscriptions, with Grok 4.5 routed through the Responses API ([#754](https://github.com/PrimeIntellect-ai/prime-agent/pull/754) by [@mwijanarko1](https://github.com/mwijanarko1)).
+- Changed the default xAI model from `grok-4.20-0309-reasoning` to `grok-4.5` ([#754](https://github.com/PrimeIntellect-ai/prime-agent/pull/754) by [@mwijanarko1](https://github.com/mwijanarko1)).
 
 ## [0.7.0] - 2026-08-05
 
