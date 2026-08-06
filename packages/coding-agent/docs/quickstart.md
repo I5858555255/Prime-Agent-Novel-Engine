@@ -10,13 +10,23 @@ Install the latest stable release on Linux or macOS:
 curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 ```
 
+On Windows, run from PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install.ps1)))
+```
+
 To try the latest beta built from `main`:
 
 ```bash
 curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh -s -- beta
 ```
 
-Both commands fetch versioned Prime Agent release artifacts and install the `prime-agent` command. The inherited npm workspace identifiers in the source tree are not the public install path.
+```powershell
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install-beta.ps1)))
+```
+
+These commands fetch versioned Prime Agent release artifacts and install the `prime-agent` command. The inherited npm workspace identifiers in the source tree are not the public install path.
 
 Then start Prime Agent in the project directory you want it to work on:
 

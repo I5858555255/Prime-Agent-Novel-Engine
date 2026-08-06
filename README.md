@@ -51,7 +51,13 @@ Install the latest stable release on macOS or Linux:
 curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 ```
 
-The installer downloads a versioned release, verifies its SHA-256 checksum, installs the `prime-agent` command, and can prepare the IPython runtime used by the agent.
+On Windows, run from PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install.ps1)))
+```
+
+The installer downloads a versioned release, verifies its SHA-256 checksum, installs the `prime-agent` command, and can prepare the IPython runtime used by the agent. Windows also requires Git Bash, Cygwin, MSYS2, or WSL; the PowerShell installer can install Git for Windows when needed.
 
 Start Prime Agent from the repository or directory you want it to work in:
 
@@ -78,7 +84,8 @@ prime-agent shutdown [--force]       # Stop every agent, worker, and background 
 ```
 
 ## Built for Long-Running Work
-Prime Agent is built for long-running work, especially for evaluations in research. These features are available in the TUI, and when run autonomously. 
+
+Prime Agent is built for long-running work, especially for evaluations in research. These features are available in the TUI, and when run autonomously.
 
 - **Continual Harness:** `/refine` can persist focused, reviewable lessons as supplemental prompts, memories, reusable skill descriptions, or subagent specifications, with recorded refinement history. It does not replace packaging and reviewing new executable skills.
 - **Direct agent-to-agent communication:** running agents and retained subagents can discover one another, exchange messages, and steer active work.

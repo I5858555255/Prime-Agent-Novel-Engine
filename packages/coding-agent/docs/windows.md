@@ -1,5 +1,13 @@
 # Windows Setup
 
+Install the latest stable release from PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://app.primeintellect.ai/prime-agent/install.ps1)))
+```
+
+The installer verifies the release checksum, installs Prime Agent with npm, and can install Node.js LTS and Git for Windows through `winget` when needed.
+
 Prime Agent requires a bash shell on Windows. Checked locations (in order):
 
 1. Custom path from `~/.prime/agent/settings.json`

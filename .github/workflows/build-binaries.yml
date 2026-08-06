@@ -5,11 +5,11 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Production release tag to create or update (e.g., v0.0.1)'
+        description: "Production release tag to create or update (e.g., v0.0.1)"
         required: true
         type: string
 
@@ -136,8 +136,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
         run: npm ci
@@ -236,12 +236,15 @@ jobs:
           const fs = require("node:fs");
           const baseUrl = process.env.INSTALL_BASE_URL;
           if (!baseUrl) throw new Error("INSTALL_BASE_URL is required");
-          const installer = fs.readFileSync("install.sh", "utf8");
-          const renderInstaller = (channel) => installer
+          const shellInstaller = fs.readFileSync("install.sh", "utf8");
+          const powershellInstaller = fs.readFileSync("install.ps1", "utf8");
+          const renderInstaller = (installer, channel) => installer
             .replaceAll("__PRIME_AGENT_DOWNLOAD_BASE_URL__", baseUrl)
             .replaceAll("__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__", channel);
-          fs.writeFileSync("/tmp/prime-agent-install.sh", renderInstaller("stable"));
-          fs.writeFileSync("/tmp/prime-agent-install-beta.sh", renderInstaller("beta"));
+          fs.writeFileSync("/tmp/prime-agent-install.sh", renderInstaller(shellInstaller, "stable"));
+          fs.writeFileSync("/tmp/prime-agent-install-beta.sh", renderInstaller(shellInstaller, "beta"));
+          fs.writeFileSync("/tmp/prime-agent-install.ps1", renderInstaller(powershellInstaller, "stable"));
+          fs.writeFileSync("/tmp/prime-agent-install-beta.ps1", renderInstaller(powershellInstaller, "beta"));
           NODE
 
       - name: Extract production release notes
@@ -296,6 +299,16 @@ jobs:
           aws s3 cp /tmp/prime-agent-install-beta.sh "s3://${R2_BUCKET}/install-beta.sh" \
             --endpoint-url "$R2_ENDPOINT_URL" \
             --content-type text/x-shellscript \
+            --cache-control no-cache
+
+          aws s3 cp /tmp/prime-agent-install.ps1 "s3://${R2_BUCKET}/install.ps1" \
+            --endpoint-url "$R2_ENDPOINT_URL" \
+            --content-type 'text/plain; charset=utf-8' \
+            --cache-control no-cache
+
+          aws s3 cp /tmp/prime-agent-install-beta.ps1 "s3://${R2_BUCKET}/install-beta.ps1" \
+            --endpoint-url "$R2_ENDPOINT_URL" \
+            --content-type 'text/plain; charset=utf-8' \
             --cache-control no-cache
 
       - name: Create production GitHub release
@@ -379,6 +392,16 @@ jobs:
             --content-type text/x-shellscript \
             --cache-control no-cache
 
+          aws s3 cp /tmp/prime-agent-install.ps1 "s3://${R2_BUCKET}/install.ps1" \
+            --endpoint-url "$R2_ENDPOINT_URL" \
+            --content-type 'text/plain; charset=utf-8' \
+            --cache-control no-cache
+
+          aws s3 cp /tmp/prime-agent-install-beta.ps1 "s3://${R2_BUCKET}/install-beta.ps1" \
+            --endpoint-url "$R2_ENDPOINT_URL" \
+            --content-type 'text/plain; charset=utf-8' \
+            --cache-control no-cache
+
           printf 'Automated beta build from `%s` (`%s`).\n' "$DEFAULT_BRANCH" "$BUILD_REF" > /tmp/beta-release-notes.md
 
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/beta" >/dev/null 2>&1; then
@@ -409,4 +432,4 @@ jobs:
           fi
 
           gh release upload beta "$BETA_DIR"/* --clobber
-          echo "Beta installer: ${R2_PUBLIC_BASE_URL%/}/install-beta.sh"
+          echo "Beta installers: ${R2_PUBLIC_BASE_URL%/}/install-beta.sh and ${R2_PUBLIC_BASE_URL%/}/install-beta.ps1"
