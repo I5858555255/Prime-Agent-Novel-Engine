@@ -16,12 +16,17 @@ import {
 	verifyHelloSupervisorPid,
 } from "../src/cli/daemon-ps.js";
 import { getProcessStartId } from "../src/core/session-lease.js";
-import { defaultDaemonSocketDir } from "../src/modes/daemon/daemon-socket.js";
+import { defaultDaemonSocketDir, defaultDaemonWorkerSocketDir } from "../src/modes/daemon/daemon-socket.js";
 
 describe("worker socket classification", () => {
-	it.runIf(process.platform !== "win32")("recognizes only worker sockets in the default service directory", () => {
-		expect(isWorkerSocketPath(join(defaultDaemonSocketDir(), "worker-abc.sock"))).toBe(true);
-		expect(isWorkerSocketPath(join(defaultDaemonSocketDir(), "daemon.sock"))).toBe(false);
+	it.runIf(process.platform !== "win32")("recognizes worker sockets in current and legacy service directories", () => {
+		for (const directory of new Set([defaultDaemonSocketDir(), defaultDaemonWorkerSocketDir()])) {
+			expect(isWorkerSocketPath(join(directory, "worker-abc.sock"))).toBe(true);
+			expect(isWorkerSocketPath(join(directory, "daemon.sock"))).toBe(false);
+			if (process.platform === "darwin" && (directory.startsWith("/tmp/") || directory.startsWith("/var/"))) {
+				expect(isWorkerSocketPath(join(`/private${directory}`, "worker-abc.sock"))).toBe(true);
+			}
+		}
 		expect(isWorkerSocketPath("/tmp/worker-abc.sock")).toBe(false);
 	});
 });

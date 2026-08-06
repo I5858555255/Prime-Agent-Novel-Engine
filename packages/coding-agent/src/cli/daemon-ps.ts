@@ -11,7 +11,11 @@ import {
 	DAEMON_SCHEMA_ID,
 	type DaemonRuntimeIdentity,
 } from "../modes/daemon/daemon-protocol.js";
-import { defaultDaemonSocketDir, defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
+import {
+	defaultDaemonSocketDir,
+	defaultDaemonSocketPath,
+	defaultDaemonWorkerSocketDir,
+} from "../modes/daemon/daemon-socket.js";
 import { acquireDaemonShutdownAdmission } from "../modes/daemon/daemon-supervisor-ownership.js";
 import type { DaemonWorkerDescriptor } from "../modes/daemon/daemon-worker-protocol.js";
 import { signalProcessGroupOrProcess } from "../utils/child-process.js";
@@ -880,10 +884,26 @@ function recordShutdownFailure(
 	failed.push({ socketPath, reason });
 }
 
+function normalizeWorkerSocketDirectory(directory: string): string {
+	const normalized = resolve(directory);
+	if (
+		process.platform === "darwin" &&
+		(normalized === "/tmp" ||
+			normalized.startsWith("/tmp/") ||
+			normalized === "/var" ||
+			normalized.startsWith("/var/"))
+	) {
+		return `/private${normalized}`;
+	}
+	return normalized;
+}
+
 export function isWorkerSocketPath(socketPath: string): boolean {
+	const socketDir = normalizeWorkerSocketDirectory(dirname(socketPath));
 	return (
 		process.platform !== "win32" &&
-		resolve(dirname(socketPath)) === resolve(defaultDaemonSocketDir()) &&
+		(socketDir === normalizeWorkerSocketDirectory(defaultDaemonSocketDir()) ||
+			socketDir === normalizeWorkerSocketDirectory(defaultDaemonWorkerSocketDir())) &&
 		basename(socketPath).startsWith("worker-") &&
 		basename(socketPath).endsWith(".sock")
 	);

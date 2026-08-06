@@ -90,8 +90,8 @@ import {
 	cleanupDaemonSocketPath,
 	type DaemonSocketIdentity,
 	type DaemonSocketPathLease,
-	defaultDaemonSocketDir,
 	defaultDaemonSocketPath,
+	defaultDaemonWorkerSocketDir,
 	getDaemonSocketIdentity,
 	prepareDaemonSocketPath,
 	restrictDaemonSocketPath,
@@ -142,6 +142,7 @@ const IDLE_EVICTION_DRAIN_TIMEOUT_MS = 5_000;
 const CHILD_PASSIVATION_PER_WORKER_CAP = 2;
 const SUPERVISOR_CONFIG_FILE_NAME = "supervisor-config";
 const WORKER_STARTUP_GATE_FD = 3;
+const PORTABLE_UNIX_SOCKET_PATH_MAX_BYTES = 100;
 
 const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"ack_result",
@@ -497,12 +498,16 @@ export function idleEvictionSweepIntervalMs(idleEvictionMinutes: IdleEvictionMin
 	);
 }
 
-function workerSocketPath(supervisorSocketPath: string, workerId: string): string {
+export function workerSocketPath(supervisorSocketPath: string, workerId: string): string {
 	const key = descriptorKey(supervisorSocketPath);
 	if (process.platform === "win32") {
 		return `\\\\.\\pipe\\prime-agent-worker-${key}-${workerId.slice(0, 12)}`;
 	}
-	return join(defaultDaemonSocketDir(), `worker-${key}-${workerId.slice(0, 12)}.sock`);
+	const socketPath = join(defaultDaemonWorkerSocketDir(), `worker-${key}-${workerId.slice(0, 12)}.sock`);
+	if (Buffer.byteLength(socketPath) > PORTABLE_UNIX_SOCKET_PATH_MAX_BYTES) {
+		throw new Error(`Generated daemon worker socket path exceeds the portable Unix limit: ${socketPath}`);
+	}
+	return socketPath;
 }
 
 function looksLikeSessionPath(selector: string): boolean {
@@ -2102,7 +2107,10 @@ export class DaemonSupervisor {
 		};
 		const workerId = existing?.descriptor.workerId ?? createActiveSessionId();
 		const rootActiveSessionId = existing?.descriptor.rootActiveSessionId ?? createActiveSessionId();
-		const socketPath = existing?.descriptor.socketPath ?? workerSocketPath(this.socketPath, workerId);
+		const socketPath =
+			existing && process.platform === "win32"
+				? existing.descriptor.socketPath
+				: workerSocketPath(this.socketPath, workerId);
 		const token = existing?.descriptor.authenticationToken ?? randomBytes(32).toString("base64url");
 		const now = new Date().toISOString();
 		const descriptorPath = existing?.descriptorPath ?? join(this.descriptorDir, `${workerId}.json`);
