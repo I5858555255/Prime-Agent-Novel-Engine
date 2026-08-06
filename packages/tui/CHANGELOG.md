@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed autocomplete remaining unavailable after an autocomplete provider request failed.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

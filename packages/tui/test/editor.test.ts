@@ -2325,6 +2325,43 @@ describe("Editor component", () => {
 			assert.strictEqual(aborts, 1);
 		});
 
+		it("recovers autocomplete after a failed provider request", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			let suggestionCalls = 0;
+
+			const mockProvider: AutocompleteProvider = {
+				getSuggestions: async (lines, _cursorLine, cursorCol) => {
+					suggestionCalls += 1;
+					if (suggestionCalls === 1) {
+						throw new Error("provider unavailable");
+					}
+					return {
+						items: [{ value: "/help", label: "help", description: "Show help" }],
+						prefix: (lines[0] || "").slice(0, cursorCol),
+					};
+				},
+				applyCompletion,
+			};
+
+			editor.setAutocompleteProvider(mockProvider);
+
+			// First request rejects: no suggestions, no unhandled rejection.
+			editor.handleInput("/");
+			await flushAutocomplete();
+			assert.strictEqual(suggestionCalls, 1);
+			assert.strictEqual(editor.isShowingAutocomplete(), false);
+
+			// Second request still reaches the provider and displays its suggestions.
+			editor.handleInput("h");
+			await flushAutocomplete();
+			assert.strictEqual(suggestionCalls, 2);
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			const overlayLines = (
+				editor as unknown as { renderAutocompleteOverlay: (width: number) => string[] }
+			).renderAutocompleteOverlay(60);
+			assert.ok(overlayLines.some((line) => stripVTControlCharacters(line).includes("help")));
+		});
+
 		it("hides autocomplete when backspacing slash command to empty", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 
