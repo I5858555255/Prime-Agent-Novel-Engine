@@ -111,6 +111,8 @@ const ZAI_THINKING_COMPAT: OpenAICompletionsCompat = {
 };
 
 const NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1";
+// Nebius /v1/models?verbose=true reports Kimi K3 as text+image while models.dev currently marks it text-only.
+const NEBIUS_MULTIMODAL_MODEL_OVERRIDES = new Set(["moonshotai/Kimi-K3"]);
 // https://api.tokenfactory.nebius.com/openapi.json
 // ChatCompletionRequest supports store, max_tokens, reasoning_effort, stream usage, and strict tools;
 // ChatMessageRole omits developer, and Chat Completions does not expose OpenAI's 24h cache controls.
@@ -1245,7 +1247,10 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: "nebius",
 					baseUrl: NEBIUS_BASE_URL,
 					reasoning: m.reasoning === true,
-					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					input:
+						m.modalities?.input?.includes("image") || NEBIUS_MULTIMODAL_MODEL_OVERRIDES.has(modelId)
+							? ["text", "image"]
+							: ["text"],
 					cost: {
 						input: m.cost?.input || 0,
 						output: m.cost?.output || 0,

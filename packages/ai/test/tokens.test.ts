@@ -183,7 +183,7 @@ describe("Token Statistics on Abort", () => {
 	});
 
 	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory Provider", () => {
-		const llm = getModel("nebius", "moonshotai/Kimi-K2.5");
+		const llm = getModel("nebius", "moonshotai/Kimi-K2.7-Code");
 
 		it("should include token stats when aborted mid-stream", { retry: 3, timeout: 30000 }, async () => {
 			await testTokensOnAbort(llm);

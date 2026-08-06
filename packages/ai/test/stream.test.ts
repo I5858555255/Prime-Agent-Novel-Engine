@@ -784,9 +784,10 @@ describe("Generate E2E Tests", () => {
 	});
 
 	describe.skipIf(!process.env.NEBIUS_API_KEY)(
-		"Nebius Token Factory Provider (Kimi-K2.5 via OpenAI Completions)",
+		"Nebius Token Factory Provider (Kimi-K2.7 Code via OpenAI Completions)",
 		() => {
-			const llm = getModel("nebius", "moonshotai/Kimi-K2.5");
+			const llm = getModel("nebius", "moonshotai/Kimi-K2.7-Code");
+			const imageLlm = getModel("nebius", "moonshotai/Kimi-K3");
 
 			it("should complete basic text generation", { retry: 3 }, async () => {
 				await basicTextGeneration(llm);
@@ -809,7 +810,7 @@ describe("Generate E2E Tests", () => {
 			});
 
 			it("should handle image input", { retry: 3 }, async () => {
-				await handleImage(llm);
+				await handleImage(imageLlm);
 			});
 		},
 	);

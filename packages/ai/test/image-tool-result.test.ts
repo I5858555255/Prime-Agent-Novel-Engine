@@ -287,8 +287,8 @@ describe("Tool Results with Images", () => {
 		});
 	});
 
-	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory Provider (Kimi-K2.5)", () => {
-		const llm = getModel("nebius", "moonshotai/Kimi-K2.5");
+	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory Provider (Kimi-K3)", () => {
+		const llm = getModel("nebius", "moonshotai/Kimi-K3");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);

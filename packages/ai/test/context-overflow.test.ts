@@ -333,8 +333,8 @@ describe("Context overflow error handling", () => {
 	// =============================================================================
 
 	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory", () => {
-		it("gpt-oss-120b-fast - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("nebius", "openai/gpt-oss-120b-fast");
+		it("gpt-oss-120b - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("nebius", "openai/gpt-oss-120b");
 			const result = await testContextOverflow(model, process.env.NEBIUS_API_KEY!);
 			logResult(result);
 

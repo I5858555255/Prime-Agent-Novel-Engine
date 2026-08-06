@@ -192,7 +192,7 @@ describe("AI Providers Abort Tests", () => {
 	});
 
 	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory Provider Abort", () => {
-		const llm = getModel("nebius", "moonshotai/Kimi-K2.5");
+		const llm = getModel("nebius", "moonshotai/Kimi-K2.7-Code");
 
 		it("should abort mid-stream", { retry: 3 }, async () => {
 			await testAbortSignal(llm);

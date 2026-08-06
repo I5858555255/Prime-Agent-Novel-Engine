@@ -52,6 +52,12 @@ describe("Nebius Token Factory models", () => {
 		expect(model.thinkingLevelMap).toMatchObject({ high: "high", xhigh: "max" });
 	});
 
+	it("preserves Kimi K3's live multimodal capability", () => {
+		const model = getModel("nebius", "moonshotai/Kimi-K3");
+
+		expect(model.input).toEqual(["text", "image"]);
+	});
+
 	it("resolves NEBIUS_API_KEY from the environment", () => {
 		process.env.NEBIUS_API_KEY = "test-nebius-key";
 

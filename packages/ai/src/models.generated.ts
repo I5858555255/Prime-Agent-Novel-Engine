@@ -8013,7 +8013,7 @@ export const MODELS = {
 			compat: {"supportsStore":true,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":true,"supportsLongCacheRetention":false},
 			reasoning: true,
 			thinkingLevelMap: {"off":null,"minimal":null,"low":null,"medium":null,"high":null,"xhigh":null,"max":"max"},
-			input: ["text"],
+			input: ["text", "image"],
 			cost: {
 				input: 3,
 				output: 15,

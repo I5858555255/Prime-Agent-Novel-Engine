@@ -549,7 +549,7 @@ describe("AI Providers Unicode Surrogate Pair Tests", () => {
 	});
 
 	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory Provider Unicode Handling", () => {
-		const llm = getModel("nebius", "moonshotai/Kimi-K2.5");
+		const llm = getModel("nebius", "moonshotai/Kimi-K2.7-Code");
 
 		it("should handle emoji in tool results", { retry: 3, timeout: 30000 }, async () => {
 			await testEmojiInToolResults(llm);

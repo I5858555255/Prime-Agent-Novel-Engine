@@ -370,7 +370,7 @@ describe("AI Providers Empty Message Tests", () => {
 	});
 
 	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory Provider Empty Messages", () => {
-		const llm = getModel("nebius", "moonshotai/Kimi-K2.5");
+		const llm = getModel("nebius", "moonshotai/Kimi-K2.7-Code");
 
 		it("should handle empty content array", { retry: 3, timeout: 30000 }, async () => {
 			await testEmptyMessage(llm);
