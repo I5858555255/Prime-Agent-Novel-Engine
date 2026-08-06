@@ -73,6 +73,7 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 - **Mistral**
 - **Groq**
 - **Cerebras**
+- **Sference** (OpenAI-compatible API)
 - **Cloudflare AI Gateway**
 - **Cloudflare Workers AI**
 - **xAI**

@@ -74,6 +74,7 @@ prime-agent
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
+| Sference | `SFERENCE_API_KEY` | `sference` |
 
 Reference for environment variables and `auth.json` keys: [`env-api-keys.ts`](../../ai/src/env-api-keys.ts).
 
@@ -93,7 +94,8 @@ Store credentials in `~/.prime/agent/auth.json`:
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },
-  "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." }
+  "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." },
+  "sference": { "type": "api_key", "key": "sk_..." }
 }
 ```
 
