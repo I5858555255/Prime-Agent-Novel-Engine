@@ -9,6 +9,7 @@ export type KnownApi =
 	| "openai-responses"
 	| "azure-openai-responses"
 	| "openai-codex-responses"
+	| "devin-agent"
 	| "anthropic-messages"
 	| "bedrock-converse-stream"
 	| "google-generative-ai"
@@ -26,6 +27,7 @@ export type KnownProvider =
 	| "openai-codex"
 	| "prime-inference"
 	| "deepseek"
+	| "devin"
 	| "github-copilot"
 	| "xai"
 	| "groq"
@@ -459,6 +461,8 @@ export interface Model<TApi extends Api> {
 	maxTokens: number;
 	/** Flagship model surfaced above non-featured models of the same provider in pickers. */
 	featured?: boolean;
+	/** Provider-reported pricing status. Undefined when the provider does not report it. */
+	free?: boolean;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"

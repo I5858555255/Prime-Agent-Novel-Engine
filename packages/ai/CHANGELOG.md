@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Devin subscription authentication, authenticated account-model and pricing-tier discovery, and the `devin-agent` Connect streaming API, including multimodal prompts, tool calls, usage accounting, and bounded frame parsing.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

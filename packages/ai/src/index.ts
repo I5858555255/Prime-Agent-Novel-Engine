@@ -8,6 +8,7 @@ export * from "./models.js";
 export type { BedrockOptions, BedrockThinkingDisplay } from "./providers/amazon-bedrock.js";
 export type { AnthropicEffort, AnthropicOptions, AnthropicThinkingDisplay } from "./providers/anthropic.js";
 export type { AzureOpenAIResponsesOptions } from "./providers/azure-openai-responses.js";
+export type { DevinOptions } from "./providers/devin.js";
 export * from "./providers/faux.js";
 export type { GoogleOptions } from "./providers/google.js";
 export type { GoogleThinkingLevel } from "./providers/google-shared.js";

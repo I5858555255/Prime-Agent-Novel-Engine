@@ -80,6 +80,7 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 - **Vercel AI Gateway**
 - **MiniMax**
 - **GitHub Copilot** (requires OAuth, see below)
+- **Devin** (requires OAuth, see below)
 - **Amazon Bedrock**
 - **OpenCode Zen**
 - **OpenCode Go**
@@ -1036,6 +1037,7 @@ const response = await complete(model, {
 ### Browser Compatibility Notes
 
 - Amazon Bedrock (`bedrock-converse-stream`) is not supported in browser environments.
+- Devin (`devin-agent`) is not supported in browser environments.
 - OAuth login flows are not supported in browser environments. Use the `prime-agent-ai/oauth` entry point in Node.js.
 - In browser builds, Bedrock can still appear in model lists. Calls to Bedrock models fail at runtime.
 - Use a server-side proxy or backend service if you need Bedrock or OAuth-based auth from a web app.
@@ -1051,6 +1053,7 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | Azure OpenAI | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` (e.g. `https://{resource}.openai.azure.com`) or `AZURE_OPENAI_RESOURCE_NAME`. Supports `*.openai.azure.com` and `*.cognitiveservices.azure.com`; root endpoints auto-normalize to `/openai/v1`. Optional: `AZURE_OPENAI_API_VERSION` (default `v1`), `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`. |
 | Anthropic | `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
+| Devin | `DEVIN_API_KEY` (session token; normally populated through OAuth) |
 | Google | `GEMINI_API_KEY` |
 | Vertex AI | `GOOGLE_CLOUD_API_KEY` or `GOOGLE_CLOUD_PROJECT` (or `GCLOUD_PROJECT`) + `GOOGLE_CLOUD_LOCATION` + ADC |
 | Mistral | `MISTRAL_API_KEY` |
@@ -1101,6 +1104,7 @@ Several providers require OAuth authentication instead of static API keys:
 - **Anthropic** (Claude Pro/Max subscription)
 - **OpenAI Codex** (ChatGPT Plus/Pro subscription, access to GPT-5.x Codex models)
 - **GitHub Copilot** (Copilot subscription)
+- **Devin** (Devin account)
 
 For paid Cloud Code Assist subscriptions, set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` to your project ID.
 

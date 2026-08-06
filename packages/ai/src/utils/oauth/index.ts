@@ -4,11 +4,14 @@
  * This module handles login, token refresh, and credential storage
  * for OAuth-based providers:
  * - Anthropic (Claude Pro/Max)
+ * - Devin
  * - GitHub Copilot
+ * - OpenAI Codex
  */
-
 // Anthropic
 export { anthropicOAuthProvider, loginAnthropic, refreshAnthropicToken } from "./anthropic.js";
+// Devin
+export { devinOAuthProvider, exchangeDevinCliToken, loginDevin } from "./devin.js";
 // GitHub Copilot
 export {
 	getGitHubCopilotBaseUrl,
@@ -27,12 +30,14 @@ export * from "./types.js";
 // ============================================================================
 
 import { anthropicOAuthProvider } from "./anthropic.js";
+import { devinOAuthProvider } from "./devin.js";
 import { githubCopilotOAuthProvider } from "./github-copilot.js";
 import { openaiCodexOAuthProvider } from "./openai-codex.js";
 import type { OAuthCredentials, OAuthProviderId, OAuthProviderInfo, OAuthProviderInterface } from "./types.js";
 
 const BUILT_IN_OAUTH_PROVIDERS: OAuthProviderInterface[] = [
 	anthropicOAuthProvider,
+	devinOAuthProvider,
 	githubCopilotOAuthProvider,
 	openaiCodexOAuthProvider,
 ];
