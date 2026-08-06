@@ -1428,7 +1428,22 @@ detect_shell_profile() {
 			printf '%s/.zshrc' "${ZDOTDIR:-$HOME}"
 			;;
 		bash)
-			printf '%s/.bashrc' "$HOME"
+			case "$(uname -s 2>/dev/null)" in
+				Darwin)
+					if [ -f "$HOME/.bash_profile" ]; then
+						printf '%s/.bash_profile' "$HOME"
+					elif [ -f "$HOME/.bash_login" ]; then
+						printf '%s/.bash_login' "$HOME"
+					elif [ -f "$HOME/.profile" ]; then
+						printf '%s/.profile' "$HOME"
+					else
+						printf '%s/.bash_profile' "$HOME"
+					fi
+					;;
+				*)
+					printf '%s/.bashrc' "$HOME"
+					;;
+			esac
 			;;
 		*)
 			if [ -f "$HOME/.zshrc" ]; then

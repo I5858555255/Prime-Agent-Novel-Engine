@@ -54,6 +54,12 @@ case "\${1:-}" in
 		}
 		configure_npm_install_environment
 		;;
+	shell-profile)
+		uname() {
+			printf '%s\n' "$PRIME_AGENT_TEST_UNAME"
+		}
+		detect_shell_profile
+		;;
 	writable-prefix)
 		prime_agent_path_supports_install() {
 			return 0
@@ -131,6 +137,7 @@ esac
 	assertPreflightNodeVersion();
 	assertUserPrefixFallback();
 	assertBlockedFallbackPackageRejected();
+	assertBashProfileSelection();
 	assertWritablePrefixPreserved();
 } finally {
 	rmSync(tempDir, { recursive: true, force: true });
@@ -207,6 +214,35 @@ function assertBlockedFallbackPackageRejected() {
 	check(result.stderr.includes("fallback prefix"), "blocked fallback package did not report the unwritable fallback");
 }
 
+function assertBashProfileSelection() {
+	const bashProfilePath = join(homeDir, ".bash_profile");
+	const bashLoginPath = join(homeDir, ".bash_login");
+	const bashrcPath = join(homeDir, ".bashrc");
+	const posixProfilePath = join(homeDir, ".profile");
+	const automaticProfile = {
+		PRIME_AGENT_TEST_NODE_VERSION: "22.8.0",
+		PRIME_AGENT_TEST_SHELL_PROFILE_AUTO: "1",
+	};
+
+	writeFileSync(bashLoginPath, "", "utf-8");
+	writeFileSync(posixProfilePath, "", "utf-8");
+	let result = runHarness("shell-profile", { ...automaticProfile, PRIME_AGENT_TEST_UNAME: "Darwin" });
+	check(result.status === 0, `macOS Bash profile harness exited with ${result.status ?? "unknown"}: ${result.stderr}`);
+	check(result.stdout === bashLoginPath, "macOS Bash did not select the first existing login profile");
+
+	rmSync(bashLoginPath);
+	result = runHarness("shell-profile", { ...automaticProfile, PRIME_AGENT_TEST_UNAME: "Darwin" });
+	check(result.stdout === posixProfilePath, "macOS Bash did not preserve an existing .profile");
+
+	rmSync(posixProfilePath);
+	result = runHarness("shell-profile", { ...automaticProfile, PRIME_AGENT_TEST_UNAME: "Darwin" });
+	check(result.stdout === bashProfilePath, "macOS Bash did not default to .bash_profile");
+
+	writeFileSync(bashrcPath, "", "utf-8");
+	result = runHarness("shell-profile", { ...automaticProfile, PRIME_AGENT_TEST_UNAME: "Linux" });
+	check(result.stdout === bashrcPath, "non-macOS Bash did not retain .bashrc");
+}
+
 function assertWritablePrefixPreserved() {
 	writeFileSync(npmLogPath, "", "utf-8");
 	const result = runHarness("writable-prefix", {
@@ -232,6 +268,7 @@ function runHarness(testCase, overrides) {
 		SHELL: "/bin/bash",
 	};
 	delete env.NPM_CONFIG_PREFIX;
+	if (env.PRIME_AGENT_TEST_SHELL_PROFILE_AUTO === "1") delete env.PRIME_AGENT_SHELL_PROFILE;
 	return spawnSync("sh", [harnessPath, testCase], { encoding: "utf-8", env });
 }
 
