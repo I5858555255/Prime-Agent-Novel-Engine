@@ -255,6 +255,56 @@ describe("buildRlmPrompt", () => {
 
 		expect(withoutEdit).not.toContain("await edit(path=");
 	});
+
+	test("prefers attach_image on vision models and IPython fallback without vision", () => {
+		const withVision = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			installedSkills: ["attach_image"],
+			activeTools: ["ipython"],
+			allowRecursion: false,
+			supportsImageInput: true,
+		});
+
+		expect(withVision).toContain('print(await attach_image("path.png"))');
+		expect(withVision).toContain("Do not use PIL, OpenCV, tesseract, or OCR as a substitute");
+		expect(withVision).not.toContain("The current model does not accept image input");
+
+		const withoutVision = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			installedSkills: ["attach_image"],
+			activeTools: ["ipython"],
+			allowRecursion: false,
+			supportsImageInput: false,
+		});
+
+		expect(withoutVision).toContain("The current model does not accept image input");
+		expect(withoutVision).toContain("use IPython as the fallback");
+		expect(withoutVision).not.toContain('print(await attach_image("path.png"))');
+
+		const unknownCapability = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			installedSkills: ["attach_image"],
+			activeTools: ["ipython"],
+			allowRecursion: false,
+		});
+
+		expect(unknownCapability).toContain('print(await attach_image("path.png"))');
+		expect(unknownCapability).toContain("fall back to IPython with PIL/OCR");
+
+		const withoutSkill = buildRlmPrompt({
+			cwd: "/repo",
+			messagesPath: "/repo/.pi/sessions/session.jsonl",
+			installedSkills: ["websearch"],
+			activeTools: ["ipython"],
+			allowRecursion: false,
+			supportsImageInput: true,
+		});
+
+		expect(withoutSkill).not.toContain("attach_image");
+	});
 });
 
 describe("buildSystemPrompt", () => {

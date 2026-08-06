@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Prefer `attach_image` for on-disk image analysis when the selected model accepts image input, and fall back to IPython PIL/OCR only when the model has no vision capability.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

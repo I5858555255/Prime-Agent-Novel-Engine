@@ -33,6 +33,8 @@ export interface BuildSystemPromptOptions {
 	rlmParentAgent?: string;
 	/** Global harness state to inject as compact persistent context. */
 	harnessState?: HarnessState;
+	/** Whether the current model accepts image input (`input` includes `"image"`). */
+	supportsImageInput?: boolean;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -121,6 +123,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		allowRecursion,
 		depth: options.rlmDepth,
 		parentAgent: options.rlmParentAgent,
+		supportsImageInput: options.supportsImageInput,
 	});
 
 	// Appended AFTER the trained buildRlmPrompt prefix, and before the harness-state

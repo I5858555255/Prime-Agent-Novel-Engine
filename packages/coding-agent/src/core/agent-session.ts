@@ -4286,6 +4286,7 @@ export class AgentSession {
 			rlmDepth: this._rlmDepth,
 			rlmParentAgent: this._rlmParentAgent,
 			harnessState: this._loadMergedHarnessState(),
+			supportsImageInput: this.model?.input?.includes("image"),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
@@ -4302,6 +4303,13 @@ export class AgentSession {
 			return extensionPrompt;
 		}
 		return extensionPrompt.replace(baseSnapshot, () => this._baseSystemPrompt);
+	}
+
+	/** Rebuild base system prompt after a model change so modality guidance stays current. */
+	private _rebuildSystemPromptAfterModelChange(): void {
+		const oldBase = this._baseSystemPrompt;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._refreshExtensionSystemPrompt(this.agent.state.systemPrompt, oldBase);
 	}
 
 	private _finishSubmissionNormalization(
@@ -6607,6 +6615,8 @@ export class AgentSession {
 		this.setThinkingLevel(thinkingLevel);
 		this._clampServiceTierForModel(serviceTier);
 
+		this._rebuildSystemPromptAfterModelChange();
+
 		const emitPromise = this._queueModelSelectEmit(model, previousModel, "set");
 		if (this._shouldWaitForModelSelectEmit(options)) {
 			await emitPromise;
@@ -6685,6 +6695,8 @@ export class AgentSession {
 		this.setThinkingLevel(thinkingLevel);
 		this._clampServiceTierForModel(serviceTier);
 
+		this._rebuildSystemPromptAfterModelChange();
+
 		const emitPromise = this._queueModelSelectEmit(next.model, currentModel, "cycle");
 		if (this._shouldWaitForModelSelectEmit(options)) {
 			await emitPromise;
@@ -6724,6 +6736,8 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 		this._clampServiceTierForModel(serviceTier);
+
+		this._rebuildSystemPromptAfterModelChange();
 
 		const emitPromise = this._queueModelSelectEmit(nextModel, currentModel, "cycle");
 		if (this._shouldWaitForModelSelectEmit(options)) {
@@ -8320,6 +8334,7 @@ export class AgentSession {
 		}
 
 		this.agent.state.model = refreshedModel;
+		this._rebuildSystemPromptAfterModelChange();
 	}
 
 	private _bindExtensionCore(runner: ExtensionRunner): void {

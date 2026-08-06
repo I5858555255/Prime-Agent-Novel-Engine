@@ -9,6 +9,8 @@ export interface RlmPromptOptions {
 	depth?: number;
 	parentAgent?: string;
 	activeTools?: string[];
+	/** Whether the current model accepts image input (`input` includes `"image"`). */
+	supportsImageInput?: boolean;
 }
 
 const IPYTHON_CONTROL_PROMPT = [
@@ -55,6 +57,23 @@ export function buildChildAgentDoctrine(options: ChildAgentDoctrineOptions): str
 		);
 	}
 	return lines.join("\n");
+}
+
+/** Prefer model vision via attach_image; fall back to IPython/PIL/OCR only when needed. */
+export function buildAttachImageGuidance(supportsImageInput?: boolean): string[] {
+	if (supportsImageInput === true) {
+		return [
+			'For visual understanding of on-disk images (screenshots, diagrams, charts, photos, PNG/JPEG/GIF/WebP paths), use the pre-imported `attach_image` skill — it is not a separate agent tool. Call it through IPython: `print(await attach_image("path.png"))`. That loads the file into multimodal context so you can see it. Do not use PIL, OpenCV, tesseract, or OCR as a substitute for seeing the image when the goal is visual understanding. Use PIL only for programmatic pixel work the user explicitly asked for (resize, crop, hash, measure).',
+		];
+	}
+	if (supportsImageInput === false) {
+		return [
+			"The current model does not accept image input, so `attach_image` will fail. For on-disk image analysis, use IPython as the fallback: open the file with PIL and use OCR (e.g. tesseract) / cropping / pixel inspection as needed. Tell the user briefly that vision is unavailable on this model and suggest switching to a vision-capable model when accuracy matters.",
+		];
+	}
+	return [
+		'For visual understanding of on-disk images (screenshots, diagrams, charts, photos, PNG/JPEG/GIF/WebP paths): when the current model accepts image input, use the pre-imported `attach_image` skill through IPython — `print(await attach_image("path.png"))` — so the model can see the file. Do not use PIL/OCR as a substitute for vision on a vision-capable model. If the model does not support vision (or `attach_image` errors), fall back to IPython with PIL/OCR and tell the user vision is unavailable.',
+	];
 }
 
 export function buildRlmPrompt(options: RlmPromptOptions): string {
@@ -107,6 +126,9 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			skillLines.push(
 				"For targeted existing-file edits, prefer the pre-imported async `edit` skill from IPython: `old = '''...'''; new = '''...'''; await edit(path=\"pkg/file.py\", old_str=old, new_str=new)`. Use exact old/new strings; if the text contains triple double quotes, use triple single-quoted variables or build `old`/`new` from inspected file slices.",
 			);
+		}
+		if (hasIpython && installedSkills.includes("attach_image")) {
+			skillLines.push(...buildAttachImageGuidance(options.supportsImageInput));
 		}
 	}
 	if (skillLines.length > 0) {
