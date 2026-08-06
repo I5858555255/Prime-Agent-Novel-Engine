@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added anonymous HTTP MCP server support ([#745](https://github.com/PrimeIntellect-ai/prime-agent/pull/745) by [@tanvesh01](https://github.com/tanvesh01)).
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
