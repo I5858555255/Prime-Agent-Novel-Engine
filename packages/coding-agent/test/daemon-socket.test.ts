@@ -13,15 +13,15 @@ import {
 } from "../src/modes/daemon/daemon-socket.js";
 
 describe("defaultDaemonSocketPath", () => {
-	it("uses a fixed Windows named pipe path", () => {
+	it("uses an agent-dir-suffixed Windows named pipe path", () => {
 		if (process.platform !== "win32") {
 			return;
 		}
 
-		expect(defaultDaemonSocketPath()).toBe("\\\\.\\pipe\\prime-agent-daemon");
+		expect(defaultDaemonSocketPath()).toMatch(/^\\\\\.\\pipe\\prime-agent-daemon-[0-9a-f]{8}$/);
 	});
 
-	it("uses a per-user Unix socket directory", () => {
+	it("uses a per-user Unix socket directory with an agent-dir-suffixed filename", () => {
 		if (process.platform === "win32") {
 			return;
 		}
@@ -30,7 +30,27 @@ describe("defaultDaemonSocketPath", () => {
 		const socketPath = defaultDaemonSocketPath();
 
 		expect(dirname(socketPath)).toBe(join(tmpdir(), `prime-agent-${suffix}`));
-		expect(basename(socketPath)).toBe("daemon.sock");
+		expect(basename(socketPath)).toMatch(/^daemon-[0-9a-f]{8}\.sock$/);
+	});
+
+	it("derives distinct socket paths for distinct agent dirs", () => {
+		const original = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		try {
+			process.env.PRIME_AGENT_CODING_AGENT_DIR = "/tmp/agent-dir-a";
+			const a = defaultDaemonSocketPath();
+			process.env.PRIME_AGENT_CODING_AGENT_DIR = "/tmp/agent-dir-b";
+			const b = defaultDaemonSocketPath();
+			expect(a).not.toBe(b);
+			if (process.platform !== "win32") {
+				expect(dirname(a)).toBe(dirname(b));
+			}
+		} finally {
+			if (original === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = original;
+			}
+		}
 	});
 
 	it("checks a live daemon before acquiring the socket path lock", async () => {
