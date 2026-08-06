@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Refreshed the OpenRouter model catalog with newly released models, including Meta Muse Spark 1.2.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
