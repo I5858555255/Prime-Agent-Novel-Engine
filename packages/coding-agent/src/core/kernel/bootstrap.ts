@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, existsSync, readdirSync, readFileSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { stderr, stdin } from "node:process";
@@ -53,6 +53,7 @@ const REQUIRED_HARNESS_METHODS = [
 ];
 const RUNTIME_READY_CHECK = `import inspect; import rlm; from rlm import McpIntegration; from rlm.harness import HarnessEntry; _harness_methods = ${JSON.stringify(REQUIRED_HARNESS_METHODS)}; assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background')`;
 const BOOTSTRAP_VERSION_FILE = ".bootstrap-version";
+const STALE_VENV_SUFFIX = ".stale-";
 const BOOTSTRAP_LOCK_NAME = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS = 100;
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
@@ -718,6 +719,37 @@ async function hashRuntimeSource(sourceDir: string): Promise<string> {
 	return `sha256:${hash.digest("hex")}`;
 }
 
+// Windows keeps a running executable mapped, so deleting a venv whose python is
+// still alive fails with EPERM and takes the whole rebuild down with it. Renaming
+// the directory succeeds even then, which frees the path for the new venv; the
+// renamed copy is deleted once nothing holds it, here or on a later rebuild.
+export async function discardVenvDir(venv: string): Promise<void> {
+	await removeStaleVenvDirs(venv);
+	const staged = `${venv}${STALE_VENV_SUFFIX}${process.pid}-${Date.now()}`;
+	try {
+		await rename(venv, staged);
+	} catch (error) {
+		if (isNodeError(error, "ENOENT")) return;
+		await rm(venv, { recursive: true, force: true });
+		return;
+	}
+	await rm(staged, { recursive: true, force: true }).catch(() => undefined);
+}
+
+async function removeStaleVenvDirs(venv: string): Promise<void> {
+	const prefix = `${path.basename(venv)}${STALE_VENV_SUFFIX}`;
+	let entries: string[];
+	try {
+		entries = await readdir(path.dirname(venv));
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		if (!entry.startsWith(prefix)) continue;
+		await rm(path.join(path.dirname(venv), entry), { recursive: true, force: true }).catch(() => undefined);
+	}
+}
+
 async function bootstrapVenv(
 	venv: string,
 	pythonSkills: readonly BootstrapPythonSkill[],
@@ -902,7 +934,7 @@ async function ensureKernelPythonUncached(
 		reportProgress(options, "› setting up python kernel (one-time, ~30s)…");
 		if (hadVenv) {
 			reportProgress(options, "rebuilding kernel venv");
-			await rm(venv, { recursive: true, force: true });
+			await discardVenvDir(venv);
 		}
 
 		await bootstrapVenv(venv, pythonSkills, options);
