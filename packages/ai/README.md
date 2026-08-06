@@ -1240,7 +1240,7 @@ const response = await complete(model, {
 
 **GitHub Copilot**: If you get "The requested model is not supported" error, enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click "Enable".
 
-**xAI**: Use the device-code flow with a SuperGrok or X Premium subscription, or set `XAI_API_KEY` for API billing. OAuth access and refresh tokens are handled automatically by the credential store.
+**xAI**: Use the device-code flow with a SuperGrok or X Premium subscription, or set `XAI_API_KEY` for API billing. OAuth access and refresh tokens are handled automatically by the credential store. Grok 4.5 is the default xAI model and uses the Responses API.
 
 ## Development
 

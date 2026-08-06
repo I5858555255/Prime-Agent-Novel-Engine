@@ -209,20 +209,20 @@ export async function loginXai(callbacks: OAuthLoginCallbacks): Promise<OAuthCre
 	return pollForTokens(device, callbacks.signal);
 }
 
-export async function refreshXaiToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+export async function refreshXaiToken(refreshToken: string): Promise<OAuthCredentials> {
 	const response = await postForm(XAI_TOKEN_URL, {
 		grant_type: "refresh_token",
 		client_id: XAI_CLIENT_ID,
-		refresh_token: credentials.refresh,
+		refresh_token: refreshToken,
 	});
 	if (!response.ok) throw requestFailure("token refresh", response);
-	return credentialsFromTokenResponse(response.body, credentials.refresh);
+	return credentialsFromTokenResponse(response.body, refreshToken);
 }
 
 export const xaiOAuthProvider: OAuthProviderInterface = {
 	id: "xai",
 	name: "xAI (Grok/X subscription)",
 	login: loginXai,
-	refreshToken: refreshXaiToken,
+	refreshToken: (credentials) => refreshXaiToken(credentials.refresh),
 	getApiKey: (credentials) => credentials.access,
 };

@@ -435,8 +435,9 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider.cerebras).toBe("zai-glm-4.7");
 	});
 
-	test("ai-gateway default tracks current model", () => {
+	test("ai-gateway and xAI defaults track current models", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
+		expect(defaultModelPerProvider.xai).toBe("grok-4.5");
 	});
 
 	test("findInitialModel accepts explicit provider custom model ids", async () => {

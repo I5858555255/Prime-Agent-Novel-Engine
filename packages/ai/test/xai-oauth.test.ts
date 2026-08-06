@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getOAuthProvider } from "../src/utils/oauth/index.js";
 import type { OAuthCredentials } from "../src/utils/oauth/types.js";
-import { xaiOAuthProvider } from "../src/utils/oauth/xai.js";
+import { refreshXaiToken, xaiOAuthProvider } from "../src/utils/oauth/xai.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -58,7 +58,7 @@ function loginXaiForTest(options: {
 }
 
 function refreshXaiForTest(refreshToken: string): Promise<OAuthCredentials> {
-	return xaiOAuthProvider.refreshToken({ access: "old-access", refresh: refreshToken, expires: 0 });
+	return refreshXaiToken(refreshToken);
 }
 
 describe("xAI OAuth device flow", () => {
@@ -262,10 +262,16 @@ describe("xAI OAuth device flow", () => {
 
 		const rotated = await refreshXaiForTest("old-refresh");
 		const preserved = await refreshXaiForTest("keep-refresh");
+		const viaProvider = await xaiOAuthProvider.refreshToken({
+			access: "old-access",
+			refresh: "keep-refresh",
+			expires: 0,
+		});
 		expect(rotated.refresh).toBe("new-refresh");
 		expect(rotated.access).toBe("new-access");
 		expect(preserved.refresh).toBe("keep-refresh");
 		expect(preserved.access).toBe("newer-access");
+		expect(viaProvider.refresh).toBe("keep-refresh");
 		expect(xaiOAuthProvider.name).toBe("xAI (Grok/X subscription)");
 		expect(xaiOAuthProvider.getApiKey(preserved)).toBe("newer-access");
 	});

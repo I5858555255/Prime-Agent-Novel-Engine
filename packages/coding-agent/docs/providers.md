@@ -40,6 +40,7 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Requires a SuperGrok or X Premium subscription
 - `/login` displays a verification link and code, then waits for browser approval
+- Grok 4.5 is the default and uses xAI's Responses API
 - `XAI_API_KEY` remains available as a separate API-billing option
 
 ## API Keys
