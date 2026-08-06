@@ -1273,7 +1273,9 @@ function mapStopReason(reason: Anthropic.Messages.StopReason | string): StopReas
 		case "sensitive": // Content flagged by safety filters (not yet in SDK types)
 			return "error";
 		default:
-			// Handle unknown stop reasons gracefully (API may add new values)
-			throw new Error(`Unhandled stop reason: ${reason}`);
+			// Unknown stop reasons must not crash a valid stream or be reported as
+			// success; map to "error" so stopReasonRaw is preserved and the stream
+			// terminates via the structured failure path (streamFailureFromStopReason).
+			return "error";
 	}
 }

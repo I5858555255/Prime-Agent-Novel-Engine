@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed new provider stop and status values being reported as successful completions ([#707](https://github.com/PrimeIntellect-ai/prime-agent/issues/707)).
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
