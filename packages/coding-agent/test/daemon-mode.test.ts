@@ -4763,42 +4763,6 @@ describe("daemon mode helpers", () => {
 		}
 	});
 
-	it("applies a disabled telemetry policy before create and monotonically to reused sessions", async () => {
-		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-telemetry-"));
-		try {
-			const sessionPath = join(tempDir, "session.jsonl");
-			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => ({
-				session: makeRuntimeSession(options.sessionManager),
-				extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
-					ReturnType<CreateAgentSessionRuntimeFactory>
-				>["extensionsResult"],
-				services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
-					ReturnType<CreateAgentSessionRuntimeFactory>
-				>["services"],
-				diagnostics: [],
-			}));
-			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
-				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir: tempDir },
-				createRuntime,
-			});
-			const create = (
-				daemon as unknown as {
-					createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
-				}
-			).createRuntime.bind(daemon);
-
-			const state = await create({ type: "create", sessionPath, telemetryPolicy: "disabled" });
-			expect(createRuntime.mock.calls[0]?.[0].sessionConfig?.telemetryPolicy).toBe("disabled");
-
-			const disableTelemetry = vi.fn();
-			state.runtime.disableTelemetry = disableTelemetry;
-			await create({ type: "create", sessionPath, telemetryPolicy: "disabled" });
-			expect(disableTelemetry).toHaveBeenCalledOnce();
-		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
 	it("uses the binding session as its own list and roster context", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-controller-race-"));
 		try {

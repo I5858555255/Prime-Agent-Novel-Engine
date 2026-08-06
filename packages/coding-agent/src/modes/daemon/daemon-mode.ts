@@ -1307,13 +1307,7 @@ export class AgentDaemon {
 		command: Extract<DaemonCommand, { type: "create" }>,
 		runtimeOpenGuard?: RuntimeOpenGuard,
 	): Promise<ActiveSessionState> {
-		const config = mergeAgentSessionRuntimeConfig(this.options.defaultSessionConfig, {
-			...command.config,
-			telemetryPolicy:
-				command.telemetryPolicy === "disabled" || command.config?.telemetryPolicy === "disabled"
-					? "disabled"
-					: command.config?.telemetryPolicy,
-		});
+		const config = mergeAgentSessionRuntimeConfig(this.options.defaultSessionConfig, command.config);
 		if (!config.cwd) {
 			throw new Error("Active session config is missing cwd");
 		}
@@ -1356,7 +1350,6 @@ export class AgentDaemon {
 				await this.setStateSessionName(state, command.name);
 			}
 			this.adoptClientEnv(state, clientEnv);
-			if (command.telemetryPolicy === "disabled") state.runtime.disableTelemetry();
 			this.rebindCronJobsToState(state);
 			return state;
 		}
@@ -1392,7 +1385,6 @@ export class AgentDaemon {
 			}
 			if (passiveSubagent.rootParentState) this.adoptClientEnv(passiveSubagent.rootParentState, clientEnv);
 			this.adoptClientEnv(state, clientEnv);
-			if (command.telemetryPolicy === "disabled") state.runtime.disableTelemetry();
 			return state;
 		}
 
@@ -1436,7 +1428,6 @@ export class AgentDaemon {
 				await this.setStateSessionName(existing, command.name);
 			}
 			this.adoptClientEnv(existing, clientEnv);
-			if (command.telemetryPolicy === "disabled") existing.runtime.disableTelemetry();
 			this.rebindCronJobsToState(existing);
 			return existing;
 		}
@@ -1476,7 +1467,6 @@ export class AgentDaemon {
 					await this.setStateSessionName(existing, command.name);
 				}
 				this.adoptClientEnv(existing, clientEnv);
-				if (command.telemetryPolicy === "disabled") existing.runtime.disableTelemetry();
 				this.rebindCronJobsToState(existing);
 				return existing;
 			}
@@ -3553,9 +3543,6 @@ export class AgentDaemon {
 
 			case "attach": {
 				const state = await this.getOrHydrateBoundSessionState(command.activeSessionId);
-				if (command.telemetryPolicy === "disabled") {
-					state.runtime.disableTelemetry();
-				}
 				if (command.clientId) {
 					client.id = command.clientId;
 				}

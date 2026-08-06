@@ -8,7 +8,6 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import {
 	captureAgentCommandUsed,
 	captureOnboardingCompleted,
-	disableAgentTelemetry,
 	getOrCreateTelemetryInstallationId,
 	installAgentTelemetry,
 	isTelemetryEnabled,
@@ -65,10 +64,6 @@ class FakeTelemetrySink implements TelemetrySink {
 
 	async flush(): Promise<void> {
 		this.flushCount++;
-	}
-
-	disable(): void {
-		this.events.length = 0;
 	}
 }
 
@@ -200,22 +195,6 @@ describe("telemetry identity and transport", () => {
 		await expect(client.flush()).resolves.toBeUndefined();
 	});
 
-	it("drops queued events and prevents future transmission when disabled", async () => {
-		const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
-		const client = new TelemetryClient({
-			agentDir: mkdtempSync(join(tmpdir(), "prime-agent-telemetry-")),
-			fetch: fetchMock,
-			randomId: uuidGenerator(),
-		});
-
-		client.capture("agent started", {});
-		client.disable();
-		client.capture("agent started", {});
-		await client.flush();
-
-		expect(fetchMock).not.toHaveBeenCalled();
-	});
-
 	it("drains every queued batch before flush resolves", async () => {
 		const batchSizes: number[] = [];
 		const client = new TelemetryClient({
@@ -276,14 +255,6 @@ describe("telemetry controls", () => {
 		expect(isTelemetryEnabled(settings)).toBe(true);
 	});
 
-	it("does not let an environment enable override re-enable a settings opt-out", () => {
-		vi.stubEnv("NODE_ENV", "production");
-		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
-		const settings = SettingsManager.inMemory({ telemetry: { enabled: false } });
-
-		expect(isTelemetryEnabled(settings)).toBe(false);
-	});
-
 	it("normalizes malformed telemetry settings before updating them", async () => {
 		const settings = SettingsManager.inMemory({ telemetry: true as never });
 		const disabledSettings = SettingsManager.inMemory({ telemetry: false as never });
@@ -301,26 +272,6 @@ describe("telemetry controls", () => {
 });
 
 describe("agent telemetry aggregation", () => {
-	it("stops a live session and drops its queued events after a daemon opt-out", () => {
-		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
-		const sink = new FakeTelemetrySink();
-		const fakeSession = new FakeAgentSession();
-
-		installAgentTelemetry(fakeSession as unknown as AgentSession, {
-			agentDir: "/not-used",
-			settingsManager: SettingsManager.inMemory(),
-			sink,
-		});
-		expect(sink.events.map((event) => event.name)).toEqual(["agent started"]);
-
-		disableAgentTelemetry(fakeSession as unknown as AgentSession);
-		fakeSession.emit({ type: "agent_start" });
-		fakeSession.dispose();
-
-		expect(sink.events).toEqual([]);
-		expect(sink.flushCount).toBe(0);
-	});
-
 	it("captures only allowlisted built-in command names", async () => {
 		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
 		const sink = new FakeTelemetrySink();

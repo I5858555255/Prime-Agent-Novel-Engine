@@ -56,14 +56,7 @@ export interface TelemetryBatch {
 export interface TelemetrySink {
 	capture(name: TelemetryEventName, properties: TelemetryProperties): void;
 	flush(): Promise<void>;
-	disable(): void;
 }
-
-interface AgentTelemetryController {
-	disable(): void;
-}
-
-const agentTelemetryControllers = new WeakMap<AgentSession, AgentTelemetryController>();
 
 interface TelemetryState {
 	version: number;
@@ -215,10 +208,10 @@ export function isTelemetryEnabled(settingsManager: SettingsManager): boolean {
 		return false;
 	}
 	const override = parseBooleanOverride(process.env.PRIME_AGENT_TELEMETRY);
-	if (override === false) {
-		return false;
+	if (override !== undefined) {
+		return override;
 	}
-	if (process.env.NODE_ENV === "test" && override !== true) {
+	if (process.env.NODE_ENV === "test") {
 		return false;
 	}
 	return settingsManager.getTelemetryEnabled();
@@ -328,7 +321,6 @@ export class TelemetryClient implements TelemetrySink {
 	private flushTimer?: ReturnType<typeof setTimeout>;
 	private flushInFlight?: Promise<void>;
 	private disabled = false;
-	private readonly activeRequests = new Set<AbortController>();
 
 	constructor(private readonly options: TelemetryClientOptions) {
 		this.endpoint = options.endpoint ?? process.env.PRIME_AGENT_TELEMETRY_ENDPOINT ?? DEFAULT_TELEMETRY_ENDPOINT;
@@ -380,12 +372,9 @@ export class TelemetryClient implements TelemetrySink {
 			clearTimeout(this.flushTimer);
 			this.flushTimer = undefined;
 		}
-		if (this.disabled) {
-			return;
-		}
 		if (this.flushInFlight) {
 			await this.flushInFlight;
-			if (!this.disabled && this.queue.length > 0) {
+			if (this.queue.length > 0) {
 				await this.flush();
 			}
 			return;
@@ -403,28 +392,13 @@ export class TelemetryClient implements TelemetrySink {
 				this.flushInFlight = undefined;
 			}
 		}
-		if (!this.disabled && this.queue.length > 0) {
+		if (this.queue.length > 0) {
 			await this.flush();
 		}
 	}
 
-	disable(): void {
-		if (this.disabled) {
-			return;
-		}
-		this.disabled = true;
-		this.queue = [];
-		if (this.flushTimer) {
-			clearTimeout(this.flushTimer);
-			this.flushTimer = undefined;
-		}
-		for (const controller of this.activeRequests) {
-			controller.abort();
-		}
-	}
-
 	private async drainQueue(): Promise<void> {
-		while (!this.disabled && this.queue.length > 0 && this.installationId) {
+		while (this.queue.length > 0 && this.installationId) {
 			const events = this.queue.splice(0, this.batchSize);
 			const batch: TelemetryBatch = {
 				installation_id: this.installationId,
@@ -435,8 +409,6 @@ export class TelemetryClient implements TelemetrySink {
 	}
 
 	private async send(batch: TelemetryBatch): Promise<void> {
-		const controller = new AbortController();
-		this.activeRequests.add(controller);
 		try {
 			await this.fetchImpl(this.endpoint, {
 				method: "POST",
@@ -445,12 +417,10 @@ export class TelemetryClient implements TelemetrySink {
 					"user-agent": `prime-agent/${VERSION}`,
 				},
 				body: JSON.stringify(batch),
-				signal: AbortSignal.any([controller.signal, AbortSignal.timeout(this.requestTimeoutMs)]),
+				signal: AbortSignal.timeout(this.requestTimeoutMs),
 			});
 		} catch {
 			// Product analytics is best-effort and must never affect the agent.
-		} finally {
-			this.activeRequests.delete(controller);
 		}
 	}
 }
@@ -632,10 +602,6 @@ function createActiveRun(now: () => number): ActiveRun {
 	};
 }
 
-export function disableAgentTelemetry(session: AgentSession): void {
-	agentTelemetryControllers.get(session)?.disable();
-}
-
 export function installAgentTelemetry(session: AgentSession, options: InstallAgentTelemetryOptions): void {
 	if (!isTelemetryEnabled(options.settingsManager)) {
 		return;
@@ -664,7 +630,6 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 	};
 	let activeRun: ActiveRun | undefined;
 	let pendingErrorFinalize: ReturnType<typeof setTimeout> | undefined;
-	let disabled = false;
 
 	const commonProperties = (): TelemetryProperties => ({
 		...baseProperties(options.executionMode ?? "unknown"),
@@ -722,9 +687,6 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 	sink.capture("agent started", commonProperties());
 
 	const unsubscribe = session.subscribe((event) => {
-		if (disabled) {
-			return;
-		}
 		switch (event.type) {
 			case "agent_start":
 				if (pendingErrorFinalize) {
@@ -811,30 +773,8 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 		}
 	});
 
-	const controller: AgentTelemetryController = {
-		disable: () => {
-			if (disabled) {
-				return;
-			}
-			disabled = true;
-			if (pendingErrorFinalize) {
-				clearTimeout(pendingErrorFinalize);
-				pendingErrorFinalize = undefined;
-			}
-			activeRun = undefined;
-			unsubscribe();
-			sink.disable();
-			agentTelemetryControllers.delete(session);
-		},
-	};
-	agentTelemetryControllers.set(session, controller);
-
 	session.registerDisposeCallback(() => {
-		if (disabled) {
-			return;
-		}
 		unsubscribe();
-		agentTelemetryControllers.delete(session);
 		finalizeRun();
 		sink.capture("agent session ended", {
 			...commonProperties(),
