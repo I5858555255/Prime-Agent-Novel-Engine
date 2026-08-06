@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed IPython kernel bootstrap failing on Windows by selecting the venv interpreter at `Scripts\python.exe` instead of the POSIX `bin\python` layout.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
