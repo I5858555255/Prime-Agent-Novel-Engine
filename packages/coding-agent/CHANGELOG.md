@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Added provider-native OpenAI Codex compaction with opaque history persistence, same-provider replay, cancellation and timeout bounds, and automatic local-summary fallback. Native compaction is enabled by default.
+- Fixed native compaction failures launching an oversized local fallback request; Prime now checks the rebuilt portable request against the model context window and reports both failure causes.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added a provider-native compaction API and OpenAI Codex compact transport.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

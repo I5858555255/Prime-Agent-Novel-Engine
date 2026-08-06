@@ -6,15 +6,22 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
-import { completeSimple } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, ProviderNativeCompactionResult, Usage } from "@earendil-works/pi-ai";
+import { compact as compactProvider, completeSimple } from "@earendil-works/pi-ai";
 import {
+	COMPACTION_SUMMARY_PREFIX,
+	COMPACTION_SUMMARY_SUFFIX,
 	convertToLlm,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "../messages.js";
-import { buildSessionContext, type CompactionEntry, type SessionEntry } from "../session-manager.js";
+import {
+	buildSessionContext,
+	type CompactionEntry,
+	canReplayCompactionWithProvider,
+	type SessionEntry,
+} from "../session-manager.js";
 import {
 	computeFileLists,
 	createFileOps,
@@ -109,6 +116,8 @@ export interface CompactionResult<T = unknown> {
 	summary: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
+	/** Opaque history returned by a provider-native compaction operation. */
+	providerNativeCompaction?: ProviderNativeCompactionResult;
 	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
 	details?: T;
 }
@@ -123,12 +132,14 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	native: boolean;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
+	native: true,
 };
 
 // ============================================================================
@@ -549,6 +560,32 @@ export function buildSummarizationPrompt(customInstructions?: string, previousSu
 	return `${basePrompt}\n\n${KERNEL_PERSIST_SUMMARY_NOTE}`;
 }
 
+function buildSummaryRequestText(
+	currentMessages: AgentMessage[],
+	customInstructions?: string,
+	previousSummary?: string,
+): string {
+	const conversationText = serializeConversation(convertToLlm(currentMessages));
+	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
+	if (previousSummary) {
+		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
+	}
+	return promptText + buildSummarizationPrompt(customInstructions, previousSummary);
+}
+
+function estimateTextTokens(text: string): number {
+	let asciiCharacters = 0;
+	for (let index = 0; index < text.length; index++) {
+		if (text.charCodeAt(index) <= 0x7f) asciiCharacters++;
+	}
+	const nonAsciiBytes = Buffer.byteLength(text, "utf8") - asciiCharacters;
+	return Math.ceil(asciiCharacters / 4) + nonAsciiBytes;
+}
+
+function estimateSummaryRequestTokens(promptText: string, maxOutputTokens: number): number {
+	return estimateTextTokens(SUMMARIZATION_SYSTEM_PROMPT) + estimateTextTokens(promptText) + maxOutputTokens;
+}
+
 /**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
@@ -566,19 +603,7 @@ export async function generateSummary(
 ): Promise<string> {
 	const maxTokens = Math.floor(0.8 * reserveTokens);
 
-	const basePrompt = buildSummarizationPrompt(customInstructions, previousSummary);
-
-	// Serialize conversation to text so model doesn't try to continue it
-	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
-
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
-	promptText += basePrompt;
+	const promptText = buildSummaryRequestText(currentMessages, customInstructions, previousSummary);
 
 	const summarizationMessages = [
 		{
@@ -615,6 +640,20 @@ export async function generateSummary(
 // Compaction Preparation (for extensions)
 // ============================================================================
 
+export class CompactionContextLimitError extends Error {
+	readonly estimatedTokens: number;
+	readonly contextWindow: number;
+
+	constructor(estimatedTokens: number, contextWindow: number, model: Model<any>) {
+		super(
+			`Local compaction requires approximately ${estimatedTokens} tokens, exceeding the ${contextWindow}-token context window for ${model.provider}/${model.id}`,
+		);
+		this.name = "CompactionContextLimitError";
+		this.estimatedTokens = estimatedTokens;
+		this.contextWindow = contextWindow;
+	}
+}
+
 export interface CompactionPreparation {
 	/** UUID of first entry to keep */
 	firstKeptEntryId: string;
@@ -627,6 +666,8 @@ export interface CompactionPreparation {
 	tokensBefore: number;
 	/** Summary from previous compaction, for iterative update */
 	previousSummary?: string;
+	/** Provider-native history from the previous compatible compaction. */
+	previousNativeCompaction?: ProviderNativeCompactionResult;
 	/** File operations extracted from messagesToSummarize */
 	fileOps: FileOperations;
 	/** Compaction settions from settings.jsonl	*/
@@ -636,6 +677,7 @@ export interface CompactionPreparation {
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
+	nativeProvider?: string,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -643,23 +685,28 @@ export function prepareCompaction(
 
 	let prevCompactionIndex = -1;
 	for (let i = pathEntries.length - 1; i >= 0; i--) {
-		if (pathEntries[i].type === "compaction") {
+		const entry = pathEntries[i];
+		if (entry.type === "compaction" && canReplayCompactionWithProvider(entry, nativeProvider)) {
 			prevCompactionIndex = i;
 			break;
 		}
 	}
 
 	let previousSummary: string | undefined;
+	let previousNativeCompaction: ProviderNativeCompactionResult | undefined;
 	let boundaryStart = 0;
 	if (prevCompactionIndex >= 0) {
 		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
 		previousSummary = prevCompaction.summary;
+		previousNativeCompaction = prevCompaction.providerNativeCompaction;
 		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
 		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
 	}
 	const boundaryEnd = pathEntries.length;
 
-	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
+	const tokensBefore = estimateContextTokens(
+		buildSessionContext(pathEntries, undefined, undefined, nativeProvider ?? null).messages,
+	).tokens;
 
 	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
 
@@ -711,6 +758,7 @@ export function prepareCompaction(
 		isSplitTurn: cutPoint.isSplitTurn,
 		tokensBefore,
 		previousSummary,
+		previousNativeCompaction,
 		fileOps,
 		settings,
 	};
@@ -734,6 +782,126 @@ Summarize the prefix to provide context for the retained suffix:
 - [Information needed to understand the retained recent work]
 
 Be concise. Focus on what's needed to understand the kept suffix.`;
+
+function buildTurnPrefixRequestText(messages: AgentMessage[]): string {
+	const conversationText = serializeConversation(convertToLlm(messages));
+	return `<conversation>
+${conversationText}
+</conversation>
+
+${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+}
+
+function assertLocalCompactionFits(
+	preparation: CompactionPreparation,
+	model: Model<any>,
+	customInstructions?: string,
+): void {
+	if (model.contextWindow <= 0) return;
+
+	const historyMaxTokens = Math.floor(0.8 * preparation.settings.reserveTokens);
+	const turnPrefixMaxTokens = Math.floor(0.5 * preparation.settings.reserveTokens);
+	let largestRequestTokens = 0;
+	if (preparation.isSplitTurn && preparation.turnPrefixMessages.length > 0) {
+		if (preparation.messagesToSummarize.length > 0) {
+			const historyPrompt = buildSummaryRequestText(
+				preparation.messagesToSummarize,
+				customInstructions,
+				preparation.previousSummary,
+			);
+			largestRequestTokens = estimateSummaryRequestTokens(historyPrompt, historyMaxTokens);
+		}
+		const turnPrefixPrompt = buildTurnPrefixRequestText(preparation.turnPrefixMessages);
+		largestRequestTokens = Math.max(
+			largestRequestTokens,
+			estimateSummaryRequestTokens(turnPrefixPrompt, turnPrefixMaxTokens),
+		);
+	} else {
+		const historyPrompt = buildSummaryRequestText(
+			preparation.messagesToSummarize,
+			customInstructions,
+			preparation.previousSummary,
+		);
+		largestRequestTokens = estimateSummaryRequestTokens(historyPrompt, historyMaxTokens);
+	}
+
+	if (largestRequestTokens > model.contextWindow) {
+		throw new CompactionContextLimitError(largestRequestTokens, model.contextWindow, model);
+	}
+}
+
+export const PROVIDER_NATIVE_COMPACTION_SUMMARY =
+	"Provider-native compaction preserved opaque history for this session.";
+
+function buildProviderNativeCompactionInstructions(customInstructions?: string): string {
+	if (!customInstructions) return SUMMARIZATION_SYSTEM_PROMPT;
+	return `${SUMMARIZATION_SYSTEM_PROMPT}
+
+Additional user instructions:
+${customInstructions}`;
+}
+
+/**
+ * Replace the prepared prefix with provider-native history. The caller decides
+ * whether the active API supports this operation and owns local fallback policy.
+ */
+export async function compactNative(
+	preparation: CompactionPreparation,
+	model: Model<any>,
+	apiKey: string,
+	headers?: Record<string, string>,
+	customInstructions?: string,
+	signal?: AbortSignal,
+	sessionId?: string,
+): Promise<CompactionResult> {
+	const nativeMessages: AgentMessage[] = [];
+	if (preparation.previousNativeCompaction) {
+		nativeMessages.push({
+			role: "user",
+			content: PROVIDER_NATIVE_COMPACTION_SUMMARY,
+			providerPayload: {
+				type: "openaiResponsesHistory",
+				provider: preparation.previousNativeCompaction.provider,
+				items: preparation.previousNativeCompaction.replacementHistory,
+			},
+			timestamp: Date.now(),
+		});
+	} else if (preparation.previousSummary) {
+		nativeMessages.push({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: COMPACTION_SUMMARY_PREFIX + preparation.previousSummary + COMPACTION_SUMMARY_SUFFIX,
+				},
+			],
+			timestamp: Date.now(),
+		});
+	}
+	nativeMessages.push(...preparation.messagesToSummarize, ...preparation.turnPrefixMessages);
+
+	const providerNativeCompaction = await compactProvider(
+		model,
+		{ messages: convertToLlm(nativeMessages) },
+		{
+			apiKey,
+			headers,
+			signal,
+			sessionId,
+			instructions: buildProviderNativeCompactionInstructions(customInstructions),
+		},
+	);
+	const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
+	const summary = PROVIDER_NATIVE_COMPACTION_SUMMARY + formatFileOperations(readFiles, modifiedFiles);
+
+	return {
+		summary,
+		firstKeptEntryId: preparation.firstKeptEntryId,
+		tokensBefore: preparation.tokensBefore,
+		providerNativeCompaction,
+		details: { readFiles, modifiedFiles } as CompactionDetails,
+	};
+}
 
 /**
  * Generate summaries for compaction using prepared data.
@@ -761,6 +929,8 @@ export async function compact(
 		fileOps,
 		settings,
 	} = preparation;
+
+	assertLocalCompactionFits(preparation, model, customInstructions);
 
 	// Generate summaries (can be parallel if both needed) and merge into one
 	let summary: string;
@@ -837,9 +1007,7 @@ async function generateTurnPrefixSummary(
 	thinkingLevel?: ThinkingLevel,
 ): Promise<string> {
 	const maxTokens = Math.floor(0.5 * reserveTokens); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	const promptText = buildTurnPrefixRequestText(messages);
 	const summarizationMessages = [
 		{
 			role: "user" as const,
