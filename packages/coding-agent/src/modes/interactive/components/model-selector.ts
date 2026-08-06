@@ -326,10 +326,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				query,
 				({ id, provider }) => `${id} ${provider} ${provider}/${id} ${provider} ${id}`,
 			);
+			// Configured providers outrank raw match quality: the unfiltered
+			// list already sorts signed-in providers first (sortModels), and a
+			// query must not surface a provider the user cannot run above one
+			// they are logged into (#653).
 			scored.sort(
 				(a, b) =>
-					a.score - b.score ||
 					Number(this.isProviderConfigured(b.item)) - Number(this.isProviderConfigured(a.item)) ||
+					a.score - b.score ||
 					this.recentRankOf(a.item) - this.recentRankOf(b.item),
 			);
 			this.filteredModels = scored.map((r) => r.item);
