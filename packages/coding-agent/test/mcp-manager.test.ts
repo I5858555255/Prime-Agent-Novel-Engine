@@ -28,6 +28,7 @@ describe("McpManager", () => {
 		const overrides = manager.getDisabledBuiltinSkillOverrides();
 		expect(overrides).toContain("-linear/SKILL.md");
 		expect(overrides).toContain("-notion/SKILL.md");
+		expect(overrides).toContain("-tavily/SKILL.md");
 	});
 
 	it("enables an integration once credentials are stored", () => {
@@ -41,6 +42,7 @@ describe("McpManager", () => {
 		const overrides = manager.getDisabledBuiltinSkillOverrides();
 		expect(overrides).not.toContain("-linear/SKILL.md");
 		expect(overrides).toContain("-notion/SKILL.md");
+		expect(overrides).toContain("-tavily/SKILL.md");
 
 		const status = manager.listStatus().find((s) => s.server === "linear");
 		expect(status?.enabled).toBe(true);
@@ -50,6 +52,7 @@ describe("McpManager", () => {
 		new McpManager({ authStorage });
 		expect(getOAuthProvider("mcp:linear")).toBeDefined();
 		expect(getOAuthProvider("mcp:notion")).toBeDefined();
+		expect(getOAuthProvider("mcp:tavily")).toBeDefined();
 	});
 
 	it("keeps MCP providers registered after ModelRegistry.refresh() resets the registry", () => {
@@ -58,6 +61,7 @@ describe("McpManager", () => {
 		registry.refresh(); // calls resetOAuthProviders(); must re-add MCP providers
 		expect(getOAuthProvider("mcp:linear")).toBeDefined();
 		expect(getOAuthProvider("mcp:notion")).toBeDefined();
+		expect(getOAuthProvider("mcp:tavily")).toBeDefined();
 	});
 
 	it("re-registers user-declared OAuth servers after ModelRegistry.refresh via the reset hook", () => {
@@ -110,6 +114,10 @@ describe("McpManager", () => {
 			headers: { "X-Extra": "1" },
 		});
 		expect(await handlers["mcp.config"]({ server: "notion" })).toEqual({ url: "https://mcp.notion.com/mcp" });
+		expect(await handlers["mcp.config"]({ server: "tavily" })).toEqual({
+			url: "https://mcp.tavily.com/mcp",
+			headers: { "X-Client-Name": "prime-agent" },
+		});
 	});
 
 	it("does not treat an oauth override of a catalog name as authed via the official stored cred", () => {

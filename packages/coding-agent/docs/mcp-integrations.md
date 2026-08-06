@@ -30,7 +30,7 @@ credentials in `auth.json`.
 
 ## Using a built-in integration
 
-Built-in integrations (Linear, Notion) ship **disabled**. Logging in enables them:
+Built-in integrations (Linear, Notion, Tavily) ship **disabled**. Logging in enables them:
 
 - Open `/login`, switch to **MCP Connections**, pick the integration, and
   complete OAuth in the browser. `/mcp login <name>` does the same from the CLI.

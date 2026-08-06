@@ -67,6 +67,7 @@ export class McpManager {
 				label: entry.label,
 				url: entry.url,
 				usesOAuth: entry.oauth?.kind === "oauth",
+				headers: entry.headers,
 			});
 		}
 		for (const [server, config] of Object.entries(this.getUserServers() ?? {})) {

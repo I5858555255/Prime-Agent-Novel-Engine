@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Tavily as a built-in OAuth MCP integration for web search, extraction, crawling, mapping and research.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
