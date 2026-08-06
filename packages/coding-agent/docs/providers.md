@@ -74,6 +74,9 @@ prime-agent
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
+| ClinePass (Cline API) | `CLINE_API_KEY` | `cline-pass` |
+| Meta Model API | `MODEL_API_KEY` | `meta` |
+| Alibaba Cloud Model Studio Token Plan | `ALIBABA_TOKEN_PLAN_API_KEY` | `alibaba-token-plan` |
 
 Reference for environment variables and `auth.json` keys: [`env-api-keys.ts`](../../ai/src/env-api-keys.ts).
 
@@ -93,7 +96,10 @@ Store credentials in `~/.prime/agent/auth.json`:
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },
-  "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." }
+  "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." },
+  "cline-pass": { "type": "api_key", "key": "..." },
+  "meta": { "type": "api_key", "key": "..." },
+  "alibaba-token-plan": { "type": "api_key", "key": "sk-sp-..." }
 }
 ```
 
@@ -122,6 +128,53 @@ OAuth credentials are also stored here after `/login` and managed automatically.
 ### Prime Inference
 
 Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or store an API key for `prime-inference` via `/login`.
+
+### ClinePass
+
+ClinePass uses the Cline API's OpenAI-compatible Chat Completions endpoint. Model IDs retain the full `cline-pass/...` slug required by Cline.
+
+In interactive mode, run `/login`, open **API Keys**, select **ClinePass**, and paste the Cline API key. Prime Agent saves it under `cline-pass` in `auth.json` and refreshes `/model` immediately.
+
+```bash
+export CLINE_API_KEY=...
+prime-agent --provider cline-pass --model cline-pass/qwen3.7-max
+```
+
+The built-in catalog follows Cline's maintained ClinePass allowlist from [models.dev](https://models.dev). Prime Agent does not use Cline's `/models` endpoint at runtime.
+
+### Meta Model API
+
+Meta Model API uses the OpenAI-compatible Responses API at `https://api.meta.ai/v1`. Responses is used instead of Chat Completions because it preserves encrypted reasoning replay across tool-call turns. Prime Agent sends stateless requests with `store: false`, requests `reasoning.encrypted_content`, and forwards the selected reasoning effort. Muse Spark does not support reasoning `off`.
+
+In interactive mode, run `/login`, open **API Keys**, select **Meta Model API**, and paste the Model API key. Prime Agent saves it under `meta` in `auth.json` and refreshes `/model` immediately.
+
+```bash
+export MODEL_API_KEY=...
+prime-agent --provider meta --model muse-spark-1.2
+```
+
+The built-in catalog contains the current documented Muse Spark model IDs. `muse-spark-1.2-contributor` is the discounted contributor tier; Meta states that contributor-tier prompts and completions may be used for model improvement. Choose the standard model unless that data-use policy is acceptable.
+
+### Alibaba Cloud Model Studio Token Plan
+
+This provider is isolated from Alibaba pay-as-you-go and Coding Plan credentials. It uses the Singapore Token Plan OpenAI-compatible endpoint and requires a dedicated Token Plan key, normally prefixed `sk-sp-`.
+
+In interactive mode, run `/login`, open **API Keys**, select **Alibaba Cloud Model Studio Token Plan**, and paste the dedicated Token Plan key. Prime Agent saves it under `alibaba-token-plan` in `auth.json` and refreshes `/model` immediately.
+
+```bash
+export ALIBABA_TOKEN_PLAN_API_KEY=sk-sp-...
+prime-agent --provider alibaba-token-plan --model qwen3.8-max
+```
+
+Set `ALIBABA_TOKEN_PLAN_BASE_URL` to replace the built-in `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` endpoint for another compatible Token Plan region or plan variant:
+
+```bash
+export ALIBABA_TOKEN_PLAN_BASE_URL=https://token-plan.example.com/compatible-mode/v1
+```
+
+The provider uses OpenAI-compatible Chat Completions. Qwen-family reasoning controls are translated to Alibaba's `enable_thinking` request field. The maintained catalog is generated from the current Alibaba Token Plan allowlist in [models.dev](https://models.dev); Prime Agent does not assume that `/models` discovery is available. Token Plan is prepaid in Credits, so per-token dollar costs are intentionally reported as unknown (`0`) rather than inferred from pay-as-you-go rates.
+
+Provider errors retain their HTTP status and upstream message. Authentication failures normally return 401/403, unavailable model or incompatible-endpoint errors 400/404, quota exhaustion 402/429, and rate limits 429. Prime Agent's stream-failure diagnostics classify these failures without logging request authorization headers.
 
 ## Cloud Providers
 

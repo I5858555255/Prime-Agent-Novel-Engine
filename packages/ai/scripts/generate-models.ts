@@ -118,6 +118,24 @@ const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
+
+const CLINE_PASS_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: false,
+	maxTokensField: "max_tokens",
+	supportsStrictMode: false,
+	supportsLongCacheRetention: false,
+};
+
+const ALIBABA_TOKEN_PLAN_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: false,
+	maxTokensField: "max_tokens",
+	supportsStrictMode: false,
+	supportsLongCacheRetention: false,
+};
 interface PrimeInferenceCatalogEntry {
 	id: string;
 	input: number;
@@ -319,7 +337,12 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("mythos-preview")) {
 		mergeThinkingLevelMap(model, { off: null, max: "max" });
 	}
-	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
+	if (
+		model.api === "openai-completions" &&
+		model.provider !== "cline-pass" &&
+		model.provider !== "alibaba-token-plan" &&
+		model.id.includes("deepseek-v4")
+	) {
 		mergeThinkingLevelMap(model, DEEPSEEK_V4_THINKING_LEVEL_MAP);
 	}
 	const kimiK3Id = model.id.toLowerCase();
@@ -1534,7 +1557,105 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// Process ClinePass models. models.dev mirrors Cline's maintained ClinePass
+		// allowlist, including the full cline-pass/* slugs required by the API.
+		if (data["cline-pass"]?.models) {
+			for (const [modelId, model] of Object.entries(data["cline-pass"].models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true || !m.modalities?.output?.includes("text")) continue;
+				if (!modelId.startsWith("cline-pass/")) continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "cline-pass",
+					baseUrl: "https://api.cline.bot/api/v1",
+					reasoning: m.reasoning === true,
+					thinkingLevelMap: m.reasoning === true ? { off: null } : undefined,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+					compat: CLINE_PASS_COMPAT,
+				});
+			}
+		}
+
+		// Process Meta Model API models through Responses so encrypted reasoning
+		// items, streamed tools, and multi-turn replay use the provider's full API.
+		if (data.meta?.models) {
+			for (const [modelId, model] of Object.entries(data.meta.models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true || !m.modalities?.output?.includes("text")) continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-responses",
+					provider: "meta",
+					baseUrl: "https://api.meta.ai/v1",
+					reasoning: m.reasoning === true,
+					thinkingLevelMap: m.reasoning === true ? { off: null, xhigh: "xhigh" } : undefined,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					// Current Meta docs publish the same limits for every Muse Spark checkpoint.
+					contextWindow: 1048576,
+					maxTokens: 131072,
+					compat: { sendSessionIdHeader: false },
+				});
+			}
+		}
+
+		// Token Plan has no discovery endpoint. models.dev maintains the explicit
+		// Token Plan allowlist; exclude non-text generation routes and retired aliases.
+		if (data["alibaba-token-plan"]?.models) {
+			const tokenPlanModels = data["alibaba-token-plan"].models as Record<
+				string,
+				ModelsDevModel & { status?: string }
+			>;
+			for (const [modelId, model] of Object.entries(tokenPlanModels)) {
+				if (model.tool_call !== true || !model.modalities?.output?.includes("text")) continue;
+				if (model.status === "deprecated") continue;
+				if (modelId.endsWith("-preview") && tokenPlanModels[modelId.slice(0, -"-preview".length)]) continue;
+
+				const supportsThinkingToggle = modelId.startsWith("qwen");
+				const thinkingOnly = model.reasoning === true && !supportsThinkingToggle;
+				models.push({
+					id: modelId,
+					name: model.name || modelId,
+					api: "openai-completions",
+					provider: "alibaba-token-plan",
+					baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+					reasoning: model.reasoning === true,
+					thinkingLevelMap: thinkingOnly ? { off: null } : undefined,
+					input: model.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: model.cost?.input || 0,
+						output: model.cost?.output || 0,
+						cacheRead: model.cost?.cache_read || 0,
+						cacheWrite: model.cost?.cache_write || 0,
+					},
+					contextWindow: model.limit?.context || 4096,
+					maxTokens: model.limit?.output || 4096,
+					compat: supportsThinkingToggle
+						? { ...ALIBABA_TOKEN_PLAN_COMPAT, thinkingFormat: "qwen" }
+						: ALIBABA_TOKEN_PLAN_COMPAT,
+				});
+			}
+		}
 		console.log(`Loaded ${models.length} tool-capable models from models.dev`);
+
 		return models;
 	} catch (error) {
 		console.error("Failed to load models.dev data:", error);
@@ -1877,9 +1998,13 @@ async function generateModels() {
 		},
 	];
 	allModels.push(...deepseekV4Models);
-
 	for (const candidate of allModels) {
-		if (candidate.api === "openai-completions" && candidate.id.includes("deepseek-v4")) {
+		if (
+			candidate.api === "openai-completions" &&
+			candidate.provider !== "cline-pass" &&
+			candidate.provider !== "alibaba-token-plan" &&
+			candidate.id.includes("deepseek-v4")
+		) {
 			candidate.compat = {
 				...candidate.compat,
 				...(candidate.provider === "openrouter"

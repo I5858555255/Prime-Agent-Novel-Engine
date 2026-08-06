@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added first-class ClinePass, Meta Model API, and Alibaba Cloud Model Studio Token Plan providers with maintained built-in model catalogs, credential environment mappings, native reasoning controls, and an Alibaba Token Plan base URL override.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
