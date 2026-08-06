@@ -361,6 +361,9 @@ describe("openai-codex streaming", () => {
 				sawError = true;
 				expect(event.error.stopReason).toBe("error");
 				expect(event.error.stopReasonRaw).toBe("quarantined");
+				expect(event.error.diagnostics).toEqual(
+					expect.arrayContaining([expect.objectContaining({ type: "provider_stream_failure" })]),
+				);
 			}
 		}
 

@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Fixed provider stop/status normalization across Anthropic, Google/Vertex, OpenAI Responses/Azure/Codex, and Mistral ([#707](https://github.com/PrimeIntellect-ai/prime-agent/issues/707)). Unknown values now map to `error` instead of throwing or reporting success, preserve the raw value in `stopReasonRaw`, and use the existing structured failure path.
+- Fixed new provider stop and status values being reported as successful completions ([#707](https://github.com/PrimeIntellect-ai/prime-agent/issues/707)).
 
 ## [0.7.0] - 2026-08-05
 

@@ -40,7 +40,12 @@ import {
 } from "../utils/diagnostics.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
-import { StreamFailureError, streamFailureFromStopReason } from "../utils/stream-failure.js";
+import {
+	formatStreamFailureMessage,
+	recordStreamFailure,
+	StreamFailureError,
+	streamFailureFromStopReason,
+} from "../utils/stream-failure.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
@@ -313,7 +318,8 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 				delete (block as { partialJson?: string }).partialJson;
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : String(error);
+			output.errorMessage = formatStreamFailureMessage(error);
+			recordStreamFailure(model, output, error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
