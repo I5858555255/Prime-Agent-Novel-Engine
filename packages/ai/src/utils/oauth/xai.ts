@@ -167,6 +167,7 @@ async function pollForTokens(device: XaiDeviceCode, signal?: AbortSignal): Promi
 
 	while (Date.now() < deadline) {
 		await abortableSleep(Math.min(intervalSeconds * 1000, deadline - Date.now()), signal);
+		if (Date.now() >= deadline) break;
 		const response = await postForm(
 			XAI_TOKEN_URL,
 			{

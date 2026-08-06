@@ -194,6 +194,18 @@ describe("xAI OAuth device flow", () => {
 		await expect(loginXaiForTest({ onAuth: () => {} })).rejects.toThrow("Untrusted verification URI");
 	});
 
+	it("stops without polling after the device code expires", async () => {
+		vi.useFakeTimers();
+		const fetchMock = vi.fn(async () => jsonResponse(deviceCodeResponse({ expires_in: 2, interval: 5 })));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const loginPromise = loginXaiForTest({ onAuth: () => {} });
+		const assertion = expect(loginPromise).rejects.toThrow("xAI device code expired");
+		await vi.advanceTimersByTimeAsync(2000);
+		await assertion;
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it.each(["access_denied", "authorization_denied"])(
 		"fails when device authorization is denied: %s",
 		async (error) => {
