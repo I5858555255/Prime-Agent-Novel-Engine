@@ -111,6 +111,12 @@ cp permission-gate.ts ~/.prime/agent/extensions/
 | `message-renderer.ts` | Custom message rendering with colors and expandable details via `registerMessageRenderer` |
 | `event-bus.ts` | Inter-extension communication via `pi.events` |
 
+### Memory
+
+| Extension | Description |
+|-----------|-------------|
+| `hindsight-memory.ts` | Server-backed long-term memory via Hindsight. Recalls relevant memories into context on each prompt (`before_agent_start`), retains each exchange (`agent_end`), and adds `/recall` for manual lookup |
+
 ### Session Metadata
 
 | Extension | Description |
