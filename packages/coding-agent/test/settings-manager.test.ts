@@ -555,5 +555,27 @@ describe("SettingsManager", () => {
 
 			expect(manager.getTelemetryEnabled()).toBe(false);
 		});
+
+		it("allows runtime overrides to further disable telemetry and control disclosure", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ telemetry: { enabled: true, noticeShown: true } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			manager.applyOverrides({ telemetry: { enabled: false, noticeShown: false } });
+
+			expect(manager.getTelemetryEnabled()).toBe(false);
+			expect(manager.getTelemetryNoticeShown()).toBe(false);
+		});
+
+		it("does not let a runtime override re-enable a global opt-out", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ telemetry: { enabled: false } }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			manager.applyOverrides({ telemetry: { enabled: true } });
+
+			expect(manager.getTelemetryEnabled()).toBe(false);
+		});
 	});
 });

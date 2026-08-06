@@ -306,6 +306,7 @@ export class SettingsManager {
 	private globalSettings: Settings;
 	private projectSettings: Settings;
 	private settings: Settings;
+	private runtimeOverrides: Settings = {};
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -502,6 +503,7 @@ export class SettingsManager {
 
 	/** Apply additional overrides on top of current settings */
 	applyOverrides(overrides: Partial<Settings>): void {
+		this.runtimeOverrides = deepMergeSettings(this.runtimeOverrides, overrides);
 		this.settings = deepMergeSettings(this.settings, overrides);
 	}
 
@@ -830,7 +832,8 @@ export class SettingsManager {
 	getTelemetryEnabled(): boolean {
 		const globalEnabled = this.globalSettings.telemetry?.enabled ?? true;
 		const projectEnabled = this.projectSettings.telemetry?.enabled ?? true;
-		return globalEnabled && projectEnabled;
+		const runtimeEnabled = this.runtimeOverrides.telemetry?.enabled ?? true;
+		return globalEnabled && projectEnabled && runtimeEnabled;
 	}
 
 	private getOrCreateGlobalTelemetrySettings(): TelemetrySettings {
@@ -848,7 +851,7 @@ export class SettingsManager {
 	}
 
 	getTelemetryNoticeShown(): boolean {
-		return this.globalSettings.telemetry?.noticeShown ?? false;
+		return this.runtimeOverrides.telemetry?.noticeShown ?? this.globalSettings.telemetry?.noticeShown ?? false;
 	}
 
 	setTelemetryNoticeShown(shown: boolean): void {
