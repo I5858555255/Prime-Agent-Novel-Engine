@@ -327,6 +327,16 @@ function classifyReachable(probe: ProbeResult): DaemonStatus {
  * status queries while every worker spawn fails with ENOENT (#704). Surface
  * that as "broken-runtime" instead of reporting the daemon healthy.
  */
+/**
+ * A daemon compiled as a Bun binary reports process.argv[1] as a path inside
+ * Bun's virtual filesystem, which never exists on disk; worker spawns skip the
+ * entrypoint entirely for those builds (createCliSubprocessLaunchSpec), so its
+ * absence must not count as a broken runtime. Markers match isBunBinary.
+ */
+function isBunVirtualEntrypoint(path: string): boolean {
+	return path.includes("$bunfs") || path.includes("~BUN") || path.includes("%7EBUN");
+}
+
 export function classifyRuntimeHealth(
 	status: DaemonStatus,
 	runtime: { executablePath?: string; entrypointPath?: string } | undefined,
@@ -335,7 +345,11 @@ export function classifyRuntimeHealth(
 	if (status !== "current" && status !== "stale") {
 		return status;
 	}
-	const spawnPaths = [runtime?.executablePath, runtime?.entrypointPath].filter(
+	const entrypointPath =
+		runtime?.entrypointPath !== undefined && isBunVirtualEntrypoint(runtime.entrypointPath)
+			? undefined
+			: runtime?.entrypointPath;
+	const spawnPaths = [runtime?.executablePath, entrypointPath].filter(
 		(path): path is string => typeof path === "string" && path.length > 0,
 	);
 	if (spawnPaths.length === 0) {

@@ -23,6 +23,26 @@ describe("issue #704 doctor must flag a daemon whose spawn paths are gone", () =
 		expect(status).toBe("broken-runtime");
 	});
 
+	it("does not flag a bun-binary daemon whose virtual entrypoint never exists on disk", () => {
+		const bunPaths = ["/$bunfs/root/prime-agent", "/private/tmp/~BUN/cli.js", "/x/%7EBUN/cli.js"];
+		for (const entrypointPath of bunPaths) {
+			const status = classifyRuntimeHealth(
+				"current",
+				{ executablePath: "/usr/local/bin/prime-agent", entrypointPath },
+				(path) => path === "/usr/local/bin/prime-agent",
+			);
+			expect(status).toBe("current");
+		}
+		// The executable itself must still exist even for bun binaries.
+		expect(
+			classifyRuntimeHealth(
+				"current",
+				{ executablePath: "/gone/prime-agent", entrypointPath: "/$bunfs/root/x" },
+				missing,
+			),
+		).toBe("broken-runtime");
+	});
+
 	it("keeps current when both spawn paths exist", () => {
 		expect(
 			classifyRuntimeHealth("current", { executablePath: "/usr/bin/node", entrypointPath: "/x/cli.js" }, present),
