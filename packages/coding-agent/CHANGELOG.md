@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed authenticated RLM discovery excluding OpenAI Codex models by sending a Codex-compatible discovery client version ([#639](https://github.com/PrimeIntellect-ai/prime-agent/issues/639)).
+
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

@@ -22,12 +22,13 @@ import {
 } from "@earendil-works/pi-ai";
 import { registerBuiltinMcpOAuthProviders } from "@earendil-works/pi-ai/mcp";
 import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
+import { OPENAI_CODEX_CLIENT_VERSION } from "@earendil-works/pi-ai/openai-codex-responses";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { type Static, type TProperties, Type } from "typebox";
 import type { Validator } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
-import { getAgentDir, VERSION } from "../config.js";
+import { getAgentDir } from "../config.js";
 import type { AuthSourceToken, AuthStatus, AuthStorage } from "./auth-storage.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "./prime-inference-auth.js";
 import {
@@ -371,6 +372,8 @@ function readOpenAICodexAccountId(token: string): string | undefined {
 		return undefined;
 	}
 }
+// OpenAI uses the Codex CLI compatibility version to select the model catalog,
+// not Prime Agent's unrelated package version.
 
 function openAICodexModelsUrl(baseUrl: string): string {
 	const normalized = baseUrl.replace(/\/+$/, "");
@@ -383,7 +386,7 @@ function openAICodexModelsUrl(baseUrl: string): string {
 		path = `${normalized}/codex/models`;
 	}
 	const url = new URL(path);
-	url.searchParams.set("client_version", VERSION);
+	url.searchParams.set("client_version", OPENAI_CODEX_CLIENT_VERSION);
 	return url.toString();
 }
 
