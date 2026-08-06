@@ -937,6 +937,7 @@ interface RlmChildRun {
 	status: RlmChildAgentStatus;
 	error?: string;
 	abort: () => void;
+	abortCompletion?: Promise<void>;
 	publication: AgentMessageDeferred;
 	/** Child session, once its runtime exists. Used to cancel nested child runs. */
 	session?: AgentSession;
@@ -963,6 +964,9 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 
 /** Cap on the post-compaction kernel namespace probe so a wedged kernel can't stall recovery. */
 const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
+/** Delay before a stopped tool loop resumes after compaction, and the poll interval used to wait it out. */
+const POST_COMPACTION_CONTINUATION_DELAY_MS = 100;
+const RLM_CHILD_ABORT_SETTLE_TIMEOUT_MS = 1000;
 const RLM_MAX_DEPTH_STATE_CUSTOM_TYPE = "rlm_max_depth_state";
 
 function noopRlmChildAbort(): void {}
@@ -6438,6 +6442,22 @@ export class AgentSession {
 		}
 	}
 
+	/** Wait through autonomous work scheduled after a spawned task's originating turn. */
+	private async _waitForSpawnedTaskSettled(throwIfCancelled: () => void, cancelled: Promise<void>): Promise<void> {
+		const waitOrCancel = async (operation: Promise<void>) => {
+			await Promise.race([operation, cancelled]);
+			throwIfCancelled();
+		};
+		while (true) {
+			throwIfCancelled();
+			await waitOrCancel(this.waitForIdle());
+			if (!this._postCompactionContinuationScheduled && !this.isCompacting && !this.isRetrying) {
+				return;
+			}
+			await waitOrCancel(sleep(POST_COMPACTION_CONTINUATION_DELAY_MS));
+		}
+	}
+
 	getPendingNextTurnMessageSnapshots(): readonly CustomMessage[] {
 		const messages = this._pendingNextTurnMessages.map((message) => cloneCustomMessage(message));
 		for (const action of this._actionStore.unfinishedActions()) {
@@ -7282,7 +7302,7 @@ export class AgentSession {
 		this._postCompactionContinuationTimer = setTimeout(() => {
 			this._postCompactionContinuationTimer = undefined;
 			void this._runScheduledPostCompactionContinue();
-		}, 100);
+		}, POST_COMPACTION_CONTINUATION_DELAY_MS);
 	}
 
 	/** Whether any snapshot of scheduled continuation messages is still session-owned. */
@@ -9627,6 +9647,10 @@ export class AgentSession {
 		let runningToolCount = 0;
 		let activity: RlmChildAgentActivity | undefined;
 		let childSession: AgentSession | undefined;
+		let resolveRunCancelled: () => void = () => {};
+		const runCancelled = new Promise<void>((resolve) => {
+			resolveRunCancelled = resolve;
+		});
 		const run: RlmChildRun = {
 			id: childNodeId,
 			prompt,
@@ -9634,7 +9658,7 @@ export class AgentSession {
 			sessionDir: childSessionDir,
 			status: "queued",
 			settled: false,
-			abort: noopRlmChildAbort,
+			abort: resolveRunCancelled,
 			publication: createAgentMessageDeferred(),
 		};
 		const throwIfCancelled = () => {
@@ -9671,7 +9695,10 @@ export class AgentSession {
 			childSession = child;
 			if (this._activeRlmChildRuns.get(run.id) !== run) return;
 			run.session = child;
-			run.abort = () => void child.abort();
+			run.abort = () => {
+				resolveRunCancelled();
+				run.abortCompletion ??= child.abort().catch(() => undefined);
+			};
 			run.publication.resolve();
 		};
 		const subagentOptions: CreateRlmSubagentRuntimeOptions = {
@@ -9811,6 +9838,13 @@ export class AgentSession {
 					customMessage: spawnMessage,
 				});
 				if (run.error) throw new Error(run.error);
+				// promptAndWait resolves at the originating turn; a threshold/overflow compaction
+				// can stop the loop mid-task and resume autonomously. Wait for that to drain before
+				// judging whether the child finished without replying, so a live child mid-compaction
+				// is not reported as completed.
+				await child._waitForSpawnedTaskSettled(throwIfCancelled, runCancelled);
+				throwIfCancelled();
+				if (run.error) throw new Error(run.error);
 				run.status = "done";
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
@@ -9841,6 +9875,8 @@ export class AgentSession {
 				if (run.status !== "cancelled") {
 					run.status = "error";
 					run.error = runError.message;
+				} else if (run.abortCompletion) {
+					await Promise.race([run.abortCompletion, sleep(RLM_CHILD_ABORT_SETTLE_TIMEOUT_MS)]);
 				}
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
