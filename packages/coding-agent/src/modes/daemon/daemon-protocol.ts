@@ -641,8 +641,8 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	list: LEGACY_DAEMON_COMMAND,
 	list_saved_sessions: LEGACY_DAEMON_COMMAND,
 	create: LEGACY_DAEMON_COMMAND,
-	attach: TELEMETRY_POLICY_ATTACH_COMMAND,
-	reattach: TELEMETRY_POLICY_ATTACH_COMMAND,
+	attach: LEGACY_DAEMON_COMMAND,
+	reattach: LEGACY_DAEMON_COMMAND,
 	detach: LEGACY_DAEMON_COMMAND,
 	complete_owned_session: CLIENT_OWNED_DAEMON_COMMAND,
 	promote_owned_session: CLIENT_OWNED_DAEMON_COMMAND,
@@ -738,6 +738,9 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 
 export function getDaemonCommandCompatibilities(command: DaemonCommand): readonly DaemonCommandCompatibility[] {
 	const compatibility = DAEMON_COMMAND_COMPATIBILITY[command.type];
+	if ((command.type === "attach" || command.type === "reattach") && command.telemetryDisabled !== undefined) {
+		return [TELEMETRY_POLICY_ATTACH_COMMAND, compatibility];
+	}
 	if ((command.type === "prompt" || command.type === "prompt_and_wait") && command.admissionId !== undefined) {
 		return [PROMPT_ADMISSION_CANCELLATION_COMMAND, compatibility];
 	}

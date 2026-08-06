@@ -16,6 +16,7 @@ import {
 	DAEMON_SCHEMA_REVISION,
 	type DaemonCommand,
 	type DaemonOutbound,
+	getDaemonCommandCompatibilities,
 	isDaemonCommandEnvelope,
 	isDaemonMutatingCommand,
 	salvageDaemonCommandId,
@@ -89,8 +90,20 @@ describe("daemon protocol helpers", () => {
 	});
 
 	it("schema-gates attach commands that carry the telemetry policy", () => {
-		expect(DAEMON_COMMAND_COMPATIBILITY.attach).toEqual({ minProtocol: 7, minSchemaRevision: 14 });
-		expect(DAEMON_COMMAND_COMPATIBILITY.reattach).toEqual({ minProtocol: 7, minSchemaRevision: 14 });
+		expect(getDaemonCommandCompatibilities({ type: "attach", activeSessionId: "active-1" })).toEqual([
+			{ minProtocol: 7 },
+		]);
+		expect(
+			getDaemonCommandCompatibilities({ type: "attach", activeSessionId: "active-1", telemetryDisabled: true }),
+		).toEqual([{ minProtocol: 7, minSchemaRevision: 14 }, { minProtocol: 7 }]);
+		expect(
+			getDaemonCommandCompatibilities({
+				type: "reattach",
+				activeSessionId: "active-1",
+				targetActiveSessionId: "active-2",
+				telemetryDisabled: true,
+			}),
+		).toEqual([{ minProtocol: 7, minSchemaRevision: 14 }, { minProtocol: 7 }]);
 	});
 
 	it("version- and capability-gates prompt admission cancellation", () => {
