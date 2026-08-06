@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createUvInstallLaunchSpec } from "../src/core/kernel/bootstrap.js";
+import { createUvInstallLaunchSpec, getKernelVenvPython } from "../src/core/kernel/bootstrap.js";
 
 describe("uv bootstrap installer", () => {
 	it("uses the native PowerShell installer on Windows", () => {
@@ -15,5 +15,11 @@ describe("uv bootstrap installer", () => {
 			],
 			displayCommand: "irm https://astral.sh/uv/install.ps1 | iex",
 		});
+	});
+
+	it("uses the Windows virtualenv interpreter path", () => {
+		expect(getKernelVenvPython(String.raw`D:\Users\prime\.prime\agent\kernel-venv`, "win32")).toBe(
+			String.raw`D:\Users\prime\.prime\agent\kernel-venv\Scripts\python.exe`,
+		);
 	});
 });
