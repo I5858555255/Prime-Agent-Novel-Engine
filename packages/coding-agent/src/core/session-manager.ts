@@ -758,7 +758,7 @@ function isAgentMessage(value: unknown): boolean {
 				hasBoolean(value, "isError")
 			);
 		case "bashExecution":
-			return hasString(value, "command") && hasString(value, "output") && "exitCode" in value;
+			return hasString(value, "command") && hasString(value, "output");
 		case "custom":
 			return hasString(value, "customType") && isMessageContent(value.content) && hasBoolean(value, "display");
 		case "branchSummary":
@@ -779,9 +779,7 @@ function isScannableSessionEntry(entry: unknown, sessionVersion = 1): entry is S
 	if (sessionVersion >= 2 && !legacyBookkeeping && !hasString(entry, "id")) return false;
 	if (entry.type === "message") {
 		if (isRecord(entry.message) && entry.message.role === "bashExecution") {
-			return (
-				hasString(entry.message, "command") && hasString(entry.message, "output") && "exitCode" in entry.message
-			);
+			return hasString(entry.message, "command") && hasString(entry.message, "output");
 		}
 		return (
 			isRecord(entry.message) &&
