@@ -45,6 +45,15 @@ case "\${1:-}" in
 		install_prime_agent_package /fixture/prime-agent.tgz
 		configure_installed_command_path "$prime_agent_install_bin"
 		;;
+	blocked-fallback-package)
+		prime_agent_path_supports_install() {
+			case "$1" in
+				"$PRIME_AGENT_TEST_NPM_PREFIX"|"$PRIME_AGENT_TEST_NPM_PREFIX/"*|"$HOME/.local/lib/node_modules/$prime_agent_package") return 1 ;;
+				*) return 0 ;;
+			esac
+		}
+		configure_npm_install_environment
+		;;
 	writable-prefix)
 		prime_agent_path_supports_install() {
 			return 0
@@ -121,6 +130,7 @@ esac
 	assertMinimumNodeVersion();
 	assertPreflightNodeVersion();
 	assertUserPrefixFallback();
+	assertBlockedFallbackPackageRejected();
 	assertWritablePrefixPreserved();
 } finally {
 	rmSync(tempDir, { recursive: true, force: true });
@@ -156,12 +166,17 @@ function assertPreflightNodeVersion() {
 
 function assertUserPrefixFallback() {
 	writeFileSync(npmLogPath, "", "utf-8");
+	const expectedPrefix = join(homeDir, ".local");
+	const expectedBin = join(expectedPrefix, "bin");
+	writeFileSync(
+		profilePath,
+		`# export PATH='${expectedBin}':"$PATH"\nexport PATH="/usr/bin:${expectedBin}:$PATH"\n`,
+		"utf-8",
+	);
 	const result = runHarness("user-prefix", {
 		PRIME_AGENT_TEST_NODE_VERSION: "22.8.0",
 		PRIME_AGENT_TEST_NPM_PREFIX: systemPrefix,
 	});
-	const expectedPrefix = join(homeDir, ".local");
-	const expectedBin = join(expectedPrefix, "bin");
 	check(result.status === 0, `user-prefix harness exited with ${result.status ?? "unknown"}: ${result.stderr}`);
 	check(result.stdout.includes(`__PREFIX__ ${expectedPrefix}\n`), "unwritable npm prefix did not select ~/.local");
 	check(result.stdout.includes(`__BIN__ ${expectedBin}\n`), "unwritable npm prefix reported the wrong command directory");
@@ -181,6 +196,15 @@ function assertUserPrefixFallback() {
 	});
 	check(sourced.status === 0, `profile update could not be sourced: ${sourced.stderr}`);
 	check(sourced.stdout.startsWith(`${expectedBin}:`), "profile update did not prepend the fallback npm bin directory");
+}
+
+function assertBlockedFallbackPackageRejected() {
+	const result = runHarness("blocked-fallback-package", {
+		PRIME_AGENT_TEST_NODE_VERSION: "22.8.0",
+		PRIME_AGENT_TEST_NPM_PREFIX: systemPrefix,
+	});
+	check(result.status === 1, `blocked fallback package harness exited with ${result.status ?? "unknown"}`);
+	check(result.stderr.includes("fallback prefix"), "blocked fallback package did not report the unwritable fallback");
 }
 
 function assertWritablePrefixPreserved() {

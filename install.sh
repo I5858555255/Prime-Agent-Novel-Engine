@@ -933,6 +933,7 @@ configure_npm_install_environment() {
 		fi
 		fallback_prefix="$HOME/.local"
 		if ! prime_agent_path_supports_install "$fallback_prefix/lib/node_modules" ||
+			! prime_agent_path_supports_install "$fallback_prefix/lib/node_modules/$prime_agent_package" ||
 			! prime_agent_path_supports_install "$fallback_prefix/bin"; then
 			printf 'error: npm global prefix %s and fallback prefix %s are not writable.\n' "$npm_prefix" "$fallback_prefix" >&2
 			return 1
@@ -1444,7 +1445,8 @@ detect_shell_profile() {
 shell_profile_has_install_path() {
 	profile="$1"
 	install_bin="$2"
-	[ -f "$profile" ] && grep -F "$install_bin" "$profile" >/dev/null 2>&1
+	path_line=$(install_path_line "$install_bin")
+	[ -f "$profile" ] && grep -F -x "$path_line" "$profile" >/dev/null 2>&1
 }
 
 prompt_add_install_path() {
