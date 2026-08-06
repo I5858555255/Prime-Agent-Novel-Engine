@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import types
 from dataclasses import dataclass
@@ -344,3 +345,72 @@ def __getattr__(name: str) -> Any:  # noqa: D401 - module-level lazy attr hook
 
         return getattr(mcp_base, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _subprocess_kill_tree(pid: int) -> None:
+    """Kill *pid* and its descendants so no pipe-holding grandchild survives."""
+    import subprocess as _sp
+
+    if sys.platform == "win32":
+        try:
+            _sp.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=15)
+        except BaseException:
+            pass
+    else:
+        try:
+            if os.getpgid(pid) != os.getpgid(0):
+                os.killpg(os.getpgid(pid), 9)
+            else:
+                os.kill(pid, 9)
+        except BaseException:
+            try:
+                os.kill(pid, 9)
+            except BaseException:
+                pass
+
+
+def _install_subprocess_run_kill_tree() -> None:
+    import subprocess as _sp
+
+    if getattr(_sp, "_prime_agent_kill_tree_patched", False):
+        return
+    _orig_run = _sp.run
+
+    def _run(*popenargs, input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        if timeout is None:
+            return _orig_run(*popenargs, input=input, capture_output=capture_output,
+                             timeout=None, check=check, **kwargs)
+        if input is not None:
+            if kwargs.get("stdin") is not None:
+                raise ValueError("stdin and input arguments may not both be used.")
+            kwargs["stdin"] = _sp.PIPE
+        if capture_output:
+            if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+                raise ValueError("stdout and stderr arguments may not both be used with capture_output.")
+            kwargs["stdout"] = _sp.PIPE
+            kwargs["stderr"] = _sp.PIPE
+        with _sp.Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except _sp.TimeoutExpired as exc:
+                _subprocess_kill_tree(process.pid)
+                process.kill()
+                process.wait()
+                exc.stdout = None
+                exc.stderr = None
+                raise
+            except BaseException:
+                process.kill()
+                raise
+            retcode = process.poll()
+            if check and retcode:
+                raise _sp.CalledProcessError(retcode, process.args, output=stdout, stderr=stderr)
+        return _sp.CompletedProcess(process.args, retcode, stdout, stderr)
+
+    _sp.run = _run
+    _sp._prime_agent_kill_tree_patched = True
+
+
+if os.environ.get("PRIME_AGENT_DISABLE_SUBPROCESS_KILL_TREE") != "1":
+    _install_subprocess_run_kill_tree()
+
