@@ -424,6 +424,7 @@ describe("resolveCliModel", () => {
 describe("default model selection", () => {
 	test("openai defaults track current models", () => {
 		expect(defaultModelPerProvider.openai).toBe("gpt-5.4");
+		expect(defaultModelPerProvider.meta).toBe("muse-spark-1.2");
 		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.5");
 		expect(defaultModelPerProvider["prime-inference"]).toBe("z-ai/glm-5.2");
 	});
@@ -433,6 +434,7 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
 		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
 		expect(defaultModelPerProvider.cerebras).toBe("zai-glm-4.7");
+		expect(defaultModelPerProvider.celeris).toBe("celeris-1");
 	});
 
 	test("ai-gateway default tracks current model", () => {

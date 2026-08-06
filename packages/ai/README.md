@@ -63,6 +63,8 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 ## Supported Providers
 
 - **OpenAI**
+- **Meta Model API** (Muse Spark via Meta's OpenAI-compatible Responses API)
+- **Celeris** (Celeris 1 via OpenAI-compatible Chat Completions)
 - **Prime Inference** (OpenAI-compatible API)
 - **Azure OpenAI (Responses)**
 - **OpenAI Codex** (ChatGPT Plus/Pro subscription, requires OAuth, see below)
@@ -747,9 +749,9 @@ Notes:
 A **provider** offers models through a specific API. For example:
 - **Anthropic** models use the `anthropic-messages` API
 - **Google** models use the `google-generative-ai` API
-- **OpenAI** models use the `openai-responses` API
+- **OpenAI** and **Meta Model API** models use the `openai-responses` API
 - **Mistral** models use the `mistral-conversations` API
-- **xAI, Cerebras, Groq, etc.** models use the `openai-completions` API (OpenAI-compatible)
+- **Celeris, xAI, Cerebras, Groq, etc.** models use the `openai-completions` API (OpenAI-compatible)
 
 ### Querying Providers and Models
 
@@ -1047,6 +1049,8 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | Provider | Environment Variable(s) |
 |----------|------------------------|
 | OpenAI | `OPENAI_API_KEY` |
+| Meta Model API | `MODEL_API_KEY` |
+| Celeris | `CELERIS_API_KEY` |
 | Prime Inference | `PRIME_API_KEY` |
 | Azure OpenAI | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` (e.g. `https://{resource}.openai.azure.com`) or `AZURE_OPENAI_RESOURCE_NAME`. Supports `*.openai.azure.com` and `*.cognitiveservices.azure.com`; root endpoints auto-normalize to `/openai/v1`. Optional: `AZURE_OPENAI_API_VERSION` (default `v1`), `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`. |
 | Anthropic | `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` |
@@ -1233,6 +1237,10 @@ const response = await complete(model, {
 **OpenAI Codex**: Requires a ChatGPT Plus or Pro subscription. Provides access to GPT-5.x Codex models with extended context windows and reasoning capabilities. The library automatically handles session-based prompt caching when `sessionId` is provided in stream options. You can set `transport` in stream options to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. When using WebSocket with a `sessionId`, connections are reused per session and expire after 5 minutes of inactivity.
 
 **Prime Inference**: Uses the OpenAI-compatible API at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or pass an API key explicitly.
+
+**Meta Model API**: Uses the Responses API at `https://api.meta.ai/v1` and defaults to `muse-spark-1.2`. Create a key at [dev.meta.ai](https://dev.meta.ai/), then set `MODEL_API_KEY` (quote its `LLM|...|...` value in shells) or pass the key explicitly. Muse Spark always reasons and supports `minimal`, `low`, `medium`, `high`, and `xhigh`; reasoning cannot be disabled. Prime Agent currently exposes text and image inputs. Meta states that prompts and completions sent to the lower-cost `muse-spark-1.2-contributor` tier may be used to train future Meta models; standard-tier prompts and completions are not used for training.
+
+**Celeris**: Uses OpenAI-compatible Chat Completions at `https://inference.celeris.ai/celeris-1/v1` and defaults to `celeris-1`. Create a key in the [Celeris Console](https://console.celeris.ai), then set `CELERIS_API_KEY` or pass the key explicitly. Celeris 1 supports text and inline PNG/JPEG image input, text output, and tool calling. Its 131,072-token context window is shared between the prompt and requested output; simple requests default to 2,048 output tokens. Celeris accepts `toolChoice` values `auto` and `none`, but not `required` or forced-function selection.
 
 **Azure OpenAI (Responses)**: Uses the Responses API only. Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` supports both `https://<resource>.openai.azure.com` and `https://<resource>.cognitiveservices.azure.com`; root endpoints are normalized to `.../openai/v1` automatically. Use `AZURE_OPENAI_API_VERSION` (defaults to `v1`) to override the API version if needed. Deployment names are treated as model IDs by default, override with `azureDeploymentName` or `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` using comma-separated `model-id=deployment` pairs (for example `gpt-4o-mini=my-deployment,gpt-4o=prod`). Legacy deployment-based URLs are intentionally unsupported.
 

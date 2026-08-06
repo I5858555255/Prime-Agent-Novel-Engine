@@ -194,6 +194,40 @@ describe("totalTokens field", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.MODEL_API_KEY)("Meta Model API Responses", () => {
+		it(
+			"muse-spark-1.2 - should return totalTokens equal to sum of components",
+			{ retry: 3, timeout: 60000 },
+			async () => {
+				const llm = getModel("meta", "muse-spark-1.2");
+
+				console.log(`\nMeta Model API Responses / ${llm.id}:`);
+				const { first, second } = await testTotalTokensWithCache(llm, { reasoningEffort: "high" });
+
+				logUsage("First request", first);
+				logUsage("Second request", second);
+
+				assertTotalTokensEqualsComponents(first);
+				assertTotalTokensEqualsComponents(second);
+			},
+		);
+	});
+
+	describe.skipIf(!process.env.CELERIS_API_KEY)("Celeris Chat Completions", () => {
+		it("celeris-1 - should return totalTokens equal to sum of components", { retry: 3, timeout: 60000 }, async () => {
+			const llm = getModel("celeris", "celeris-1");
+
+			console.log(`\nCeleris Chat Completions / ${llm.id}:`);
+			const { first, second } = await testTotalTokensWithCache(llm);
+
+			logUsage("First request", first);
+			logUsage("Second request", second);
+
+			assertTotalTokensEqualsComponents(first);
+			assertTotalTokensEqualsComponents(second);
+		});
+	});
+
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses", () => {
 		it(
 			"gpt-4o-mini - should return totalTokens equal to sum of components",

@@ -75,6 +75,11 @@ const KIMI_STATIC_HEADERS = {
 
 const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
+const META_MUSE_MODEL_IDS: ReadonlySet<string> = new Set([
+	"muse-spark-1.1",
+	"muse-spark-1.2",
+	"muse-spark-1.2-contributor",
+]);
 const ZAI_TOOL_STREAM_UNSUPPORTED_MODELS = new Set(["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v"]);
 const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 	"github-copilot:claude-haiku-4.5",
@@ -289,6 +294,9 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	}
 	if (supportsOpenAiXhigh(model.id)) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
+	}
+	if (model.provider === "meta" && META_MUSE_MODEL_IDS.has(model.id)) {
+		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh" });
 	}
 	if (model.id.includes("gpt-5.6")) {
 		mergeThinkingLevelMap(model, { minimal: null, max: "max" });
@@ -970,6 +978,40 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// Process Meta Model API models
+		if (data.meta?.models) {
+			for (const [modelId, model] of Object.entries(data.meta.models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				const isMuseSpark = META_MUSE_MODEL_IDS.has(modelId);
+				const officialMuseCost = modelId === "muse-spark-1.2-contributor"
+					? { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 }
+					: { input: 1.25, output: 4.25, cacheRead: 0.15, cacheWrite: 0 };
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-responses",
+					provider: "meta",
+					baseUrl: "https://api.meta.ai/v1",
+					reasoning: isMuseSpark || m.reasoning === true,
+					input: isMuseSpark || m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: isMuseSpark
+						? officialMuseCost
+						: {
+								input: m.cost?.input || 0,
+								output: m.cost?.output || 0,
+								cacheRead: m.cost?.cache_read || 0,
+								cacheWrite: m.cost?.cache_write || 0,
+							},
+					contextWindow: isMuseSpark ? 1048576 : m.limit?.context || 4096,
+					maxTokens: isMuseSpark ? 131072 : m.limit?.output || 4096,
+					compat: { sendSessionIdHeader: false },
+				});
+			}
+		}
+
 		// Process Groq models
 		if (data.groq?.models) {
 			for (const [modelId, model] of Object.entries(data.groq.models)) {
@@ -1556,6 +1598,34 @@ async function generateModels() {
 		(model) =>
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
 	);
+
+	// Celeris is not currently listed by the upstream catalogs.
+	allModels.push({
+		id: "celeris-1",
+		name: "Celeris 1",
+		api: "openai-completions",
+		provider: "celeris",
+		baseUrl: "https://inference.celeris.ai/celeris-1/v1",
+		reasoning: false,
+		input: ["text", "image"],
+		cost: {
+			input: 0.2,
+			output: 0.7,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: 131072,
+		maxTokens: 131072,
+		compat: {
+			supportsStore: false,
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: false,
+			supportsUsageInStreaming: true,
+			maxTokensField: "max_tokens",
+			supportsStrictMode: false,
+			supportsLongCacheRetention: false,
+		},
+	});
 
 	// Fix incorrect cache pricing for Claude Opus 4.5 from models.dev
 	// models.dev has 3x the correct pricing (1.5/18.75 instead of 0.5/6.25)

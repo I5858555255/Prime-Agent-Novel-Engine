@@ -84,6 +84,8 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 **API keys:**
 - Anthropic
 - OpenAI
+- Meta Model API
+- Celeris
 - Prime Inference
 - Azure OpenAI
 - DeepSeek

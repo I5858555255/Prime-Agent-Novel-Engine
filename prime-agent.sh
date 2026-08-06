@@ -26,6 +26,8 @@ if [[ "$NO_ENV" == "true" ]]; then
   unset ANTHROPIC_API_KEY
   unset ANTHROPIC_OAUTH_TOKEN
   unset OPENAI_API_KEY
+  unset MODEL_API_KEY
+  unset CELERIS_API_KEY
   unset PRIME_API_KEY
   unset GEMINI_API_KEY
   unset GROQ_API_KEY
@@ -78,4 +80,4 @@ if [[ ! -x "$TSX_BIN" ]]; then
   exit 1
 fi
 
-"$TSX_BIN" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}
+"$TSX_BIN" --tsconfig "$SCRIPT_DIR/tsconfig.json" "$SCRIPT_DIR/packages/coding-agent/src/cli.ts" ${ARGS[@]+"${ARGS[@]}"}

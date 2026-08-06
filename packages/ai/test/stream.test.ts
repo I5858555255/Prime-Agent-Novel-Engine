@@ -525,6 +525,59 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.MODEL_API_KEY)("Meta Model API Provider (muse-spark-1.2)", () => {
+		const llm = getModel("meta", "muse-spark-1.2");
+		const options = { reasoningEffort: "high" } satisfies StreamOptionsWithExtras;
+
+		it("should complete basic text generation with default reasoning", { retry: 3 }, async () => {
+			await basicTextGeneration(llm);
+		});
+
+		it("should handle tool calling", { retry: 3 }, async () => {
+			await handleToolCall(llm, options);
+		});
+
+		it("should handle streaming", { retry: 3 }, async () => {
+			await handleStreaming(llm, options);
+		});
+
+		it("should handle thinking", { retry: 2 }, async () => {
+			await handleThinking(llm, options);
+		});
+
+		it("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
+			await multiTurn(llm, options);
+		});
+
+		it("should handle image input", { retry: 3 }, async () => {
+			await handleImage(llm, options);
+		});
+	});
+
+	describe.skipIf(!process.env.CELERIS_API_KEY)("Celeris Provider (celeris-1)", () => {
+		const llm = getModel("celeris", "celeris-1");
+
+		it("should complete basic text generation", { retry: 3 }, async () => {
+			await basicTextGeneration(llm);
+		});
+
+		it("should handle tool calling", { retry: 3 }, async () => {
+			await handleToolCall(llm);
+		});
+
+		it("should handle streaming", { retry: 3 }, async () => {
+			await handleStreaming(llm);
+		});
+
+		it("should handle multi-turn with tools", { retry: 3 }, async () => {
+			await multiTurn(llm);
+		});
+
+		it("should handle image input", { retry: 3 }, async () => {
+			await handleImage(llm);
+		});
+	});
+
 	describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic Provider (claude-haiku-4-5)", () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 

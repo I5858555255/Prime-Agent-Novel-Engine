@@ -141,6 +141,31 @@ describe("AI Providers Abort Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.MODEL_API_KEY)("Meta Model API Provider Abort", () => {
+		const llm = getModel("meta", "muse-spark-1.2");
+		const options = { reasoningEffort: "high" } satisfies StreamOptionsWithExtras;
+
+		it("should abort mid-stream", { retry: 3 }, async () => {
+			await testAbortSignal(llm, options);
+		});
+
+		it("should handle immediate abort", { retry: 3 }, async () => {
+			await testImmediateAbort(llm, options);
+		});
+	});
+
+	describe.skipIf(!process.env.CELERIS_API_KEY)("Celeris Provider Abort", () => {
+		const llm = getModel("celeris", "celeris-1");
+
+		it("should abort mid-stream", { retry: 3 }, async () => {
+			await testAbortSignal(llm);
+		});
+
+		it("should handle immediate abort", { retry: 3 }, async () => {
+			await testImmediateAbort(llm);
+		});
+	});
+
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses Provider Abort", () => {
 		const llm = getModel("azure-openai-responses", "gpt-4o-mini");
 		const azureDeploymentName = resolveAzureDeploymentName(llm.id);

@@ -33,11 +33,22 @@ describe("OAuthSelectorComponent", () => {
 
 	it("keeps built-in API key providers separate from OAuth-only providers", () => {
 		const oauthProviderIds = new Set(["anthropic", "github-copilot", "custom-oauth"]);
-		const builtInProviderIds = new Set(["anthropic", "github-copilot", "amazon-bedrock", "openai"]);
+		const builtInProviderIds = new Set([
+			"anthropic",
+			"github-copilot",
+			"amazon-bedrock",
+			"openai",
+			"meta",
+			"celeris",
+		]);
 
 		expect(isApiKeyLoginProvider("anthropic", oauthProviderIds, builtInProviderIds)).toBe(true);
 		expect(BUILT_IN_PROVIDER_DISPLAY_NAMES.anthropic).toBe("Anthropic");
 		expect(isApiKeyLoginProvider("openai", oauthProviderIds, builtInProviderIds)).toBe(true);
+		expect(isApiKeyLoginProvider("meta", oauthProviderIds, builtInProviderIds)).toBe(true);
+		expect(BUILT_IN_PROVIDER_DISPLAY_NAMES.meta).toBe("Meta Model API");
+		expect(isApiKeyLoginProvider("celeris", oauthProviderIds, builtInProviderIds)).toBe(true);
+		expect(BUILT_IN_PROVIDER_DISPLAY_NAMES.celeris).toBe("Celeris");
 		expect(isApiKeyLoginProvider("github-copilot", oauthProviderIds, builtInProviderIds)).toBe(false);
 		expect(isApiKeyLoginProvider("amazon-bedrock", oauthProviderIds, builtInProviderIds)).toBe(true);
 		expect(isApiKeyLoginProvider("custom-oauth", oauthProviderIds, builtInProviderIds)).toBe(false);
