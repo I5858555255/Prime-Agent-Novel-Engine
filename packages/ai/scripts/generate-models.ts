@@ -118,6 +118,15 @@ const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
+const GREENPT_BASE_URL = "https://api.greenpt.ai/v1";
+const GREENPT_MODEL_IDS = new Set(["glm-5.2", "kimi-k2.7-code"]);
+const GREENPT_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: false,
+	maxTokensField: "max_tokens",
+	supportsStrictMode: false,
+};
 interface PrimeInferenceCatalogEntry {
 	id: string;
 	input: number;
@@ -1018,6 +1027,34 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					},
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
+				});
+			}
+		}
+
+		// Process GreenPT's curated coding models
+		if (data.greenpt?.models) {
+			for (const [modelId, model] of Object.entries(data.greenpt.models)) {
+				const m = model as ModelsDevModel;
+				if (!GREENPT_MODEL_IDS.has(modelId) || m.tool_call !== true) continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "greenpt",
+					baseUrl: GREENPT_BASE_URL,
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+					compat: GREENPT_COMPAT,
+					featured: true,
 				});
 			}
 		}

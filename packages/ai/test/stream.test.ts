@@ -639,6 +639,26 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.GREENPT_API_KEY)("GreenPT Provider (GLM-5.2 via OpenAI Completions)", () => {
+		const llm = getModel("greenpt", "glm-5.2");
+
+		it("should complete basic text generation", { retry: 3 }, async () => {
+			await basicTextGeneration(llm);
+		});
+
+		it("should handle tool calling", { retry: 3 }, async () => {
+			await handleToolCall(llm);
+		});
+
+		it("should handle streaming", { retry: 3 }, async () => {
+			await handleStreaming(llm);
+		});
+
+		it("should handle multi-turn with tools", { retry: 3 }, async () => {
+			await multiTurn(llm);
+		});
+	});
+
 	describe.skipIf(!hasCloudflareWorkersAICredentials())(
 		"Cloudflare Workers AI Provider (Kimi K2.6 via OpenAI Completions)",
 		() => {
