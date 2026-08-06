@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added `rlm.wait()` for programmable subagent fan-in, failure handling, and cancellation handling.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

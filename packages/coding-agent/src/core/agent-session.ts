@@ -221,9 +221,11 @@ import {
 	createRlmFindModelsHostHandler,
 	createRlmListSubagentsHostHandler,
 	createRlmRunHostHandler,
+	createRlmWaitHostHandler,
 	findRlmModelMatches,
 	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
+	type RlmChildOutcome,
 	type RlmDeleteSubagentResult,
 	type RlmFindModelsResult,
 	type RlmListSubagentsResult,
@@ -889,6 +891,14 @@ function createAgentMessageDeferred(): AgentMessageDeferred {
 	return deferred;
 }
 
+function createRlmChildCompletionDeferred(): RlmChildCompletionDeferred {
+	const deferred = {} as RlmChildCompletionDeferred;
+	deferred.promise = new Promise<RlmChildOutcome>((resolve) => {
+		deferred.resolve = resolve;
+	});
+	return deferred;
+}
+
 /** Result from cycleModel() */
 export interface ModelCycleResult {
 	model: Model<any>;
@@ -929,6 +939,11 @@ type AutonomousRuntimeSnapshot = Pick<
 	"continuationsUsed" | "gateAttempts" | "lastGateFailure" | "lastGateFailureSnapshot"
 >;
 
+interface RlmChildCompletionDeferred {
+	promise: Promise<RlmChildOutcome>;
+	resolve: (outcome: RlmChildOutcome) => void;
+}
+
 interface RlmChildRun {
 	id: string;
 	prompt: string;
@@ -938,6 +953,7 @@ interface RlmChildRun {
 	error?: string;
 	abort: () => void;
 	publication: AgentMessageDeferred;
+	completion: RlmChildCompletionDeferred;
 	/** Child session, once its runtime exists. Used to cancel nested child runs. */
 	session?: AgentSession;
 	/** True once the detached run task has finished its catch and cleanup paths. */
@@ -3922,6 +3938,8 @@ export class AgentSession {
 	}
 
 	private async _disposeAsyncOnce(): Promise<void> {
+		// Settle rlm.wait host requests before kernel disposal waits for host requests.
+		this._cancelActiveRlmChildRuns("Parent session disposed");
 		// Flush kernels/traces for both still-running and retained children; the sync
 		// dispose() below only tears them down synchronously.
 		for (const run of this._activeRlmChildRuns.values()) {
@@ -8665,6 +8683,7 @@ export class AgentSession {
 			})),
 			"rlm.find_models": createRlmFindModelsHostHandler((query, limit) => this.findRlmModels(query, limit)),
 			"rlm.list_subagents": createRlmListSubagentsHostHandler(() => this.listRlmSubagents()),
+			"rlm.wait": createRlmWaitHostHandler((target) => this.waitForRlmChild(target)),
 			"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) => this.deleteRlmSubagent(target)),
 			"model.info": async () => ({
 				id: this.model?.id ?? null,
@@ -9020,12 +9039,22 @@ export class AgentSession {
 		}
 	}
 
+	private _settleRlmChildRun(run: RlmChildRun, outcome: RlmChildOutcome): void {
+		run.completion.resolve(outcome);
+	}
+
 	private _cancelRlmChildRun(run: RlmChildRun, reason: string): boolean {
 		if (run.status !== "running" && run.status !== "queued") {
 			return false;
 		}
 		run.status = "cancelled";
 		run.error = reason;
+		this._settleRlmChildRun(run, {
+			rlm_child_id: run.id,
+			status: "cancelled",
+			result: null,
+			error: reason,
+		});
 		run.publication.reject(new Error(reason));
 		run.abort();
 		// Surface the cancellation immediately; the run's own terminal update is
@@ -9058,6 +9087,29 @@ export class AgentSession {
 		if (!run) return undefined;
 		await run.publication.promise;
 		return run.session?.sessionId;
+	}
+
+	/** Wait for a direct child and return its terminal outcome. */
+	async waitForRlmChild(target: string): Promise<RlmChildOutcome> {
+		const localRuns = [...this._activeRlmChildRuns.values()].filter(
+			(run) => run.id === target || run.sessionName === target,
+		);
+		if (localRuns.length > 1) {
+			throw new Error(`RLM subagent selector "${target}" is ambiguous in the current parent session`);
+		}
+		if (localRuns[0]) return localRuns[0].completion.promise;
+
+		const direct = await this._resolveDirectRlmSubagent(target);
+		const run = this._activeRlmChildRuns.get(direct.rlm_child_id);
+		if (run) return run.completion.promise;
+
+		const retained = this._rlmChildSessions.get(direct.rlm_child_id);
+		return {
+			rlm_child_id: direct.rlm_child_id,
+			status: direct.status === "completed" ? "completed" : "error",
+			result: direct.status === "completed" ? (retained?.getLastAssistantText() ?? null) : null,
+			error: null,
+		};
 	}
 
 	/** Current direct-child registry for the model-facing rlm.list_subagents API. */
@@ -9636,6 +9688,7 @@ export class AgentSession {
 			settled: false,
 			abort: noopRlmChildAbort,
 			publication: createAgentMessageDeferred(),
+			completion: createRlmChildCompletionDeferred(),
 		};
 		const throwIfCancelled = () => {
 			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
@@ -9814,6 +9867,12 @@ export class AgentSession {
 				run.status = "done";
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
+				this._settleRlmChildRun(run, {
+					rlm_child_id: run.id,
+					status: "completed",
+					result: child.getLastAssistantText() ?? null,
+					error: null,
+				});
 				emitChildUpdate();
 				if (!run.detachedDeletion && child._parentReplyCount === parentReplyCountBeforeRun) {
 					const lastAssistantText = child.getLastAssistantText();
@@ -9842,6 +9901,12 @@ export class AgentSession {
 					run.status = "error";
 					run.error = runError.message;
 				}
+				this._settleRlmChildRun(run, {
+					rlm_child_id: run.id,
+					status: run.status === "cancelled" ? "cancelled" : "error",
+					result: null,
+					error: run.error ?? runError.message,
+				});
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();

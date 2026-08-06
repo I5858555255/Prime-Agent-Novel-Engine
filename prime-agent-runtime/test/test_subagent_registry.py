@@ -131,6 +131,73 @@ class RlmSubagentRegistryTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "invalid model entry"):
                 asyncio.run(rlm_module.find_models("opus"))
 
+    def test_waits_for_subagent_completion_by_handle(self) -> None:
+        handle = rlm_module.RLMSpawnHandle(
+            rlm_child_id="sub-a1b2c3d4",
+            name="api-reviewer",
+            session_dir=Path("/tmp/parent/sub-a1b2c3d4"),
+            model="anthropic/claude-opus-4-7",
+        )
+        host_request = AsyncMock(
+            return_value={
+                "outcome": {
+                    "rlm_child_id": handle.rlm_child_id,
+                    "status": "completed",
+                    "result": "The API is sound.",
+                    "error": None,
+                }
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            outcome = asyncio.run(rlm_module.rlm.wait(handle))
+
+        self.assertEqual(outcome.status, "completed")
+        self.assertEqual(outcome.result, "The API is sound.")
+        self.assertIsNone(outcome.error)
+        host_request.assert_awaited_once_with(
+            "rlm.wait",
+            {"target": handle.rlm_child_id},
+        )
+
+    def test_wait_returns_error_and_cancelled_outcomes(self) -> None:
+        for status, error in (("error", "provider failed"), ("cancelled", "stopped")):
+            host_request = AsyncMock(
+                return_value={
+                    "outcome": {
+                        "rlm_child_id": "sub-worker",
+                        "status": status,
+                        "result": None,
+                        "error": error,
+                    }
+                }
+            )
+            with patch.object(rlm_module, "host_request", host_request):
+                outcome = asyncio.run(rlm_module.wait(" worker "))
+            self.assertEqual(outcome.status, status)
+            self.assertEqual(outcome.error, error)
+            host_request.assert_awaited_once_with("rlm.wait", {"target": "worker"})
+
+    def test_rejects_invalid_wait_target_and_payload(self) -> None:
+        with self.assertRaisesRegex(ValueError, "target must not be empty"):
+            asyncio.run(rlm_module.wait("   "))
+        with self.assertRaisesRegex(TypeError, "RLMSpawnHandle"):
+            asyncio.run(rlm_module.wait(123))
+
+        host_request = AsyncMock(
+            return_value={
+                "outcome": {
+                    "rlm_child_id": "sub-worker",
+                    "status": "unknown",
+                    "result": None,
+                    "error": None,
+                }
+            }
+        )
+        with patch.object(rlm_module, "host_request", host_request):
+            with self.assertRaisesRegex(RuntimeError, "invalid status"):
+                asyncio.run(rlm_module.wait("worker"))
+
     def test_deletes_subagent_by_name_through_host(self) -> None:
         deleted_payload = {
             "rlm_child_id": "sub-a1b2c3d4",

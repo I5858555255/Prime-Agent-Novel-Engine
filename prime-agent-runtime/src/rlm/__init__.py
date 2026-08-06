@@ -7,7 +7,7 @@ import sys
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .harness import HarnessEntry, HarnessScope, HarnessState, RefinementEvent, get_harness_state
 
@@ -30,6 +30,14 @@ class RLMSpawnHandle:
     name: str
     session_dir: Path
     model: str
+
+
+@dataclass(frozen=True)
+class RLMChildOutcome:
+    rlm_child_id: str
+    status: Literal["completed", "error", "cancelled"]
+    result: str | None
+    error: str | None
 
 
 @dataclass(frozen=True)
@@ -216,6 +224,51 @@ async def list_subagents() -> list[RLMSubagent]:
     return [_subagent_from_payload(entry) for entry in entries]
 
 
+def _subagent_selector(target: str | RLMSpawnHandle | RLMSubagent) -> str:
+    if isinstance(target, RLMSpawnHandle):
+        return target.rlm_child_id
+    if isinstance(target, RLMSubagent):
+        return target.rlm_child_id
+    if isinstance(target, str):
+        selector = target.strip()
+        if not selector:
+            raise ValueError("target must not be empty")
+        return selector
+    raise TypeError(
+        f"target must be str, RLMSpawnHandle, or RLMSubagent, got {type(target).__name__}"
+    )
+
+
+def _child_outcome_from_payload(payload: Any) -> RLMChildOutcome:
+    if not isinstance(payload, dict):
+        raise RuntimeError("rlm.wait returned an invalid outcome")
+    child_id = payload.get("rlm_child_id")
+    status = payload.get("status")
+    result = payload.get("result")
+    error = payload.get("error")
+    if not isinstance(child_id, str) or not child_id:
+        raise RuntimeError("rlm.wait outcome is missing rlm_child_id")
+    if status not in {"completed", "error", "cancelled"}:
+        raise RuntimeError("rlm.wait outcome has invalid status")
+    if result is not None and not isinstance(result, str):
+        raise RuntimeError("rlm.wait outcome has invalid result")
+    if error is not None and not isinstance(error, str):
+        raise RuntimeError("rlm.wait outcome has invalid error")
+    return RLMChildOutcome(
+        rlm_child_id=child_id,
+        status=status,
+        result=result,
+        error=error,
+    )
+
+
+async def wait(target: str | RLMSpawnHandle | RLMSubagent) -> RLMChildOutcome:
+    """Wait for one direct child and return its completed, error, or cancelled outcome."""
+    selector = _subagent_selector(target)
+    payload = await host_request("rlm.wait", {"target": selector})
+    return _child_outcome_from_payload(payload.get("outcome"))
+
+
 async def delete_subagent(target: str | RLMSubagent) -> RLMSubagent:
     """Delete one running or retained direct child from the current parent session."""
     if isinstance(target, RLMSubagent):
@@ -294,6 +347,9 @@ class _RLMCallable:
     async def list_subagents(self) -> list[RLMSubagent]:
         return await list_subagents()
 
+    async def wait(self, target: str | RLMSpawnHandle | RLMSubagent) -> RLMChildOutcome:
+        return await wait(target)
+
     async def delete_subagent(self, target: str | RLMSubagent) -> RLMSubagent:
         return await delete_subagent(target)
 
@@ -319,6 +375,7 @@ __all__ = [
     "McpIntegration",
     "McpToolError",
     "NotEnabled",
+    "RLMChildOutcome",
     "RLMModel",
     "RLMSpawnHandle",
     "RLMSubagent",
@@ -331,6 +388,7 @@ __all__ = [
     "list_subagents",
     "rlm",
     "run",
+    "wait",
 ]
 
 # Lazily re-export the MCP base class. Kept lazy so `import rlm` never requires
