@@ -21,6 +21,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
 	anthropic: "claude-opus-4-7",
 	openai: "gpt-5.4",
+	meta: "muse-spark-1.2",
 	"azure-openai-responses": "gpt-5.4",
 	"openai-codex": "gpt-5.5",
 	"prime-inference": PRIME_INFERENCE_DEFAULT_MODEL_ID,

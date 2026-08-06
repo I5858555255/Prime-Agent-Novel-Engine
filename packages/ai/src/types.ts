@@ -22,6 +22,7 @@ export type KnownProvider =
 	| "google"
 	| "google-vertex"
 	| "openai"
+	| "meta"
 	| "azure-openai-responses"
 	| "openai-codex"
 	| "prime-inference"

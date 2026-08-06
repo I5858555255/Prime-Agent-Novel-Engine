@@ -127,6 +127,14 @@ describe("Tool Call Without Result Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.MODEL_API_KEY)("Meta Model API Provider", () => {
+		const model = getModel("meta", "muse-spark-1.2");
+
+		it("should filter out tool calls without corresponding tool results", { retry: 3, timeout: 30000 }, async () => {
+			await testToolCallWithoutResult(model, { reasoningEffort: "high" });
+		});
+	});
+
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses Provider", () => {
 		const model = getModel("azure-openai-responses", "gpt-4o-mini");
 		const azureDeploymentName = resolveAzureDeploymentName(model.id);

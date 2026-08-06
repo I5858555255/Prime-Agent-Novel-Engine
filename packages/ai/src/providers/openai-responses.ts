@@ -26,7 +26,7 @@ import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copi
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
-const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode", "meta"]);
 
 /**
  * Resolve cache retention preference.
@@ -174,6 +174,9 @@ function createClient(
 	sessionId?: string,
 ) {
 	if (!apiKey) {
+		if (model.provider === "meta") {
+			throw new Error("Meta Model API key is required. Set MODEL_API_KEY or pass it as an argument.");
+		}
 		if (!process.env.OPENAI_API_KEY) {
 			throw new Error(
 				"OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it as an argument.",
@@ -267,15 +270,22 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 				effort: (model.thinkingLevelMap?.off ?? "none") as NonNullable<typeof params.reasoning>["effort"],
 			};
 		}
+
+		// Muse always reasons, so stateless multi-turn replay needs encrypted content even at the default effort.
+		if (model.provider === "meta") {
+			params.include = ["reasoning.encrypted_content"];
+		}
 	}
 
 	return params;
 }
 
 function getServiceTierCostMultiplier(
-	model: Pick<Model<"openai-responses">, "id">,
+	model: Pick<Model<"openai-responses">, "id" | "provider">,
 	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
 ): number {
+	if (model.provider === "meta") return 1;
+
 	switch (serviceTier) {
 		case "flex":
 			return 0.5;
@@ -289,7 +299,7 @@ function getServiceTierCostMultiplier(
 function applyServiceTierPricing(
 	usage: Usage,
 	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-	model: Pick<Model<"openai-responses">, "id">,
+	model: Pick<Model<"openai-responses">, "id" | "provider">,
 ) {
 	const multiplier = getServiceTierCostMultiplier(model, serviceTier);
 	if (multiplier === 1) return;

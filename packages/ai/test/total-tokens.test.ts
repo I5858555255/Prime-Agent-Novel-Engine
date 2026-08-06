@@ -194,6 +194,25 @@ describe("totalTokens field", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.MODEL_API_KEY)("Meta Model API Responses", () => {
+		it(
+			"muse-spark-1.2 - should return totalTokens equal to sum of components",
+			{ retry: 3, timeout: 60000 },
+			async () => {
+				const llm = getModel("meta", "muse-spark-1.2");
+
+				console.log(`\nMeta Model API Responses / ${llm.id}:`);
+				const { first, second } = await testTotalTokensWithCache(llm, { reasoningEffort: "high" });
+
+				logUsage("First request", first);
+				logUsage("Second request", second);
+
+				assertTotalTokensEqualsComponents(first);
+				assertTotalTokensEqualsComponents(second);
+			},
+		);
+	});
+
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses", () => {
 		it(
 			"gpt-4o-mini - should return totalTokens equal to sum of components",

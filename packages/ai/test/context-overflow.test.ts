@@ -187,6 +187,18 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 	});
 
+	describe.skipIf(!process.env.MODEL_API_KEY)("Meta Model API Responses", () => {
+		it("muse-spark-1.2 - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("meta", "muse-spark-1.2");
+			const result = await testContextOverflow(model, process.env.MODEL_API_KEY!);
+			logResult(result);
+
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toMatch(/context length is only .*maximum input length/i);
+			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+		}, 120000);
+	});
+
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses", () => {
 		it("gpt-4o-mini - should detect overflow via isContextOverflow", async () => {
 			const model = getModel("azure-openai-responses", "gpt-4o-mini");

@@ -70,6 +70,14 @@ describe("responseId E2E Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.MODEL_API_KEY)("Meta Model API Provider", () => {
+		const llm = getModel("meta", "muse-spark-1.2");
+
+		it("should expose responseId", { retry: 3, timeout: 30000 }, async () => {
+			await expectResponseId(llm, { reasoningEffort: "high" });
+		});
+	});
+
 	describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic Provider", () => {
 		const llm = getModel("anthropic", "claude-sonnet-4-5");
 

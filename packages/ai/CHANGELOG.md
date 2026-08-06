@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Meta Model API support for Muse Spark through the Responses API.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

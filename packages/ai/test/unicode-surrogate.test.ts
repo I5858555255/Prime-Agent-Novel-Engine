@@ -334,6 +334,23 @@ describe("AI Providers Unicode Surrogate Pair Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.MODEL_API_KEY)("Meta Model API Provider Unicode Handling", () => {
+		const llm = getModel("meta", "muse-spark-1.2");
+		const options = { reasoningEffort: "high" } satisfies StreamOptionsWithExtras;
+
+		it("should handle emoji in tool results", { retry: 3, timeout: 30000 }, async () => {
+			await testEmojiInToolResults(llm, options);
+		});
+
+		it("should handle real-world LinkedIn comment data with emoji", { retry: 3, timeout: 30000 }, async () => {
+			await testRealWorldLinkedInData(llm, options);
+		});
+
+		it("should handle unpaired high surrogate (0xD83D) in tool results", { retry: 3, timeout: 30000 }, async () => {
+			await testUnpairedHighSurrogate(llm, options);
+		});
+	});
+
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses Provider Unicode Handling", () => {
 		const llm = getModel("azure-openai-responses", "gpt-4o-mini");
 		const azureDeploymentName = resolveAzureDeploymentName(llm.id);

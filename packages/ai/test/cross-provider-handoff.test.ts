@@ -66,6 +66,7 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 		apiOverride: "openai-completions",
 	},
 	{ provider: "openai", model: "gpt-5-mini", label: "openai-responses-gpt-5-mini" },
+	{ provider: "meta", model: "muse-spark-1.2", label: "meta-muse-spark-1.2" },
 	{ provider: "azure-openai-responses", model: "gpt-4o-mini", label: "azure-openai-responses-gpt-4o-mini" },
 	// OpenAI Codex
 	{ provider: "openai-codex", model: "gpt-5.2-codex", label: "openai-codex-gpt-5.2-codex" },

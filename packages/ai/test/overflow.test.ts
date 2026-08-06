@@ -40,6 +40,13 @@ describe("isContextOverflow", () => {
 		expect(isContextOverflow(message, 32768)).toBe(false);
 	});
 
+	it("detects Meta Model API context overflow errors", () => {
+		const message = createErrorMessage(
+			"You passed 1200064 input tokens and requested 1 output tokens. However, the model's context length is only 1048576 tokens, resulting in a maximum input length of 1048575 tokens. Please reduce the length of the input prompt",
+		);
+		expect(isContextOverflow(message, 1048576)).toBe(true);
+	});
+
 	it("does not treat Bedrock throttling 'Too many tokens' as overflow", () => {
 		// Bedrock returns this for HTTP 429 rate limiting, NOT context overflow.
 		// formatBedrockError uses a human-readable prefix for ThrottlingException.

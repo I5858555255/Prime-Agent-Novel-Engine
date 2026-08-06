@@ -424,6 +424,7 @@ describe("resolveCliModel", () => {
 describe("default model selection", () => {
 	test("openai defaults track current models", () => {
 		expect(defaultModelPerProvider.openai).toBe("gpt-5.4");
+		expect(defaultModelPerProvider.meta).toBe("muse-spark-1.2");
 		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.5");
 		expect(defaultModelPerProvider["prime-inference"]).toBe("z-ai/glm-5.2");
 	});

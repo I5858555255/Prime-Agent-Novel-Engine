@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Meta Model API to built-in API-key login and model selection, defaulting to Muse Spark 1.2.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

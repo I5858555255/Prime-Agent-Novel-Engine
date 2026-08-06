@@ -20,6 +20,7 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 	opencode: "OpenCode Zen",
 	"opencode-go": "OpenCode Go",
 	openai: "OpenAI",
+	meta: "Meta Model API",
 	openrouter: "OpenRouter",
 	"prime-agent-traces": "Prime Agent Traces",
 	"prime-inference": "Prime Inference",

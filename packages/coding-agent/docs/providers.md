@@ -51,6 +51,7 @@ prime-agent
 | Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 | OpenAI | `OPENAI_API_KEY` | `openai` |
+| Meta Model API | `MODEL_API_KEY` | `meta` |
 | Prime Inference | `PRIME_API_KEY` | `prime-inference` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
 | Google Gemini | `GEMINI_API_KEY` | `google` |
@@ -85,6 +86,7 @@ Store credentials in `~/.prime/agent/auth.json`:
 {
   "anthropic": { "type": "api_key", "key": "sk-ant-..." },
   "openai": { "type": "api_key", "key": "sk-..." },
+  "meta": { "type": "api_key", "key": "..." },
   "prime-inference": { "type": "api_key", "key": "..." },
   "deepseek": { "type": "api_key", "key": "sk-..." },
   "google": { "type": "api_key", "key": "..." },
@@ -122,6 +124,15 @@ OAuth credentials are also stored here after `/login` and managed automatically.
 ### Prime Inference
 
 Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or store an API key for `prime-inference` via `/login`.
+
+### Meta Model API
+
+Create a key at [dev.meta.ai](https://dev.meta.ai/), then set `MODEL_API_KEY` or store it for `meta` via `/login`. Prime Agent uses the Responses API at `https://api.meta.ai/v1` and defaults to `muse-spark-1.2`. Muse Spark always reasons and supports `minimal`, `low`, `medium`, `high`, and `xhigh`; reasoning cannot be disabled. Meta states that prompts and completions sent to the lower-cost `muse-spark-1.2-contributor` tier may be used to train future Meta models; standard-tier prompts and completions are not used for training.
+
+```bash
+export MODEL_API_KEY="LLM|...|..."
+prime-agent --provider meta --model muse-spark-1.2
+```
 
 ## Cloud Providers
 
