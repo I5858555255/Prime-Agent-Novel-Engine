@@ -352,10 +352,20 @@ describe("openai-codex streaming", () => {
 			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
 		};
 
-		const result = await streamOpenAICodexResponses(model, context, { apiKey: token, transport: "sse" }).result();
+		const streamResult = streamOpenAICodexResponses(model, context, { apiKey: token, transport: "sse" });
+		let sawDone = false;
+		let sawError = false;
+		for await (const event of streamResult) {
+			if (event.type === "done") sawDone = true;
+			if (event.type === "error") {
+				sawError = true;
+				expect(event.error.stopReason).toBe("error");
+				expect(event.error.stopReasonRaw).toBe("quarantined");
+			}
+		}
 
-		expect(result.stopReason).toBe("error");
-		expect(result.stopReasonRaw).toBe("quarantined");
+		expect(sawDone).toBe(false);
+		expect(sawError).toBe(true);
 	});
 
 	it("sets session_id/x-client-request-id headers and prompt_cache_key when sessionId is provided", async () => {

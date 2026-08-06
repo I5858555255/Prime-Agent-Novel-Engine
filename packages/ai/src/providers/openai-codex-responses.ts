@@ -40,7 +40,7 @@ import {
 } from "../utils/diagnostics.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
-import { streamFailureFromStopReason } from "../utils/stream-failure.js";
+import { StreamFailureError, streamFailureFromStopReason } from "../utils/stream-failure.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
@@ -301,6 +301,9 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
 			}
+			if (output.stopReason === "error") {
+				throw streamFailureFromStopReason(output.stopReasonRaw);
+			}
 
 			stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
 			stream.end();
@@ -490,7 +493,7 @@ class CodexProtocolError extends Error {
 }
 
 function isCodexNonTransportError(error: unknown): boolean {
-	return error instanceof CodexApiError || error instanceof CodexProtocolError;
+	return error instanceof CodexApiError || error instanceof CodexProtocolError || error instanceof StreamFailureError;
 }
 
 async function* mapCodexEvents(events: AsyncIterable<Record<string, unknown>>): AsyncGenerator<ResponseStreamEvent> {
