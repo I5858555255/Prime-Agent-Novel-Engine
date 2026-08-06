@@ -1417,6 +1417,18 @@ export class DaemonSupervisor {
 				return this.handleSavedSessionList(client, command);
 			case "create": {
 				const worker = await this.createOrReuseWorker(this.protocolClientId(client), command);
+				if (command.telemetryPolicy === "disabled") {
+					const sessionPath = worker.descriptor.sessionFile ?? worker.descriptor.createCommand.sessionPath;
+					if (sessionPath) {
+						const response = await this.forwardToWorker(worker, {
+							...withoutSupervisorCreateFields(command),
+							sessionPath,
+							continueRecent: false,
+						});
+						if (!response.success) return responseWithId(response, command.id);
+						await this.refreshWorkerSummaries(worker);
+					}
+				}
 				const requestedSummary = command.sessionPath
 					? this.findSummaryInWorker(worker, command.sessionPath)
 					: undefined;
@@ -3287,7 +3299,9 @@ export class DaemonSupervisor {
 		client.capabilities = normalizeCapabilities(command.capabilities, command.supportsExtensionUi);
 		client.supportsExtensionUi = client.capabilities.has("extension_ui");
 
-		let result = match.worker.snapshotCache.get(activeSessionId);
+		// A disabled policy must reach the worker even when the supervisor already
+		// has a cached snapshot; attach is also the monotonic privacy-control path.
+		let result = command.telemetryPolicy === "disabled" ? undefined : match.worker.snapshotCache.get(activeSessionId);
 		if (
 			result &&
 			!client.capabilities.has("chunked_snapshot") &&
@@ -3296,7 +3310,7 @@ export class DaemonSupervisor {
 			result = undefined;
 		}
 		if (!result) {
-			const snapshotLoadKey = `${activeSessionId}:${client.capabilities.has("chunked_snapshot") ? "chunked" : "full"}`;
+			const snapshotLoadKey = `${activeSessionId}:${client.capabilities.has("chunked_snapshot") ? "chunked" : "full"}:${command.telemetryPolicy ?? "inherit"}`;
 			let retryInvalidatedLoad = true;
 			while (!result) {
 				let loading = match.worker.snapshotLoads.get(snapshotLoadKey);
@@ -3316,6 +3330,7 @@ export class DaemonSupervisor {
 								: ["attach_snapshot", "event_sequence", "slim_attach"],
 							supportsExtensionUi: false,
 							env: command.env ?? collectDaemonClientEnv(),
+							telemetryPolicy: command.telemetryPolicy,
 						});
 						const loaded = attachResultFromResponse(response);
 						if (match.worker.snapshotLoads.get(snapshotLoadKey) !== loading) {

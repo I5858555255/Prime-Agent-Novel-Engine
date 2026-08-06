@@ -17,6 +17,7 @@ import { assertSessionCwdExists } from "./session-cwd.js";
 import { SessionImportFileNotFoundError } from "./session-import-errors.js";
 import { acquireSessionLease, canonicalSessionPath, type SessionLease } from "./session-lease.js";
 import { SessionManager } from "./session-manager.js";
+import { disableAgentTelemetry } from "./telemetry.js";
 
 export { SessionImportFileNotFoundError } from "./session-import-errors.js";
 
@@ -91,6 +92,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	private subagentRuntimeHost?: SubagentRuntimeHost;
 	private subagentRuntimes = new Map<string, AgentSessionRuntime>();
 	private disposePromise?: Promise<void>;
+	private telemetryDisabled: boolean;
 
 	constructor(
 		private _session: AgentSession,
@@ -105,6 +107,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		},
 		private _sessionLease?: SessionLease,
 	) {
+		this.telemetryDisabled = sessionConfig?.telemetryPolicy === "disabled";
 		this.bindRuntimeHost();
 	}
 
@@ -139,7 +142,26 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	}
 
 	get runtimeConfig(): AgentSessionRuntimeConfig | undefined {
-		return this.sessionConfig ? { ...this.sessionConfig } : undefined;
+		return this.effectiveSessionConfig();
+	}
+
+	disableTelemetry(): void {
+		this.telemetryDisabled = true;
+		this._services.settingsManager.applyOverrides({ telemetry: { enabled: false } });
+		disableAgentTelemetry(this._session);
+		for (const runtime of this.subagentRuntimes.values()) {
+			runtime.disableTelemetry();
+		}
+	}
+
+	private effectiveSessionConfig(): AgentSessionRuntimeConfig | undefined {
+		if (!this.sessionConfig && !this.telemetryDisabled) {
+			return undefined;
+		}
+		return {
+			...(this.sessionConfig ?? {}),
+			...(this.telemetryDisabled ? { telemetryPolicy: "disabled" as const } : {}),
+		};
 	}
 
 	setRebindSession(rebindSession?: (session: AgentSession) => Promise<void>): void {
@@ -237,6 +259,10 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		this._services = result.services;
 		this._diagnostics = result.diagnostics;
 		this._modelFallbackMessage = result.modelFallbackMessage;
+		if (this.telemetryDisabled) {
+			this._services.settingsManager.applyOverrides({ telemetry: { enabled: false } });
+			disableAgentTelemetry(this._session);
+		}
 		this.bindRuntimeHost();
 	}
 
@@ -346,7 +372,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "startup" },
-				sessionConfig: this.sessionConfig,
+				sessionConfig: this.effectiveSessionConfig(),
 				sessionOptions: {
 					model: options.model,
 					thinkingLevel: options.thinkingLevel,
@@ -458,7 +484,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							reason: "resume",
 							previousSessionFile,
 						},
-						sessionConfig: this.sessionConfig,
+						sessionConfig: this.effectiveSessionConfig(),
 					}),
 				),
 			lease,
@@ -501,7 +527,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							reason: "new",
 							previousSessionFile,
 						},
-						sessionConfig: this.sessionConfig,
+						sessionConfig: this.effectiveSessionConfig(),
 					}),
 				),
 			lease,
@@ -572,7 +598,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 									reason: "fork",
 									previousSessionFile,
 								},
-								sessionConfig: this.sessionConfig,
+								sessionConfig: this.effectiveSessionConfig(),
 							}),
 						),
 					lease,
@@ -601,7 +627,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 								reason: "fork",
 								previousSessionFile,
 							},
-							sessionConfig: this.sessionConfig,
+							sessionConfig: this.effectiveSessionConfig(),
 						}),
 					),
 				lease,
@@ -634,7 +660,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							reason: "fork",
 							previousSessionFile,
 						},
-						sessionConfig: this.sessionConfig,
+						sessionConfig: this.effectiveSessionConfig(),
 					}),
 				),
 			lease,
@@ -694,7 +720,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 							reason: "resume",
 							previousSessionFile,
 						},
-						sessionConfig: this.sessionConfig,
+						sessionConfig: this.effectiveSessionConfig(),
 					}),
 				),
 			lease,

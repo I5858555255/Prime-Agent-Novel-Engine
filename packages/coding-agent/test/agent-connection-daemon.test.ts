@@ -696,6 +696,21 @@ function emitSequencedQueueUpdate(client: FakeDaemonClient, activeSessionId: str
 }
 
 describe("DaemonAgentConnection", () => {
+	it("forwards a disabled telemetry policy on attach", async () => {
+		const fakeClient = new FakeDaemonClient();
+
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+			telemetryPolicy: "disabled",
+		});
+
+		expect(fakeClient.requests[0]).toMatchObject({
+			type: "attach",
+			activeSessionId: "active-1",
+			telemetryPolicy: "disabled",
+		});
+		await connection.dispose();
+	});
+
 	it("forwards queueIfBusy for prompt admission", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");

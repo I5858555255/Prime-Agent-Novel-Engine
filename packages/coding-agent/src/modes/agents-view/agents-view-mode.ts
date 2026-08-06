@@ -128,6 +128,7 @@ export interface AgentsViewModeOptions {
 	initialSession?: SessionSummary;
 	/** When set, the first view is rooted at this session's direct children. */
 	initialScopeKey?: AgentsViewScopeKey;
+	telemetryPolicy?: "inherit" | "disabled";
 }
 
 export type AgentsViewRunResult =
@@ -332,6 +333,7 @@ async function openAgentsViewSession(
 				closeClientOnDispose: true,
 				recoverDaemon: options.recoverDaemon,
 				reconnectTimeoutMs: options.reconnectTimeoutMs,
+				telemetryPolicy: options.telemetryPolicy,
 			});
 			return { connection, summary };
 		} catch (error) {
@@ -349,11 +351,12 @@ async function openAgentsViewSession(
 	}
 
 	try {
-		const resumed = await resumeSavedAgentsViewSession(client, options.config, summary);
+		const resumed = await resumeSavedAgentsViewSession(client, options.config, summary, options.telemetryPolicy);
 		const connection = await DaemonAgentConnection.attach(client, resumed.activeSessionId, {
 			closeClientOnDispose: true,
 			recoverDaemon: options.recoverDaemon,
 			reconnectTimeoutMs: options.reconnectTimeoutMs,
+			telemetryPolicy: options.telemetryPolicy,
 		});
 		return { connection, summary: resumed.summary, cwdFallbackNotice: resumed.cwdFallbackNotice };
 	} catch (error) {
@@ -371,6 +374,7 @@ async function resumeSavedAgentsViewSession(
 	client: DaemonClient,
 	config: AgentSessionRuntimeConfig,
 	summary: SessionSummary,
+	telemetryPolicy: "inherit" | "disabled" = "inherit",
 ): Promise<{ summary: SessionSummary; activeSessionId: string; cwdFallbackNotice?: string }> {
 	if (!summary.sessionFile) {
 		throw new Error("Cannot resume a session without a saved session file");
@@ -380,6 +384,7 @@ async function resumeSavedAgentsViewSession(
 		type: "create",
 		config: createAgentsViewResumeConfig(config, overrideCwd),
 		sessionPath: summary.sessionFile,
+		telemetryPolicy,
 	});
 	const createdSummary = expectSessionSummary(requireDaemonData(response));
 	return {
@@ -1727,6 +1732,7 @@ export class AgentsViewMode implements Component, Focusable {
 					this.requireClient(),
 					this.options.config,
 					currentSummary,
+					this.options.telemetryPolicy,
 				);
 				activeSessionId = resumed.activeSessionId;
 				didResume = true;
@@ -1765,6 +1771,7 @@ export class AgentsViewMode implements Component, Focusable {
 					type: "create",
 					config: this.options.config,
 					env: collectDaemonClientEnv(),
+					telemetryPolicy: this.options.telemetryPolicy ?? "inherit",
 				});
 				const created = expectSessionSummary(requireDaemonData(response));
 				// The view can finish mid-create; kill the fresh session instead of orphaning it.

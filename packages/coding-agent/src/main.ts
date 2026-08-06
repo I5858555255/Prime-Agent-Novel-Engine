@@ -70,6 +70,7 @@ import {
 import { canonicalSessionPath, SessionAlreadyActiveError } from "./core/session-lease.js";
 import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
+import { isTelemetryEnabled } from "./core/telemetry.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
 import { isDaemonCatalogProcess, runDaemonCatalogProcess } from "./modes/daemon/daemon-catalog-process.js";
@@ -750,6 +751,9 @@ async function prepareRuntimeServices(options: {
 		},
 	});
 	const { settingsManager, modelRegistry, resourceLoader } = services;
+	if (config.telemetryPolicy === "disabled") {
+		settingsManager.applyOverrides({ telemetry: { enabled: false } });
+	}
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 		...services.diagnostics,
 		...collectSettingsDiagnostics(settingsManager, "runtime creation"),
@@ -945,6 +949,7 @@ async function createDaemonClientConnection(options: {
 	clientOwned?: boolean;
 	noSession?: boolean;
 	supportsExtensionUi?: boolean;
+	telemetryPolicy: "inherit" | "disabled";
 }): Promise<{ connection: DaemonAgentConnection; summary: SessionSummary }> {
 	// Caller must have awaited ensureInteractiveDaemonRunning for this socket.
 	const client = new DaemonClient(options.socketPath);
@@ -957,6 +962,7 @@ async function createDaemonClientConnection(options: {
 				sendClientEnv: true,
 				ownedSession: options.clientOwned,
 				supportsExtensionUi: options.supportsExtensionUi,
+				telemetryPolicy: options.telemetryPolicy,
 				recoverDaemon: () => ensureInteractiveDaemonRunning(options.socketPath),
 			});
 			return { connection, summary };
@@ -990,6 +996,7 @@ async function createDaemonClientConnection(options: {
 			continueRecent: options.continueRecent,
 			noSession: options.noSession,
 			env: collectDaemonClientEnv(),
+			telemetryPolicy: options.telemetryPolicy,
 			lifecycle: options.clientOwned ? "client_owned" : "resident",
 			launchEnv: options.clientOwned ? collectDaemonLaunchEnv() : undefined,
 		});
@@ -1396,6 +1403,7 @@ export async function main(args: string[], options?: MainOptions) {
 				initialSession,
 				initialScopeKey,
 				verbose: parsed.verbose,
+				telemetryPolicy: isTelemetryEnabled(settingsManager) ? "inherit" : "disabled",
 			});
 		};
 		if (
@@ -1435,6 +1443,7 @@ export async function main(args: string[], options?: MainOptions) {
 			clientOwned: parsed.noSession,
 			noSession: parsed.noSession,
 			supportsExtensionUi: true,
+			telemetryPolicy: isTelemetryEnabled(settingsManager) ? "inherit" : "disabled",
 		});
 		const agentConnection: AgentConnection = connection;
 		const attachModelFallbackMessage = isFreshDefaultSession
@@ -1515,6 +1524,7 @@ export async function main(args: string[], options?: MainOptions) {
 				clientOwned: true,
 				noSession: parsed.noSession,
 				supportsExtensionUi: appMode === "rpc",
+				telemetryPolicy: isTelemetryEnabled(settingsManager) ? "inherit" : "disabled",
 			}));
 		} catch (error) {
 			if (error instanceof SessionAlreadyActiveError) {

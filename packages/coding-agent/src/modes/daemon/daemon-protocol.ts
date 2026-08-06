@@ -6,7 +6,7 @@ import type {
 	AgentSessionMessageSafetyStatus,
 } from "../../core/agent-messages.js";
 import type { SessionActionRecoverySnapshot } from "../../core/agent-session.js";
-import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
+import type { AgentSessionRuntimeConfig, AgentTelemetryPolicy } from "../../core/agent-session-config.js";
 import type { AgentSessionRuntimeMetadata } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import type { BashResult } from "../../core/bash-executor.js";
@@ -56,8 +56,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 11 adds immediate get/set commands for active-session RLM max depth.
 // Revision 12 publishes idle-residency metadata on session summary rows.
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
-export const DAEMON_SCHEMA_REVISION = 13;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-13-816309b1cd50";
+// Revision 14 adds an explicit monotonic telemetry policy to create and attach commands.
+export const DAEMON_SCHEMA_REVISION = 14;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-14-b91d5a9038d3";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -168,6 +169,11 @@ export type DaemonSessionLifecycle = "resident" | "client_owned";
 
 export interface DaemonLaunchEnv {
 	launchEnv?: Record<string, string>;
+}
+
+/** Explicit per-invocation privacy policy. Workers may only move from inherit to disabled. */
+export interface DaemonClientTelemetryPolicy {
+	telemetryPolicy?: AgentTelemetryPolicy;
 }
 
 /**
@@ -359,7 +365,8 @@ export type DaemonCommand =
 			runtimeMetadata?: AgentSessionRuntimeMetadata;
 			lifecycle?: DaemonSessionLifecycle;
 	  } & DaemonClientEnv &
-			DaemonLaunchEnv)
+			DaemonLaunchEnv &
+			DaemonClientTelemetryPolicy)
 	// Attach env is adopt-if-absent only: it fills identity for env-less
 	// sessions (e.g. cron-created) but never rebinds one, since watchers
 	// (agents view, subagent viewers) also attach.
@@ -370,7 +377,8 @@ export type DaemonCommand =
 			supportsExtensionUi?: boolean;
 	  } & DaemonAttachClientMetadata &
 			DaemonClientEnv &
-			DaemonLaunchEnv)
+			DaemonLaunchEnv &
+			DaemonClientTelemetryPolicy)
 	| ({
 			id?: string;
 			type: "reattach";
@@ -379,7 +387,8 @@ export type DaemonCommand =
 			supportsExtensionUi?: boolean;
 	  } & DaemonAttachClientMetadata &
 			DaemonClientEnv &
-			DaemonLaunchEnv)
+			DaemonLaunchEnv &
+			DaemonClientTelemetryPolicy)
 	| { id?: string; type: "detach"; activeSessionId?: string }
 	| { id?: string; type: "complete_owned_session"; activeSessionId: string }
 	| { id?: string; type: "promote_owned_session"; activeSessionId: string }

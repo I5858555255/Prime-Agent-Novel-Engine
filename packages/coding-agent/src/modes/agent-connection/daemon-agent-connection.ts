@@ -167,6 +167,8 @@ export interface DaemonAgentConnectionOptions {
 	supportsExtensionUi?: boolean;
 	/** Dispose the connection by stopping its hidden worker instead of detaching. */
 	ownedSession?: boolean;
+	/** Monotonic per-invocation telemetry policy forwarded on every attach and reattach. */
+	telemetryPolicy?: "inherit" | "disabled";
 }
 
 /**
@@ -306,6 +308,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
 			],
 			env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
+			telemetryPolicy: this.options.telemetryPolicy ?? "inherit",
 			launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,
 			resumeCursor:
 				this.lastEventCursor === undefined
@@ -1138,6 +1141,7 @@ export class DaemonAgentConnection implements AgentConnection {
 					...(this.options.ownedSession ? (["client_owned_sessions"] as const) : []),
 				],
 				env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
+				telemetryPolicy: this.options.telemetryPolicy ?? "inherit",
 				launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,
 			});
 			reattached = true;
