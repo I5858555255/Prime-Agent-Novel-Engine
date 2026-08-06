@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed the kernel venv rebuild failing on Windows when a kernel from the old venv was still running.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
