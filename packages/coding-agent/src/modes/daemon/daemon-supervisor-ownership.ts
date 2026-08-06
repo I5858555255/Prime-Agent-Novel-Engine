@@ -623,6 +623,13 @@ function readOwnerRecordForScope(
 		return owner;
 	}
 	const scope = readOwnerScope(directory);
+	const entries = !scope ? readdirSync(directory) : [];
+	if (!scope && !entries.includes("owner.json") && !entries.includes("scope.json")) {
+		const abandonedDirectory = `${directory}.abandoned-${randomUUID()}`;
+		renameSync(directory, abandonedDirectory);
+		rmSync(abandonedDirectory, { recursive: true, force: true });
+		return undefined;
+	}
 	if (!scope || isRelevant(scope)) {
 		throw new Error(`Invalid daemon supervisor owner record: ${directory}`);
 	}

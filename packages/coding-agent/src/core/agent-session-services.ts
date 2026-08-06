@@ -74,10 +74,15 @@ export interface AgentSessionCreationOptions {
 	rlmMaxDepth?: number;
 	rlmSessionDir?: string;
 	rlmParentNodeId?: string;
+	rlmParentAgent?: string;
 	subagentRuntimeHost?: SubagentRuntimeHost;
 	rlmHeartbeatController?: AgentRlmHeartbeatController;
 	prewarmIpythonKernel?: boolean;
 	autonomous?: AgentAutonomousConfig;
+	/** Serialized refine mode for print/headless autonomous runs. */
+	serializedRefine?: boolean;
+	/** Initial goal to seed at session creation (rlmDepth 0 only, idempotent). */
+	initialGoal?: { objective: string; tokenBudget?: number };
 }
 
 /**
@@ -282,11 +287,14 @@ export async function createAgentSessionFromServices(
 		rlmMaxDepth: options.rlmMaxDepth,
 		rlmSessionDir: options.rlmSessionDir,
 		rlmParentNodeId: options.rlmParentNodeId,
+		rlmParentAgent: options.rlmParentAgent,
 		subagentRuntimeHost: options.subagentRuntimeHost,
 		rlmHeartbeatController: options.rlmHeartbeatController,
 		sessionStartEvent: options.sessionStartEvent,
 		prewarmIpythonKernel: options.prewarmIpythonKernel,
 		autonomous: options.autonomous,
+		serializedRefine: options.serializedRefine,
+		initialGoal: options.initialGoal,
 	});
 	if ((options.rlmDepth ?? 0) === 0) {
 		installAgentTelemetry(result.session, {

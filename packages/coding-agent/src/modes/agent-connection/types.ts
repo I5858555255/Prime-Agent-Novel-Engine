@@ -1,10 +1,6 @@
 import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, ServiceTier, TextContent, Transport, Usage } from "@earendil-works/pi-ai";
-import type {
-	AgentSessionMessageDeliveryMode,
-	AgentSessionMessageReceipt,
-	AgentSessionMessageSafetyStatus,
-} from "../../core/agent-messages.js";
+import type { AgentSessionMessageReceipt, AgentSessionMessageSafetyStatus } from "../../core/agent-messages.js";
 import type { AuthSourceToken } from "../../core/auth-storage.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import type { BashResult } from "../../core/bash-executor.js";
@@ -21,6 +17,8 @@ import type { InputSource } from "../../core/extensions/types.js";
 import type { GoalState } from "../../core/goals.js";
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
 import type { RefinementResult } from "../../core/refinement/index.js";
+import type { RlmMaxDepthStatus, SetRlmMaxDepthResult } from "../../core/rlm-max-depth.js";
+import type { SessionActionSnapshot } from "../../core/session-action-store.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
 
@@ -59,6 +57,7 @@ export interface AgentConnectionSessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	rlmDepth?: number;
 	git?: {
 		repoUrl?: string;
 		commit?: string;
@@ -121,6 +120,7 @@ export interface AgentConnectionSavedSessionInfo {
 	name?: string;
 	state?: AgentConnectionSavedSessionState;
 	parentSessionPath?: string;
+	rlmDepth?: number;
 	created: Date;
 	modified: Date;
 	messageCount: number;
@@ -192,6 +192,7 @@ export interface AgentConnectionChildUsageAttributionEntry extends AgentConnecti
 	targetId: string;
 	childUsage: Usage;
 	aggregateUsage: Usage;
+	origin?: "spawn_task" | "agent_message" | "direct_user";
 }
 
 export interface AgentConnectionCustomMessageEntry extends AgentConnectionSessionEntryBase {
@@ -248,11 +249,14 @@ export type AgentConnectionSessionEntry =
 	| AgentConnectionAgentStatusEntry
 	| AgentConnectionGitStateEntry;
 
-export interface AgentConnectionSessionTreeNode {
+export interface AgentConnectionSessionTreeFlatNode {
 	entry: AgentConnectionSessionEntry;
-	children: AgentConnectionSessionTreeNode[];
 	label?: string;
 	labelTimestamp?: string;
+}
+
+export interface AgentConnectionSessionTreeNode extends AgentConnectionSessionTreeFlatNode {
+	children: AgentConnectionSessionTreeNode[];
 }
 
 export interface AgentConnectionSessionContext {
@@ -332,7 +336,7 @@ export interface AgentConnectionState {
 	leafId: string | null;
 	autoCompactionEnabled: boolean;
 	messageCount: number;
-	pendingMessageCount: number;
+	sessionActions: SessionActionSnapshot;
 	compactionCount: number;
 	goal: GoalState;
 	heartbeat?: AgentCronJob | null;
@@ -425,10 +429,28 @@ export interface AgentConnectionToolDefinition {
 	replayBuiltInToolName?: ReplayBuiltInToolName;
 }
 
+/** Prompt admission failure; only a confirmed cancellation is retry-safe. */
+export class AgentConnectionPromptAdmissionError extends Error {
+	readonly cancelled: boolean;
+
+	constructor(
+		message: string,
+		readonly status: "cancelled" | "owned" | "unknown" | "unsupported",
+		options?: ErrorOptions,
+	) {
+		super(message, options);
+		this.cancelled = status === "cancelled";
+		this.name = "AgentConnectionPromptAdmissionError";
+	}
+}
+
 export interface AgentConnectionPromptOptions {
 	images?: ImageContent[];
 	streamingBehavior?: "steer" | "followUp";
+	queueIfBusy?: boolean;
 	source?: InputSource;
+	/** Cancel admission while it is still waiting; accepted prompts remain session-owned. */
+	signal?: AbortSignal;
 }
 
 export interface AgentConnectionSideQuestionEvent {
@@ -439,8 +461,21 @@ export interface AgentConnectionSideQuestionEvent {
 	errorMessage?: string;
 }
 
+export interface AgentConnectionSideQuestionTurn {
+	question: string;
+	answer: string;
+}
+
 export interface AgentConnectionExecuteBashOptions {
 	excludeFromContext?: boolean;
+	/** Run without recording into the session (side-conversation bash). */
+	transient?: boolean;
+	/**
+	 * Caller-generated id echoed on the run's bash_start/bash_end events, so the
+	 * requesting client can tell its own run apart from other clients' runs
+	 * broadcast on the same session.
+	 */
+	runId?: string;
 }
 
 export interface AgentConnectionNewSessionOptions {
@@ -512,6 +547,7 @@ export interface AgentConnectionRlmChildAgentSnapshot {
 	status: AgentConnectionRlmChildAgentStatus;
 	durationMs?: number;
 	answerPreview?: string;
+	repliedSinceTask?: boolean;
 	/** Number of tool executions the subagent has started so far. */
 	toolUseCount?: number;
 	/** Context size (tokens) of the subagent's latest turn. */
@@ -527,11 +563,7 @@ export interface AgentConnectionRlmChildAgentSnapshot {
 export type AgentConnectionSessionEvent =
 	| AgentEvent
 	| { type: "ipython_sent_agent_message"; toolCallId: string; message: KernelSentAgentMessage }
-	| {
-			type: "queue_update";
-			steering: readonly string[];
-			followUp: readonly string[];
-	  }
+	| { type: "session_action_update"; actions: SessionActionSnapshot }
 	| {
 			type: "compaction_start";
 			reason: "manual" | "threshold" | "overflow" | "requested";
@@ -557,7 +589,7 @@ export type AgentConnectionSessionEvent =
 	| { type: "rlm_child_update"; child: AgentConnectionRlmChildAgentSnapshot }
 	| { type: "recap_update"; recap: string | undefined }
 	| { type: "goal_update"; goal: GoalState }
-	| { type: "bash_start"; command: string; excludeFromContext: boolean }
+	| { type: "bash_start"; command: string; excludeFromContext: boolean; transient?: boolean; runId?: string }
 	| { type: "bash_output"; chunk: string }
 	| {
 			type: "bash_end";
@@ -567,7 +599,13 @@ export type AgentConnectionSessionEvent =
 			fullOutputPath?: string;
 			/** Set when execution failed before producing a result (e.g. spawn failure) */
 			errorMessage?: string;
-	  };
+			/** Set for transient (side-conversation) runs so other attached clients suppress them. */
+			transient?: boolean;
+			/** Echo of the caller-supplied run id, so clients correlate runs by identity. */
+			runId?: string;
+	  }
+	| { type: "refine_complete"; result: RefinementResult }
+	| { type: "refine_failed"; error: string };
 
 export type AgentConnectionEvent =
 	| { type: "session_event"; event: AgentConnectionSessionEvent }
@@ -623,11 +661,7 @@ export interface AgentConnection {
 		deliveryMode?: AgentHeartbeatDeliveryMode,
 	): Promise<AgentCronJob>;
 	updateHeartbeat(action: AgentHeartbeatUpdateAction): Promise<AgentCronJob | undefined>;
-	sendAgentMessage(
-		targetActiveSessionId: string,
-		message: string,
-		deliveryMode?: AgentSessionMessageDeliveryMode,
-	): Promise<AgentSessionMessageReceipt>;
+	sendAgentMessage(targetActiveSessionId: string, message: string): Promise<AgentSessionMessageReceipt>;
 	getAgentMessageStatus(): Promise<AgentSessionMessageSafetyStatus>;
 	pauseAgentMessages(): Promise<AgentSessionMessageSafetyStatus>;
 	resumeAgentMessages(): Promise<AgentSessionMessageSafetyStatus>;
@@ -642,7 +676,7 @@ export interface AgentConnection {
 
 	prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void>;
 	promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void>;
-	startSideQuestion(id: string, question: string): Promise<void>;
+	startSideQuestion(id: string, question: string, previousTurns?: AgentConnectionSideQuestionTurn[]): Promise<void>;
 	abortSideQuestion(id: string): Promise<boolean>;
 	steer(message: string, images?: ImageContent[]): Promise<void>;
 	followUp(message: string, images?: ImageContent[]): Promise<void>;
@@ -691,6 +725,8 @@ export interface AgentConnection {
 	exportToHtml(outputPath?: string): Promise<string>;
 	exportToJsonl(outputPath?: string): Promise<string>;
 	setSessionName(name: string): Promise<void>;
+	getRlmMaxDepthStatus(): Promise<RlmMaxDepthStatus>;
+	setRlmMaxDepth(maxDepth: number, options?: { global?: boolean }): Promise<SetRlmMaxDepthResult>;
 	renameSavedSession(sessionPath: string, name: string): Promise<void>;
 	deleteSavedSession(sessionPath: string): Promise<DeleteSessionFileResult>;
 
@@ -702,6 +738,7 @@ export interface AgentConnection {
 
 export interface AgentConnectionSessionWatcher {
 	getMessages(): Promise<AgentMessage[]>;
+	getCommands(): Promise<AgentConnectionSlashCommand[]>;
 	subscribe(listener: AgentConnectionEventListener): () => void;
 	getToolDefinition(name: string): Promise<AgentConnectionToolDefinition | undefined>;
 	close(): Promise<void>;

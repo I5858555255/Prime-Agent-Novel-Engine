@@ -4,14 +4,9 @@ import { join } from "node:path";
 import { registerFauxProvider } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { AGENT_MESSAGE_SKILL_NAME, type AgentSessionMessageController } from "../src/core/agent-messages.js";
-import {
-	AGENT_OBSERVE_SKILL_NAME,
-	type AgentObserveController,
-	ORCHESTRATION_HEARTBEAT_SKILL_NAME,
-} from "../src/core/agent-observe.js";
+import { AGENT_OBSERVE_SKILL_NAME, type AgentObserveController } from "../src/core/agent-observe.js";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import type { AgentRlmHeartbeatController } from "../src/core/cron-jobs.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
 
@@ -86,7 +81,7 @@ describe("createAgentSessionFromServices", () => {
 						runtimeKind: "top-level",
 						cwd: tempDir,
 						isStreaming: false,
-						pendingMessageCount: 0,
+						unfinishedActionCount: 0,
 					},
 				],
 			}),
@@ -103,10 +98,9 @@ describe("createAgentSessionFromServices", () => {
 		});
 
 		try {
-			expect(session.handleAgentMessageHostRequest("agent_message.list")).toMatchObject({
-				current: { activeSessionId: "current" },
-				agents: [{ activeSessionId: "worker" }],
-			});
+			expect(() => session.handleAgentMessageHostRequest("agent_message.list")).toThrow(
+				"unknown agent message request",
+			);
 			expect(
 				(
 					session as unknown as {
@@ -161,7 +155,6 @@ describe("createAgentSessionFromServices", () => {
 		try {
 			expect(visibleSkillNames(withoutControllers)).not.toContain(AGENT_MESSAGE_SKILL_NAME);
 			expect(visibleSkillNames(withoutControllers)).not.toContain(AGENT_OBSERVE_SKILL_NAME);
-			expect(visibleSkillNames(withoutControllers)).not.toContain(ORCHESTRATION_HEARTBEAT_SKILL_NAME);
 		} finally {
 			withoutControllers.dispose();
 		}
@@ -179,7 +172,8 @@ describe("createAgentSessionFromServices", () => {
 					isCompacting: false,
 					attachedClients: 1,
 					messageCount: 0,
-					pendingMessageCount: 0,
+					queuedCount: 0,
+					isSessionActive: false,
 				},
 				agents: [],
 			}),
@@ -190,27 +184,13 @@ describe("createAgentSessionFromServices", () => {
 				throw new Error("not used");
 			},
 		};
-		const rlmHeartbeatController: AgentRlmHeartbeatController = {
-			listRlmHeartbeats: () => [],
-			createRlmHeartbeat: () => {
-				throw new Error("not used");
-			},
-			updateRlmHeartbeat: () => {
-				throw new Error("not used");
-			},
-			deleteRlmHeartbeat: () => {
-				throw new Error("not used");
-			},
-		};
 		const withControllers = await createSession({
 			services,
 			sessionManager: SessionManager.create(tempDir, join(tempDir, "sessions-with")),
 			agentObserveController,
-			rlmHeartbeatController,
 		});
 		try {
 			expect(visibleSkillNames(withControllers)).toContain(AGENT_OBSERVE_SKILL_NAME);
-			expect(visibleSkillNames(withControllers)).toContain(ORCHESTRATION_HEARTBEAT_SKILL_NAME);
 			expect(visibleSkillNames(withControllers)).not.toContain(AGENT_MESSAGE_SKILL_NAME);
 		} finally {
 			withControllers.dispose();

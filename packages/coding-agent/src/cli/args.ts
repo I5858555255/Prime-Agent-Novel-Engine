@@ -5,7 +5,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { APP_NAME } from "../config.js";
 
-export type Mode = "text" | "json" | "rpc" | "daemon";
+export type Mode = "text" | "json" | "rpc" | "acp" | "daemon";
 
 export interface Args {
 	provider?: string;
@@ -47,6 +47,8 @@ export interface Args {
 	autonomousMaxTurns?: number;
 	autonomousMaxTokens?: number;
 	autonomousTimeoutMs?: number;
+	goal?: string;
+	goalTokenBudget?: number;
 	listModels?: string | true;
 	offline?: boolean;
 	verbose?: boolean;
@@ -99,7 +101,7 @@ export function parseArgs(args: string[]): Args {
 			result.version = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
-			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "daemon") {
+			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "acp" || mode === "daemon") {
 				result.mode = mode;
 			}
 		} else if (arg === "--daemon-socket" && i + 1 < args.length) {
@@ -257,6 +259,19 @@ export function parseArgs(args: string[]): Args {
 			if (hasRequiredOptionValue(args, i, arg, result)) {
 				result.autonomousTimeoutMs = parsePositiveInt(args[++i], "--autonomous-timeout-ms", result);
 			}
+		} else if (arg === "--goal") {
+			if (hasRequiredOptionValue(args, i, arg, result)) {
+				const value = args[++i];
+				if (!value.trim()) {
+					result.diagnostics.push({ type: "error", message: "--goal requires a non-empty objective" });
+				} else {
+					result.goal = value;
+				}
+			}
+		} else if (arg === "--goal-token-budget") {
+			if (hasRequiredOptionValue(args, i, arg, result)) {
+				result.goalTokenBudget = parsePositiveInt(args[++i], "--goal-token-budget", result);
+			}
 		} else if (arg === "--list-models") {
 			const hasSearch = i + 1 < args.length && !args[i + 1].startsWith("-") && !args[i + 1].startsWith("@");
 			if (!internalRuntimeCommand) {
@@ -300,6 +315,13 @@ export function parseArgs(args: string[]): Args {
 		} else if (!arg.startsWith("-")) {
 			result.messages.push(arg);
 		}
+	}
+
+	if (result.goalTokenBudget !== undefined && !result.goal) {
+		result.diagnostics.push({
+			type: "error",
+			message: "--goal-token-budget requires --goal",
+		});
 	}
 
 	return result;

@@ -27,7 +27,6 @@ import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
 import { installOwnedSessionRecoveryTracking, isOwnedSessionWorkerProcess } from "./cli/owned-session-worker.js";
 import { handlePublicCommand } from "./cli/public-command.js";
-import { selectSession } from "./cli/session-picker.js";
 import {
 	looksLikeSessionPath,
 	resolveSessionPath,
@@ -83,6 +82,7 @@ import {
 } from "./modes/daemon/daemon-worker-protocol.js";
 import {
 	type AgentConnection,
+	type AgentsViewScopeKey,
 	ClientPromptStashStore,
 	createInteractiveModeLocalSessionHost,
 	createInteractiveModeUiServicesFromServices,
@@ -93,6 +93,8 @@ import {
 	InProcessAgentConnection,
 	InteractiveMode,
 	resolveAttachModelFallbackMessage,
+	runAcpMode,
+	runAcpModeWithConnection,
 	runAgentsViewMode,
 	runDaemonMode,
 	runDaemonSupervisorMode,
@@ -154,12 +156,16 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
-export type ClientMode = "interactive" | "print" | "json" | "rpc";
+export type ClientMode = "interactive" | "print" | "json" | "rpc" | "acp";
 /** Compatibility view of the CLI's internal daemon process entrypoint. */
 export type AppMode = ClientMode | "daemon";
 
 export function shouldRejectNonInteractiveAttach(attachAgent: string | undefined, appMode: AppMode): boolean {
 	return attachAgent !== undefined && appMode !== "interactive";
+}
+
+export function shouldRejectBareResume(resume: true | string | undefined): boolean {
+	return resume === true;
 }
 
 function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
@@ -168,6 +174,9 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
 	}
 	if (parsed.mode === "rpc") {
 		return "rpc";
+	}
+	if (parsed.mode === "acp") {
+		return "acp";
 	}
 	if (parsed.mode === "json") {
 		return "json";
@@ -178,7 +187,7 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
 	return "interactive";
 }
 
-function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc" | "daemon"> {
+function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc" | "acp" | "daemon"> {
 	return appMode === "json" ? "json" : "text";
 }
 
@@ -244,14 +253,12 @@ export interface AgentsViewStartupDecision {
 export function shouldOpenAgentsViewForDaemonInteractive(options: AgentsViewStartupDecision): boolean {
 	return (
 		options.useDaemonInteractive &&
-		// `prime-agent` opens a new chat by default; the agents view is reached via
+		// `prime-agent` opens a new chat by default; the unified agents view is reached via
 		// left-arrow from a session or requested explicitly (`agents`).
 		!!options.explicitAgentsView &&
-		// Onboarding lives in InteractiveMode, so a first run must take the
-		// direct session path; the agents view would otherwise require creating
-		// an agent before the onboarding splash ever renders.
 		!options.needsOnboarding &&
-		!options.resume &&
+		// A resume selector resolves and opens its target directly.
+		typeof options.resume !== "string" &&
 		!options.continue &&
 		!options.fork
 	);
@@ -267,7 +274,7 @@ export interface DaemonInteractiveSessionManagerDecision {
 export function shouldUseEphemeralSessionManagerForDaemonInteractive(
 	options: DaemonInteractiveSessionManagerDecision,
 ): boolean {
-	return !options.hasActiveDaemonSession && !options.resume && !options.continue && !options.fork;
+	return !options.hasActiveDaemonSession && options.resume === undefined && !options.continue && !options.fork;
 }
 
 export interface DaemonActiveSessionLookupDecision {
@@ -439,7 +446,6 @@ export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
 	sessionDir: string | undefined,
-	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
 	const explicitCwdOverride = parsed.cwd ? cwd : undefined;
 
@@ -476,24 +482,6 @@ export async function createSessionManager(
 				}
 				return forkSessionOrExit(resolved.path, cwd, sessionDir);
 			}
-		}
-	}
-
-	if (parsed.resume) {
-		initTheme(settingsManager.getTheme(), true);
-		try {
-			const selectedPath = await selectSession(
-				(callbacks) => SessionManager.list(cwd, sessionDir, callbacks),
-				SessionManager.listAll,
-				{ cwd, sessionDir },
-			);
-			if (!selectedPath) {
-				console.log(chalk.dim("No session selected"));
-				process.exit(0);
-			}
-			return SessionManager.open(selectedPath, sessionDir, explicitCwdOverride);
-		} finally {
-			stopThemeWatcher();
 		}
 	}
 
@@ -643,6 +631,7 @@ function runtimeConfigFromArgs(
 	cwd: string,
 	agentDir: string,
 	sessionDir: string | undefined,
+	appMode: AppMode,
 ): AgentSessionRuntimeConfig {
 	return {
 		cwd,
@@ -669,6 +658,12 @@ function runtimeConfigFromArgs(
 		noContextFiles: parsed.noContextFiles,
 		autonomous: runtimeAutonomousConfigFromArgs(parsed),
 		extensionFlagValues: parsed.unknownFlags.size > 0 ? Object.fromEntries(parsed.unknownFlags.entries()) : undefined,
+		// Serialized refine for print/json/rpc: the client's appMode is NOT
+		// "daemon" here — it's "print", "json", or "rpc". The daemon worker
+		// receives this flag via AgentSessionRuntimeConfig and uses it
+		// instead of its own appMode="daemon".
+		serializedRefine: appMode !== "interactive" && appMode !== "daemon",
+		initialGoal: parsed.goal ? { objective: parsed.goal, tokenBudget: parsed.goalTokenBudget } : undefined,
 	};
 }
 
@@ -678,6 +673,10 @@ interface PreparedRuntimeServices {
 	sessionOptions: CreateAgentSessionOptions;
 	cliThinkingFromModel: boolean;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
+}
+
+export function daemonServerDefaultSessionConfig(config: AgentSessionRuntimeConfig): AgentSessionRuntimeConfig {
+	return { ...config, initialGoal: undefined };
 }
 
 export function resolveRuntimeSessionOptions(
@@ -707,6 +706,7 @@ export function resolveRuntimeSessionOptions(
 		rlmMaxDepth: runtimeSessionOptions?.rlmMaxDepth,
 		rlmSessionDir: runtimeSessionOptions?.rlmSessionDir,
 		rlmParentNodeId: runtimeSessionOptions?.rlmParentNodeId,
+		rlmParentAgent: runtimeSessionOptions?.rlmParentAgent,
 		subagentRuntimeHost: runtimeSessionOptions?.subagentRuntimeHost,
 	};
 }
@@ -1065,8 +1065,15 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("parseArgs");
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY);
+
 	if (shouldRejectNonInteractiveAttach(publicCommand.attachAgent, appMode)) {
 		console.error(chalk.red("Error: attach requires an interactive terminal"));
+		process.exit(1);
+	}
+	if (shouldRejectBareResume(parsed.resume)) {
+		console.error(
+			chalk.red("Error: --resume requires a session id or path; browse sessions with left-arrow from a chat"),
+		);
 		process.exit(1);
 	}
 	setLogContext({ mode: appMode });
@@ -1199,7 +1206,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionManager = SessionManager.inMemory(cwd);
 	} else {
 		try {
-			sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
+			sessionManager = await createSessionManager(parsed, cwd, sessionDir);
 		} catch (error) {
 			if (!(error instanceof SessionSelectorError)) {
 				throw error;
@@ -1209,7 +1216,7 @@ export async function main(args: string[], options?: MainOptions) {
 					? ` Did you mean '${error.suggestion}'?`
 					: "";
 			console.error(chalk.red(`Error: ${error.message}.${suggestion}`));
-			console.error(chalk.dim(`Run "${APP_NAME} --resume" to browse sessions.`));
+			console.error(chalk.dim(`Open ${APP_NAME} and press left-arrow to browse sessions.`));
 			process.exit(1);
 		}
 	}
@@ -1228,7 +1235,11 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	time("createSessionManager");
 
-	const defaultSessionConfig = runtimeConfigFromArgs(parsed, sessionManager.getCwd(), agentDir, sessionDir);
+	const defaultSessionConfig = runtimeConfigFromArgs(parsed, sessionManager.getCwd(), agentDir, sessionDir, appMode);
+	// Verifier/headless clients pass initialGoal in each create request. The long-lived
+	// daemon fallback must not seed that goal into unrelated future sessions.
+	const daemonDefaultSessionConfig = daemonServerDefaultSessionConfig(defaultSessionConfig);
+	const runtimeDefaultSessionConfig = appMode === "daemon" ? daemonDefaultSessionConfig : defaultSessionConfig;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -1237,7 +1248,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionConfig,
 		sessionOptions: runtimeSessionOptions,
 	}) => {
-		const config = mergeAgentSessionRuntimeConfig(defaultSessionConfig, sessionConfig);
+		const config = mergeAgentSessionRuntimeConfig(runtimeDefaultSessionConfig, sessionConfig);
 		const prepared = await prepareRuntimeServices({
 			config,
 			cwd,
@@ -1257,6 +1268,12 @@ export async function main(args: string[], options?: MainOptions) {
 			// Main agents boot their kernel in the background at session creation;
 			// subagent sessions (rlmDepth > 0) keep the lazy first-call start.
 			prewarmIpythonKernel: true,
+			// Read serializedRefine from the merged runtime config (passed
+			// from the JSON/print client through AgentSessionRuntimeConfig)
+			// so it survives the daemon worker's appMode="daemon" context.
+			serializedRefine: config.serializedRefine ?? false,
+			// Only seed initial goal for top-level sessions (rlmDepth 0).
+			initialGoal: (runtimeSessionOptions?.rlmDepth ?? 0) === 0 ? config.initialGoal : undefined,
 		});
 		const cliThinkingOverride = config.thinking !== undefined || prepared.cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
@@ -1279,7 +1296,7 @@ export async function main(args: string[], options?: MainOptions) {
 		if (isDaemonWorkerProcess()) {
 			await runDaemonMode({
 				socketPath: parsed.daemonSocket,
-				defaultSessionConfig,
+				defaultSessionConfig: daemonDefaultSessionConfig,
 				createRuntime,
 				worker: {
 					authenticationToken: requireDaemonWorkerAuthenticationToken(),
@@ -1289,7 +1306,7 @@ export async function main(args: string[], options?: MainOptions) {
 		} else {
 			await runDaemonSupervisorMode({
 				socketPath: parsed.daemonSocket,
-				defaultSessionConfig,
+				defaultSessionConfig: daemonDefaultSessionConfig,
 			});
 		}
 		return;
@@ -1307,8 +1324,12 @@ export async function main(args: string[], options?: MainOptions) {
 
 		const startupModel = await resolvePreparedStartupModel({ prepared, sessionManager });
 
+		// ACP holds stdin open as a long-lived NDJSON request stream, so reading
+		// piped stdin here would block until EOF and never return.
 		let stdinContent: string | undefined;
-		stdinContent = await readPipedStdin();
+		if (appMode !== "acp") {
+			stdinContent = await readPipedStdin();
+		}
 		time("readPipedStdin");
 
 		const { initialMessage, initialImages } = await prepareInitialMessage(
@@ -1345,7 +1366,7 @@ export async function main(args: string[], options?: MainOptions) {
 			services,
 			sessionManager,
 		});
-		const launchAgentsView = async (includeInitialPrompts: boolean) => {
+		const launchAgentsView = async (initialSession?: SessionSummary, initialScopeKey?: AgentsViewScopeKey) => {
 			await runAgentsViewMode({
 				socketPath: daemonSocketPath,
 				config: defaultSessionConfig,
@@ -1374,7 +1395,8 @@ export async function main(args: string[], options?: MainOptions) {
 				modelFallbackMessage: startupModel.modelFallbackMessage,
 				promptStashStore,
 				startupModelId: startupModel.model?.id,
-				...(includeInitialPrompts ? { initialMessage, initialImages, initialMessages: parsed.messages } : {}),
+				initialSession,
+				initialScopeKey,
 				verbose: parsed.verbose,
 			});
 		};
@@ -1395,7 +1417,7 @@ export async function main(args: string[], options?: MainOptions) {
 			daemonReady = (await awaitDaemonReady(daemonReady)).ready;
 			await preloadCodeHighlighter();
 			printTimings();
-			await launchAgentsView(true);
+			await launchAgentsView();
 			return;
 		}
 
@@ -1439,21 +1461,38 @@ export async function main(args: string[], options?: MainOptions) {
 			// view was not rendered here, so we intentionally leave
 			// agentsViewOwnsStartupNotices unset and let the in-session fallback run.
 			returnToAgentsView: !parsed.noSession,
+			sessionDepth: summary.rlmDepth,
+			// Direct launch has only the attached summary; the live+passive+saved
+			// unified catalog index is not built until the agents view opens. Retained
+			// child snapshots augment this running-child fallback inside chat.
+			sessionHasChildren: summary.hasRunningRlmChildren === true,
 		});
 
 		await preloadCodeHighlighter();
 		printTimings();
-		await interactiveMode.run();
+		const interactiveResult = await interactiveMode.run();
 		if (parsed.noSession) {
 			return;
 		}
-		await launchAgentsView(false);
+		const returnedSummary = {
+			...summary,
+			...interactiveResult.source,
+			id: interactiveResult.source.activeSessionId ?? summary.id,
+		};
+		const initialScopeKey =
+			interactiveResult.type === "scoped_agents_view"
+				? {
+						sessionId: interactiveResult.source.sessionId,
+						activeSessionId: interactiveResult.source.activeSessionId,
+					}
+				: undefined;
+		await launchAgentsView(returnedSummary, initialScopeKey);
 		return;
 	}
 	if (useDaemonClient) {
 		const settingsManager = SettingsManager.create(sessionManager.getCwd(), agentDir);
 		let stdinContent: string | undefined;
-		if (appMode !== "rpc") {
+		if (appMode !== "rpc" && appMode !== "acp") {
 			stdinContent = await readPipedStdin();
 		}
 		time("readPipedStdin");
@@ -1502,6 +1541,9 @@ export async function main(args: string[], options?: MainOptions) {
 		if (appMode === "rpc") {
 			return await runRpcModeWithConnection(connection);
 		}
+		if (appMode === "acp") {
+			return await runAcpModeWithConnection(connection);
+		}
 		const exitCode = await runPrintModeWithConnection(connection, {
 			mode: toPrintOutputMode(appMode),
 			messages: parsed.messages,
@@ -1543,7 +1585,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	// Read piped stdin content (if any) - skip for RPC/daemon modes which use other transports
 	let stdinContent: string | undefined;
-	if (appMode !== "rpc" && appMode !== "daemon") {
+	if (appMode !== "rpc" && appMode !== "acp" && appMode !== "daemon") {
 		stdinContent = await readPipedStdin();
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";
@@ -1581,7 +1623,13 @@ export async function main(args: string[], options?: MainOptions) {
 	if (appMode === "rpc") {
 		printTimings();
 		await runRpcMode(runtime);
+	} else if (appMode === "acp") {
+		printTimings();
+		await runAcpMode(runtime);
 	} else if (appMode === "interactive") {
+		if (explicitAgentsView) {
+			console.error(chalk.yellow("Warning: the agents view needs the daemon; opening a normal chat instead"));
+		}
 		if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
 			const modelList = scopedModels
 				.map((sm) => {
