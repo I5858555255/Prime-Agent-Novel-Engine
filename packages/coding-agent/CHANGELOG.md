@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed a lone `.` submission to resume the prior intent through a hidden host continuation without adding a visible user message.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
