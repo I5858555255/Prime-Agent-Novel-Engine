@@ -2391,12 +2391,14 @@ export class Editor implements Component, Focusable {
 	): Promise<void> {
 		if (!this.autocompleteProvider) return;
 
-		const suggestions = await this.autocompleteProvider.getSuggestions(
-			this.state.lines,
-			this.state.cursorLine,
-			this.state.cursorCol,
-			{ signal: controller.signal, force: options.force },
-		);
+		// A rejected provider request must not reject autocompleteRequestTask, or every
+		// later request would fail on `await previousTask`. Treat it as no suggestions.
+		const suggestions = await this.autocompleteProvider
+			.getSuggestions(this.state.lines, this.state.cursorLine, this.state.cursorCol, {
+				signal: controller.signal,
+				force: options.force,
+			})
+			.catch(() => null);
 
 		if (!this.isAutocompleteRequestCurrent(requestId, controller, snapshotText, snapshotLine, snapshotCol)) {
 			return;
