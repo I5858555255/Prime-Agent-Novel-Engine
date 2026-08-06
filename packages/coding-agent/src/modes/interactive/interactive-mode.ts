@@ -6375,7 +6375,6 @@ export class InteractiveMode {
 
 		if (options.clearChat) {
 			this.chatContainer.clear();
-			this.recordRebuildRenderedMessages(messagesToRender);
 		}
 
 		if (options.updateFooter) {
@@ -6464,6 +6463,12 @@ export class InteractiveMode {
 		for (const [toolCallId, component] of renderedPendingTools) {
 			component.setIncludeImageDimensions(true);
 			this.pendingTools.set(toolCallId, component);
+		}
+		// Armed only after the transcript rendered fully: if the render throws
+		// partway, the in-flight message_start must still append its message
+		// rather than be swallowed by a key for a render that never completed.
+		if (options.clearChat) {
+			this.recordRebuildRenderedMessages(messagesToRender);
 		}
 		this.ui.requestRender();
 	}
