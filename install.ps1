@@ -24,7 +24,7 @@ function Get-PrimeAgentVersion {
 
 	if ($Release -in @("stable", "beta")) {
 		Write-Host "Resolving the $Release release..."
-		$Release = (Invoke-RestMethod -Uri "$baseUrl/$Release" -Method Get).ToString().Trim()
+		$Release = (Invoke-RestMethod -UseBasicParsing -Uri "$baseUrl/$Release" -Method Get).ToString().Trim()
 	}
 
 	$version = $Release.Trim().TrimStart("v")
@@ -40,6 +40,13 @@ function Assert-Command {
 	if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
 		throw "$Name is required. $InstallMessage"
 	}
+}
+
+function Invoke-PrimeAgentDownload {
+	param([string]$Uri, [string]$OutFile)
+
+	$ProgressPreference = "SilentlyContinue"
+	Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile
 }
 
 Assert-Command "node" "Install Node.js 22.8 or newer from https://nodejs.org/."
@@ -61,8 +68,8 @@ $checksumsPath = Join-Path $tempDirectory "SHA256SUMS"
 New-Item -ItemType Directory -Path $tempDirectory | Out-Null
 try {
 	Write-Host "Downloading Prime Agent v$version..."
-	Invoke-WebRequest -Uri "$releaseUrl/SHA256SUMS" -OutFile $checksumsPath
-	Invoke-WebRequest -Uri "$releaseUrl/$tarballName" -OutFile $tarballPath
+	Invoke-PrimeAgentDownload -Uri "$releaseUrl/SHA256SUMS" -OutFile $checksumsPath
+	Invoke-PrimeAgentDownload -Uri "$releaseUrl/$tarballName" -OutFile $tarballPath
 
 	$checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "^[0-9a-fA-F]{64}\s+\*?$([regex]::Escape($tarballName))$" } | Select-Object -First 1
 	if (-not $checksumLine) {
