@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed Anthropic, Google/Vertex, OpenAI Responses/Azure, and Mistral to map unknown provider stop/status values to `error` instead of throwing or reporting success, preserving the raw value in `stopReasonRaw` and routing through the existing `StreamFailureError` path.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
