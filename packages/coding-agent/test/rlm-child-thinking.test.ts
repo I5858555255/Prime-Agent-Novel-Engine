@@ -1,5 +1,5 @@
 import { fauxAssistantMessage, type SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeRequestedRlmSubagentThinkingLevel } from "../src/core/rlm-runtime.js";
 import { createHarness } from "./suite/harness.js";
 
@@ -12,12 +12,21 @@ function getReasoning(options: SimpleStreamOptions | undefined): string | undefi
 }
 
 describe("native RLM child thinking", () => {
+	beforeEach(() => {
+		vi.stubEnv("RLM_DEPTH", "0");
+		vi.stubEnv("RLM_MAX_DEPTH", "1");
+	});
+
+	afterEach(() => vi.unstubAllEnvs());
+
 	it("normalizes supported levels, trims whitespace, and rejects invalid values", () => {
 		for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
 			expect(normalizeRequestedRlmSubagentThinkingLevel(level)).toBe(level);
 		}
 		expect(normalizeRequestedRlmSubagentThinkingLevel(undefined)).toBeUndefined();
 		expect(normalizeRequestedRlmSubagentThinkingLevel("  high  ")).toBe("high");
+		expect(() => normalizeRequestedRlmSubagentThinkingLevel("")).toThrow("rlm.run thinking must not be empty");
+		expect(() => normalizeRequestedRlmSubagentThinkingLevel("   ")).toThrow("rlm.run thinking must not be empty");
 		expect(() => normalizeRequestedRlmSubagentThinkingLevel(null)).toThrow("rlm.run thinking must be a string");
 		expect(() => normalizeRequestedRlmSubagentThinkingLevel(42)).toThrow("rlm.run thinking must be a string");
 		expect(() => normalizeRequestedRlmSubagentThinkingLevel(" HIGH ")).toThrow(

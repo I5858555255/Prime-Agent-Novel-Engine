@@ -1,9 +1,9 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
-import { isValidThinkingLevel, VALID_THINKING_LEVELS } from "../cli/args.js";
 import type { AgentSession } from "./agent-session.js";
 import type { ToolDefinition } from "./extensions/index.js";
 import type { HostRequestHandler } from "./kernel/index.js";
+import { isValidThinkingLevel, VALID_THINKING_LEVELS } from "./thinking-levels.js";
 
 export interface RlmRunRequest {
 	prompt: string;
@@ -68,6 +68,9 @@ export function normalizeRequestedRlmSubagentThinkingLevel(value: unknown): Thin
 		throw new Error("rlm.run thinking must be a string");
 	}
 	const thinking = value.trim();
+	if (!thinking) {
+		throw new Error("rlm.run thinking must not be empty");
+	}
 	if (!isValidThinkingLevel(thinking)) {
 		throw new Error(`rlm.run thinking must be one of: ${VALID_THINKING_LEVELS.join(", ")}`);
 	}
