@@ -59,6 +59,15 @@ export interface AppKeybindings {
 	"app.tree.filter.all": true;
 	"app.tree.filter.cycleForward": true;
 	"app.tree.filter.cycleBackward": true;
+
+	// Persistent agents/resume sidebar (left rail)
+	"app.sidebar.kill": true;
+	"app.sidebar.refresh": true;
+	"app.sidebar.search": true;
+	"app.sidebar.nextSession": true;
+	"app.sidebar.prevSession": true;
+	"app.sidebar.nextSection": true;
+	"app.sidebar.prevSection": true;
 }
 
 export type AppKeybinding = keyof AppKeybindings;
@@ -198,6 +207,34 @@ export const KEYBINDINGS = {
 		defaultKeys: "shift+ctrl+o",
 		description: "Tree filter: cycle backward",
 	},
+	"app.sidebar.kill": {
+		defaultKeys: "x",
+		description: "Stop / kill the selected agent in the sidebar",
+	},
+	"app.sidebar.refresh": {
+		defaultKeys: "r",
+		description: "Force refresh the sidebar roster",
+	},
+	"app.sidebar.search": {
+		defaultKeys: "/",
+		description: "Filter the sidebar roster by session search",
+	},
+	"app.sidebar.nextSession": {
+		defaultKeys: "ctrl+j",
+		description: "Sidebar: jump to the next selectable session",
+	},
+	"app.sidebar.prevSession": {
+		defaultKeys: "ctrl+k",
+		description: "Sidebar: jump to the previous selectable session",
+	},
+	"app.sidebar.nextSection": {
+		defaultKeys: "ctrl+n",
+		description: "Sidebar: jump to the next section (running/idle/saved)",
+	},
+	"app.sidebar.prevSection": {
+		defaultKeys: "ctrl+p",
+		description: "Sidebar: jump to the previous section (running/idle/saved)",
+	},
 } as const satisfies KeybindingDefinitions;
 
 const KEYBINDING_NAME_MIGRATIONS = {
@@ -259,6 +296,13 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	treeUnfoldOrDown: "app.tree.unfoldOrDown",
 	treeEditLabel: "app.tree.editLabel",
 	treeToggleLabelTimestamp: "app.tree.toggleLabelTimestamp",
+
+	sidebarRefresh: "app.sidebar.refresh",
+	sidebarSearch: "app.sidebar.search",
+	sidebarNextSession: "app.sidebar.nextSession",
+	sidebarPrevSession: "app.sidebar.prevSession",
+	sidebarNextSection: "app.sidebar.nextSection",
+	sidebarPrevSection: "app.sidebar.prevSection",
 } as const satisfies Record<string, Keybinding>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

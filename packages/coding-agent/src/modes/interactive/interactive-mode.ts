@@ -6744,13 +6744,14 @@ export class InteractiveMode {
 		// flows through to the editor untouched.
 		this.unsubscribeAgentsSidebarInput = this.ui.addInputListener((data: string) => {
 			if (!this.agentsSidebarFocused || !this.agentsSidebar) return undefined;
-			if (data === "x") {
+			const kb = getKeybindings();
+			if (kb.matches(data, "app.sidebar.kill")) {
 				this.agentsSidebarFocused = false;
 				this.ui.requestRender();
 				void this.killSelectedAgentsSidebar();
 				return { consume: true };
 			}
-			if (data === "r") {
+			if (kb.matches(data, "app.sidebar.refresh")) {
 				void this.agentsSidebar?.refreshNow?.()?.then(() => this.ui.requestRender());
 				return { consume: true };
 			}
@@ -6760,7 +6761,6 @@ export class InteractiveMode {
 				return { consume: true };
 			}
 			// Escape / left-arrow within the focused rail returns to the editor.
-			const kb = getKeybindings();
 			if (kb.matches(data, "tui.select.cancel") || kb.matches(data, "app.agents.back")) {
 				this.unfocusAgentsSidebar();
 				return { consume: true };
@@ -9553,6 +9553,13 @@ ${shortcutsKey ? `\`${shortcutsKey}\` quick shortcuts · ` : ""}\`/hotkeys\` ful
 	}
 
 	private getHotkeysGuide(): string {
+		const sidebarSearch = this.getAppKeyDisplay("app.sidebar.search");
+		const sidebarNext = this.getAppKeyDisplay("app.sidebar.nextSession");
+		const sidebarPrev = this.getAppKeyDisplay("app.sidebar.prevSession");
+		const sidebarNextSection = this.getAppKeyDisplay("app.sidebar.nextSection");
+		const sidebarPrevSection = this.getAppKeyDisplay("app.sidebar.prevSection");
+		const sidebarKill = this.getAppKeyDisplay("app.sidebar.kill");
+		const sidebarRefresh = this.getAppKeyDisplay("app.sidebar.refresh");
 		const cursorUp = this.getEditorKeyDisplay("tui.editor.cursorUp");
 		const cursorDown = this.getEditorKeyDisplay("tui.editor.cursorDown");
 		const cursorLeft = this.getEditorKeyDisplay("tui.editor.cursorLeft");
@@ -9647,6 +9654,15 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 | \`${viewportFollow}\` | Scroll to bottom and follow output |
 | mouse wheel | Scroll transcript |
 | mouse drag | Select and copy text |
+
+**Sidebar (agents/resume, \`/agents\`)**
+| Key | Action |
+|-----|--------|
+| \`${sidebarSearch}\` | Filter the roster by session search |
+| \`${sidebarNext}\` / \`${sidebarPrev}\` | Jump to the next / previous session |
+| \`${sidebarNextSection}\` / \`${sidebarPrevSection}\` | Jump to the next / previous section |
+| \`${sidebarKill}\` | Stop / kill the selected agent |
+| \`${sidebarRefresh}\` | Force-refresh the roster |
 `;
 
 		const shortcuts = this.bindLocalSessionExtensions

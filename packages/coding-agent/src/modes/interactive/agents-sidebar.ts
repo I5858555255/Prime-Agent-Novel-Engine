@@ -12,15 +12,23 @@
  * sidebar is focused.
  */
 
-import { getKeybindings, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import {
+	decodePrintableKey,
+	getKeybindings,
+	truncateToWidth,
+	visibleWidth,
+	type Component,
+} from "@earendil-works/pi-tui";
 import {
 	buildAgentsViewRows,
 	buildUnifiedSessionIndex,
+	filterUnifiedSessions,
 	reconcileUnifiedSessions,
 	sectionTitle,
 	shouldShowAgentsViewSession,
 	type AgentsViewRow,
 } from "../agents-view/agents-view-state.js";
+import { matchesSearchText } from "../agents-view/session-view-search.js";
 import { DaemonClient } from "../daemon/daemon-client.js";
 import { listDaemonHeartbeats } from "../daemon/heartbeat-catalog.js";
 import {
@@ -74,6 +82,10 @@ export class AgentsSidebar implements Component {
 	private rows: AgentsViewRow[] = [];
 	private selectableRows: AgentsViewRow[] = [];
 	private selectedIndex = 0;
+	/** Live session-search query filter (empty = no filtering). */
+	private query = "";
+	/** True while the user is typing a search query in the rail. */
+	private searchActive = false;
 	private error: string | undefined;
 	private lastErrorAt = 0;
 	private pulseFrame = 0;
@@ -174,7 +186,12 @@ export class AgentsSidebar implements Component {
 		const visible = this.sessions.filter((s) => shouldShowAgentsViewSession(s));
 		const records = reconcileUnifiedSessions(visible, this.savedSessions, this.heartbeats);
 		buildUnifiedSessionIndex(records);
-		this.rows = buildAgentsViewRows(records);
+		// Apply the live session-search filter. filterUnifiedSessions retains
+		// ancestor rows of any match, so a hit deep in the roster still shows
+		// its parent chain (same behaviour as the full agents view).
+		const query = this.query.trim();
+		const scoped = query ? filterUnifiedSessions(records, (text) => matchesSearchText(text, query)) : records;
+		this.rows = buildAgentsViewRows(scoped);
 		this.selectableRows = this.rows.filter((row) => row.selectable);
 		if (this.selectedIndex >= this.selectableRows.length) {
 			this.selectedIndex = Math.max(0, this.selectableRows.length - 1);
@@ -193,6 +210,51 @@ export class AgentsSidebar implements Component {
 	/** Handle one input chunk while the sidebar has focus. Returns true if consumed. */
 	handleInput(data: string): boolean {
 		const kb = getKeybindings();
+
+		// While searching, printable characters, space, backspace and the
+		// search toggle all manipulate the query; navigation keys still work so
+		// the user can move the selection while the filter is live.
+		if (this.searchActive) {
+			if (kb.matches(data, "tui.input.tab")) {
+				// commit the filter and leave search mode (keep the query)
+				this.setSearchActive(false);
+				return true;
+			}
+			if (kb.matches(data, "tui.select.cancel")) {
+				// escape clears the filter and exits search mode
+				this.clearSearch();
+				return true;
+			}
+			if (kb.matches(data, "tui.editor.deleteCharBackward")) {
+				this.setQuery(this.query.slice(0, -1));
+				return true;
+			}
+			if (kb.matches(data, "tui.input.copy")) {
+				return true; // swallow ctrl+c so it doesn't fall through
+			}
+			const ch = decodePrintableKey(data);
+			if (ch !== undefined && this.searchActive) {
+				this.setQuery(this.query + ch);
+				return true;
+			}
+			if (data === " ") {
+				this.setQuery(this.query + " ");
+				return true;
+			}
+			// fall through to navigation below
+		}
+
+		if (kb.matches(data, "app.sidebar.search")) {
+			if (this.searchActive) {
+				// second "/" commits the current filter and exits edit mode
+				this.setSearchActive(false);
+			} else {
+				// "/" opens the search box; an existing filter is pre-editable
+				this.setSearchActive(true);
+			}
+			return true;
+		}
+
 		if (kb.matches(data, "tui.select.up")) {
 			if (this.selectableRows.length > 0) {
 				this.selectedIndex = (this.selectedIndex - 1 + this.selectableRows.length) % this.selectableRows.length;
@@ -217,11 +279,113 @@ export class AgentsSidebar implements Component {
 			this.advancePulse();
 			return true;
 		}
+		if (kb.matches(data, "app.sidebar.nextSession")) {
+			if (this.selectableRows.length > 0) this.selectedIndex = (this.selectedIndex + 1) % this.selectableRows.length;
+			this.advancePulse();
+			return true;
+		}
+		if (kb.matches(data, "app.sidebar.prevSession")) {
+			if (this.selectableRows.length > 0) {
+				this.selectedIndex = (this.selectedIndex - 1 + this.selectableRows.length) % this.selectableRows.length;
+			}
+			this.advancePulse();
+			return true;
+		}
+		if (kb.matches(data, "app.sidebar.nextSection")) {
+			this.jumpSection(1);
+			return true;
+		}
+		if (kb.matches(data, "app.sidebar.prevSection")) {
+			this.jumpSection(-1);
+			return true;
+		}
 		if (kb.matches(data, "tui.select.confirm")) {
 			this.openSelected();
 			return true;
 		}
 		return false;
+	}
+
+	/** Set the live search filter query and re-reconcile the roster. */
+	setQuery(query: string): void {
+		this.query = query;
+		this.reconcile();
+	}
+
+	/** Enter/exit live search-edit mode without clearing the current filter. */
+	setSearchActive(active: boolean): void {
+		this.searchActive = active;
+	}
+
+	/** Clear the search filter and exit search-edit mode. */
+	clearSearch(): void {
+		this.query = "";
+		this.searchActive = false;
+		this.reconcile();
+	}
+
+	/** True while the user is editing the search filter in the rail. */
+	getSearchActive(): boolean {
+		return this.searchActive;
+	}
+
+	/** Current search filter text (empty when no filter is applied). */
+	getQuery(): string {
+		return this.query;
+	}
+
+	/** Move the selection to the first row of the next/previous section. */
+	private jumpSection(dir: 1 | -1): void {
+		if (this.selectableRows.length === 0) return;
+		const currentSection = this.selectableRows[this.selectedIndex]?.section;
+		let best = -1;
+		if (dir === 1) {
+			for (let i = this.selectedIndex + 1; i < this.selectableRows.length; i++) {
+				if (this.selectableRows[i]!.section !== currentSection) {
+					best = i;
+					break;
+				}
+			}
+			if (best === -1) {
+				// wrap to the first section
+				const first = this.selectableRows[0]!.section;
+				for (let i = 0; i < this.selectableRows.length; i++) {
+					if (this.selectableRows[i]!.section !== first) {
+						best = i;
+						break;
+					}
+				}
+				best = best === -1 ? 0 : best;
+			}
+		} else {
+			for (let i = this.selectedIndex - 1; i >= 0; i--) {
+				if (this.selectableRows[i]!.section !== currentSection) {
+					best = i;
+					break;
+				}
+			}
+			if (best === -1) {
+				// wrap to the last section
+				for (let i = this.selectableRows.length - 1; i >= 0; i--) {
+					if (this.selectableRows[i]!.section !== currentSection) {
+						best = i;
+						break;
+					}
+				}
+				if (best === -1) best = this.selectableRows.length - 1;
+				else {
+					const targetSection = this.selectableRows[best]!.section;
+					for (let i = 0; i < this.selectableRows.length; i++) {
+						if (this.selectableRows[i]!.section === targetSection) {
+							best = i;
+							break;
+						}
+					}
+				}
+			}
+		}
+		if (best >= 0) this.selectedIndex = best;
+		this.advancePulse();
 	}
 
 	/** Kill the selected live agent (daemon kill command). */
@@ -277,6 +441,16 @@ export class AgentsSidebar implements Component {
 		// header
 		out.push(theme.bold(theme.fg("accent", truncateToWidth(" agents", innerWidth))));
 		out.push(theme.fg("borderMuted", "─".repeat(Math.max(0, innerWidth))));
+
+		// search / filter row: a live input while editing, otherwise a compact
+		// indicator when a filter is active (with a hint to clear it).
+		if (this.searchActive) {
+			const prompt = "/ ";
+			const cursor = this.pulseFrame % 2 === 0 ? "▌" : " ";
+			out.push(truncateToWidth(`${prompt}${this.query}${cursor}`, innerWidth));
+		} else if (this.query.trim()) {
+			out.push(theme.fg("muted", truncateToWidth(` ⌕ ${this.query}`, innerWidth)));
+		}
 
 		if (this.error) {
 			out.push(theme.fg("error", truncateToWidth(` ! ${this.error}`, innerWidth)));
