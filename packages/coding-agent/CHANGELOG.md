@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
