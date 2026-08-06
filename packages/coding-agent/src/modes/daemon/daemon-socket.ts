@@ -216,7 +216,8 @@ function assertSocketLease(socketPath: string, lease: DaemonSocketPathLease): vo
 const LONGEST_SOCKET_NAME_LENGTH = 37;
 // sun_path allows 104 bytes on macOS/BSD and 108 on Linux, including the
 // terminating NUL.
-const UNIX_SOCKET_PATH_LIMIT = process.platform === "darwin" ? 103 : 107;
+const BSD_SUN_PATH_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(["darwin", "freebsd", "openbsd", "netbsd"]);
+const UNIX_SOCKET_PATH_LIMIT = BSD_SUN_PATH_PLATFORMS.has(process.platform) ? 103 : 107;
 
 export function defaultDaemonSocketDir(): string {
 	const suffix = typeof process.getuid === "function" ? String(process.getuid()) : "user";
