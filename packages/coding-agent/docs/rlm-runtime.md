@@ -150,10 +150,11 @@ await rlm.run("subtask")
 
 Supported `rlm.run` options are:
 
-- `name`: a unique readable child session name; and
-- `model`: an exact `provider/model` selector from `rlm.find_models()`.
+- `name`: a unique readable child session name;
+- `model`: an exact `provider/model` selector from `rlm.find_models()`; and
+- `thinking`: one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 
-Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. If an exact selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
+Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. If an exact selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model and thinking level. Whether inherited or explicitly requested, the thinking level is clamped to the selected child model's capabilities. An explicit `thinking` value does not depend on the parent's current level. Some reasoning-capable models cannot disable reasoning, so `off` may clamp upward to their lowest supported level. The effective level is persisted in the child session.
 
 ## Child Execution
 

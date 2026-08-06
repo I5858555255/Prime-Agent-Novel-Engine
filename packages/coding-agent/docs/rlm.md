@@ -59,7 +59,20 @@ handle = await rlm("Review the authentication flow for security issues", name="a
 print(handle.rlm_child_id, handle.name, handle.session_dir, handle.model)
 ```
 
-The call returns immediately after task admission with a child handle; it never waits for or returns the child's answer. The TypeScript host creates a normal child `AgentSession` with an independent context and session directory. The child inherits the parent model, provider configuration, skills, tools, retry policy, and resource loader unless the call requests another configured model.
+The call returns immediately after task admission with a child handle; it never waits for or returns the child's answer. The TypeScript host creates a normal child `AgentSession` with an independent context and session directory. The child inherits the parent's provider configuration, skills, tools, retry policy, and resource loader. It uses the parent model unless another configured model is requested, and it inherits the parent's thinking level unless an explicit level is requested.
+
+Thinking can be selected independently for a child:
+
+```python
+handle = await rlm(
+    "Review the authentication flow for security issues",
+    name="auth-reviewer",
+    model="anthropic/claude-opus-4-7",
+    thinking="max",
+)
+```
+
+Valid levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. An omitted level inherits the parent level; an explicit level overrides it. In both cases the host clamps the level to the selected model's capabilities. Some reasoning-capable models cannot disable reasoning, so `off` may clamp upward to their lowest supported level. The effective level is persisted in the child session.
 
 Spawn independent children in separate calls and end the turn instead of awaiting completion:
 

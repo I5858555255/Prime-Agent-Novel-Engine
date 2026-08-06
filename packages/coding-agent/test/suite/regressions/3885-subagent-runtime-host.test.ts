@@ -50,7 +50,7 @@ describe("ENG-3885 subagent runtime host", () => {
 		const faux = registerFauxProvider({
 			models: [
 				{ id: "faux-parent", reasoning: true },
-				{ id: "faux-child", reasoning: false },
+				{ id: "faux-child", reasoning: true },
 			],
 		});
 		const authStorage = AuthStorage.inMemory();
@@ -72,6 +72,7 @@ describe("ENG-3885 subagent runtime host", () => {
 				baseUrl: model.baseUrl,
 			})),
 		});
+		let hostedChildThinkingLevel: string | undefined;
 
 		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 			cwd,
@@ -80,6 +81,9 @@ describe("ENG-3885 subagent runtime host", () => {
 			sessionStartEvent,
 			sessionOptions,
 		}) => {
+			if (sessionOptions?.model?.id === "faux-child") {
+				hostedChildThinkingLevel = sessionOptions.thinkingLevel;
+			}
 			const services = await createAgentSessionServices({
 				cwd,
 				agentDir,
@@ -146,6 +150,7 @@ describe("ENG-3885 subagent runtime host", () => {
 
 		const resultPromise = runtime.session.runRlmChild("inspect child runtime", {
 			model: `${faux.getModel("faux-child")!.provider}/faux-child`,
+			thinking: "high",
 		});
 
 		await waitFor(() => childStarted && runtime.listSubagentRuntimes().length === 1);
@@ -153,6 +158,8 @@ describe("ENG-3885 subagent runtime host", () => {
 		expect(childRuntime).toBeInstanceOf(AgentSessionRuntime);
 		expect(childRuntime?.session.sessionId).not.toBe(runtime.session.sessionId);
 		expect(childRuntime?.session.model?.id).toBe("faux-child");
+		expect(hostedChildThinkingLevel).toBe("high");
+		expect(childRuntime?.session.thinkingLevel).toBe("high");
 		expect(childRuntime?.metadata).toEqual(
 			expect.objectContaining({
 				kind: "subagent",

@@ -111,6 +111,13 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("exact returned selector");
 		expect(prompt).toContain("An unavailable requested model fails spawn");
 		expect(prompt).toContain("decide whether to retry or omit `model`");
+		expect(prompt).toContain("inherits your current thinking level");
+		expect(prompt).toContain("thinking='max'");
+		expect(prompt).toContain("valid levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`");
+		expect(prompt).toContain("Explicit levels are also clamped to the selected model");
+		expect(prompt).toContain(
+			"some reasoning-capable models cannot disable reasoning, so `off` may clamp upward to their lowest supported level.",
+		);
 		expect(prompt).not.toContain("model choices for subagents");
 	});
 

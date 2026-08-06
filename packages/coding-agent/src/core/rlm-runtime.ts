@@ -1,5 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
+import { isValidThinkingLevel, VALID_THINKING_LEVELS } from "../cli/args.js";
 import type { AgentSession } from "./agent-session.js";
 import type { ToolDefinition } from "./extensions/index.js";
 import type { HostRequestHandler } from "./kernel/index.js";
@@ -57,6 +58,21 @@ export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindMode
 const RLM_SUBAGENT_SESSION_NAME_MAX_LENGTH = 64;
 export const DEFAULT_RLM_MODEL_SEARCH_LIMIT = 8;
 export const MAX_RLM_MODEL_SEARCH_LIMIT = 20;
+
+/** Validate and normalize an orchestrator-supplied child thinking level. */
+export function normalizeRequestedRlmSubagentThinkingLevel(value: unknown): ThinkingLevel | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "string") {
+		throw new Error("rlm.run thinking must be a string");
+	}
+	const thinking = value.trim();
+	if (!isValidThinkingLevel(thinking)) {
+		throw new Error(`rlm.run thinking must be one of: ${VALID_THINKING_LEVELS.join(", ")}`);
+	}
+	return thinking;
+}
 
 /** Validate and normalize an orchestrator-supplied subagent session name. */
 export function normalizeRequestedRlmSubagentSessionName(value: unknown): string | undefined {
