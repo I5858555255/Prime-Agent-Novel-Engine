@@ -29,6 +29,10 @@ export interface DaemonSocketClient {
 	supportsExtensionUi: boolean;
 	capabilities: Set<DaemonClientCapability>;
 	capabilitiesByActiveSessionId?: Map<string, Set<DaemonClientCapability>>;
+	/** Status keys observed by legacy clients, retained as tombstones for resync clears. */
+	extensionStatusKeysByActiveSessionId?: Map<string, Set<string>>;
+	/** Legacy status updates observed during snapshot transfer, replayed after it closes. */
+	pendingExtensionStatusReplayActiveSessionIds?: Set<string>;
 }
 
 export interface ActiveSessionState {

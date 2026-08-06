@@ -225,6 +225,10 @@ describe("ENG-4656 active session resume", () => {
 			activeSessionId: sourceActiveSessionId,
 			targetActiveSessionId,
 		});
+		const initialAttach = client.requests[0] as Extract<DaemonCommand, { type: "attach" }>;
+		const reattach = client.requests[2] as Extract<DaemonCommand, { type: "reattach" }>;
+		expect(initialAttach.capabilities).toContain("extension_status_snapshot");
+		expect(reattach.capabilities).toContain("extension_status_snapshot");
 		await expect(connection.getState()).resolves.toMatchObject({
 			activeSessionId: targetActiveSessionId,
 			sessionId: `${targetActiveSessionId}-session`,
@@ -237,6 +241,16 @@ describe("ENG-4656 active session resume", () => {
 		);
 		await connection.dispose();
 		expect(client.requests.at(-1)).toMatchObject({ type: "detach", activeSessionId: targetActiveSessionId });
+	});
+
+	it("does not advertise extension status snapshots for a legacy connection", async () => {
+		const client = new ResumeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(client), sourceActiveSessionId, {
+			supportsExtensionUi: false,
+		});
+		const attach = client.requests[0] as Extract<DaemonCommand, { type: "attach" }>;
+		expect(attach.capabilities).not.toContain("extension_status_snapshot");
+		await connection.dispose();
 	});
 
 	it("keeps other source and target clients attached when one client moves", async () => {

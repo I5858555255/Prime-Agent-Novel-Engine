@@ -4069,6 +4069,25 @@ describe("daemon mode helpers", () => {
 		]);
 	});
 
+	it("replays legacy status tombstones before current values on resync", () => {
+		const state = makeState("active");
+		state.extensionStatuses = new Map([["current", "ready"]]);
+		const replay = createExtensionStatusReplay(state, new Set(["removed", "current"]));
+		expect(replay.map((message) => message.payload)).toEqual([
+			{ statusKey: "removed", statusText: undefined },
+			{ statusKey: "current", statusText: "ready" },
+		]);
+		const resynced: Extract<DaemonOutbound, { type: "session_resynced" }> = {
+			type: "session_resynced",
+			activeSessionId: "active",
+			snapshot: { state: { extensionStatuses: { current: "ready" } } as never, messages: [] } as never,
+		};
+		const legacyClient = makeClient("legacy-client", "active", true);
+		expect(
+			(daemonOutboundForClient(legacyClient, resynced) as typeof resynced).snapshot.state.extensionStatuses,
+		).toBeUndefined();
+	});
+
 	it("sends dialog extension UI requests only to UI-capable clients", () => {
 		const lineClient = makeClient("line-client", "active", false);
 		const uiClient = makeClient("ui-client", "active", true);

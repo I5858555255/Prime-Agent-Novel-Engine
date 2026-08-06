@@ -3647,6 +3647,9 @@ export class AgentDaemon {
 						lastEventSequence: result.lastEventSequence,
 					});
 				}
+				// Legacy clients reset extension UI while attaching and need the
+				// ordered status replay after the inline attach payload.
+				this.replayExtensionStatusesToClient(client, state);
 				return success(command.id, "attach", result);
 			}
 
@@ -4655,6 +4658,10 @@ export class AgentDaemon {
 		const transferSignal = signal ?? markClientSnapshotStreaming(client, result.activeSessionId);
 		if (client.socket.destroyed) {
 			finishClientSnapshotStreaming(client, result.activeSessionId);
+			if (client.pendingExtensionStatusReplayActiveSessionIds?.delete(result.activeSessionId)) {
+				const latestState = this.sessions.get(result.activeSessionId);
+				if (latestState) this.replayExtensionStatusesToClient(client, latestState);
+			}
 			transcript.dispose?.();
 			return;
 		}
@@ -4783,6 +4790,10 @@ export class AgentDaemon {
 				client.snapshotTransferTails.delete(result.activeSessionId);
 			}
 			finishClientSnapshotStreaming(client, result.activeSessionId);
+			if (client.pendingExtensionStatusReplayActiveSessionIds?.delete(result.activeSessionId)) {
+				const latestState = this.sessions.get(result.activeSessionId);
+				if (latestState) this.replayExtensionStatusesToClient(client, latestState);
+			}
 			transcript.dispose?.();
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpBackpressuredClient(client).catch((error) =>
@@ -6088,6 +6099,7 @@ export class AgentDaemon {
 		this.broadcastToSession(state, { type: "session_closed", activeSessionId: state.activeSessionId, reason });
 		for (const client of state.clients) {
 			client.attachedActiveSessionIds.delete(state.activeSessionId);
+			client.extensionStatusKeysByActiveSessionId?.delete(state.activeSessionId);
 			removeDaemonClientSessionCapabilities(client, state.activeSessionId);
 		}
 		state.clients.clear();
@@ -6127,6 +6139,16 @@ export class AgentDaemon {
 		return cascadeError;
 	}
 
+	private noteDeliveredExtensionStatus(client: DaemonSocketClient, message: DaemonOutbound): void {
+		if (message.type !== "extension_ui_request" || message.method !== "setStatus") return;
+		const statusKey = message.payload.statusKey;
+		if (typeof statusKey !== "string") return;
+		client.extensionStatusKeysByActiveSessionId ??= new Map();
+		const knownKeys = client.extensionStatusKeysByActiveSessionId.get(message.activeSessionId) ?? new Set<string>();
+		knownKeys.add(statusKey);
+		client.extensionStatusKeysByActiveSessionId.set(message.activeSessionId, knownKeys);
+	}
+
 	private replayExtensionStatusesToClient(client: DaemonSocketClient, state: ActiveSessionState): void {
 		if (
 			client.socket.destroyed ||
@@ -6135,7 +6157,13 @@ export class AgentDaemon {
 		) {
 			return;
 		}
-		for (const message of createExtensionStatusReplay(state)) this.write(client, message);
+		client.extensionStatusKeysByActiveSessionId ??= new Map();
+		const knownKeys = client.extensionStatusKeysByActiveSessionId.get(state.activeSessionId) ?? new Set<string>();
+		for (const message of createExtensionStatusReplay(state, knownKeys)) {
+			this.write(client, message);
+			knownKeys.add(message.payload.statusKey as string);
+		}
+		client.extensionStatusKeysByActiveSessionId.set(state.activeSessionId, knownKeys);
 	}
 
 	private broadcastToSession(state: ActiveSessionState, message: DaemonOutbound): void {
@@ -6173,12 +6201,21 @@ export class AgentDaemon {
 				this.write(client, messageForClient);
 				continue;
 			}
+			const legacyStatusUpdate =
+				messageForClient.type === "extension_ui_request" &&
+				messageForClient.method === "setStatus" &&
+				!daemonClientSupportsExtensionStatusSnapshot(client, state.activeSessionId);
 			if (client.snapshotActiveSessionIds?.has(state.activeSessionId)) {
-				this.queueClientCatchup(
-					client,
-					state.activeSessionId,
-					sequencedMessage.type === "session_replaced" ? "replacement" : "resync",
-				);
+				if (!legacyStatusUpdate) {
+					this.queueClientCatchup(
+						client,
+						state.activeSessionId,
+						sequencedMessage.type === "session_replaced" ? "replacement" : "resync",
+					);
+				} else {
+					client.pendingExtensionStatusReplayActiveSessionIds ??= new Set();
+					client.pendingExtensionStatusReplayActiveSessionIds.add(state.activeSessionId);
+				}
 				continue;
 			}
 			if (client.backpressured === true) {
@@ -6210,6 +6247,7 @@ export class AgentDaemon {
 				serializedWithoutExtensionStatuses ??= serializeJsonLine(messageForClient);
 				this.writeSerialized(client, serializedWithoutExtensionStatuses, messageForClient);
 			}
+			this.noteDeliveredExtensionStatus(client, messageForClient);
 			if (sequencedMessage.type === "session_replaced") {
 				this.replayExtensionStatusesToClient(client, state);
 			}
@@ -6229,6 +6267,7 @@ export class AgentDaemon {
 			this.log(`could not prepare replacement snapshot: ${String(error)}`);
 			if (!client.socket.destroyed && this.sessions.get(state.activeSessionId) === state) {
 				this.write(client, message);
+				this.replayExtensionStatusesToClient(client, state);
 			}
 			if (!client.snapshotStreaming && client.catchupActiveSessionIds?.size) {
 				void this.catchUpBackpressuredClient(client).catch((catchupError) =>
@@ -6475,6 +6514,7 @@ export class AgentDaemon {
 					}
 					return "retry-later";
 				}
+				this.replayExtensionStatusesToClient(client, state);
 			} catch (error) {
 				for (const remaining of pending.slice(index)) {
 					this.queueClientCatchup(client, remaining.activeSessionId, remaining.purpose);
@@ -6685,6 +6725,7 @@ export function getChildActiveSessionStates(
 export function detachClientFromActiveSession(client: DaemonSocketClient, state: ActiveSessionState): void {
 	state.clients.delete(client);
 	client.attachedActiveSessionIds.delete(state.activeSessionId);
+	client.extensionStatusKeysByActiveSessionId?.delete(state.activeSessionId);
 	removeDaemonClientSessionCapabilities(client, state.activeSessionId);
 	if (state.clients.size === 0) {
 		cancelPendingExtensionUiRequests(state);
@@ -6729,27 +6770,48 @@ export function daemonClientSupportsExtensionStatusSnapshot(
 }
 
 export function daemonOutboundForClient<T extends DaemonOutbound>(client: DaemonSocketClient, message: T): T {
-	if (
-		message.type !== "session_replaced" ||
-		message.state.extensionStatuses === undefined ||
-		daemonClientSupportsExtensionStatusSnapshot(client, message.activeSessionId)
-	) {
+	const activeSessionId = "activeSessionId" in message ? message.activeSessionId : undefined;
+	if (activeSessionId === undefined || daemonClientSupportsExtensionStatusSnapshot(client, activeSessionId)) {
 		return message;
 	}
-	const { extensionStatuses: _extensionStatuses, ...state } = message.state;
-	return { ...message, state } as T;
+	if (message.type === "session_replaced" && message.state.extensionStatuses !== undefined) {
+		const { extensionStatuses: _extensionStatuses, ...state } = message.state;
+		return { ...message, state } as T;
+	}
+	if (message.type === "session_resynced" && message.snapshot.state.extensionStatuses !== undefined) {
+		const { extensionStatuses: _extensionStatuses, ...state } = message.snapshot.state;
+		return { ...message, snapshot: { ...message.snapshot, state } } as T;
+	}
+	return message;
 }
 
 export function createExtensionStatusReplay(
 	state: ActiveSessionState,
+	knownKeys?: ReadonlySet<string>,
 ): Array<Extract<DaemonOutbound, { type: "extension_ui_request" }>> {
-	return [...(state.extensionStatuses ?? [])].map(([statusKey, statusText]) => ({
-		type: "extension_ui_request",
-		activeSessionId: state.activeSessionId,
-		id: randomUUID(),
-		method: "setStatus",
-		payload: { statusKey, statusText },
-	}));
+	const statuses = state.extensionStatuses ?? new Map<string, string>();
+	const messages: Array<Extract<DaemonOutbound, { type: "extension_ui_request" }>> = [];
+	for (const statusKey of knownKeys ?? []) {
+		if (!statuses.has(statusKey)) {
+			messages.push({
+				type: "extension_ui_request",
+				activeSessionId: state.activeSessionId,
+				id: randomUUID(),
+				method: "setStatus",
+				payload: { statusKey, statusText: undefined },
+			});
+		}
+	}
+	for (const [statusKey, statusText] of statuses) {
+		messages.push({
+			type: "extension_ui_request",
+			activeSessionId: state.activeSessionId,
+			id: randomUUID(),
+			method: "setStatus",
+			payload: { statusKey, statusText },
+		});
+	}
+	return messages;
 }
 
 export function markClientSnapshotStreaming(client: DaemonSocketClient, activeSessionId: string): AbortSignal {

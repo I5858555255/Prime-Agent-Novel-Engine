@@ -72,6 +72,7 @@ import {
 	type DaemonUpdateRestartManifest,
 	failure,
 	isDaemonCommandEnvelope,
+	isDaemonDialogExtensionUiRequest,
 	isDaemonMutatingCommand,
 	salvageDaemonCommandId,
 	success,
@@ -254,6 +255,8 @@ interface ResidentWorker {
 	transcriptCaches: Map<string, SnapshotTranscriptCache>;
 	snapshotGenerations: Map<string, Map<string, SnapshotTranscriptGeneration>>;
 	snapshotLoads: Map<string, Promise<DaemonAttachResult>>;
+	/** Passive status deltas observed while worker snapshots are loading or validating. */
+	extensionStatusOverlays: Map<string, Map<string, string | undefined>>;
 	recovery?: Promise<void>;
 	deferredRecovery?: Promise<void>;
 	intentionalStop: boolean;
@@ -301,6 +304,8 @@ interface WorkerMatch {
 
 interface WorkerAttachData {
 	result: DaemonAttachResult;
+	/** Authoritative worker state retained for legacy status replay. */
+	extensionStatuses?: Record<string, string>;
 	worker: ResidentWorker;
 	transcript?: SnapshotTranscriptCache;
 	releaseTranscript?: () => void;
@@ -934,6 +939,7 @@ export class DaemonSupervisor {
 					transcriptCaches: new Map(),
 					snapshotGenerations: new Map(),
 					snapshotLoads: new Map(),
+					extensionStatusOverlays: new Map(),
 					intentionalStop: descriptor.stopRequestedAt !== undefined,
 					stopRevision: 0,
 				});
@@ -1051,6 +1057,7 @@ export class DaemonSupervisor {
 			this.cancelWaitingPromptAdmissionsForClient(client);
 			for (const activeSessionId of [...client.attachedActiveSessionIds]) {
 				client.attachedActiveSessionIds.delete(activeSessionId);
+				client.extensionStatusKeysByActiveSessionId?.delete(activeSessionId);
 				void this.syncWorkerExtensionUi(activeSessionId);
 			}
 			this.scheduleOwnedWorkerCleanupForClient(this.protocolClientId(client));
@@ -1455,6 +1462,7 @@ export class DaemonSupervisor {
 							streamedResult,
 							transcript,
 							"attach",
+							attached.extensionStatuses,
 							attached.releaseTranscript,
 						).catch((error) =>
 							this.log(
@@ -1467,7 +1475,10 @@ export class DaemonSupervisor {
 					}
 					return undefined;
 				}
-				return success(command.id, "attach", attached.result);
+				const response = success(command.id, "attach", attached.result);
+				this.write(client, response);
+				this.replayExtensionStatusesToClient(client, attached.result.activeSessionId, attached.extensionStatuses);
+				return undefined;
 			}
 			case "reattach": {
 				const target = await this.findWorkerForClient(client, command.targetActiveSessionId);
@@ -1498,6 +1509,7 @@ export class DaemonSupervisor {
 							streamedResult,
 							transcript,
 							"replacement",
+							attached.extensionStatuses,
 							releaseTranscript,
 							releaseSnapshotReservation,
 						);
@@ -1508,6 +1520,7 @@ export class DaemonSupervisor {
 						return undefined;
 					}
 					this.write(client, success(command.id, command.type, attached.result));
+					this.replayExtensionStatusesToClient(client, targetActiveSessionId, attached.extensionStatuses);
 					this.detachClient(client, command.activeSessionId);
 					releaseSnapshotReservation();
 					return undefined;
@@ -1888,7 +1901,12 @@ export class DaemonSupervisor {
 				(match.summary.activeSessionId ?? match.summary.id) === match.worker.descriptor.rootActiveSessionId;
 			if (!isRootKill) {
 				const forward = async () => {
-					const response = await this.forwardToWorker(match.worker, resolvedCommand);
+					const response = await this.forwardToWorker(
+						match.worker,
+						resolvedCommand,
+						WORKER_REQUEST_TIMEOUT_MS,
+						client,
+					);
 					if (admission && response.success) admission.status = "owned";
 					return response;
 				};
@@ -1904,7 +1922,7 @@ export class DaemonSupervisor {
 			this.persistWorkerStopTombstone(match.worker, true);
 			let response: DaemonResponse;
 			try {
-				response = await this.forwardToWorker(match.worker, resolvedCommand);
+				response = await this.forwardToWorker(match.worker, resolvedCommand, WORKER_REQUEST_TIMEOUT_MS, client);
 			} finally {
 				await this.stopWorker(match.worker, true, false, true);
 			}
@@ -2189,6 +2207,7 @@ export class DaemonSupervisor {
 				transcriptCaches: new Map(),
 				snapshotGenerations: new Map(),
 				snapshotLoads: new Map(),
+				extensionStatusOverlays: new Map(),
 				intentionalStop: false,
 				stopRevision: 0,
 				launchEnv,
@@ -2364,8 +2383,15 @@ export class DaemonSupervisor {
 			type: "worker_subscribe",
 			activeSessionId,
 			capabilities: supportsExtensionUi
-				? ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"]
-				: ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"],
+				? [
+						"attach_snapshot",
+						"event_sequence",
+						"extension_ui",
+						"extension_status_snapshot",
+						"slim_attach",
+						"chunked_snapshot",
+					]
+				: ["attach_snapshot", "event_sequence", "extension_status_snapshot", "slim_attach", "chunked_snapshot"],
 			supportsExtensionUi,
 		});
 		if (!response.success) {
@@ -2706,6 +2732,7 @@ export class DaemonSupervisor {
 	}
 
 	private async recoverWorker(worker: ResidentWorker): Promise<void> {
+		worker.extensionStatusOverlays?.clear();
 		if (this.isWorkerRecoveryCancelled(worker)) {
 			return;
 		}
@@ -3124,6 +3151,130 @@ export class DaemonSupervisor {
 		};
 	}
 
+	private publicOutboundForClient(client: DaemonSocketClient, message: DaemonOutbound): DaemonOutbound {
+		if (client.capabilities.has("extension_status_snapshot")) return message;
+		if (message.type === "session_replaced" && message.state.extensionStatuses !== undefined) {
+			const { extensionStatuses: _extensionStatuses, ...state } = message.state;
+			return { ...message, state };
+		}
+		if (message.type === "session_resynced" && message.snapshot.state.extensionStatuses !== undefined) {
+			const { extensionStatuses: _extensionStatuses, ...state } = message.snapshot.state;
+			return { ...message, snapshot: { ...message.snapshot, state } };
+		}
+		return message;
+	}
+
+	private applyExtensionStatusOverlay(
+		worker: ResidentWorker,
+		activeSessionId: string,
+		result: DaemonAttachResult,
+	): DaemonAttachResult {
+		if (!worker.extensionStatusOverlays) worker.extensionStatusOverlays = new Map();
+		const overlays = worker.extensionStatusOverlays;
+		const overlay = overlays.get(activeSessionId);
+		if (!overlay || !result.snapshot.state) return result;
+		const statuses = Object.assign(
+			Object.create(null) as Record<string, string>,
+			result.snapshot.state.extensionStatuses ?? {},
+		);
+		for (const [statusKey, statusText] of overlay) {
+			if (statusText === undefined) delete statuses[statusKey];
+			else statuses[statusKey] = statusText;
+		}
+		return {
+			...result,
+			snapshot: { ...result.snapshot, state: { ...result.snapshot.state, extensionStatuses: statuses } },
+		};
+	}
+
+	private updateCachedExtensionStatus(
+		worker: ResidentWorker,
+		activeSessionId: string,
+		message: DaemonOutbound | undefined,
+	): void {
+		if (message?.type !== "extension_ui_request" || message.method !== "setStatus") return;
+		const statusKey = message.payload.statusKey;
+		if (typeof statusKey !== "string") return;
+		if (!worker.extensionStatusOverlays) worker.extensionStatusOverlays = new Map();
+		const overlays = worker.extensionStatusOverlays;
+		const overlay = overlays.get(activeSessionId) ?? new Map<string, string | undefined>();
+		overlay.set(statusKey, typeof message.payload.statusText === "string" ? message.payload.statusText : undefined);
+		overlays.set(activeSessionId, overlay);
+		const cached = worker.snapshotCache.get(activeSessionId);
+		if (cached)
+			worker.snapshotCache.set(activeSessionId, this.applyExtensionStatusOverlay(worker, activeSessionId, cached));
+	}
+
+	private extensionStatusesForOutbound(message: DaemonOutbound | undefined): Record<string, string> | undefined {
+		if (!message) return undefined;
+		if (message.type === "session_replaced") return message.state.extensionStatuses;
+		if (message.type === "session_resynced") return message.snapshot.state.extensionStatuses;
+		return undefined;
+	}
+
+	private publicAttachResultForClient(client: DaemonSocketClient, result: DaemonAttachResult): DaemonAttachResult {
+		if (client.capabilities.has("extension_status_snapshot") || !result.snapshot.state) return result;
+		const stripState = <T extends { extensionStatuses?: Record<string, string> }>(state: T): T => {
+			if (state.extensionStatuses === undefined) return state;
+			const { extensionStatuses: _extensionStatuses, ...withoutStatuses } = state;
+			return withoutStatuses as T;
+		};
+		return {
+			...result,
+			snapshot: { ...result.snapshot, state: stripState(result.snapshot.state) },
+		};
+	}
+
+	private replayExtensionStatusesToClient(
+		client: DaemonSocketClient,
+		activeSessionId: string,
+		statuses: Record<string, string> | undefined,
+	): void {
+		if (
+			!client.socket ||
+			client.socket.destroyed ||
+			!client.attachedActiveSessionIds.has(activeSessionId) ||
+			client.capabilities.has("extension_status_snapshot")
+		) {
+			return;
+		}
+		client.extensionStatusKeysByActiveSessionId ??= new Map();
+		const knownKeys = client.extensionStatusKeysByActiveSessionId.get(activeSessionId) ?? new Set<string>();
+		const current = statuses ?? {};
+		for (const statusKey of knownKeys) {
+			if (!Object.hasOwn(current, statusKey)) {
+				this.write(client, {
+					type: "extension_ui_request",
+					activeSessionId,
+					id: randomUUID(),
+					method: "setStatus",
+					payload: { statusKey, statusText: undefined },
+				});
+			}
+		}
+		for (const [statusKey, statusText] of Object.entries(current)) {
+			this.write(client, {
+				type: "extension_ui_request",
+				activeSessionId,
+				id: randomUUID(),
+				method: "setStatus",
+				payload: { statusKey, statusText },
+			});
+			knownKeys.add(statusKey);
+		}
+		client.extensionStatusKeysByActiveSessionId.set(activeSessionId, knownKeys);
+	}
+
+	private noteDeliveredExtensionStatus(client: DaemonSocketClient, message: DaemonOutbound): void {
+		if (message.type !== "extension_ui_request" || message.method !== "setStatus") return;
+		const statusKey = message.payload.statusKey;
+		if (typeof statusKey !== "string") return;
+		client.extensionStatusKeysByActiveSessionId ??= new Map();
+		const knownKeys = client.extensionStatusKeysByActiveSessionId.get(message.activeSessionId) ?? new Set<string>();
+		knownKeys.add(statusKey);
+		client.extensionStatusKeysByActiveSessionId.set(message.activeSessionId, knownKeys);
+	}
+
 	private publicSummary(worker: ResidentWorker, summary: SessionSummary): SessionSummary {
 		const activeSessionId = summary.activeSessionId ?? summary.id;
 		return {
@@ -3234,6 +3385,7 @@ export class DaemonSupervisor {
 		worker: ResidentWorker,
 		command: DaemonCommand,
 		timeoutMs = WORKER_REQUEST_TIMEOUT_MS,
+		publicClient?: DaemonSocketClient,
 	): Promise<DaemonResponse> {
 		if (!worker.client || worker.descriptor.lifecycle !== "ready") {
 			throw new Error(`Session worker is ${worker.descriptor.lifecycle}`);
@@ -3241,6 +3393,17 @@ export class DaemonSupervisor {
 		const response = await worker.client.request(withoutCommandId(command), timeoutMs);
 		if (command.type === "get_state" && response.success && isSessionSummary(response.data)) {
 			return { ...response, id: command.id, data: this.publicSummary(worker, response.data) };
+		}
+		if (
+			command.type === "get_connection_state" &&
+			publicClient &&
+			!publicClient.capabilities.has("extension_status_snapshot") &&
+			response.success &&
+			response.data &&
+			typeof response.data === "object"
+		) {
+			const { extensionStatuses: _extensionStatuses, ...state } = response.data as Record<string, unknown>;
+			return { ...response, id: command.id, data: state };
 		}
 		if (command.type === "rename" && response.success && isSessionSummary(response.data)) {
 			await this.refreshWorkerSummaries(worker);
@@ -3316,8 +3479,14 @@ export class DaemonSupervisor {
 							type: "attach",
 							activeSessionId,
 							capabilities: client.capabilities.has("chunked_snapshot")
-								? ["attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot"]
-								: ["attach_snapshot", "event_sequence", "slim_attach"],
+								? [
+										"attach_snapshot",
+										"event_sequence",
+										"extension_status_snapshot",
+										"slim_attach",
+										"chunked_snapshot",
+									]
+								: ["attach_snapshot", "event_sequence", "extension_status_snapshot", "slim_attach"],
 							supportsExtensionUi: false,
 							env: command.env ?? collectDaemonClientEnv(),
 						});
@@ -3398,12 +3567,12 @@ export class DaemonSupervisor {
 					}
 				}
 			}
-			const publicResult: DaemonAttachResult = {
+			const publicResult: DaemonAttachResult = this.publicAttachResultForClient(client, {
 				...result,
 				state: result.state ? publicSummary : undefined,
 				snapshot: { ...result.snapshot, summary: publicSummary },
 				client: { id: client.id, capabilities: [...client.capabilities] },
-			};
+			});
 			if (publicResult.state && publicResult.messages) {
 				this.write(client, {
 					type: "session_attached",
@@ -3416,7 +3585,13 @@ export class DaemonSupervisor {
 				});
 			}
 			void this.syncWorkerExtensionUi(activeSessionId);
-			return { result: publicResult, worker: match.worker, transcript, releaseTranscript };
+			return {
+				result: publicResult,
+				extensionStatuses: result.snapshot.state?.extensionStatuses,
+				worker: match.worker,
+				transcript,
+				releaseTranscript,
+			};
 		} catch (error) {
 			releaseTranscript?.();
 			if (!wasAttached) {
@@ -3440,6 +3615,9 @@ export class DaemonSupervisor {
 		loaded: DaemonAttachResult,
 		observedSnapshotId: string | undefined,
 	): DaemonAttachResult {
+		const reconcile = (candidate: DaemonAttachResult): DaemonAttachResult =>
+			this.applyExtensionStatusOverlay(worker, activeSessionId, candidate);
+		loaded = reconcile(loaded);
 		const currentTranscript = worker.transcriptCaches.get(activeSessionId);
 		const currentGeneration = this.currentSnapshotGeneration(worker, activeSessionId);
 		const currentResult = currentGeneration?.result ?? worker.snapshotCache.get(activeSessionId);
@@ -3447,9 +3625,11 @@ export class DaemonSupervisor {
 		const loadedSnapshotId = loaded.snapshotStream?.id;
 		if (!loaded.snapshotStream) {
 			if (currentSnapshotId && currentSnapshotId !== observedSnapshotId) {
+				worker.extensionStatusOverlays.delete(activeSessionId);
 				return loaded;
 			}
 			worker.snapshotCache.set(activeSessionId, loaded);
+			worker.extensionStatusOverlays.delete(activeSessionId);
 			return loaded;
 		}
 		if (
@@ -3458,7 +3638,9 @@ export class DaemonSupervisor {
 			(currentSnapshotId !== observedSnapshotId ||
 				(currentResult?.lastEventSequence ?? -1) > loaded.lastEventSequence)
 		) {
-			return currentResult ?? loaded;
+			const selected = this.applyExtensionStatusOverlay(worker, activeSessionId, currentResult ?? loaded);
+			worker.extensionStatusOverlays.delete(activeSessionId);
+			return selected;
 		}
 		let transcript = currentTranscript;
 		if (transcript && transcript.snapshotId !== loaded.snapshotStream.id) {
@@ -3492,6 +3674,7 @@ export class DaemonSupervisor {
 		}
 		worker.transcriptCaches.set(activeSessionId, transcript);
 		worker.snapshotCache.set(activeSessionId, loaded);
+		worker.extensionStatusOverlays.delete(activeSessionId);
 		return loaded;
 	}
 
@@ -3558,6 +3741,7 @@ export class DaemonSupervisor {
 		result: DaemonAttachResult,
 		transcript: SnapshotTranscriptCache,
 		purpose: "attach" | "replacement" | "resync" = "attach",
+		extensionStatuses?: Record<string, string>,
 		retainedTranscriptRelease?: () => void,
 		releaseSnapshotReservation = this.reserveSnapshotStream(client, result.activeSessionId),
 	): Promise<void> {
@@ -3609,6 +3793,11 @@ export class DaemonSupervisor {
 				lastEventSequence: result.lastEventSequence,
 				lastEventCursor: result.lastEventCursor,
 			});
+			const latestResult =
+				worker.snapshotCache.get(result.activeSessionId) ??
+				this.applyExtensionStatusOverlay(worker, result.activeSessionId, result);
+			const latestExtensionStatuses = latestResult.snapshot.state?.extensionStatuses ?? extensionStatuses;
+			this.replayExtensionStatusesToClient(client, result.activeSessionId, latestExtensionStatuses);
 		} catch (error) {
 			const streamError = error instanceof Error ? error : new Error(String(error));
 			if (!client.socket.destroyed) {
@@ -3630,6 +3819,16 @@ export class DaemonSupervisor {
 		} finally {
 			releaseSnapshotReservation();
 			releaseTranscript();
+			if (client.pendingExtensionStatusReplayActiveSessionIds?.delete(result.activeSessionId)) {
+				const latestResult =
+					worker.snapshotCache.get(result.activeSessionId) ??
+					this.applyExtensionStatusOverlay(worker, result.activeSessionId, result);
+				this.replayExtensionStatusesToClient(
+					client,
+					result.activeSessionId,
+					latestResult.snapshot.state?.extensionStatuses ?? extensionStatuses,
+				);
+			}
 		}
 	}
 
@@ -3708,6 +3907,7 @@ export class DaemonSupervisor {
 			}
 			client.catchupActiveSessionIds?.delete(resolvedId);
 			client.catchupPurposes?.delete(resolvedId);
+			client.extensionStatusKeysByActiveSessionId?.delete(resolvedId);
 			this.write(client, { type: "session_detached", activeSessionId: resolvedId });
 			void this.syncWorkerExtensionUi(resolvedId);
 		}
@@ -3763,7 +3963,7 @@ export class DaemonSupervisor {
 					summary: publicSummary,
 					messages: [],
 				};
-				const result: DaemonAttachResult = {
+				let result: DaemonAttachResult = {
 					protocol: DAEMON_PROTOCOL_INFO,
 					activeSessionId,
 					snapshot,
@@ -3781,6 +3981,7 @@ export class DaemonSupervisor {
 					},
 					client: { id: "supervisor", capabilities: ["chunked_snapshot"] },
 				};
+				result = this.applyExtensionStatusOverlay(worker, activeSessionId, result);
 				const generations = this.snapshotGenerationsFor(worker, activeSessionId);
 				let generation = generations.get(begin.snapshotId);
 				if (generation?.incoming) {
@@ -3967,9 +4168,15 @@ export class DaemonSupervisor {
 					if (!generation.duplicateResult) {
 						throw new Error(`Duplicate snapshot ${transcript.snapshotId} has no result`);
 					}
-					generation.result = generation.duplicateResult;
+					const reconciledDuplicate = this.applyExtensionStatusOverlay(
+						worker,
+						activeSessionId,
+						generation.duplicateResult,
+					);
+					generation.result = reconciledDuplicate;
+					worker.extensionStatusOverlays?.delete(activeSessionId);
 					if (worker.transcriptCaches.get(activeSessionId) === transcript) {
-						worker.snapshotCache.set(activeSessionId, generation.duplicateResult);
+						worker.snapshotCache.set(activeSessionId, reconciledDuplicate);
 					}
 					this.settleSnapshotDuplicateValidation(generation);
 				}
@@ -4081,6 +4288,7 @@ export class DaemonSupervisor {
 			}
 			publicPayload = Buffer.from(serializeJsonLine(reconstructed));
 		} else if (
+			outboundType === "extension_ui_request" ||
 			sessionEventType === "message_start" ||
 			sessionEventType === "message_end" ||
 			outboundType === "session_replaced" ||
@@ -4096,6 +4304,7 @@ export class DaemonSupervisor {
 		}
 		const replacementSnapshotFollows =
 			decodedOutbound?.type === "session_replaced" && decodedOutbound.snapshotFollows === true;
+		this.updateCachedExtensionStatus(worker, activeSessionId, decodedOutbound);
 		this.invalidateWorkerSnapshot(
 			worker,
 			activeSessionId,
@@ -4110,18 +4319,57 @@ export class DaemonSupervisor {
 			if (replacementSnapshotFollows && !client.capabilities.has("chunked_snapshot")) {
 				continue;
 			}
-			if (outboundType === "extension_ui_request" && !client.supportsExtensionUi) {
+			if (
+				outboundType === "extension_ui_request" &&
+				isDaemonDialogExtensionUiRequest(
+					decodedOutbound?.type === "extension_ui_request" ? decodedOutbound.method : "",
+				) &&
+				!client.supportsExtensionUi
+			) {
 				continue;
 			}
+			const legacyStatusUpdate =
+				outboundType === "extension_ui_request" &&
+				decodedOutbound?.type === "extension_ui_request" &&
+				decodedOutbound.method === "setStatus" &&
+				!client.capabilities.has("extension_status_snapshot");
 			if (client.snapshotActiveSessionIds?.has(activeSessionId)) {
-				this.queueCatchup(client, activeSessionId, outboundType === "session_replaced" ? "replacement" : "resync");
+				if (!legacyStatusUpdate) {
+					this.queueCatchup(
+						client,
+						activeSessionId,
+						outboundType === "session_replaced" ? "replacement" : "resync",
+					);
+				} else {
+					client.pendingExtensionStatusReplayActiveSessionIds ??= new Set();
+					client.pendingExtensionStatusReplayActiveSessionIds.add(activeSessionId);
+				}
 				continue;
 			}
 			if (client.backpressured === true) {
 				this.queueCatchup(client, activeSessionId, outboundType === "session_replaced" ? "replacement" : "resync");
 				continue;
 			}
-			this.writeSerialized(client, publicPayload);
+			const outboundForClient = decodedOutbound ? this.publicOutboundForClient(client, decodedOutbound) : undefined;
+			const payloadForClient = outboundForClient ? Buffer.from(serializeJsonLine(outboundForClient)) : publicPayload;
+			this.writeSerialized(client, payloadForClient);
+			if (outboundForClient) {
+				this.noteDeliveredExtensionStatus(client, outboundForClient);
+				if (
+					!replacementSnapshotFollows &&
+					(outboundForClient.type === "session_replaced" || outboundForClient.type === "session_resynced")
+				) {
+					this.replayExtensionStatusesToClient(
+						client,
+						activeSessionId,
+						this.extensionStatusesForOutbound(decodedOutbound),
+					);
+				}
+			}
+		}
+		if (outboundType === "session_closed") {
+			for (const client of this.clients) client.extensionStatusKeysByActiveSessionId?.delete(activeSessionId);
+			worker.extensionStatusOverlays?.delete(activeSessionId);
 		}
 		if (outboundType === "session_replaced" || outboundType === "session_closed") {
 			void this.refreshWorkerSummaries(worker)
@@ -4268,6 +4516,7 @@ export class DaemonSupervisor {
 						this.createStreamedAttachResult(attached.result, transcript),
 						transcript,
 						purpose,
+						attached.extensionStatuses,
 						releaseTranscript,
 					);
 					releaseTranscript = undefined;
@@ -4300,6 +4549,7 @@ export class DaemonSupervisor {
 					}
 					return;
 				}
+				this.replayExtensionStatusesToClient(client, activeSessionId, attached.extensionStatuses);
 			} catch (error) {
 				releaseTranscript?.();
 				this.log(`Failed to catch up client ${client.id} for ${activeSessionId}: ${String(error)}`);
