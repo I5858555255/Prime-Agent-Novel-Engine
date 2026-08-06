@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/login`, `/model`, model-list, and CLI selection support for ClinePass, Meta Model API, and Alibaba Cloud Model Studio Token Plan.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
