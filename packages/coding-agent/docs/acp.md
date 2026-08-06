@@ -28,6 +28,18 @@ One session per connection is a deliberate limit: Prime Agent's underlying sessi
 
 Likewise `session/prompt` refuses a concurrent turn while one is running, and the working directory cannot be changed after startup — a client-supplied `cwd` that differs from the agent's real one is reported back in `_meta` rather than silently ignored.
 
+## MCP servers
+
+Prime Agent accepts streamable HTTP and stdio MCP servers from `session/new`. They are available only to that ACP process and are not written to user settings.
+
+Consistent with Prime Agent's IPython-only tool design, Prime Agent discovers every server's tools while creating the session and exposes each tool as a temporary, pre-imported Python skill. Names follow the same `<server>_<tool>` normalization as `rlm-harness`:
+
+```python
+await task_tools_lookup(query="ACP")
+```
+
+Each callable module has a keyword-only signature derived from the MCP tool's input schema and a docstring derived from its description, so `help(task_tools_lookup)` and `inspect.signature(task_tools_lookup)` expose the API before it is called. Session creation fails if a server cannot be reached or if two tools normalize to the same Python name. HTTP headers and stdio arguments and environment variables are scoped to the client-provided server configuration.
+
 ## Streamed updates
 
 Session activity arrives as `session/update` notifications:
