@@ -89,7 +89,13 @@ describe("daemon protocol helpers", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.set_rlm_max_depth).toEqual({ minProtocol: 7, minSchemaRevision: 11 });
 	});
 
-	it("schema-gates attach commands that carry the telemetry policy", () => {
+	it("schema-gates session commands that carry the telemetry policy", () => {
+		expect(getDaemonCommandCompatibilities({ type: "create", config: { cwd: "/tmp" } })).toEqual([
+			{ minProtocol: 7 },
+		]);
+		expect(
+			getDaemonCommandCompatibilities({ type: "create", config: { cwd: "/tmp", telemetryDisabled: true } }),
+		).toEqual([{ minProtocol: 7, minSchemaRevision: 14 }, { minProtocol: 7 }]);
 		expect(getDaemonCommandCompatibilities({ type: "attach", activeSessionId: "active-1" })).toEqual([
 			{ minProtocol: 7 },
 		]);
