@@ -10,6 +10,7 @@
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 - Fixed `retry_worker` cancelling its own recovery when a stopped session worker left a saved stop marker behind, leaving the session stuck at "Session worker is not connected".
+- Fixed RLM model discovery omitting OpenAI Codex GPT-5.6 models ([#718](https://github.com/PrimeIntellect-ai/prime-agent/pull/718) by [@nickadminroot](https://github.com/nickadminroot)).
 
 ## [0.7.0] - 2026-08-05
 
