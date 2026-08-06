@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed supervisor recovery replacing live, load-slow session workers and interrupting their in-flight work.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
