@@ -18,6 +18,14 @@ const DAEMON_SUPERVISOR_REGISTRY_DIR_ENV = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVIS
 
 const OWNER_VERSION = 1;
 const REGISTRY_LOCK_STALE_MS = 5000;
+const REGISTRY_LOCK_UPDATE_MS = 1000;
+const REGISTRY_LOCK_RETRIES = 500;
+const REGISTRY_LOCK_RETRY_MS = 10;
+const STARTUP_FENCE_POLL_MS = 250;
+const SHUTDOWN_ADMISSION_FILE_NAME = "shutdown-admission.json";
+const SHUTDOWN_ADMISSION_LEASE_MS = 5000;
+const SHUTDOWN_ADMISSION_REFRESH_MS = 1000;
+const SHUTDOWN_ADMISSION_WAIT_MS = 50;
 
 // getProcessStartId() synchronously shells out to `powershell.exe` on Windows
 // (see session-lease.ts) to read a pid's start time. That call alone commonly
@@ -32,6 +40,11 @@ const REGISTRY_LOCK_STALE_MS = 5000;
 // briefly is safe; the TTL bounds the (already narrow, non-security) staleness
 // window for the rare case of a pid being recycled, matching the tolerance
 // this file already accepts elsewhere (e.g. REGISTRY_LOCK_STALE_MS above).
+// This is the same lookup daemon-update-restart.ts's createProcessIdentityLivenessCheck
+// throttles for the identical reason (PROCESS_START_ID_RECHECK_MS = 1000 there); this
+// file uses 5000ms because the expiry is computed AFTER the (potentially 1.1-1.25s,
+// occasionally multi-second) lookup returns, not before, so a shorter TTL closer to
+// the observed steady-state lookup cost would leave little to no effective caching.
 const PROCESS_START_ID_CACHE_TTL_MS = 5000;
 const processStartIdCache = new Map<number, { value: string | undefined; expiresAt: number }>();
 
@@ -40,27 +53,23 @@ export function cachedProcessStartId(
 	lookup: (pid: number) => string | undefined = getProcessStartId,
 	now: () => number = Date.now,
 ): string | undefined {
-	const nowMs = now();
 	const cached = processStartIdCache.get(pid);
-	if (cached && cached.expiresAt > nowMs) {
+	if (cached && cached.expiresAt > now()) {
 		return cached.value;
 	}
 	const value = lookup(pid);
-	processStartIdCache.set(pid, { value, expiresAt: nowMs + PROCESS_START_ID_CACHE_TTL_MS });
+	// Stamp the expiry from AFTER the lookup returns, not before: the lookup
+	// itself can take as long as the TTL (or longer, cold), and computing the
+	// deadline from the start time would make slow lookups produce an entry
+	// that is already expired the moment it is stored — caching nothing at
+	// all in exactly the environments this fix targets.
+	processStartIdCache.set(pid, { value, expiresAt: now() + PROCESS_START_ID_CACHE_TTL_MS });
 	return value;
 }
 
 export function clearProcessStartIdCacheForTests(): void {
 	processStartIdCache.clear();
 }
-const REGISTRY_LOCK_UPDATE_MS = 1000;
-const REGISTRY_LOCK_RETRIES = 500;
-const REGISTRY_LOCK_RETRY_MS = 10;
-const STARTUP_FENCE_POLL_MS = 250;
-const SHUTDOWN_ADMISSION_FILE_NAME = "shutdown-admission.json";
-const SHUTDOWN_ADMISSION_LEASE_MS = 5000;
-const SHUTDOWN_ADMISSION_REFRESH_MS = 1000;
-const SHUTDOWN_ADMISSION_WAIT_MS = 50;
 
 type DaemonSupervisorOwnerPhase = "starting" | "owner" | "stopping";
 

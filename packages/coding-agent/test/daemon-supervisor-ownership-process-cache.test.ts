@@ -55,6 +55,26 @@ describe("cachedProcessStartId", () => {
 		expect(calls).toEqual([1, 2]);
 	});
 
+	it("does not produce an already-expired entry when the lookup itself is slower than the TTL", () => {
+		clearProcessStartIdCacheForTests();
+		let calls = 0;
+		let now = 1_000;
+		// Simulate a slow synchronous lookup (the real-world powershell.exe spawn
+		// this cache exists for) that itself takes longer than the cache TTL.
+		// The expiry must be computed from when the lookup RETURNS, not when it
+		// STARTED, or the entry is already stale the instant it's stored.
+		const lookup = (pid: number) => {
+			calls++;
+			now += 5_500;
+			return `win:${pid}-start`;
+		};
+
+		expect(cachedProcessStartId(42, lookup, () => now)).toBe("win:42-start");
+		expect(cachedProcessStartId(42, lookup, () => now)).toBe("win:42-start");
+
+		expect(calls).toBe(1);
+	});
+
 	it("caches an undefined result too, so a slow negative lookup isn't repeated", () => {
 		clearProcessStartIdCacheForTests();
 		let calls = 0;
