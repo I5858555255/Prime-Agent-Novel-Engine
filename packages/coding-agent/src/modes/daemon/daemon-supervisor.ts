@@ -2409,6 +2409,21 @@ export class DaemonSupervisor {
 				return;
 			}
 			this.log(`Could not adopt worker ${worker.descriptor.workerId}: ${String(error)}`);
+			const processAlive = isProcessAlive(worker.descriptor.pid);
+			const observedProcessStartId = processAlive ? getProcessStartId(worker.descriptor.pid) : undefined;
+			if (
+				worker.descriptor.processStartId !== undefined &&
+				processAlive &&
+				(observedProcessStartId === undefined || observedProcessStartId === worker.descriptor.processStartId)
+			) {
+				worker.descriptor.lifecycle = "recovering";
+				worker.descriptor.lastError = error instanceof Error ? error.message : String(error);
+				this.persistWorker(worker);
+				void this.recoverWorker(worker).catch((recoveryError) =>
+					this.log(`Could not recover worker ${worker.descriptor.workerId}: ${String(recoveryError)}`),
+				);
+				return;
+			}
 			await this.recoverWorker(worker);
 		}
 	}
@@ -2717,8 +2732,10 @@ export class DaemonSupervisor {
 			return worker.recovery;
 		}
 		worker.recovery = (async () => {
-			for (const [retryIndex, retryDelay] of WORKER_RETRY_DELAYS_MS.entries()) {
+			let keepRetryingLiveWorker = false;
+			for (const retryDelay of WORKER_RETRY_DELAYS_MS) {
 				await delay(retryDelay);
+				keepRetryingLiveWorker = false;
 				if (this.isWorkerRecoveryCancelled(worker)) {
 					return;
 				}
@@ -2756,22 +2773,25 @@ export class DaemonSupervisor {
 							await this.assertRecoveryAllowed();
 							worker.client?.close();
 							worker.client = undefined;
-							if (retryIndex < WORKER_RETRY_DELAYS_MS.length - 1) {
-								throw error;
-							}
+							// A verified live worker can be load-slow rather than dead. Keep probing
+							// instead of relaunching it and dropping its in-flight operations.
+							keepRetryingLiveWorker =
+								worker.descriptor.processStartId !== undefined &&
+								observedProcessStartId === worker.descriptor.processStartId;
+							throw error;
 						}
 					}
 					if (
 						processAlive &&
 						(worker.descriptor.processStartId === undefined || observedProcessStartId === undefined)
 					) {
+						keepRetryingLiveWorker =
+							worker.descriptor.processStartId !== undefined && observedProcessStartId === undefined;
 						throw new Error(
 							`Cannot safely replace live session worker ${worker.descriptor.workerId} without a verified process identity`,
 						);
 					}
-					const safeToKillWorkerProcess =
-						processAlive && processIdentityMatches && worker.descriptor.processStartId !== undefined;
-					await this.recoverUncertainWorkerOperations(worker, safeToKillWorkerProcess);
+					await this.recoverUncertainWorkerOperations(worker, false);
 					if (this.isWorkerRecoveryCancelled(worker)) {
 						return;
 					}
@@ -2793,6 +2813,15 @@ export class DaemonSupervisor {
 					worker.descriptor.lastError = error instanceof Error ? error.message : String(error);
 					this.persistWorker(worker);
 				}
+			}
+			if (keepRetryingLiveWorker) {
+				worker.descriptor.lifecycle = "recovering";
+				this.persistWorker(worker);
+				this.deferWorkerRecovery(
+					worker,
+					new Error(worker.descriptor.lastError ?? "Live session worker did not answer recovery probes"),
+				);
+				return;
 			}
 			try {
 				await this.assertRecoveryAllowed();

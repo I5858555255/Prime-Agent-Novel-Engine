@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getProcessStartId } from "../src/core/session-lease.js";
 import type { DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import { CommandRecoveryJournal } from "../src/modes/daemon/command-recovery-journal.js";
 import { DaemonCatalogClient } from "../src/modes/daemon/daemon-catalog-process.js";
@@ -1399,6 +1400,140 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(supervisor.recoverUncertainWorkerOperations).not.toHaveBeenCalled();
 		expect(supervisor.launchWorker).not.toHaveBeenCalled();
 		expect(worker.descriptor.lifecycle).toBe("failed");
+	});
+
+	it("continues startup after a verified live worker fails its initial adoption probe", async () => {
+		type AdoptionWorker = {
+			descriptor: {
+				workerId: string;
+				pid: number;
+				processStartId?: string;
+				rootActiveSessionId: string;
+				lifecycle?: string;
+				lastError?: string;
+			};
+		};
+		type AdoptionHarness = {
+			connectWorker: ReturnType<typeof vi.fn>;
+			subscribeWorker: ReturnType<typeof vi.fn>;
+			refreshWorkerSummaries: ReturnType<typeof vi.fn>;
+			recoverWorker: ReturnType<typeof vi.fn>;
+			persistWorker: ReturnType<typeof vi.fn>;
+			log: ReturnType<typeof vi.fn>;
+			assertRecoveryAllowed: ReturnType<typeof vi.fn>;
+			adoptOrRecoverWorker(worker: AdoptionWorker): Promise<void>;
+		};
+		const worker: AdoptionWorker = {
+			descriptor: {
+				workerId: "worker-live-unreachable",
+				pid: process.pid,
+				processStartId: getProcessStartId(process.pid),
+				rootActiveSessionId: "active-1",
+			},
+		};
+		const pendingRecovery = new Promise<void>(() => {});
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			connectWorker: vi.fn(async () => {}),
+			subscribeWorker: vi.fn(async () => {}),
+			refreshWorkerSummaries: vi.fn(async () => {
+				throw new Error("Timed out waiting for daemon worker response to list");
+			}),
+			recoverWorker: vi.fn(() => pendingRecovery),
+			persistWorker: vi.fn(),
+			log: vi.fn(),
+			assertRecoveryAllowed: vi.fn(async () => {}),
+		}) as AdoptionHarness;
+
+		await expect(supervisor.adoptOrRecoverWorker(worker)).resolves.toBeUndefined();
+
+		expect(supervisor.recoverWorker).toHaveBeenCalledWith(worker);
+		expect(worker.descriptor.lifecycle).toBe("recovering");
+	});
+
+	it.each([
+		{ name: "after repeated probe timeouts", identityUnavailable: false, expectedConnections: 4 },
+		{ name: "when its identity is temporarily unavailable", identityUnavailable: true, expectedConnections: 1 },
+	])("keeps retrying a verified live worker $name", async ({ identityUnavailable, expectedConnections }) => {
+		vi.useFakeTimers();
+		type RecoveryWorker = {
+			descriptor: {
+				workerId: string;
+				pid: number;
+				processStartId?: string;
+				rootActiveSessionId: string;
+				createCommand: { type: "create" };
+				lifecycle?: string;
+				consecutiveFailures: number;
+				lastFailureAt?: string;
+				lastError?: string;
+			};
+			intentionalStop: boolean;
+			stopRevision: number;
+			recovery?: Promise<void>;
+			client?: { close(): void };
+		};
+		type RecoveryHarness = {
+			workers: Map<string, RecoveryWorker>;
+			shuttingDown: boolean;
+			connectWorker: ReturnType<typeof vi.fn>;
+			subscribeWorker: ReturnType<typeof vi.fn>;
+			refreshWorkerSummaries: ReturnType<typeof vi.fn>;
+			recoverUncertainWorkerOperations: ReturnType<typeof vi.fn>;
+			launchWorker: ReturnType<typeof vi.fn>;
+			persistWorker: ReturnType<typeof vi.fn>;
+			syncAgentPeers: ReturnType<typeof vi.fn>;
+			broadcastHeartbeatsChanged: ReturnType<typeof vi.fn>;
+			log: ReturnType<typeof vi.fn>;
+			assertRecoveryAllowed: ReturnType<typeof vi.fn>;
+			recoverWorker(worker: RecoveryWorker): Promise<void>;
+		};
+		const worker: RecoveryWorker = {
+			descriptor: {
+				workerId: "worker-live-unreachable",
+				pid: process.pid,
+				processStartId: getProcessStartId(process.pid),
+				rootActiveSessionId: "active-1",
+				createCommand: { type: "create" },
+				consecutiveFailures: 0,
+			},
+			intentionalStop: false,
+			stopRevision: 0,
+		};
+		workerLaunchTestState.forceMissingProcessStartId = identityUnavailable;
+		const timeout = new Error("Timed out connecting to daemon session worker");
+		let remainingTimeouts = identityUnavailable ? 0 : 3;
+		const connectWorker = vi.fn(async () => {
+			if (remainingTimeouts-- > 0) {
+				throw timeout;
+			}
+		});
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			shuttingDown: false,
+			connectWorker,
+			subscribeWorker: vi.fn(async () => {}),
+			refreshWorkerSummaries: vi.fn(async () => {}),
+			recoverUncertainWorkerOperations: vi.fn(async () => {}),
+			launchWorker: vi.fn(async () => worker),
+			persistWorker: vi.fn(() => {
+				if (identityUnavailable && worker.descriptor.consecutiveFailures === 3) {
+					workerLaunchTestState.forceMissingProcessStartId = false;
+				}
+			}),
+			syncAgentPeers: vi.fn(async () => {}),
+			broadcastHeartbeatsChanged: vi.fn(),
+			log: vi.fn(),
+			assertRecoveryAllowed: vi.fn(async () => {}),
+		}) as RecoveryHarness;
+
+		const recovery = supervisor.recoverWorker(worker);
+		await vi.runAllTimersAsync();
+		await recovery;
+
+		expect(supervisor.connectWorker).toHaveBeenCalledTimes(expectedConnections);
+		expect(supervisor.recoverUncertainWorkerOperations).not.toHaveBeenCalled();
+		expect(supervisor.launchWorker).not.toHaveBeenCalled();
+		expect(worker.descriptor.lifecycle).toBe("ready");
 	});
 
 	it("keeps a recovered worker ready when peer synchronization fails", async () => {
