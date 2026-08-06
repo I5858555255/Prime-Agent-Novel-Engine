@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added live OpenRouter model discovery so the model browser reflects OpenRouter’s current catalog, with the generated snapshot retained as an offline/failure fallback.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
