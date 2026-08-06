@@ -440,8 +440,7 @@ export function parseSessionEntries(content: string): FileEntry[] {
 		}
 	}
 
-	applyChildUsageAttributions(entries);
-	return entries;
+	return finalizeLoadedEntries(entries);
 }
 
 function applyChildUsageAttributions(entries: FileEntry[]): void {
@@ -646,17 +645,326 @@ async function parseEntriesFromBufferAsync(buffer: Buffer): Promise<FileEntry[]>
 			await new Promise<void>((resolve) => setImmediate(resolve));
 		}
 	}
-	return entries;
+	return finalizeLoadedEntries(entries);
+}
+
+// Known non-header entry type names (the SessionEntry union). Used by the
+// deserialization guard to drop structurally malformed rows before they reach
+// the index or context builders. Kept migration/legacy-tolerant: id, parentId,
+// and timestamp are not required here because v1 entries lack id/parentId
+// (backfilled by migrateV1ToV2) and older daemons wrote bookkeeping entries
+// (session_state/agent_status/git_state) without those fields.
+const SESSION_ENTRY_TYPE_NAMES = new Set<string>([
+	"message",
+	"thinking_level_change",
+	"service_tier_change",
+	"model_change",
+	"compaction",
+	"branch_summary",
+	"custom",
+	"child_usage_attributed",
+	"custom_message",
+	"label",
+	"session_info",
+	"session_state",
+	"agent_status",
+	"git_state",
+]);
+
+/**
+ * Runtime shape guard for a deserialized non-header entry.
+ * Rejects garbage rows and unknown types, plus message entries whose `message`
+ * payload is missing or lacks a string `role` (which would crash
+ * applyChildUsageAttributions/buildSessionContext/isAssistantEntry on
+ * `entry.message.role`). Does NOT require id/parentId/timestamp so v1 and legacy
+ * daemon-bookkeeping entries pass; migration backfills id/parentId where needed.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function hasString(record: Record<string, unknown>, key: string): boolean {
+	return typeof record[key] === "string";
+}
+
+function hasNumber(record: Record<string, unknown>, key: string): boolean {
+	return typeof record[key] === "number" && Number.isFinite(record[key]);
+}
+
+function hasBoolean(record: Record<string, unknown>, key: string): boolean {
+	return typeof record[key] === "boolean";
+}
+
+function isMessageContent(value: unknown, allowStructuredBlocks = false, allowLegacyEmpty = false): boolean {
+	if (allowLegacyEmpty && (value === undefined || value === null)) return true;
+	if (typeof value === "string") return true;
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(block) =>
+				isRecord(block) &&
+				hasString(block, "type") &&
+				((block.type === "text" && hasString(block, "text")) ||
+					(block.type === "image" && hasString(block, "mimeType") && hasString(block, "data")) ||
+					(allowStructuredBlocks &&
+						((block.type === "thinking" && hasString(block, "thinking")) ||
+							(block.type === "toolCall" &&
+								hasString(block, "id") &&
+								hasString(block, "name") &&
+								isRecord(block.arguments))))),
+		)
+	);
+}
+
+function isUsage(value: unknown): boolean {
+	if (!isRecord(value)) return false;
+	if (!hasNumber(value, "input") || !hasNumber(value, "output")) return false;
+	if (!hasNumber(value, "cacheRead") || !hasNumber(value, "cacheWrite") || !hasNumber(value, "totalTokens")) {
+		return false;
+	}
+	const cost = value.cost;
+	return (
+		isRecord(cost) &&
+		hasNumber(cost, "input") &&
+		hasNumber(cost, "output") &&
+		hasNumber(cost, "cacheRead") &&
+		hasNumber(cost, "cacheWrite") &&
+		hasNumber(cost, "total")
+	);
+}
+
+function isAgentMessage(value: unknown): boolean {
+	if (!isRecord(value) || !hasString(value, "role") || !hasNumber(value, "timestamp")) return false;
+
+	switch (value.role) {
+		case "user":
+			return "content" in value && isMessageContent(value.content);
+		case "assistant":
+			return (
+				isMessageContent(value.content, true) &&
+				Array.isArray(value.content) &&
+				hasString(value, "api") &&
+				hasString(value, "provider") &&
+				hasString(value, "model") &&
+				isUsage(value.usage) &&
+				hasString(value, "stopReason")
+			);
+		case "toolResult":
+			return (
+				hasString(value, "toolCallId") &&
+				hasString(value, "toolName") &&
+				Array.isArray(value.content) &&
+				isMessageContent(value.content) &&
+				hasBoolean(value, "isError")
+			);
+		case "bashExecution":
+			return hasString(value, "command") && hasString(value, "output");
+		case "custom":
+			return hasString(value, "customType") && isMessageContent(value.content) && hasBoolean(value, "display");
+		case "branchSummary":
+			return hasString(value, "summary") && hasString(value, "fromId");
+		case "compactionSummary":
+			return hasString(value, "summary") && hasNumber(value, "tokensBefore");
+		default:
+			// Extensions may register additional AgentMessage roles. Preserve those
+			// messages when they carry a timestamp and at least one payload field.
+			return Object.keys(value).some((key) => key !== "role" && key !== "timestamp");
+	}
+}
+
+function isScannableSessionEntry(entry: unknown, sessionVersion = 1): entry is SessionEntry {
+	if (!isRecord(entry) || typeof entry.type !== "string" || !SESSION_ENTRY_TYPE_NAMES.has(entry.type)) return false;
+	const legacyBookkeeping =
+		entry.type === "session_state" || entry.type === "agent_status" || entry.type === "git_state";
+	if (sessionVersion >= 2 && !legacyBookkeeping && !hasString(entry, "id")) return false;
+	if (entry.type === "message") {
+		if (isRecord(entry.message) && entry.message.role === "bashExecution") {
+			return hasString(entry.message, "command") && hasString(entry.message, "output");
+		}
+		return (
+			isRecord(entry.message) &&
+			hasString(entry.message, "role") &&
+			isMessageContent(entry.message.content, entry.message.role === "assistant", sessionVersion < 2)
+		);
+	}
+	if (entry.type === "session_info") {
+		return !("name" in entry) || entry.name === undefined || hasString(entry, "name");
+	}
+	return true;
+}
+
+function normalizeLegacyMessageContent(entry: unknown, sessionVersion: number): void {
+	if (sessionVersion >= 2 || !isRecord(entry) || entry.type !== "message" || !isRecord(entry.message)) return;
+	if (!("content" in entry.message) || entry.message.content === null) {
+		entry.message.content = [];
+	}
+	if (entry.message.role === "assistant" && isRecord(entry.message.usage) && !("totalTokens" in entry.message.usage)) {
+		const usage = entry.message.usage;
+		const input = usage.input;
+		const output = usage.output;
+		const cacheRead = usage.cacheRead;
+		const cacheWrite = usage.cacheWrite;
+		if (
+			typeof input === "number" &&
+			Number.isFinite(input) &&
+			typeof output === "number" &&
+			Number.isFinite(output) &&
+			typeof cacheRead === "number" &&
+			Number.isFinite(cacheRead) &&
+			typeof cacheWrite === "number" &&
+			Number.isFinite(cacheWrite)
+		) {
+			usage.totalTokens = input + output + cacheRead + cacheWrite;
+		}
+	}
+}
+
+function isWellFormedSessionEntry(entry: unknown, sessionVersion = CURRENT_SESSION_VERSION): entry is SessionEntry {
+	if (!isRecord(entry) || typeof entry.type !== "string" || !SESSION_ENTRY_TYPE_NAMES.has(entry.type)) return false;
+
+	// These fields are omitted by v1 and some legacy daemon bookkeeping entries.
+	// Current tree entries need all three fields so they can be indexed safely.
+	if ("id" in entry && !hasString(entry, "id")) return false;
+	if ("parentId" in entry && entry.parentId !== null && !hasString(entry, "parentId")) return false;
+	if ("timestamp" in entry && !hasString(entry, "timestamp")) return false;
+	const legacyBookkeeping =
+		entry.type === "session_state" || entry.type === "agent_status" || entry.type === "git_state";
+	if (sessionVersion >= 2 && !legacyBookkeeping) {
+		if (
+			!hasString(entry, "id") ||
+			!("parentId" in entry) ||
+			(entry.parentId !== null && !hasString(entry, "parentId"))
+		) {
+			return false;
+		}
+		if (!hasString(entry, "timestamp")) return false;
+	}
+
+	switch (entry.type) {
+		case "message":
+			return isAgentMessage(entry.message);
+		case "thinking_level_change":
+			return hasString(entry, "thinkingLevel");
+		case "service_tier_change":
+			return hasString(entry, "serviceTier");
+		case "model_change":
+			return hasString(entry, "provider") && hasString(entry, "modelId");
+		case "compaction":
+			return (
+				hasString(entry, "summary") &&
+				hasNumber(entry, "tokensBefore") &&
+				(hasString(entry, "firstKeptEntryId") || (sessionVersion < 2 && hasNumber(entry, "firstKeptEntryIndex")))
+			);
+		case "branch_summary":
+			return hasString(entry, "fromId") && hasString(entry, "summary");
+		case "custom":
+			return hasString(entry, "customType");
+		case "child_usage_attributed":
+			return hasString(entry, "targetId") && isUsage(entry.childUsage) && isUsage(entry.aggregateUsage);
+		case "custom_message":
+			return hasString(entry, "customType") && isMessageContent(entry.content) && hasBoolean(entry, "display");
+		case "label":
+			return (
+				hasString(entry, "targetId") &&
+				(!("label" in entry) || entry.label === undefined || hasString(entry, "label"))
+			);
+		case "session_info":
+			return !("name" in entry) || entry.name === undefined || hasString(entry, "name");
+		case "session_state":
+			return isRecord(entry.state) && normalizeSessionStateStatus(entry.state.status) !== undefined;
+		case "agent_status":
+			return (
+				isRecord(entry.status) &&
+				hasString(entry.status, "summary") &&
+				hasNumber(entry.status, "basedOnMessageCount") &&
+				(!("taskState" in entry.status) ||
+					entry.status.taskState === undefined ||
+					entry.status.taskState === "needs_input" ||
+					entry.status.taskState === "completed")
+			);
+		case "git_state":
+			return (
+				isRecord(entry.git) &&
+				(!("repoUrl" in entry.git) || entry.git.repoUrl === undefined || hasString(entry.git, "repoUrl")) &&
+				(!("commit" in entry.git) || entry.git.commit === undefined || hasString(entry.git, "commit")) &&
+				(!("branch" in entry.git) || entry.git.branch === undefined || hasString(entry.git, "branch"))
+			);
+	}
+	return false;
+}
+
+function isSessionHeader(entry: unknown): entry is SessionHeader {
+	if (typeof entry !== "object" || entry === null) return false;
+	const record = entry as Record<string, unknown>;
+	return record.type === "session" && typeof record.id === "string";
 }
 
 function finalizeLoadedEntries(entries: FileEntry[]): FileEntry[] {
 	if (entries.length === 0) return entries;
 	const header = entries[0];
-	if (header.type !== "session" || typeof (header as any).id !== "string") {
+	if (!isSessionHeader(header)) {
 		return [];
 	}
-	applyChildUsageAttributions(entries);
-	return entries;
+	// Drop structurally malformed non-header rows at the deserialization
+	// boundary so they cannot reach the index, context builder, or trace
+	// readers. The header (entries[0]) is already validated above.
+	const sessionVersion = typeof header.version === "number" ? header.version : 1;
+	const filtered: FileEntry[] = [header];
+	const retainedIds = new Set<string>();
+	for (let index = 1; index < entries.length; index++) {
+		const entry = entries[index];
+		normalizeLegacyMessageContent(entry, sessionVersion);
+		if (!isWellFormedSessionEntry(entry, sessionVersion)) continue;
+
+		if (
+			sessionVersion >= 2 &&
+			entry.type !== "session_state" &&
+			entry.type !== "agent_status" &&
+			entry.type !== "git_state"
+		) {
+			if (retainedIds.has(entry.id)) continue;
+			if (entry.parentId !== null && !retainedIds.has(entry.parentId)) continue;
+		}
+
+		filtered.push(entry);
+		if ("id" in entry && typeof entry.id === "string") {
+			retainedIds.add(entry.id);
+		}
+	}
+
+	// V1 compactions refer to entries by their position in the original JSONL
+	// array. Filtering before migration must translate that position, or a bad
+	// row before the compaction would make migration target the wrong entry.
+	if (sessionVersion < 2) {
+		let validEntries = filtered;
+		while (true) {
+			const retained = new Set(validEntries);
+			const invalidCompactions = new Set<FileEntry>();
+			for (const entry of validEntries) {
+				if (entry.type !== "compaction" || !("firstKeptEntryIndex" in entry)) continue;
+				const target = entries[entry.firstKeptEntryIndex as number];
+				if (target === undefined || !retained.has(target)) {
+					invalidCompactions.add(entry);
+				}
+			}
+			if (invalidCompactions.size === 0) break;
+			validEntries = validEntries.filter((entry) => !invalidCompactions.has(entry));
+		}
+		for (const entry of validEntries) {
+			if (entry.type !== "compaction" || !("firstKeptEntryIndex" in entry)) continue;
+			const target = entries[entry.firstKeptEntryIndex as number];
+			const translatedIndex = target === undefined ? -1 : validEntries.indexOf(target);
+			if (translatedIndex >= 0) {
+				(entry as CompactionEntry & { firstKeptEntryIndex: number }).firstKeptEntryIndex = translatedIndex;
+			}
+		}
+		if (validEntries !== filtered) {
+			applyChildUsageAttributions(validEntries);
+			return validEntries;
+		}
+	}
+	applyChildUsageAttributions(filtered);
+	return filtered;
 }
 
 /** Exported for testing */
@@ -675,7 +983,7 @@ export async function loadEntriesFromFileAsync(
 	if (!existsSync(filePath)) return [];
 	const streamThresholdBytes = options.streamThresholdBytes ?? SESSION_STREAMING_LOAD_THRESHOLD_BYTES;
 	if ((await stat(filePath)).size < streamThresholdBytes) {
-		return finalizeLoadedEntries(await parseEntriesFromBufferAsync(await readFile(filePath)));
+		return parseEntriesFromBufferAsync(await readFile(filePath));
 	}
 
 	const entries: FileEntry[] = [];
@@ -696,7 +1004,8 @@ function readSessionHeader(filePath: string): Partial<SessionHeader> | undefined
 	if (!firstLine) {
 		return undefined;
 	}
-	return JSON.parse(firstLine) as Partial<SessionHeader>;
+	const parsed: unknown = JSON.parse(firstLine);
+	return isSessionHeader(parsed) ? parsed : undefined;
 }
 
 function isValidRlmDepth(value: unknown): value is number {
@@ -1051,13 +1360,17 @@ async function scanSessionInfo(filePath: string, stats: Awaited<ReturnType<typeo
 			}
 
 			const trimmed = line.trim();
-			let entry: FileEntry;
+			let parsed: unknown;
 			try {
-				entry = JSON.parse(trimmed) as FileEntry;
+				parsed = JSON.parse(trimmed);
 			} catch {
 				// Skip malformed lines
 				continue;
 			}
+			if (!isSessionHeader(parsed) && !isScannableSessionEntry(parsed, header?.version ?? 1)) {
+				continue;
+			}
+			const entry: FileEntry = parsed;
 
 			// Extract session name (use latest, including explicit clears)
 			if (entry.type === "session_info") {
@@ -1328,6 +1641,10 @@ export class SessionManager {
 		this.leafId = null;
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
+			// Older daemon bookkeeping rows can be appended without tree identity.
+			// Keep them available to lifecycle/status readers, but do not let an
+			// undefined id replace the real conversation leaf.
+			if (typeof entry.id !== "string") continue;
 			this.byId.set(entry.id, entry);
 			this.leafId = entry.id;
 			if (entry.type === "label") {
@@ -1798,16 +2115,35 @@ export class SessionManager {
 
 	private _appendEntryWithRollback(append: () => string): string {
 		const previousLeafId = this.leafId;
+		const previousLength = this.fileEntries.length;
+		let appendedEntryId: string | undefined;
 		try {
-			const entryId = append();
+			appendedEntryId = append();
 			this.flushNow();
-			return entryId;
+			return appendedEntryId;
 		} catch (error) {
 			// The append indexes the entry before persisting it; undo exactly that.
-			if (this.leafId !== null && this.leafId !== previousLeafId) {
-				this.byId.delete(this.leafId);
-				this.fileEntries.pop();
-				this.leafId = previousLeafId;
+			// A re-entrant persist listener can append another entry after the
+			// caller's entry. Remove the caller's entry by identity instead of
+			// popping the current leaf, which may belong to that listener.
+			const firstAddedEntry = this.fileEntries.slice(previousLength).find((entry) => entry.type !== "session");
+			const failedEntryId = appendedEntryId ?? firstAddedEntry?.id;
+			if (failedEntryId !== undefined) {
+				const failedIndex = this.fileEntries.findIndex(
+					(entry) => entry.type !== "session" && entry.id === failedEntryId,
+				);
+				if (failedIndex !== -1) {
+					this.fileEntries.splice(failedIndex, 1);
+					this.byId.delete(failedEntryId);
+					for (const entry of this.fileEntries) {
+						if (entry.type !== "session" && entry.parentId === failedEntryId) {
+							entry.parentId = previousLeafId;
+						}
+					}
+					if (this.leafId === failedEntryId) {
+						this.leafId = previousLeafId;
+					}
+				}
 				// The failed append may have left a torn line on disk. Restore the file
 				// from the rolled-back entries now; if that also fails (e.g. the disk is
 				// still full), fall back to forcing the next persist to rewrite.

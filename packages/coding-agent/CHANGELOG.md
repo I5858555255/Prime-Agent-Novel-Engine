@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed malformed JSONL session entries (unknown types, garbage rows, and message entries missing their `message` payload) reaching consumers without runtime validation; the deserialization boundary now drops structurally invalid non-header rows before they can crash context building or trace readers.
+- Fixed `_appendEntryWithRollback` popping the wrong entry when a re-entrant persist listener appended during the rolled-back operation; rollback now restores the exact pre-call entry set by length instead of popping the current leaf.
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
