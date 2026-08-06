@@ -5075,7 +5075,16 @@ export class InteractiveMode {
 				} else if (event.type === "side_question_event") {
 					this.handleSideQuestionEvent(event.event);
 				} else if (event.type === "extension_ui_request") {
-					await this.handleConnectionExtensionUiRequest(event.request);
+					// Extension UI requests are emitted by the daemon while a session
+					// replacement is being rebound. Serialize them with session events so
+					// stale status clears cannot race a new session's status update.
+					const generation = this.sessionEventGeneration;
+					const run = this.sessionEventQueue.then(async () => {
+						if (generation !== this.sessionEventGeneration) return;
+						await this.handleConnectionExtensionUiRequest(event.request);
+					});
+					this.sessionEventQueue = run.then(() => undefined).catch(() => {});
+					await run;
 				} else if (event.type === "connection_status") {
 					this.showStatus(
 						event.status === "connected" ? "Daemon reconnected" : "Daemon connection lost; reconnecting…",

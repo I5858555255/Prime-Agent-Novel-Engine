@@ -18,6 +18,11 @@ import {
 	isDaemonDialogExtensionUiRequest,
 } from "./daemon-protocol.js";
 
+export interface ActiveSessionBindingOptions {
+	/** Defer fire-and-forget UI requests until the replacement snapshot is broadcast. */
+	deferPassiveExtensionUi?: boolean;
+}
+
 export interface ActiveSessionBindingCallbacks {
 	broadcast: (state: ActiveSessionState, message: DaemonOutbound) => void;
 	createConnectionState?: (state: ActiveSessionState) => AgentConnectionState;
@@ -49,8 +54,23 @@ function slimSessionEventForWire(event: BroadcastSessionEvent): BroadcastSession
 export async function bindActiveSessionState(
 	state: ActiveSessionState,
 	callbacks: ActiveSessionBindingCallbacks,
-): Promise<void> {
+	options: ActiveSessionBindingOptions = {},
+): Promise<DaemonOutbound[]> {
 	const session = state.runtime.session;
+	const deferredExtensionUiRequests: DaemonOutbound[] = [];
+	let binding = true;
+	const broadcastExtensionUi: ActiveSessionBindingCallbacks["broadcast"] = (targetState, message) => {
+		if (
+			options.deferPassiveExtensionUi &&
+			binding &&
+			message.type === "extension_ui_request" &&
+			!isDaemonDialogExtensionUiRequest(message.method)
+		) {
+			deferredExtensionUiRequests.push(message);
+			return;
+		}
+		callbacks.broadcast(targetState, message);
+	};
 
 	session.setExecEnvProvider(() => execEnvForSession(state.clientEnv));
 	// Every runtime rebuild (new/switch/fork/import, subagent spawn) re-loads
@@ -68,7 +88,9 @@ export async function bindActiveSessionState(
 	});
 
 	state.runtime.setRebindSession(async () => {
-		await bindActiveSessionState(state, callbacks);
+		const deferredRequests = await bindActiveSessionState(state, callbacks, {
+			deferPassiveExtensionUi: true,
+		});
 		callbacks.sessionReplaced?.(state);
 		callbacks.broadcast(state, {
 			type: "session_replaced",
@@ -78,10 +100,16 @@ export async function bindActiveSessionState(
 				createAgentConnectionState(state.runtime, state.activeSessionId),
 			messages: state.runtime.session.messages,
 		});
+		// A replacement resets the client footer before rebinding the session.
+		// Send passive extension UI updates only after that reset and snapshot.
+		for (const message of deferredRequests) callbacks.broadcast(state, message);
 	});
 
 	await session.bindExtensions({
-		uiContext: createExtensionUIContext(state, callbacks.broadcast),
+		uiContext: createExtensionUIContext(
+			state,
+			options.deferPassiveExtensionUi ? broadcastExtensionUi : callbacks.broadcast,
+		),
 		commandContextActions: createCommandContextActions(state),
 		shutdownHandler: callbacks.shutdown,
 		onError: (error) => {
@@ -94,6 +122,9 @@ export async function bindActiveSessionState(
 			});
 		},
 	});
+	binding = false;
+
+	return deferredExtensionUiRequests;
 }
 
 function createCommandContextActions(state: ActiveSessionState): ExtensionCommandContextActions {

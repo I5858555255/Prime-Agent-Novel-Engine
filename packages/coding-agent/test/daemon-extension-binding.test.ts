@@ -253,4 +253,43 @@ describe("daemon extension binding", () => {
 			"assistant:replacement reply",
 		]);
 	});
+
+	it("broadcasts passive extension UI after a session replacement", async () => {
+		const runtime = await createRuntimeForTest((pi) => {
+			pi.on("session_start", (_event, ctx) => {
+				ctx.ui.setStatus("test-status", ctx.model?.id ?? "missing-model");
+			});
+			pi.on("session_shutdown", (_event, ctx) => {
+				ctx.ui.setStatus("test-status", undefined);
+			});
+		}, []);
+
+		const outbound: DaemonOutbound[] = [];
+		const state: ActiveSessionState = {
+			activeSessionId: "active-status",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-status",
+			lastEventSequence: 0,
+		};
+		await bindActiveSessionState(state, {
+			broadcast: (_state, message) => outbound.push(message),
+			shutdown: () => {},
+		});
+		outbound.length = 0;
+
+		await runtime.newSession();
+
+		const replacementIndex = outbound.findIndex((message) => message.type === "session_replaced");
+		expect(replacementIndex).toBeGreaterThanOrEqual(0);
+		const statusAfterReplacement = outbound
+			.slice(replacementIndex + 1)
+			.find(
+				(message): message is Extract<DaemonOutbound, { type: "extension_ui_request" }> =>
+					message.type === "extension_ui_request" && message.method === "setStatus",
+			);
+		expect(statusAfterReplacement?.payload).toEqual({ statusKey: "test-status", statusText: "faux-daemon" });
+	});
 });
