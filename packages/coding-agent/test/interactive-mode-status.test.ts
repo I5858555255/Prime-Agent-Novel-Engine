@@ -3864,6 +3864,44 @@ describe("InteractiveMode splash cwd display", () => {
 	});
 });
 
+describe("InteractiveMode tray location label", () => {
+	type TrayLocationLabelHarness = {
+		options: {
+			sessionDepth?: number;
+			sessionHasChildren?: boolean;
+		};
+		getModelTrayLabel(): string;
+		getShortcutsTrayHint(): string | undefined;
+		getAgentsViewTrayHint(): string | undefined;
+		getCurrentCwd(): string;
+		getTrayLocationLabel(): string | undefined;
+	};
+	const getTrayLocationLabel = (InteractiveMode.prototype as unknown as TrayLocationLabelHarness).getTrayLocationLabel;
+
+	function createHarness(cwd: string): TrayLocationLabelHarness {
+		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLocationLabelHarness;
+		fakeThis.options = { sessionDepth: 0, sessionHasChildren: false };
+		fakeThis.getModelTrayLabel = () => "GPT-5.6 Sol • medium";
+		fakeThis.getShortcutsTrayHint = () => undefined;
+		fakeThis.getAgentsViewTrayHint = () => undefined;
+		fakeThis.getCurrentCwd = () => cwd;
+		return fakeThis;
+	}
+
+	test("includes the current session cwd in the location label", () => {
+		const fakeThis = createHarness("/tmp/project");
+
+		expect(getTrayLocationLabel.call(fakeThis)).toBe("cwd /tmp/project  GPT-5.6 Sol • medium");
+	});
+
+	test("uses compact home-relative formatting for the current session cwd", () => {
+		const cwd = path.join(homedir(), "workspace", "prime-agent");
+		const fakeThis = createHarness(cwd);
+
+		expect(getTrayLocationLabel.call(fakeThis)).toBe("cwd ~/workspace/prime-agent  GPT-5.6 Sol • medium");
+	});
+});
+
 describe("InteractiveMode goal status announcements", () => {
 	test("does not announce active goal usage-only updates", () => {
 		type GoalAnnouncementHarness = {
