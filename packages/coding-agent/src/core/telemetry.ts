@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
@@ -235,15 +235,45 @@ function readInstallationId(path: string): string | undefined {
 	}
 }
 
+function writeTelemetryStateAtomically(path: string, state: TelemetryState): void {
+	const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporaryPath, JSON.stringify(state, null, 2), {
+			encoding: "utf8",
+			flag: "wx",
+			mode: 0o600,
+		});
+		renameSync(temporaryPath, path);
+	} finally {
+		try {
+			unlinkSync(temporaryPath);
+		} catch {
+			// The rename succeeded or the temporary file was never created.
+		}
+	}
+}
+
 export function getOrCreateTelemetryInstallationId(agentDir: string, randomId: () => string = randomUUID): string {
 	const path = join(agentDir, TELEMETRY_STATE_FILE);
 	let replaceInvalidState = false;
-	if (existsSync(path)) {
+	try {
+		const stats = lstatSync(path);
+		if (!stats.isFile()) {
+			throw new Error("Telemetry state path must be a regular file");
+		}
 		const existing = readInstallationId(path);
 		if (existing) {
 			return existing;
 		}
 		replaceInvalidState = true;
+	} catch (error) {
+		const code =
+			typeof error === "object" && error !== null && "code" in error
+				? String((error as { code?: unknown }).code)
+				: undefined;
+		if (code !== "ENOENT") {
+			throw error;
+		}
 	}
 
 	const installationId = randomId();
@@ -256,12 +286,15 @@ export function getOrCreateTelemetryInstallationId(agentDir: string, randomId: (
 		installationId,
 	};
 	try {
-		writeFileSync(path, JSON.stringify(state, null, 2), {
-			encoding: "utf8",
-			flag: replaceInvalidState ? "w" : "wx",
-			mode: 0o600,
-		});
-		chmodSync(path, 0o600);
+		if (replaceInvalidState) {
+			writeTelemetryStateAtomically(path, state);
+		} else {
+			writeFileSync(path, JSON.stringify(state, null, 2), {
+				encoding: "utf8",
+				flag: "wx",
+				mode: 0o600,
+			});
+		}
 		return installationId;
 	} catch (error) {
 		const code =

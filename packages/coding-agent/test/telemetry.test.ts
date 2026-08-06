@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -125,6 +125,21 @@ describe("telemetry identity and transport", () => {
 			installationId,
 		});
 		expect(getOrCreateTelemetryInstallationId(agentDir, randomId)).toBe(installationId);
+	});
+
+	it("does not follow a telemetry state symlink", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "prime-agent-telemetry-"));
+		const targetPath = join(agentDir, "target.json");
+		const telemetryPath = join(agentDir, "telemetry.json");
+		writeFileSync(targetPath, "do not overwrite");
+		symlinkSync(targetPath, telemetryPath);
+		const client = new TelemetryClient({ agentDir, randomId: uuidGenerator() });
+
+		expect(() => client.capture("agent started", {})).not.toThrow();
+		await expect(client.flush()).resolves.toBeUndefined();
+
+		expect(readFileSync(targetPath, "utf8")).toBe("do not overwrite");
+		expect(lstatSync(telemetryPath).isSymbolicLink()).toBe(true);
 	});
 
 	it("batches events through the configured Prime endpoint", async () => {
