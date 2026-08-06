@@ -778,6 +778,11 @@ function isScannableSessionEntry(entry: unknown, sessionVersion = 1): entry is S
 		entry.type === "session_state" || entry.type === "agent_status" || entry.type === "git_state";
 	if (sessionVersion >= 2 && !legacyBookkeeping && !hasString(entry, "id")) return false;
 	if (entry.type === "message") {
+		if (isRecord(entry.message) && entry.message.role === "bashExecution") {
+			return (
+				hasString(entry.message, "command") && hasString(entry.message, "output") && "exitCode" in entry.message
+			);
+		}
 		return (
 			isRecord(entry.message) &&
 			hasString(entry.message, "role") &&
@@ -794,6 +799,25 @@ function normalizeLegacyMessageContent(entry: unknown, sessionVersion: number): 
 	if (sessionVersion >= 2 || !isRecord(entry) || entry.type !== "message" || !isRecord(entry.message)) return;
 	if (!("content" in entry.message) || entry.message.content === null) {
 		entry.message.content = [];
+	}
+	if (entry.message.role === "assistant" && isRecord(entry.message.usage) && !("totalTokens" in entry.message.usage)) {
+		const usage = entry.message.usage;
+		const input = usage.input;
+		const output = usage.output;
+		const cacheRead = usage.cacheRead;
+		const cacheWrite = usage.cacheWrite;
+		if (
+			typeof input === "number" &&
+			Number.isFinite(input) &&
+			typeof output === "number" &&
+			Number.isFinite(output) &&
+			typeof cacheRead === "number" &&
+			Number.isFinite(cacheRead) &&
+			typeof cacheWrite === "number" &&
+			Number.isFinite(cacheWrite)
+		) {
+			usage.totalTokens = input + output + cacheRead + cacheWrite;
+		}
 	}
 }
 
@@ -914,19 +938,29 @@ function finalizeLoadedEntries(entries: FileEntry[]): FileEntry[] {
 	// array. Filtering before migration must translate that position, or a bad
 	// row before the compaction would make migration target the wrong entry.
 	if (sessionVersion < 2) {
-		const invalidCompactions = new Set<FileEntry>();
-		for (const entry of filtered) {
+		let validEntries = filtered;
+		while (true) {
+			const retained = new Set(validEntries);
+			const invalidCompactions = new Set<FileEntry>();
+			for (const entry of validEntries) {
+				if (entry.type !== "compaction" || !("firstKeptEntryIndex" in entry)) continue;
+				const target = entries[entry.firstKeptEntryIndex as number];
+				if (target === undefined || !retained.has(target)) {
+					invalidCompactions.add(entry);
+				}
+			}
+			if (invalidCompactions.size === 0) break;
+			validEntries = validEntries.filter((entry) => !invalidCompactions.has(entry));
+		}
+		for (const entry of validEntries) {
 			if (entry.type !== "compaction" || !("firstKeptEntryIndex" in entry)) continue;
 			const target = entries[entry.firstKeptEntryIndex as number];
-			const translatedIndex = target === undefined ? undefined : filtered.indexOf(target);
-			if (translatedIndex === undefined || translatedIndex < 0) {
-				invalidCompactions.add(entry);
-				continue;
+			const translatedIndex = target === undefined ? -1 : validEntries.indexOf(target);
+			if (translatedIndex >= 0) {
+				(entry as CompactionEntry & { firstKeptEntryIndex: number }).firstKeptEntryIndex = translatedIndex;
 			}
-			(entry as CompactionEntry & { firstKeptEntryIndex: number }).firstKeptEntryIndex = translatedIndex;
 		}
-		if (invalidCompactions.size > 0) {
-			const validEntries = filtered.filter((entry) => !invalidCompactions.has(entry));
+		if (validEntries !== filtered) {
 			applyChildUsageAttributions(validEntries);
 			return validEntries;
 		}

@@ -72,7 +72,7 @@ describe("SessionManager deserialization guard (H11)", () => {
 		await expect(readSessionInfo(file)).resolves.toMatchObject({ messageCount: 1 });
 	});
 
-	it("keeps v1 compaction indexes aligned after filtering a malformed row", () => {
+	it("keeps v1 compaction indexes aligned after filtering rows", () => {
 		const file = join(tempDir, "v1-compaction.jsonl");
 		writeFileSync(
 			file,
@@ -92,18 +92,38 @@ describe("SessionManager deserialization guard (H11)", () => {
 				JSON.stringify({
 					type: "compaction",
 					timestamp: "2025-01-01T00:00:03.000Z",
-					summary: "summary",
-					firstKeptEntryIndex: 2,
+					summary: "invalid compaction",
+					firstKeptEntryIndex: 999,
 					tokensBefore: 10,
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: "2025-01-01T00:00:04.000Z",
+					message: { role: "user", content: "kept after invalid compaction", timestamp: 4 },
+				}),
+				JSON.stringify({
+					type: "compaction",
+					timestamp: "2025-01-01T00:00:05.000Z",
+					summary: "valid compaction",
+					firstKeptEntryIndex: 4,
+					tokensBefore: 20,
 				}),
 			].join("\n")}\n`,
 		);
 
 		const mgr = SessionManager.open(file, tempDir);
-		const compaction = mgr.getEntries().find((entry) => entry.type === "compaction");
-		expect(compaction?.type).toBe("compaction");
-		if (compaction?.type === "compaction") {
-			expect(compaction.firstKeptEntryId).toBe(mgr.getEntries()[0]?.id);
+		const entries = mgr.getEntries();
+		const compactions = entries.filter((entry) => entry.type === "compaction");
+		expect(compactions).toHaveLength(1);
+		const keptMessage = entries.find(
+			(entry) =>
+				entry.type === "message" &&
+				entry.message.role === "user" &&
+				entry.message.content === "kept after invalid compaction",
+		);
+		expect(compactions[0]?.type).toBe("compaction");
+		if (compactions[0]?.type === "compaction") {
+			expect(compactions[0].firstKeptEntryId).toBe(keptMessage?.id);
 		}
 	});
 
@@ -229,7 +249,6 @@ describe("SessionManager deserialization guard (H11)", () => {
 							output: 0,
 							cacheRead: 0,
 							cacheWrite: 0,
-							totalTokens: 0,
 							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 						},
 						stopReason: "stop",
@@ -256,6 +275,7 @@ describe("SessionManager deserialization guard (H11)", () => {
 		expect((entries[1] as { message: { content: unknown } }).message.content).toEqual([]);
 		expect((entries[2] as { message: { content: unknown } }).message.content).toEqual([]);
 		expect((entries[3] as { message: { content: unknown } }).message.content).toEqual([]);
+		expect((entries[2] as { message: { usage: { totalTokens: number } } }).message.usage.totalTokens).toBe(0);
 
 		const mgr = SessionManager.open(file, tempDir);
 		expect(mgr.buildSessionContext().messages).toHaveLength(3);
@@ -299,10 +319,23 @@ describe("SessionManager deserialization guard (H11)", () => {
 						timestamp: 1,
 					},
 				}),
+				JSON.stringify({
+					type: "message",
+					id: "bash-1",
+					parentId: "assistant-1",
+					timestamp: "2026-01-01T00:00:02.000Z",
+					message: {
+						role: "bashExecution",
+						command: "printf hello",
+						output: "hello",
+						exitCode: 0,
+						timestamp: 2,
+					},
+				}),
 			].join("\n")}\n`,
 		);
 
-		await expect(readSessionInfo(file)).resolves.toMatchObject({ messageCount: 1 });
+		await expect(readSessionInfo(file)).resolves.toMatchObject({ messageCount: 2 });
 	});
 });
 
