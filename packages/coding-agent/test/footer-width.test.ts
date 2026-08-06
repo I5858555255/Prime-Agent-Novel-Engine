@@ -4,10 +4,10 @@ import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provide
 import { FooterComponent } from "../src/modes/interactive/components/footer.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
-function createFooterData(providerCount: number): ReadonlyFooterDataProvider {
+function createFooterData(providerCount: number, statuses = new Map<string, string>()): ReadonlyFooterDataProvider {
 	const provider = {
 		getGitBranch: () => "main",
-		getExtensionStatuses: () => new Map<string, string>(),
+		getExtensionStatuses: () => statuses,
 		getAvailableProviderCount: () => providerCount,
 		onBranchChange: (callback: () => void) => {
 			void callback;
@@ -41,5 +41,12 @@ describe("FooterComponent width handling", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
+	});
+
+	it("renders extension statuses", () => {
+		const statuses = new Map([["codex-usage", "codex 25% 1.8d"]]);
+		const footer = new FooterComponent(createFooterData(1, statuses));
+
+		expect(footer.render(60)).toEqual(["codex 25% 1.8d"]);
 	});
 });
