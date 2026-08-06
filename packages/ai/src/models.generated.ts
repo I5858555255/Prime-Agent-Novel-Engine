@@ -5456,8 +5456,9 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "greenpt",
 			baseUrl: "https://api.greenpt.ai/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":"none"},
 			input: ["text"],
 			cost: {
 				input: 1.254,
@@ -5475,8 +5476,9 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "greenpt",
 			baseUrl: "https://api.greenpt.ai/v1",
-			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"maxTokensField":"max_tokens","supportsStrictMode":false},
+			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":true,"maxTokensField":"max_tokens","supportsStrictMode":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":"none"},
 			input: ["text"],
 			cost: {
 				input: 0.9006,

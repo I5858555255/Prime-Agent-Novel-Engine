@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.js";
-import { getModel } from "../src/models.js";
+import { getModel, getSupportedThinkingLevels } from "../src/models.js";
 
 const originalGreenptApiKey = process.env.GREENPT_API_KEY;
 
@@ -28,10 +28,12 @@ describe("GreenPT models", () => {
 		expect(model.contextWindow).toBe(contextWindow);
 		expect(model.maxTokens).toBe(maxTokens);
 		expect(model.featured).toBe(true);
+		expect(model.thinkingLevelMap).toEqual({ off: "none" });
+		expect(getSupportedThinkingLevels(model)).toEqual(["off", "minimal", "low", "medium", "high"]);
 		expect(model.compat).toEqual({
 			supportsStore: false,
 			supportsDeveloperRole: false,
-			supportsReasoningEffort: false,
+			supportsReasoningEffort: true,
 			maxTokensField: "max_tokens",
 			supportsStrictMode: false,
 		});

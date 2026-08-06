@@ -120,10 +120,11 @@ const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 };
 const GREENPT_BASE_URL = "https://api.greenpt.ai/v1";
 const GREENPT_MODEL_IDS = new Set(["glm-5.2", "kimi-k2.7-code"]);
+const GREENPT_THINKING_LEVEL_MAP = { off: "none" } as const;
 const GREENPT_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
 	supportsDeveloperRole: false,
-	supportsReasoningEffort: false,
+	supportsReasoningEffort: true,
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
@@ -1044,6 +1045,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: "greenpt",
 					baseUrl: GREENPT_BASE_URL,
 					reasoning: m.reasoning === true,
+					thinkingLevelMap: GREENPT_THINKING_LEVEL_MAP,
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: {
 						input: m.cost?.input || 0,
