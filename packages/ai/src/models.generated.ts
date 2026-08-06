@@ -2991,6 +2991,26 @@ export const MODELS = {
 			maxTokens: 100000,
 		} satisfies Model<"azure-openai-responses">,
 	},
+	"celeris": {
+		"celeris-1": {
+			id: "celeris-1",
+			name: "Celeris 1",
+			api: "openai-completions",
+			provider: "celeris",
+			baseUrl: "https://inference.celeris.ai/celeris-1/v1",
+			compat: {"supportsStore":false,"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":true,"maxTokensField":"max_tokens","supportsStrictMode":false,"supportsLongCacheRetention":false},
+			reasoning: false,
+			input: ["text", "image"],
+			cost: {
+				input: 0.2,
+				output: 0.7,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 131072,
+			maxTokens: 131072,
+		} satisfies Model<"openai-completions">,
+	},
 	"cerebras": {
 		"gemma-4-31b": {
 			id: "gemma-4-31b",

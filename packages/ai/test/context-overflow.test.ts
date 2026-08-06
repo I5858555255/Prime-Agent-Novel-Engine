@@ -199,6 +199,18 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 	});
 
+	describe.skipIf(!process.env.CELERIS_API_KEY)("Celeris Chat Completions", () => {
+		it("celeris-1 - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("celeris", "celeris-1");
+			const result = await testContextOverflow(model, process.env.CELERIS_API_KEY!);
+			logResult(result);
+
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toBeTruthy();
+			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+		}, 120000);
+	});
+
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses", () => {
 		it("gpt-4o-mini - should detect overflow via isContextOverflow", async () => {
 			const model = getModel("azure-openai-responses", "gpt-4o-mini");

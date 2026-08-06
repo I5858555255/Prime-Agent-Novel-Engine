@@ -31,6 +31,7 @@ export type KnownProvider =
 	| "xai"
 	| "groq"
 	| "cerebras"
+	| "celeris"
 	| "openrouter"
 	| "vercel-ai-gateway"
 	| "zai"

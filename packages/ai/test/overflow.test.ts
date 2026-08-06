@@ -47,6 +47,15 @@ describe("isContextOverflow", () => {
 		expect(isContextOverflow(message, 1048576)).toBe(true);
 	});
 
+	it("detects Celeris context overflow errors", () => {
+		const documented = createErrorMessage("Prompt tokens plus max_tokens must be at most 131072.");
+		const alternate = createErrorMessage(
+			"max_tokens of 32000 plus 110000 prompt_tokens exceeds the context length of 131072",
+		);
+		expect(isContextOverflow(documented, 131072)).toBe(true);
+		expect(isContextOverflow(alternate, 131072)).toBe(true);
+	});
+
 	it("does not treat Bedrock throttling 'Too many tokens' as overflow", () => {
 		// Bedrock returns this for HTTP 429 rate limiting, NOT context overflow.
 		// formatBedrockError uses a human-readable prefix for ThrottlingException.

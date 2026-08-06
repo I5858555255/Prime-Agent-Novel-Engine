@@ -554,6 +554,30 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.CELERIS_API_KEY)("Celeris Provider (celeris-1)", () => {
+		const llm = getModel("celeris", "celeris-1");
+
+		it("should complete basic text generation", { retry: 3 }, async () => {
+			await basicTextGeneration(llm);
+		});
+
+		it("should handle tool calling", { retry: 3 }, async () => {
+			await handleToolCall(llm);
+		});
+
+		it("should handle streaming", { retry: 3 }, async () => {
+			await handleStreaming(llm);
+		});
+
+		it("should handle multi-turn with tools", { retry: 3 }, async () => {
+			await multiTurn(llm);
+		});
+
+		it("should handle image input", { retry: 3 }, async () => {
+			await handleImage(llm);
+		});
+	});
+
 	describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic Provider (claude-haiku-4-5)", () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 

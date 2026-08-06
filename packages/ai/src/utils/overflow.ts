@@ -12,6 +12,7 @@ import type { AssistantMessage } from "../types.js";
  * - Anthropic: "413 {\"error\":{\"type\":\"request_too_large\",\"message\":\"Request exceeds the maximum size\"}}"
  * - OpenAI: "Your input exceeds the context window of this model"
  * - Meta: "the model's context length is only 1048576 tokens, resulting in a maximum input length of 1048575 tokens"
+ * - Celeris: "prompt tokens plus max_tokens must be at most 131072"
  * - Google: "The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)"
  * - xAI: "This model's maximum prompt length is 131072 but the request contains 537812 tokens"
  * - Groq: "Please reduce the length of the messages or completion"
@@ -35,6 +36,7 @@ const OVERFLOW_PATTERNS = [
 	/input is too long for requested model/i, // Amazon Bedrock
 	/exceeds the context window/i, // OpenAI (Completions & Responses API)
 	/context length is only \d+ tokens.*maximum input length/i, // Meta Model API
+	/(?:prompt[_ ]tokens?[\s\S]*max_tokens|max_tokens[\s\S]*prompt[_ ]tokens?)[\s\S]*(?:at most|context (?:window|length)|exceed|limit)/i, // Celeris
 	/input token count.*exceeds the maximum/i, // Google (Gemini)
 	/maximum prompt length is \d+/i, // xAI (Grok)
 	/reduce the length of the messages/i, // Groq
@@ -83,6 +85,7 @@ const NON_OVERFLOW_PATTERNS = [
  * - Anthropic: "prompt is too long: X tokens > Y maximum" or "request_too_large"
  * - OpenAI (Completions & Responses): "exceeds the context window"
  * - Meta Model API: "context length is only X tokens, resulting in a maximum input length of Y tokens"
+ * - Celeris: "prompt tokens plus max_tokens must be at most X"
  * - Google Gemini: "input token count exceeds the maximum"
  * - xAI (Grok): "maximum prompt length is X but request contains Y"
  * - Groq: "reduce the length of the messages"

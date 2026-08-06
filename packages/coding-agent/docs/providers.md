@@ -52,6 +52,7 @@ prime-agent
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 | OpenAI | `OPENAI_API_KEY` | `openai` |
 | Meta Model API | `MODEL_API_KEY` | `meta` |
+| Celeris | `CELERIS_API_KEY` | `celeris` |
 | Prime Inference | `PRIME_API_KEY` | `prime-inference` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
 | Google Gemini | `GEMINI_API_KEY` | `google` |
@@ -87,6 +88,7 @@ Store credentials in `~/.prime/agent/auth.json`:
   "anthropic": { "type": "api_key", "key": "sk-ant-..." },
   "openai": { "type": "api_key", "key": "sk-..." },
   "meta": { "type": "api_key", "key": "..." },
+  "celeris": { "type": "api_key", "key": "ck_..." },
   "prime-inference": { "type": "api_key", "key": "..." },
   "deepseek": { "type": "api_key", "key": "sk-..." },
   "google": { "type": "api_key", "key": "..." },
@@ -132,6 +134,15 @@ Create a key at [dev.meta.ai](https://dev.meta.ai/), then set `MODEL_API_KEY` or
 ```bash
 export MODEL_API_KEY="LLM|...|..."
 prime-agent --provider meta --model muse-spark-1.2
+```
+
+### Celeris
+
+Create a key in the [Celeris Console](https://console.celeris.ai), then set `CELERIS_API_KEY` or store it for `celeris` via `/login`. Prime Agent uses OpenAI-compatible Chat Completions at `https://inference.celeris.ai/celeris-1/v1` and defaults to `celeris-1`. The model accepts text and inline PNG/JPEG images, supports tool calling, and shares its 131,072-token context window between the prompt and requested output. Requests default to 2,048 output tokens.
+
+```bash
+export CELERIS_API_KEY="ck_..."
+prime-agent --provider celeris --model celeris-1
 ```
 
 ## Cloud Providers

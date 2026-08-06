@@ -1602,6 +1602,34 @@ async function generateModels() {
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
 	);
 
+	// Celeris is not currently listed by the upstream catalogs.
+	allModels.push({
+		id: "celeris-1",
+		name: "Celeris 1",
+		api: "openai-completions",
+		provider: "celeris",
+		baseUrl: "https://inference.celeris.ai/celeris-1/v1",
+		reasoning: false,
+		input: ["text", "image"],
+		cost: {
+			input: 0.2,
+			output: 0.7,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: 131072,
+		maxTokens: 131072,
+		compat: {
+			supportsStore: false,
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: false,
+			supportsUsageInStreaming: true,
+			maxTokensField: "max_tokens",
+			supportsStrictMode: false,
+			supportsLongCacheRetention: false,
+		},
+	});
+
 	// Fix incorrect cache pricing for Claude Opus 4.5 from models.dev
 	// models.dev has 3x the correct pricing (1.5/18.75 instead of 0.5/6.25)
 	const opus45 = allModels.find(m => m.provider === "anthropic" && m.id === "claude-opus-4-5");

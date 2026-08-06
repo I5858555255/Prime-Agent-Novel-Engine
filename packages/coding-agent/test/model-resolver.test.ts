@@ -434,6 +434,7 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
 		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
 		expect(defaultModelPerProvider.cerebras).toBe("zai-glm-4.7");
+		expect(defaultModelPerProvider.celeris).toBe("celeris-1");
 	});
 
 	test("ai-gateway default tracks current model", () => {

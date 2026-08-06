@@ -430,6 +430,10 @@ export const streamSimpleOpenAICompletions: StreamFunction<"openai-completions",
 	}
 
 	const base = buildBaseOptions(model, options, apiKey);
+	// Preserve Celeris's documented Chat Completions default and input headroom.
+	if (model.provider === "celeris" && options?.maxTokens === undefined) {
+		base.maxTokens = 2048;
+	}
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 	const toolChoice = (options as OpenAICompletionsOptions | undefined)?.toolChoice;
@@ -450,6 +454,9 @@ function createClient(
 	compat: ResolvedOpenAICompletionsCompat = getCompat(model),
 ) {
 	if (!apiKey) {
+		if (model.provider === "celeris") {
+			throw new Error("Celeris API key is required. Set CELERIS_API_KEY or pass it as an argument.");
+		}
 		if (!process.env.OPENAI_API_KEY) {
 			throw new Error(
 				"OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it as an argument.",
@@ -509,6 +516,15 @@ function buildParams(
 	cacheRetention: CacheRetention = resolveCacheRetention(options?.cacheRetention),
 	cacheControl: OpenAICompatCacheControl | undefined = getCompatCacheControl(compat, cacheRetention),
 ) {
+	if (
+		model.provider === "celeris" &&
+		options?.toolChoice !== undefined &&
+		options.toolChoice !== "auto" &&
+		options.toolChoice !== "none"
+	) {
+		throw new Error('Celeris tool_choice supports only "auto" or "none".');
+	}
+
 	const messages = convertMessages(model, context, compat);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
