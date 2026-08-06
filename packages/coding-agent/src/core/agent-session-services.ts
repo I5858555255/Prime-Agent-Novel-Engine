@@ -54,6 +54,8 @@ export interface CreateAgentSessionServicesOptions {
 	 * would release the pane while the parent is still running.
 	 */
 	noBuiltinHerdrReporter?: boolean;
+	/** Explicit daemon-carried opt-out; cannot enable telemetry. */
+	telemetryDisabled?: true;
 }
 
 export interface AgentSessionCreationOptions {
@@ -84,6 +86,8 @@ export interface AgentSessionCreationOptions {
 	serializedRefine?: boolean;
 	/** User-facing client mode that created the top-level session. */
 	executionMode?: AgentExecutionMode;
+	/** Explicit daemon-carried opt-out; cannot enable telemetry. */
+	telemetryDisabled?: true;
 	/** Initial goal to seed at session creation (rlmDepth 0 only, idempotent). */
 	initialGoal?: { objective: string; tokenBudget?: number };
 }
@@ -211,7 +215,11 @@ export async function createAgentSessionServices(
 	await resourceLoader.reload();
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
-	if (isTelemetryEnabled(settingsManager) && !settingsManager.getTelemetryNoticeShown()) {
+	if (
+		!options.telemetryDisabled &&
+		isTelemetryEnabled(settingsManager) &&
+		!settingsManager.getTelemetryNoticeShown()
+	) {
 		diagnostics.push({
 			type: "info",
 			message:
@@ -295,7 +303,7 @@ export async function createAgentSessionFromServices(
 		serializedRefine: options.serializedRefine,
 		initialGoal: options.initialGoal,
 	});
-	if (result.session.rlmDepth === 0) {
+	if (result.session.rlmDepth === 0 && !options.telemetryDisabled) {
 		installAgentTelemetry(result.session, {
 			agentDir: options.services.agentDir,
 			settingsManager: options.services.settingsManager,

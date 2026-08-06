@@ -150,6 +150,8 @@ export interface DaemonAttachClientMetadata {
 	clientId?: DaemonClientId;
 	capabilities?: readonly DaemonClientCapability[];
 	resumeCursor?: DaemonResumeCursor;
+	/** Opt-out-only policy. A telemetry-enabled worker must reject this attach. */
+	telemetryDisabled?: true;
 }
 
 /**

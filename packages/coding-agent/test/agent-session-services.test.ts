@@ -49,6 +49,37 @@ describe("createAgentSessionFromServices", () => {
 		expect(settingsManager.getTelemetryNoticeShown()).toBe(true);
 	});
 
+	it("honors an explicit daemon-carried telemetry opt-out", async () => {
+		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
+		const tempDir = join(tmpdir(), `pi-session-daemon-telemetry-opt-out-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanupPaths.push(tempDir);
+		const settingsManager = SettingsManager.inMemory();
+		const services = await createAgentSessionServices({
+			cwd: tempDir,
+			agentDir: tempDir,
+			settingsManager,
+			telemetryDisabled: true,
+			resourceLoaderOptions: { noPromptTemplates: true, noThemes: true },
+		});
+
+		expect(services.diagnostics).not.toContainEqual(
+			expect.objectContaining({ message: expect.stringContaining("pseudonymous usage") }),
+		);
+		expect(settingsManager.getTelemetryNoticeShown()).toBe(false);
+
+		const { session } = await createAgentSessionFromServices({
+			services,
+			sessionManager: SessionManager.create(tempDir, join(tempDir, "sessions")),
+			telemetryDisabled: true,
+		});
+		try {
+			expect(existsSync(join(tempDir, "telemetry.json"))).toBe(false);
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("does not install top-level telemetry for a resumed child session", async () => {
 		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
 		const tempDir = join(tmpdir(), `pi-session-child-telemetry-${Date.now()}`);
