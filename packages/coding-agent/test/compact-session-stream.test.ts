@@ -140,6 +140,48 @@ describe("compact daemon assistant streaming", () => {
 		});
 	});
 
+	it("drops a delta that would leave a gap instead of emitting a hole", () => {
+		const reconstructor = new CompactAssistantStreamReconstructor();
+		reconstructor.observe({
+			type: "session_event",
+			activeSessionId: "active-gap",
+			event: { type: "message_start", message: assistant([]) },
+		});
+
+		// The worker is on its second block; the client never applied the first start.
+		const worker = assistant([
+			{ type: "text", text: "first" },
+			{ type: "text", text: "" },
+		]);
+		const secondStart = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-gap",
+			event: {
+				type: "message_update",
+				message: worker,
+				assistantMessageEvent: { type: "text_start", contentIndex: 1, partial: worker },
+			},
+		});
+		expect(secondStart).toBeDefined();
+		expect(reconstructor.reconstruct(secondStart!)).toBeUndefined();
+
+		// The reconstructor stays dense, so nothing serializes to null for clients.
+		const firstStart = createCompactAssistantDelta({
+			type: "session_event",
+			activeSessionId: "active-gap",
+			event: {
+				type: "message_update",
+				message: worker,
+				assistantMessageEvent: { type: "text_start", contentIndex: 0, partial: worker },
+			},
+		});
+		const reconstructed = reconstructor.reconstruct(firstStart!);
+		expect(reconstructed).toMatchObject({
+			event: { type: "message_update", message: { content: [{ type: "text", text: "" }] } },
+		});
+		expect(JSON.stringify(reconstructed)).not.toContain("null");
+	});
+
 	it("continues tool arguments after reconstructing from a snapshot", () => {
 		const reconstructor = new CompactAssistantStreamReconstructor();
 		reconstructor.seed(

@@ -50,6 +50,29 @@ function formatInlineLoginRecoveryMessage(message: string): string | undefined {
 }
 
 /**
+ * A daemon stream that lost a content-start frame can hand over an array with
+ * gaps, which serialize to null on the wire. Rendering runs on every frame, so
+ * it drops the missing blocks instead of failing the whole TUI render pass.
+ */
+function withoutMissingBlocks(message: AssistantMessage): AssistantMessage {
+	const blocks = message.content as (AssistantMessage["content"][number] | null | undefined)[];
+	let complete = true;
+	for (let i = 0; i < blocks.length; i++) {
+		if (blocks[i] == null) {
+			complete = false;
+			break;
+		}
+	}
+	if (complete) {
+		return message;
+	}
+	return {
+		...message,
+		content: blocks.filter((block): block is AssistantMessage["content"][number] => block != null),
+	};
+}
+
+/**
  * Component that renders a complete assistant message.
  *
  * Streaming sends one updateContent() per token, so content updates are
@@ -137,7 +160,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	updateContent(message: AssistantMessage): void {
-		this.lastMessage = message;
+		this.lastMessage = withoutMissingBlocks(message);
 		this.dirty = true;
 	}
 
