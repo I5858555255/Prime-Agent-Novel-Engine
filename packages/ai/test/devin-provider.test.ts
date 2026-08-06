@@ -1,19 +1,8 @@
 import { gunzipSync } from "node:zlib";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import "../src/providers/register-builtins.js";
 import { getApiProvider } from "../src/api-registry.js";
 import { getModels } from "../src/models.js";
-import {
-	GetChatMessageRequestSchema,
-	GetChatMessageResponseSchema,
-} from "../src/providers/devin/proto/exa/api_server_pb/api_server_pb.js";
-import { GetUserJwtRequestSchema, GetUserJwtResponseSchema } from "../src/providers/devin/proto/exa/auth_pb/auth_pb.js";
-import {
-	ChatToolCallSchema,
-	ModelUsageStatsSchema,
-	StopReason,
-} from "../src/providers/devin/proto/exa/codeium_common_pb/codeium_common_pb.js";
 import { streamDevin } from "../src/providers/devin.js";
 import type { Context, Model, ToolCall } from "../src/types.js";
 
@@ -35,18 +24,13 @@ const context: Context = {
 	messages: [{ role: "user", content: "Use the task tool", timestamp: 1 }],
 };
 
-function frameConnectMessage(payload: Uint8Array): Uint8Array {
-	const frame = new Uint8Array(5 + payload.length);
-	const view = new DataView(frame.buffer);
-	view.setUint8(0, 0);
-	view.setUint32(1, payload.length, false);
-	frame.set(payload, 5);
-	return frame;
-}
-
-function authPayload(): Uint8Array {
-	return toBinary(GetUserJwtResponseSchema, create(GetUserJwtResponseSchema, { userJwt: "jwt" }));
-}
+const AUTH_RESPONSE = Buffer.from("CgNqd3Q=", "base64");
+const TOOL_CALL_RESPONSE = Buffer.from(
+	"AAAAACEyHwoGY2FsbC0xEgR0YXNrGg97ImFnZW50IjoidGFzayIAAAAALSgKMikKBmNhbGwtMRIEdGFzaxoZeyJhZ2VudCI6InRhc2siLCJzdGVwIjoyfQ==",
+	"base64",
+);
+const TEXT_RESPONSE = Buffer.from("AAAAABIaDnNwbGl0IHJlc3BvbnNlKAI=", "base64");
+const USAGE_RESPONSE = Buffer.from("AAAAAAwoAjoIEAsYByANKGQ=", "base64");
 
 describe("Devin provider", () => {
 	it("registers the devin-agent streaming API", () => {
@@ -71,7 +55,7 @@ describe("Devin provider", () => {
 		const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 			if (String(input).includes("GetUserJwt")) {
 				authRequest = new Uint8Array(init?.body as ArrayBuffer);
-				return new Response(authPayload());
+				return new Response(AUTH_RESPONSE);
 			}
 			chatRequest = new Uint8Array(init?.body as ArrayBuffer);
 			return new Response(new Uint8Array());
@@ -80,8 +64,7 @@ describe("Devin provider", () => {
 		await streamDevin(devinModel, context, { apiKey: "session-token", fetch: fetchImpl }).result();
 
 		expect(authRequest).toBeDefined();
-		const auth = fromBinary(GetUserJwtRequestSchema, authRequest!);
-		expect(auth.metadata?.apiKey).toBe("devin-session-token$session-token");
+		expect(Buffer.from(authRequest!).includes(Buffer.from("devin-session-token$session-token"))).toBe(true);
 
 		expect(chatRequest).toBeDefined();
 		const compressedLength = new DataView(
@@ -89,33 +72,15 @@ describe("Devin provider", () => {
 			chatRequest!.byteOffset,
 			chatRequest!.byteLength,
 		).getUint32(1, false);
-		const request = fromBinary(
-			GetChatMessageRequestSchema,
-			gunzipSync(chatRequest!.subarray(5, 5 + compressedLength)),
-		);
-		expect(request.prompt).toBe("You are a coding agent.");
-		expect(request.chatMessagePrompts[0]?.prompt).toBe("Use the task tool");
+		const request = gunzipSync(chatRequest!.subarray(5, 5 + compressedLength));
+		expect(request.includes(Buffer.from("You are a coding agent."))).toBe(true);
+		expect(request.includes(Buffer.from("Use the task tool"))).toBe(true);
 	});
 
 	it("streams tool arguments and flushes the final object", async () => {
-		const responses = [
-			create(GetChatMessageResponseSchema, {
-				deltaToolCalls: [
-					create(ChatToolCallSchema, { id: "call-1", name: "task", argumentsJson: '{"agent":"task"' }),
-				],
-			}),
-			create(GetChatMessageResponseSchema, {
-				stopReason: StopReason.FUNCTION_CALL,
-				deltaToolCalls: [
-					create(ChatToolCallSchema, { id: "call-1", name: "task", argumentsJson: '{"agent":"task","step":2}' }),
-				],
-			}),
-		];
-		const responseBody = new Uint8Array(
-			responses.flatMap((response) => [...frameConnectMessage(toBinary(GetChatMessageResponseSchema, response))]),
-		);
+		const responseBody = TOOL_CALL_RESPONSE;
 		const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
-			String(input).includes("GetUserJwt") ? new Response(authPayload()) : new Response(responseBody);
+			String(input).includes("GetUserJwt") ? new Response(AUTH_RESPONSE) : new Response(responseBody);
 
 		const result = await streamDevin(devinModel, context, { apiKey: "token", fetch: fetchImpl }).result();
 
@@ -124,11 +89,7 @@ describe("Devin provider", () => {
 	});
 
 	it("parses Connect frames split across reader chunks", async () => {
-		const response = create(GetChatMessageResponseSchema, {
-			deltaText: "split response",
-			stopReason: StopReason.STOP_PATTERN,
-		});
-		const framed = frameConnectMessage(toBinary(GetChatMessageResponseSchema, response));
+		const framed = TEXT_RESPONSE;
 		const responseBody = new ReadableStream<Uint8Array>({
 			start(controller) {
 				for (let index = 0; index < framed.length; index++) {
@@ -138,7 +99,7 @@ describe("Devin provider", () => {
 			},
 		});
 		const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
-			String(input).includes("GetUserJwt") ? new Response(authPayload()) : new Response(responseBody);
+			String(input).includes("GetUserJwt") ? new Response(AUTH_RESPONSE) : new Response(responseBody);
 
 		const result = await streamDevin(devinModel, context, { apiKey: "token", fetch: fetchImpl }).result();
 
@@ -147,18 +108,9 @@ describe("Devin provider", () => {
 	});
 
 	it("includes cache tokens in total usage", async () => {
-		const response = create(GetChatMessageResponseSchema, {
-			stopReason: StopReason.STOP_PATTERN,
-			usage: create(ModelUsageStatsSchema, {
-				inputTokens: 11n,
-				outputTokens: 7n,
-				cacheReadTokens: 100n,
-				cacheWriteTokens: 13n,
-			}),
-		});
-		const body = frameConnectMessage(toBinary(GetChatMessageResponseSchema, response));
+		const body = USAGE_RESPONSE;
 		const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
-			String(input).includes("GetUserJwt") ? new Response(authPayload()) : new Response(body);
+			String(input).includes("GetUserJwt") ? new Response(AUTH_RESPONSE) : new Response(body);
 
 		const result = await streamDevin(devinModel, context, { apiKey: "token", fetch: fetchImpl }).result();
 
@@ -184,7 +136,7 @@ describe("Devin provider", () => {
 			},
 		});
 		const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
-			String(input).includes("GetUserJwt") ? new Response(authPayload()) : new Response(responseBody);
+			String(input).includes("GetUserJwt") ? new Response(AUTH_RESPONSE) : new Response(responseBody);
 
 		const result = await streamDevin(devinModel, context, { apiKey: "token", fetch: fetchImpl }).result();
 

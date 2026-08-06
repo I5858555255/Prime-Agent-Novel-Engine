@@ -1,12 +1,11 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { create, toBinary } from "@bufbuild/protobuf";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GetCliModelConfigsResponseSchema } from "../../ai/src/providers/devin/proto/exa/api_server_pb/api_server_pb.js";
-import { ClientModelConfigSchema } from "../../ai/src/providers/devin/proto/exa/codeium_common_pb/codeium_common_pb.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
+
+const MODELS_RESPONSE = Buffer.from("ChgKB0dMTSA1LjKQAcCaDLIBB2dsbS01LjI=", "base64");
 
 describe("Devin model registry discovery", () => {
 	let tempDir: string;
@@ -30,18 +29,7 @@ describe("Devin model registry discovery", () => {
 	});
 
 	it("replaces the static fallback with the authenticated account catalog", async () => {
-		const payload = toBinary(
-			GetCliModelConfigsResponseSchema,
-			create(GetCliModelConfigsResponseSchema, {
-				clientModelConfigs: [
-					create(ClientModelConfigSchema, {
-						label: "GLM 5.2",
-						modelUid: "glm-5.2",
-						maxTokens: 200_000,
-					}),
-				],
-			}),
-		);
+		const payload = MODELS_RESPONSE;
 		const fetchImpl = vi.fn(async () => new Response(payload, { status: 200 }));
 		vi.stubGlobal("fetch", fetchImpl);
 		const registry = ModelRegistry.inMemory(authStorage);

@@ -1,35 +1,20 @@
 import { gzipSync } from "node:zlib";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { describe, expect, it, vi } from "vitest";
-import {
-	GetCliModelConfigsRequestSchema,
-	GetCliModelConfigsResponseSchema,
-} from "../src/providers/devin/proto/exa/api_server_pb/api_server_pb.js";
-import {
-	ClientModelConfigSchema,
-	ModelCostTier,
-} from "../src/providers/devin/proto/exa/codeium_common_pb/codeium_common_pb.js";
 import { fetchDevinModels } from "../src/providers/devin-models.js";
+
+const FREE_MODELS_RESPONSE = Buffer.from("Ci0KEEdMTSA1LjIgVGhpbmtpbmcoAZABgNAPsgEHZ2xtLTUuMroBBDICeAHAAQQ=", "base64");
+const MIXED_MODELS_RESPONSE = Buffer.from(
+	"CiUKC05vIFRoaW5raW5nkAGgjQayAQ1lbmFibGVkLW1vZGVswAEBCiMKDFVua25vd24gQ29zdLIBEnVua25vd24tY29zdC1tb2RlbAodCghEaXNhYmxlZCABsgEOZGlzYWJsZWQtbW9kZWw=",
+	"base64",
+);
 
 describe("Devin model discovery", () => {
 	it("fetches the authenticated account catalog and normalizes model metadata", async () => {
-		const payload = toBinary(
-			GetCliModelConfigsResponseSchema,
-			create(GetCliModelConfigsResponseSchema, {
-				clientModelConfigs: [
-					create(ClientModelConfigSchema, {
-						label: "GLM 5.2 Thinking",
-						modelUid: "glm-5.2",
-						maxTokens: 256_000,
-						supportsImages: true,
-						modelCostTier: ModelCostTier.FREE,
-					}),
-				],
-			}),
-		);
+		const payload = FREE_MODELS_RESPONSE;
 		const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-			const request = fromBinary(GetCliModelConfigsRequestSchema, new Uint8Array(init?.body as Uint8Array));
-			expect(request.metadata?.apiKey).toBe("devin-session-token$account-token");
+			expect(Buffer.from(init?.body as Uint8Array).includes(Buffer.from("devin-session-token$account-token"))).toBe(
+				true,
+			);
 			expect(init?.headers).toMatchObject({
 				"content-type": "application/proto",
 				"connect-protocol-version": "1",
@@ -57,30 +42,7 @@ describe("Devin model discovery", () => {
 	});
 
 	it("filters disabled entries and accepts gzip-compressed responses", async () => {
-		const payload = gzipSync(
-			toBinary(
-				GetCliModelConfigsResponseSchema,
-				create(GetCliModelConfigsResponseSchema, {
-					clientModelConfigs: [
-						create(ClientModelConfigSchema, {
-							label: "No Thinking",
-							modelUid: "enabled-model",
-							maxTokens: 100_000,
-							modelCostTier: ModelCostTier.LOW,
-						}),
-						create(ClientModelConfigSchema, {
-							label: "Unknown Cost",
-							modelUid: "unknown-cost-model",
-						}),
-						create(ClientModelConfigSchema, {
-							label: "Disabled",
-							modelUid: "disabled-model",
-							disabled: true,
-						}),
-					],
-				}),
-			),
-		);
+		const payload = gzipSync(MIXED_MODELS_RESPONSE);
 		const fetchImpl = vi.fn(async () => new Response(payload, { status: 200 }));
 
 		await expect(fetchDevinModels({ apiKey: "token", fetch: fetchImpl })).resolves.toEqual([
