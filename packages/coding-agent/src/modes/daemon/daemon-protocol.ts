@@ -57,6 +57,7 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 12 publishes idle-residency metadata on session summary rows.
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
 // Revision 14 carries the client's monotonic telemetry opt-out on attach and reattach.
+// Revision 14 adds capability-gated extension statuses to connection state snapshots.
 export const DAEMON_SCHEMA_REVISION = 14;
 export const DAEMON_SCHEMA_ID = "protocol-7-schema-14-816309b1cd50";
 
@@ -74,6 +75,7 @@ export type DaemonClientCapability =
 	| "attach_snapshot"
 	| "event_sequence"
 	| "extension_ui"
+	| "extension_status_snapshot"
 	| "slim_attach"
 	| "chunked_snapshot"
 	| "client_owned_sessions";
@@ -119,6 +121,7 @@ export const DAEMON_SUPPORTED_CLIENT_CAPABILITIES: readonly DaemonClientCapabili
 	"attach_snapshot",
 	"event_sequence",
 	"extension_ui",
+	"extension_status_snapshot",
 	"slim_attach",
 	"chunked_snapshot",
 	"client_owned_sessions",

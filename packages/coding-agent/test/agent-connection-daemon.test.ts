@@ -669,6 +669,7 @@ function createAttachResult(
 					capability === "attach_snapshot" ||
 					capability === "event_sequence" ||
 					capability === "extension_ui" ||
+					capability === "extension_status_snapshot" ||
 					capability === "slim_attach" ||
 					capability === "chunked_snapshot",
 			),
@@ -1779,6 +1780,54 @@ describe("DaemonAgentConnection", () => {
 		expect(events).toEqual([]);
 	});
 
+	it("dispatches a streamed replacement before an adjacent legacy status replay", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		await connection.attach();
+		const events: AgentConnectionEvent[] = [];
+		let releaseReplacement!: () => void;
+		const replacementBlocked = new Promise<void>((resolve) => {
+			releaseReplacement = resolve;
+		});
+		connection.subscribe(async (event) => {
+			events.push(event);
+			if (event.type === "session_replaced") await replacementBlocked;
+		});
+		const full = createAttachResult("active-1", "client-1", undefined, 13, {
+			state: createConnectionState("active-1", "session-next"),
+			messages: [],
+		});
+		const { messages: _messages, ...snapshot } = full.snapshot;
+
+		fakeClient.emitMessage({
+			type: "session_snapshot_begin",
+			activeSessionId: "active-1",
+			snapshotId: "snapshot-replacement-status",
+			snapshot,
+			messageCount: 0,
+			targetChunkBytes: 512 * 1024,
+			purpose: "replacement",
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_end",
+			activeSessionId: "active-1",
+			snapshotId: "snapshot-replacement-status",
+			chunkCount: 0,
+			lastEventSequence: 13,
+		});
+		fakeClient.emitMessage({
+			type: "extension_ui_request",
+			activeSessionId: "active-1",
+			id: "legacy-status-replay",
+			method: "setStatus",
+			payload: { statusKey: "codex", statusText: "23% 1.8d" },
+		});
+
+		await vi.waitFor(() => expect(events).toHaveLength(2));
+		expect(events.map((event) => event.type)).toEqual(["session_replaced", "extension_ui_request"]);
+		releaseReplacement();
+	});
+
 	it("distinguishes chunked catch-up snapshots from runtime replacements", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
@@ -2006,7 +2055,14 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.at(-1)).toMatchObject({
 			type: "attach",
 			activeSessionId: "active-1",
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
+			capabilities: [
+				"attach_snapshot",
+				"event_sequence",
+				"extension_ui",
+				"extension_status_snapshot",
+				"slim_attach",
+				"chunked_snapshot",
+			],
 			resumeCursor: {
 				activeSessionId: "active-1",
 				generation: "generation-active-1",
@@ -2501,7 +2557,14 @@ describe("DaemonAgentConnection", () => {
 			type: "attach",
 			activeSessionId: "active-1",
 			clientId: expect.any(String),
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
+			capabilities: [
+				"attach_snapshot",
+				"event_sequence",
+				"extension_ui",
+				"extension_status_snapshot",
+				"slim_attach",
+				"chunked_snapshot",
+			],
 			resumeCursor: {
 				activeSessionId: "active-1",
 				generation: "generation-active-1",
@@ -2513,7 +2576,14 @@ describe("DaemonAgentConnection", () => {
 		expect(fakeClient.requests.at(-1)).toMatchObject({
 			type: "attach",
 			activeSessionId: "active-1",
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
+			capabilities: [
+				"attach_snapshot",
+				"event_sequence",
+				"extension_ui",
+				"extension_status_snapshot",
+				"slim_attach",
+				"chunked_snapshot",
+			],
 			resumeCursor: {
 				activeSessionId: "active-1",
 				generation: "generation-active-1",
@@ -2572,7 +2642,14 @@ describe("DaemonAgentConnection", () => {
 			activeSessionId: "active-1",
 			supportsExtensionUi: true,
 			clientId: expect.any(String),
-			capabilities: ["attach_snapshot", "event_sequence", "extension_ui", "slim_attach", "chunked_snapshot"],
+			capabilities: [
+				"attach_snapshot",
+				"event_sequence",
+				"extension_ui",
+				"extension_status_snapshot",
+				"slim_attach",
+				"chunked_snapshot",
+			],
 		});
 
 		fakeClient.emitMessage({

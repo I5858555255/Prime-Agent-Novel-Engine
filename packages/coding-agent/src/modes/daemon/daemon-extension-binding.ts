@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentSession } from "../../core/agent-session.js";
 import type {
 	ExtensionCommandContextActions,
 	ExtensionUIContext,
@@ -18,11 +19,6 @@ import {
 	isDaemonDialogExtensionUiRequest,
 } from "./daemon-protocol.js";
 
-export interface ActiveSessionBindingOptions {
-	/** Defer fire-and-forget UI requests until the replacement snapshot is broadcast. */
-	deferPassiveExtensionUi?: boolean;
-}
-
 export interface ActiveSessionBindingCallbacks {
 	broadcast: (state: ActiveSessionState, message: DaemonOutbound) => void;
 	createConnectionState?: (state: ActiveSessionState) => AgentConnectionState;
@@ -32,6 +28,16 @@ export interface ActiveSessionBindingCallbacks {
 }
 
 type BroadcastSessionEvent = Extract<DaemonOutbound, { type: "session_event" }>["event"];
+type ExtensionUiRequest = Extract<DaemonOutbound, { type: "extension_ui_request" }>;
+
+interface ExtensionUiBindingState {
+	replacementsInProgress: number;
+	staleSessions: WeakSet<AgentSession>;
+}
+
+interface DeferredExtensionUiRequests {
+	messages: ExtensionUiRequest[];
+}
 
 /**
  * message_update events carry the full partial assistant message twice: once
@@ -54,19 +60,38 @@ function slimSessionEventForWire(event: BroadcastSessionEvent): BroadcastSession
 export async function bindActiveSessionState(
 	state: ActiveSessionState,
 	callbacks: ActiveSessionBindingCallbacks,
-	options: ActiveSessionBindingOptions = {},
-): Promise<DaemonOutbound[]> {
+): Promise<void> {
+	state.extensionStatuses ??= new Map();
+	await bindSession(state, callbacks, { replacementsInProgress: 0, staleSessions: new WeakSet() }, false);
+}
+
+async function bindSession(
+	state: ActiveSessionState,
+	callbacks: ActiveSessionBindingCallbacks,
+	uiState: ExtensionUiBindingState,
+	deferPassiveExtensionUi: boolean,
+): Promise<DeferredExtensionUiRequests> {
 	const session = state.runtime.session;
-	const deferredExtensionUiRequests: DaemonOutbound[] = [];
+	state.extensionStatuses ??= new Map();
+	const statuses = state.extensionStatuses;
+	const deferred: DeferredExtensionUiRequests = { messages: [] };
 	let binding = true;
 	const broadcastExtensionUi: ActiveSessionBindingCallbacks["broadcast"] = (targetState, message) => {
+		if (message.type !== "extension_ui_request") {
+			callbacks.broadcast(targetState, message);
+			return;
+		}
+		const passive = !isDaemonDialogExtensionUiRequest(message.method);
 		if (
-			options.deferPassiveExtensionUi &&
-			binding &&
-			message.type === "extension_ui_request" &&
-			!isDaemonDialogExtensionUiRequest(message.method)
+			uiState.replacementsInProgress > 0 ||
+			uiState.staleSessions.has(session) ||
+			targetState.runtime.session !== session
 		) {
-			deferredExtensionUiRequests.push(message);
+			return;
+		}
+		if (passive) recordExtensionStatus(message, statuses);
+		if (deferPassiveExtensionUi && binding && passive) {
+			if (message.method !== "setStatus") deferred.messages.push(message);
 			return;
 		}
 		callbacks.broadcast(targetState, message);
@@ -79,6 +104,13 @@ export async function bindActiveSessionState(
 
 	state.unsubscribe?.();
 	state.runtime.setSubagentRuntimeHost(callbacks.subagentRuntimeHost);
+	state.runtime.setBeforeSessionReplace(() => {
+		uiState.replacementsInProgress += 1;
+		uiState.staleSessions.add(session);
+	});
+	state.runtime.setSessionReplaceFailed(() => {
+		uiState.replacementsInProgress = Math.max(0, uiState.replacementsInProgress - 1);
+	});
 	state.unsubscribe = session.subscribe((event) => {
 		callbacks.broadcast(state, {
 			type: "session_event",
@@ -88,27 +120,31 @@ export async function bindActiveSessionState(
 	});
 
 	state.runtime.setRebindSession(async () => {
-		const deferredRequests = await bindActiveSessionState(state, callbacks, {
-			deferPassiveExtensionUi: true,
-		});
+		uiState.replacementsInProgress = Math.max(0, uiState.replacementsInProgress - 1);
+		const replacementUi = await bindSession(state, callbacks, uiState, true);
 		callbacks.sessionReplaced?.(state);
+		const connectionState =
+			callbacks.createConnectionState?.(state) ?? createAgentConnectionState(state.runtime, state.activeSessionId);
+		connectionState.extensionStatuses = Object.fromEntries(statuses);
 		callbacks.broadcast(state, {
 			type: "session_replaced",
 			activeSessionId: state.activeSessionId,
-			state:
-				callbacks.createConnectionState?.(state) ??
-				createAgentConnectionState(state.runtime, state.activeSessionId),
+			state: connectionState,
 			messages: state.runtime.session.messages,
 		});
-		// A replacement resets the client footer before rebinding the session.
-		// Send passive extension UI updates only after that reset and snapshot.
-		for (const message of deferredRequests) callbacks.broadcast(state, message);
+		// The snapshot restores statuses atomically with the replacement render.
+		// Deliver other passive UI updates only after that reset and snapshot.
+		for (const message of replacementUi.messages) callbacks.broadcast(state, message);
 	});
 
 	await session.bindExtensions({
 		uiContext: createExtensionUIContext(
 			state,
-			options.deferPassiveExtensionUi ? broadcastExtensionUi : callbacks.broadcast,
+			broadcastExtensionUi,
+			() =>
+				uiState.replacementsInProgress === 0 &&
+				!uiState.staleSessions.has(session) &&
+				state.runtime.session === session,
 		),
 		commandContextActions: createCommandContextActions(state),
 		shutdownHandler: callbacks.shutdown,
@@ -124,7 +160,16 @@ export async function bindActiveSessionState(
 	});
 	binding = false;
 
-	return deferredExtensionUiRequests;
+	return deferred;
+}
+
+function recordExtensionStatus(message: ExtensionUiRequest, statuses: Map<string, string>): void {
+	if (message.method !== "setStatus") return;
+	const statusKey = message.payload.statusKey;
+	if (typeof statusKey !== "string") return;
+	const statusText = message.payload.statusText;
+	if (typeof statusText === "string") statuses.set(statusKey, statusText);
+	else statuses.delete(statusKey);
 }
 
 function createCommandContextActions(state: ActiveSessionState): ExtensionCommandContextActions {
@@ -156,8 +201,10 @@ function createCommandContextActions(state: ActiveSessionState): ExtensionComman
 function createExtensionUIContext(
 	state: ActiveSessionState,
 	broadcast: ActiveSessionBindingCallbacks["broadcast"],
+	isActive: () => boolean,
 ): ExtensionUIContext {
-	const emitUiRequest = (method: string, payload: Record<string, unknown>): string => {
+	const emitUiRequest = (method: string, payload: Record<string, unknown>): string | undefined => {
+		if (!isActive()) return undefined;
 		const id = randomUUID();
 		broadcast(state, {
 			type: "extension_ui_request",
@@ -176,6 +223,7 @@ function createExtensionUIContext(
 		fallback: T,
 		resolveResponse: (response: DaemonExtensionUIResponse) => T,
 	): Promise<T> => {
+		if (!isActive()) return Promise.resolve(fallback);
 		if (opts?.signal?.aborted) {
 			return Promise.resolve(fallback);
 		}
@@ -183,6 +231,7 @@ function createExtensionUIContext(
 			return Promise.resolve(fallback);
 		}
 		const requestId = emitUiRequest(method, payload);
+		if (!requestId) return Promise.resolve(fallback);
 		return new Promise((resolveDialog) => {
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 			const cleanup = () => {
