@@ -70,15 +70,10 @@ describe("Prime Inference models", () => {
 			expect(model.api).toBe("openai-completions");
 			expect(model.reasoning).toBe(true);
 			expect(model.thinkingLevelMap).toEqual({
-				off: null,
-				minimal: null,
-				low: null,
-				medium: null,
-				high: null,
-				xhigh: null,
+				xhigh: "xhigh",
 				max: "max",
 			});
-			expect(getSupportedThinkingLevels(model)).toEqual(["max"]);
+			expect(getSupportedThinkingLevels(model)).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 			expect(model.input).toEqual(["text", "image"]);
 			expect(model.contextWindow).toBe(1048576);
 			expect(model.maxTokens).toBe(1048576);
