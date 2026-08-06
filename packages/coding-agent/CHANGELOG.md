@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added xAI OAuth device-code authentication for SuperGrok and X Premium subscriptions ([#754](https://github.com/PrimeIntellect-ai/prime-agent/pull/754) by [@mwijanarko1](https://github.com/mwijanarko1)).
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
