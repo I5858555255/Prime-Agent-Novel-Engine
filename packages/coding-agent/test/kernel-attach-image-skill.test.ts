@@ -231,7 +231,8 @@ except RuntimeError as error:
 		expect(result.status).toBe("ok");
 		expect(result.stdout.trim()).toBe(
 			"RuntimeError: openai/gpt-oss-120b does not support vision. " +
-				"Tell the user to switch to a vision-capable model to load images into context.",
+				"Do not retry attach_image. Fall back to IPython with PIL/OCR for analysis, " +
+				"and tell the user to switch to a vision-capable model to load images into context.",
 		);
 		expect(result.attachments).toBeUndefined();
 	});

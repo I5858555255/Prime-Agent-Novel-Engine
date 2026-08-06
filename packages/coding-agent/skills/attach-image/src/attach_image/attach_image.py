@@ -240,7 +240,8 @@ async def run(*paths: str) -> str:
         model_id = info.get("id") or "the current model"
         raise RuntimeError(
             f"{model_id} does not support vision. "
-            "Tell the user to switch to a vision-capable model to load images into context."
+            "Do not retry attach_image. Fall back to IPython with PIL/OCR for analysis, "
+            "and tell the user to switch to a vision-capable model to load images into context."
         )
 
     # Validate every path before emitting anything, so a later failure never

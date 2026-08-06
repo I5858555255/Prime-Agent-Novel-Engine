@@ -1,49 +1,45 @@
 ---
 name: attach-image
-description: Load an on-disk image (PNG, JPEG, GIF, WebP) into the model's context as a viewable attachment so the model can directly SEE it — for screenshots, diagrams, charts, photos, or scanned pages. Use this when you need to perceive an image's visual contents. Requires a vision-capable model; errors clearly otherwise.
+description: Load an on-disk image (PNG, JPEG, GIF, WebP) into multimodal context via the pre-imported IPython callable `attach_image` (not a separate agent tool). On vision-capable models, prefer `print(await attach_image("path.png"))` when the user gives an image path or asks to analyze/see a screenshot, diagram, chart, or photo — do not use PIL/OCR instead. If the model is not vision-capable, skip this skill and fall back to IPython PIL/OCR analysis.
 ---
 
 # Attach Image
 
-Load on-disk images into the model's context as multimodal attachments. The
-image is sent to the model the same way a pasted image is, so the model can
-actually look at it.
-
-## When to use this
-
-- The user points at an image file and wants you to look at it.
-- You need to read text, a chart, a diagram, or a layout from an image.
-- A screenshot needs visual interpretation.
-
-## When NOT to use this
-
-For *programmatic* work on an image — measuring pixels, cropping, resizing,
-computing a hash, comparing files byte-by-byte — open it in the kernel with a
-library instead:
-
-```python
-from PIL import Image
-img = Image.open("diagram.png")
-print(img.size)
-```
-
-That path does not put the image in the model's context; it only lets you
-compute over it. Use `attach_image` when you need to *see* the image.
-
-## Usage
-
-Call the prepared `attach_image` import directly in the IPython kernel:
+`attach_image` is a **pre-imported Python skill** in the IPython kernel. It is
+not a standalone agent tool. Invoke it through `ipython`:
 
 ```python
 print(await attach_image("diagram.png"))
 print(await attach_image("a.png", "b.jpg"))
 ```
 
-The skill automatically resizes and compresses large images before loading them
-into context. Animated images that need compression are flattened to their first
-frame. Transparent images that need compression are composited onto a neutral
-gray background. Extremely large images are rejected by pixel count before full
-processing. The original file is left untouched.
+That loads the file into multimodal context the same way a pasted image does,
+so a vision-capable model can look at it.
 
-Supported formats: PNG, JPEG, GIF, WebP. The skill errors if a file is not a
-supported image, or if the current model is not vision-capable.
+## When to use
+
+- Current model supports images (`input` includes `image`)
+- User points at an image file and wants you to look at / analyze / describe it
+- Screenshots, diagrams, charts, UI captures, photos, scanned pages
+
+## When NOT to use (IPython fallback)
+
+If the current model is **not** vision-capable, `attach_image` raises. Do not
+retry it. Fall back to programmatic analysis in IPython:
+
+```python
+from PIL import Image
+img = Image.open("diagram.png")
+print(img.size, img.mode)
+# then OCR / crop / inspect as needed, e.g. tesseract
+```
+
+Also use PIL (not `attach_image`) for programmatic pixel work the user asked
+for explicitly — resize, crop, hash, compare bytes — even on vision models.
+
+## Rules
+
+- Vision model → prefer `await attach_image(...)` for visual understanding.
+- Non-vision model → IPython PIL/OCR fallback; say vision is unavailable.
+- Supported formats: PNG, JPEG, GIF, WebP.
+- Large images are auto-resized/compressed; originals are left untouched.
