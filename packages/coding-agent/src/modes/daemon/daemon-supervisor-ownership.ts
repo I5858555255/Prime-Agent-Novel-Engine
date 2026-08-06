@@ -18,6 +18,41 @@ const DAEMON_SUPERVISOR_REGISTRY_DIR_ENV = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVIS
 
 const OWNER_VERSION = 1;
 const REGISTRY_LOCK_STALE_MS = 5000;
+
+// getProcessStartId() synchronously shells out to `powershell.exe` on Windows
+// (see session-lease.ts) to read a pid's start time. That call alone commonly
+// costs 100ms-1s+, worse under load, and every worker_auth attempt during the
+// daemon supervisor<->worker handshake calls it through isProcessIdentityAlive
+// below for the SAME supervisor pid. Because that synchronous spawn blocks the
+// worker's event loop while the client's own request timeout keeps ticking
+// independently, the client can time out and reconnect before the worker ever
+// finishes computing the value it needed to answer the *previous* attempt —
+// a livelock where every retry loses the race by a small margin. A pid's
+// start time is immutable for as long as that pid stays alive, so caching it
+// briefly is safe; the TTL bounds the (already narrow, non-security) staleness
+// window for the rare case of a pid being recycled, matching the tolerance
+// this file already accepts elsewhere (e.g. REGISTRY_LOCK_STALE_MS above).
+const PROCESS_START_ID_CACHE_TTL_MS = 5000;
+const processStartIdCache = new Map<number, { value: string | undefined; expiresAt: number }>();
+
+export function cachedProcessStartId(
+	pid: number,
+	lookup: (pid: number) => string | undefined = getProcessStartId,
+	now: () => number = Date.now,
+): string | undefined {
+	const nowMs = now();
+	const cached = processStartIdCache.get(pid);
+	if (cached && cached.expiresAt > nowMs) {
+		return cached.value;
+	}
+	const value = lookup(pid);
+	processStartIdCache.set(pid, { value, expiresAt: nowMs + PROCESS_START_ID_CACHE_TTL_MS });
+	return value;
+}
+
+export function clearProcessStartIdCacheForTests(): void {
+	processStartIdCache.clear();
+}
 const REGISTRY_LOCK_UPDATE_MS = 1000;
 const REGISTRY_LOCK_RETRIES = 500;
 const REGISTRY_LOCK_RETRY_MS = 10;
@@ -525,7 +560,7 @@ function isProcessIdentityAlive(identity: ProcessIdentity): boolean {
 	if (!identity.processStartId) {
 		return true;
 	}
-	const observed = getProcessStartId(identity.pid);
+	const observed = cachedProcessStartId(identity.pid);
 	return observed === undefined || observed === identity.processStartId;
 }
 
@@ -533,7 +568,7 @@ function matchesExactProcessIdentity(identity: ProcessIdentity): boolean {
 	if (!isProcessAlive(identity.pid)) {
 		return false;
 	}
-	return identity.processStartId === undefined || getProcessStartId(identity.pid) === identity.processStartId;
+	return identity.processStartId === undefined || cachedProcessStartId(identity.pid) === identity.processStartId;
 }
 
 function isProcessAlive(pid: number): boolean {
