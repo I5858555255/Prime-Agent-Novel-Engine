@@ -554,9 +554,9 @@ function mapStopReason(status: OpenAI.Responses.ResponseStatus | undefined): Sto
 		case "in_progress":
 		case "queued":
 			return "stop";
-		default: {
-			const _exhaustive: never = status;
-			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
-		}
+		default:
+			// Unknown status — route through structured failure path
+			// instead of crashing the stream.  See #707.
+			return "error";
 	}
 }

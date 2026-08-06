@@ -634,6 +634,8 @@ function mapChatStopReason(reason: string | null): StopReason {
 		case "error":
 			return "error";
 		default:
-			return "stop";
+			// Unknown finish reason — treat as error instead of silently
+			// reporting as successful completion.  See #707.
+			return "error";
 	}
 }
