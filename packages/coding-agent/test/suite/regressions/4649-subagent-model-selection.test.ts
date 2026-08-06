@@ -55,6 +55,63 @@ describe("ENG-4649 subagent model selection", () => {
 		}
 	});
 
+	it("limits agent model discovery and selection to the user's model scope", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model" }, { id: "scoped-model" }, { id: "out-of-scope-model" }],
+		});
+		try {
+			harness.session.setScopedModels([
+				{ model: harness.getModel("parent-model")! },
+				{ model: harness.getModel("scoped-model")! },
+			]);
+
+			const discovered = await harness.session.findRlmModels("", 20);
+			expect(discovered.models.map((model) => model.selector)).toEqual([
+				`${provider}/parent-model`,
+				`${provider}/scoped-model`,
+			]);
+			await expect(harness.session.findRlmModels("out of scope", 20)).resolves.toEqual({ models: [] });
+			await expect(
+				harness.session.runRlmChild("reject the out-of-scope model", {
+					model: `${provider}/out-of-scope-model`,
+				}),
+			).rejects.toThrow(
+				`Requested subagent model "${provider}/out-of-scope-model" is unavailable, unauthenticated, or expired`,
+			);
+
+			harness.setResponses([fauxAssistantMessage("scoped child answer")]);
+			const result = await harness.session.runRlmChild("use the scoped model", {
+				model: `${provider}/scoped-model`,
+			});
+			expect(result.model).toBe(`${provider}/scoped-model`);
+			await vi.waitFor(async () => {
+				const childEntry = (await harness.session.listRlmSubagents()).subagents[0];
+				expect(childEntry?.status).toBe("completed");
+				const child = harness.session.getRlmChildSession(childEntry!.rlm_child_id);
+				expect(child?.model?.id).toBe("scoped-model");
+				expect((await child!.findRlmModels("", 20)).models.map((model) => model.selector)).toEqual([
+					`${provider}/parent-model`,
+					`${provider}/scoped-model`,
+				]);
+			});
+
+			harness.session.setScopedModels([{ model: harness.getModel("scoped-model")! }]);
+			expect((await harness.session.findRlmModels("", 20)).models.map((model) => model.selector)).toEqual([
+				`${provider}/scoped-model`,
+			]);
+			await expect(
+				harness.session.runRlmChild("reject the parent outside the updated scope", {
+					model: `${provider}/parent-model`,
+				}),
+			).rejects.toThrow(
+				`Requested subagent model "${provider}/parent-model" is unavailable, unauthenticated, or expired`,
+			);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("omits providers whose credentials are marked expired", async () => {
 		const harness = await createHarness({ provider, models: [{ id: "parent-model" }, { id: "child-model" }] });
 		try {

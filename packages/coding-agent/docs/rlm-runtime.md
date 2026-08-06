@@ -153,7 +153,7 @@ Supported `rlm.run` options are:
 - `name`: a unique readable child session name; and
 - `model`: an exact `provider/model` selector from `rlm.find_models()`.
 
-Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. If an exact selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
+Unknown options fail instead of being ignored. Model search is bounded to the user's configured model scope when one is active, then further limited to executable models with active, non-expired credentials. If no scope is configured, all executable models remain searchable. If an exact selection is outside the scope, unavailable, or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
 
 ## Child Execution
 
