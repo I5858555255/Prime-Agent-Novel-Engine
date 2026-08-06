@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed daemon command recovery compaction on platforms without directory fsync support ([#666](https://github.com/PrimeIntellect-ai/prime-agent/issues/666)).
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
