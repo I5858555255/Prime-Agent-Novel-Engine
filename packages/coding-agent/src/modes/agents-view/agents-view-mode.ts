@@ -332,6 +332,7 @@ async function openAgentsViewSession(
 				closeClientOnDispose: true,
 				recoverDaemon: options.recoverDaemon,
 				reconnectTimeoutMs: options.reconnectTimeoutMs,
+				telemetryDisabled: options.config.telemetryDisabled,
 			});
 			return { connection, summary };
 		} catch (error) {
@@ -354,6 +355,7 @@ async function openAgentsViewSession(
 			closeClientOnDispose: true,
 			recoverDaemon: options.recoverDaemon,
 			reconnectTimeoutMs: options.reconnectTimeoutMs,
+			telemetryDisabled: options.config.telemetryDisabled,
 		});
 		return { connection, summary: resumed.summary, cwdFallbackNotice: resumed.cwdFallbackNotice };
 	} catch (error) {

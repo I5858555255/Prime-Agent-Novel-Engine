@@ -3258,10 +3258,10 @@ export class DaemonSupervisor {
 					worker.descriptor.rootSessionId === command.activeSessionId),
 		);
 		if (ownedWorker) {
-			this.assertTelemetryAttachAllowed(ownedWorker, command.telemetryDisabled);
 			if (ownedWorker.descriptor.ownerClientId !== this.protocolClientId(client)) {
 				throw new Error(`Unknown active session: ${command.activeSessionId}`);
 			}
+			this.assertTelemetryAttachAllowed(ownedWorker, command.telemetryDisabled);
 			ownedWorker.launchEnv = command.launchEnv ?? ownedWorker.launchEnv;
 			if (!ownedWorker.client || ownedWorker.descriptor.lifecycle !== "ready") {
 				if (!ownedWorker.launchEnv) {

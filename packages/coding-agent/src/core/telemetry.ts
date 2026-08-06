@@ -111,6 +111,7 @@ interface UsageTotals extends Usage {
 
 interface ActiveRun {
 	startedAt: number;
+	agentEnded: boolean;
 	firstTurnStartedAt?: number;
 	firstModelEventMs?: number;
 	visibleTtftMs?: number;
@@ -591,6 +592,7 @@ function assistantMessage(event: AgentSessionEvent): AssistantMessage | undefine
 function createActiveRun(now: () => number): ActiveRun {
 	return {
 		startedAt: now(),
+		agentEnded: false,
 		modelLatencyMs: 0,
 		maxModelLatencyMs: 0,
 		turnCount: 0,
@@ -629,7 +631,7 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 		usage: newUsageTotals(),
 	};
 	let activeRun: ActiveRun | undefined;
-	let pendingErrorFinalize: ReturnType<typeof setTimeout> | undefined;
+	let turnActionActive = false;
 
 	const commonProperties = (): TelemetryProperties => ({
 		...baseProperties(options.executionMode ?? "unknown"),
@@ -637,10 +639,6 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 	});
 
 	const finalizeRun = (): void => {
-		if (pendingErrorFinalize) {
-			clearTimeout(pendingErrorFinalize);
-			pendingErrorFinalize = undefined;
-		}
 		const run = activeRun;
 		if (!run) {
 			return;
@@ -688,11 +686,18 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 
 	const unsubscribe = session.subscribe((event) => {
 		switch (event.type) {
+			case "session_action_update":
+				turnActionActive = event.actions.active?.kind === "turn";
+				if (!turnActionActive && activeRun?.agentEnded) {
+					finalizeRun();
+				}
+				break;
 			case "agent_start":
-				if (pendingErrorFinalize) {
+				if (activeRun?.agentEnded && !turnActionActive) {
 					finalizeRun();
 				}
 				activeRun ??= createActiveRun(now);
+				activeRun.agentEnded = false;
 				break;
 			case "message_start":
 				if (event.message.role === "user") {
@@ -751,10 +756,6 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 				}
 				break;
 			case "auto_retry_start":
-				if (pendingErrorFinalize) {
-					clearTimeout(pendingErrorFinalize);
-					pendingErrorFinalize = undefined;
-				}
 				if (activeRun) {
 					activeRun.retryCount++;
 				}
@@ -763,11 +764,9 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 				if (!activeRun) {
 					break;
 				}
-				if (runOutcome(activeRun.lastAssistant) === "success") {
+				activeRun.agentEnded = true;
+				if (!turnActionActive) {
 					finalizeRun();
-				} else {
-					pendingErrorFinalize = setTimeout(finalizeRun, 0);
-					pendingErrorFinalize.unref?.();
 				}
 				break;
 		}

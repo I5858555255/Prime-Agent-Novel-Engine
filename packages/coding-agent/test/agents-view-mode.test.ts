@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { DaemonAgentConnection } from "../src/modes/agent-connection/daemon-agent-connection.js";
 import type { AgentConnectionSavedSessionInfo } from "../src/modes/agent-connection/types.js";
 import {
 	AgentsViewMode,
@@ -244,7 +245,7 @@ describe("AgentsViewMode", () => {
 
 		await runAgentsViewMode({
 			socketPath: "/tmp/fake-daemon.sock",
-			config: { cwd: "/tmp" } as never,
+			config: { cwd: "/tmp", telemetryDisabled: true } as never,
 			initialSession: previous,
 			uiServices: {
 				settingsManager: settingsManager as never,
@@ -257,6 +258,11 @@ describe("AgentsViewMode", () => {
 
 		expect(modeMocks.teardownSessionUi).toHaveBeenCalledWith({ preserveAltScreen: true });
 		expect(modeMocks.dispose).toHaveBeenCalledOnce();
+		expect(DaemonAgentConnection.attach).toHaveBeenCalledWith(
+			expect.anything(),
+			opened.activeSessionId,
+			expect.objectContaining({ telemetryDisabled: true }),
+		);
 		runView.mockRestore();
 	});
 

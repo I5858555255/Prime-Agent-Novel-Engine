@@ -346,6 +346,10 @@ describe("agent telemetry aggregation", () => {
 		});
 
 		const assistant = assistantMessage();
+		fakeSession.emit({
+			type: "session_action_update",
+			actions: { queuedCount: 0, steering: [], followUps: [], active: { kind: "turn", phase: "running" } },
+		});
 		fakeSession.emit({ type: "agent_start" });
 		fakeSession.emit({
 			type: "message_start",
@@ -381,6 +385,7 @@ describe("agent telemetry aggregation", () => {
 		fakeSession.emit({ type: "turn_end", message: assistant, toolResults: [] });
 		timestamp = 1_125;
 		fakeSession.emit({ type: "agent_end", messages: [assistant] });
+		fakeSession.emit({ type: "session_action_update", actions: { queuedCount: 0, steering: [], followUps: [] } });
 
 		const run = sink.events.find((event) => event.name === "agent run completed");
 		expect(run?.properties).toMatchObject({
@@ -414,5 +419,75 @@ describe("agent telemetry aggregation", () => {
 			total_tokens: 170,
 		});
 		expect(sink.flushCount).toBe(1);
+	});
+
+	it("waits for post-run compaction before finalizing run metrics", () => {
+		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
+		const sink = new FakeTelemetrySink();
+		const fakeSession = new FakeAgentSession();
+
+		installAgentTelemetry(fakeSession as unknown as AgentSession, {
+			agentDir: "/not-used",
+			settingsManager: SettingsManager.inMemory(),
+			sink,
+		});
+
+		const assistant = assistantMessage();
+		fakeSession.emit({
+			type: "session_action_update",
+			actions: { queuedCount: 0, steering: [], followUps: [], active: { kind: "turn", phase: "running" } },
+		});
+		fakeSession.emit({ type: "agent_start" });
+		fakeSession.emit({ type: "message_end", message: assistant });
+		fakeSession.emit({ type: "agent_end", messages: [assistant] });
+		expect(sink.events.find((event) => event.name === "agent run completed")).toBeUndefined();
+
+		fakeSession.emit({
+			type: "compaction_end",
+			reason: "threshold",
+			result: { summary: "private", firstKeptEntryId: "private", tokensBefore: 100 },
+			aborted: false,
+			willRetry: false,
+		});
+		fakeSession.emit({ type: "session_action_update", actions: { queuedCount: 0, steering: [], followUps: [] } });
+
+		expect(sink.events.find((event) => event.name === "agent run completed")?.properties.compaction_count).toBe(1);
+	});
+
+	it("keeps automatic retries in one completed run", () => {
+		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
+		const sink = new FakeTelemetrySink();
+		const fakeSession = new FakeAgentSession();
+
+		installAgentTelemetry(fakeSession as unknown as AgentSession, {
+			agentDir: "/not-used",
+			settingsManager: SettingsManager.inMemory(),
+			sink,
+		});
+
+		const failed = assistantMessage({ stopReason: "error", errorMessage: "rate limit" });
+		const succeeded = assistantMessage();
+		fakeSession.emit({
+			type: "session_action_update",
+			actions: { queuedCount: 0, steering: [], followUps: [], active: { kind: "turn", phase: "running" } },
+		});
+		fakeSession.emit({ type: "agent_start" });
+		fakeSession.emit({ type: "message_end", message: failed });
+		fakeSession.emit({ type: "agent_end", messages: [failed] });
+		fakeSession.emit({
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 100,
+			errorMessage: "rate limit",
+		});
+		fakeSession.emit({ type: "agent_start" });
+		fakeSession.emit({ type: "message_end", message: succeeded });
+		fakeSession.emit({ type: "agent_end", messages: [succeeded] });
+		fakeSession.emit({ type: "session_action_update", actions: { queuedCount: 0, steering: [], followUps: [] } });
+
+		const runs = sink.events.filter((event) => event.name === "agent run completed");
+		expect(runs).toHaveLength(1);
+		expect(runs[0].properties).toMatchObject({ outcome: "success", retry_count: 1, model_call_count: 2 });
 	});
 });

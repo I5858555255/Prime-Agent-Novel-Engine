@@ -88,6 +88,11 @@ describe("daemon protocol helpers", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.set_rlm_max_depth).toEqual({ minProtocol: 7, minSchemaRevision: 11 });
 	});
 
+	it("schema-gates attach commands that carry the telemetry policy", () => {
+		expect(DAEMON_COMMAND_COMPATIBILITY.attach).toEqual({ minProtocol: 7, minSchemaRevision: 14 });
+		expect(DAEMON_COMMAND_COMPATIBILITY.reattach).toEqual({ minProtocol: 7, minSchemaRevision: 14 });
+	});
+
 	it("version- and capability-gates prompt admission cancellation", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.cancel_prompt_admission).toEqual({
 			minProtocol: 7,

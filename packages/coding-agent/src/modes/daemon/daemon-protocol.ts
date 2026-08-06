@@ -56,8 +56,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 11 adds immediate get/set commands for active-session RLM max depth.
 // Revision 12 publishes idle-residency metadata on session summary rows.
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
-export const DAEMON_SCHEMA_REVISION = 13;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-13-816309b1cd50";
+// Revision 14 carries the client's monotonic telemetry opt-out on attach and reattach.
+export const DAEMON_SCHEMA_REVISION = 14;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-14-816309b1cd50";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -633,14 +634,15 @@ const DELETE_RLM_SUBAGENT_COMMAND = {
 	capability: "delete_rlm_subagent",
 } as const;
 const FLAT_SESSION_TREE_COMMAND = { minProtocol: 7 } as const;
+const TELEMETRY_POLICY_ATTACH_COMMAND = { minProtocol: 7, minSchemaRevision: 14 } as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
 	ack_result: LEGACY_DAEMON_COMMAND,
 	list: LEGACY_DAEMON_COMMAND,
 	list_saved_sessions: LEGACY_DAEMON_COMMAND,
 	create: LEGACY_DAEMON_COMMAND,
-	attach: LEGACY_DAEMON_COMMAND,
-	reattach: LEGACY_DAEMON_COMMAND,
+	attach: TELEMETRY_POLICY_ATTACH_COMMAND,
+	reattach: TELEMETRY_POLICY_ATTACH_COMMAND,
 	detach: LEGACY_DAEMON_COMMAND,
 	complete_owned_session: CLIENT_OWNED_DAEMON_COMMAND,
 	promote_owned_session: CLIENT_OWNED_DAEMON_COMMAND,
