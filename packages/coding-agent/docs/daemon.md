@@ -73,7 +73,7 @@ Due ticks are claimed and advanced before prompt delivery. A crash therefore doe
 
 Resident workers keep scheduling across supervisor replacement. Worker recovery marks uncertain claims interrupted, keeps the advanced schedule, and resumes future ticks only. The supervisor routes schedule commands and merges worker summaries for global listing.
 
-## Public Daemon Protocol v4
+## Public Daemon Protocol v7
 
 The public local socket is JSONL-framed. The current protocol provides:
 
@@ -88,7 +88,7 @@ The public local socket is JSONL-framed. The current protocol provides:
 - daemon-side headless completion, session-header, bash, and retry operations; and
 - structured errors for recoverable cases such as an already-active session or uncertain mutation result.
 
-Protocol version and schema revision are independent. A compatible addition can be capability-gated or require a schema revision; an incompatible wire change requires a protocol bump.
+Protocol version and schema revision are independent; the current schema revision is 13. A compatible addition can be capability-gated or require a schema revision; an incompatible wire change requires a protocol bump.
 
 Protocol v1 is retained only for the one-release update handoff that prepares and stops an older daemon. A busy older daemon that cannot produce a recovery manifest is left running.
 
