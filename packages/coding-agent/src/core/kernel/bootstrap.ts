@@ -9,6 +9,7 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from "../../config.js";
+import { getShellConfig } from "../../utils/shell.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 
 const BOOTSTRAP_SCHEMA = 8;
@@ -36,6 +37,7 @@ export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) =>
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
 export const DEFAULT_RLM_EXTRA_IMPORT_LABELS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.promptLabel);
 const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
+const UV_INSTALL_POWERSHELL_COMMAND = "irm https://astral.sh/uv/install.ps1 | iex";
 const REQUIRED_HARNESS_METHODS = [
 	"create_memory",
 	"update_memory",
@@ -511,6 +513,32 @@ async function findExecutable(name: string): Promise<string | null> {
 	return null;
 }
 
+export function createUvInstallLaunchSpec(
+	platform: NodeJS.Platform = process.platform,
+	environment: NodeJS.ProcessEnv = process.env,
+): { command: string; args: string[]; displayCommand: string } {
+	if (platform === "win32") {
+		const command = path.win32.join(
+			environment.SystemRoot ?? String.raw`C:\Windows`,
+			"System32",
+			"WindowsPowerShell",
+			"v1.0",
+			"powershell.exe",
+		);
+		return {
+			command,
+			args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", UV_INSTALL_POWERSHELL_COMMAND],
+			displayCommand: UV_INSTALL_POWERSHELL_COMMAND,
+		};
+	}
+	const { shell, args } = getShellConfig();
+	return {
+		command: shell,
+		args: [...args, UV_INSTALL_COMMAND],
+		displayCommand: UV_INSTALL_COMMAND,
+	};
+}
+
 async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 	const fromPath = await findExecutable("uv");
 	if (fromPath) return fromPath;
@@ -520,19 +548,20 @@ async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 
 	const shouldInstallUv =
 		process.env.PRIME_AGENT_INSTALL_UV === "1" || (!options.onProgress && (await confirmUvInstall()));
+	const install = createUvInstallLaunchSpec();
 	if (!shouldInstallUv) {
 		throw new Error(
-			`uv is required to set up the Python kernel. Install uv yourself: ${UV_INSTALL_COMMAND}, ` +
+			`uv is required to set up the Python kernel. Install uv yourself: ${install.displayCommand}, ` +
 				"or set PRIME_AGENT_INSTALL_UV=1 to let prime-agent run that installer.",
 		);
 	}
 
 	reportProgress(options, "› installing uv (one-time)…");
 	try {
-		await run("sh", ["-c", UV_INSTALL_COMMAND], { stdio: options.onProgress ? "ignore" : "inherit" });
+		await run(install.command, install.args, { stdio: options.onProgress ? "ignore" : "inherit" });
 	} catch (error) {
 		throw new Error(
-			`couldn't install uv from astral.sh; install it yourself: ${UV_INSTALL_COMMAND}, then re-run prime-agent. ${errorMessage(error)}`,
+			`couldn't install uv from astral.sh; install it yourself: ${install.displayCommand}, then re-run prime-agent. ${errorMessage(error)}`,
 		);
 	}
 

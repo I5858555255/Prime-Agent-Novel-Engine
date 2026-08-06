@@ -35,13 +35,28 @@ function quoteCommandArgument(value: string): string {
 	return /^[A-Za-z0-9_./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-export function formatCurrentCliCommand(args: readonly string[], environment: NodeJS.ProcessEnv = process.env): string {
+function quotePowerShellArgument(value: string): string {
+	return /^[A-Za-z0-9_./:\\@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", "''")}'`;
+}
+
+function formatCommand(command: string, args: readonly string[], platform: NodeJS.Platform): string {
+	if (platform === "win32") {
+		return `& ${[command, ...args].map(quotePowerShellArgument).join(" ")}`;
+	}
+	return [command, ...args].map(quoteCommandArgument).join(" ");
+}
+
+export function formatCurrentCliCommand(
+	args: readonly string[],
+	environment: NodeJS.ProcessEnv = process.env,
+	platform: NodeJS.Platform = process.platform,
+): string {
 	const launcherPath = environment.PRIME_AGENT_LAUNCHER_PATH;
 	if (launcherPath) {
-		return [launcherPath, ...args].map(quoteCommandArgument).join(" ");
+		return formatCommand(launcherPath, args, platform);
 	}
 	const launch = createCliSubprocessLaunchSpec(args);
-	return [launch.command, ...launch.args].map(quoteCommandArgument).join(" ");
+	return formatCommand(launch.command, launch.args, platform);
 }
 
 export function createCliSubprocessLaunchSpec(
