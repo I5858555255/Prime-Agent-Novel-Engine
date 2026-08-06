@@ -27,24 +27,13 @@ const SHUTDOWN_ADMISSION_LEASE_MS = 5000;
 const SHUTDOWN_ADMISSION_REFRESH_MS = 1000;
 const SHUTDOWN_ADMISSION_WAIT_MS = 50;
 
-// getProcessStartId() synchronously shells out to `powershell.exe` on Windows
-// (see session-lease.ts) to read a pid's start time. That call alone commonly
-// costs 100ms-1s+, worse under load, and every worker_auth attempt during the
-// daemon supervisor<->worker handshake calls it through isProcessIdentityAlive
-// below for the SAME supervisor pid. Because that synchronous spawn blocks the
-// worker's event loop while the client's own request timeout keeps ticking
-// independently, the client can time out and reconnect before the worker ever
-// finishes computing the value it needed to answer the *previous* attempt —
-// a livelock where every retry loses the race by a small margin. A pid's
-// start time is immutable for as long as that pid stays alive, so caching it
-// briefly is safe; the TTL bounds the (already narrow, non-security) staleness
-// window for the rare case of a pid being recycled, matching the tolerance
-// this file already accepts elsewhere (e.g. REGISTRY_LOCK_STALE_MS above).
-// This is the same lookup daemon-update-restart.ts's createProcessIdentityLivenessCheck
-// throttles for the identical reason (PROCESS_START_ID_RECHECK_MS = 1000 there); this
-// file uses 5000ms because the expiry is computed AFTER the (potentially 1.1-1.25s,
-// occasionally multi-second) lookup returns, not before, so a shorter TTL closer to
-// the observed steady-state lookup cost would leave little to no effective caching.
+// getProcessStartId() synchronously spawns powershell.exe on Windows (session-lease.ts),
+// costing 100ms-1s+. Every worker_auth attempt hits it for the same supervisor pid, blocking
+// the worker's event loop past the client's 1000ms per-attempt timeout, so the handshake
+// livelocks with every retry losing the race. A pid's start time is immutable while that pid
+// is alive, so caching it briefly is safe; this is not a security boundary. 5000ms rather than
+// daemon-update-restart.ts's PROCESS_START_ID_RECHECK_MS = 1000 because the expiry below is
+// stamped after the lookup returns, so a TTL near the lookup's own cost would cache nothing.
 const PROCESS_START_ID_CACHE_TTL_MS = 5000;
 const processStartIdCache = new Map<number, { value: string | undefined; expiresAt: number }>();
 
@@ -58,11 +47,8 @@ export function cachedProcessStartId(
 		return cached.value;
 	}
 	const value = lookup(pid);
-	// Stamp the expiry from AFTER the lookup returns, not before: the lookup
-	// itself can take as long as the TTL (or longer, cold), and computing the
-	// deadline from the start time would make slow lookups produce an entry
-	// that is already expired the moment it is stored — caching nothing at
-	// all in exactly the environments this fix targets.
+	// Expiry is stamped after the lookup returns: a lookup slower than the TTL
+	// would otherwise store an entry that is already expired.
 	processStartIdCache.set(pid, { value, expiresAt: now() + PROCESS_START_ID_CACHE_TTL_MS });
 	return value;
 }
