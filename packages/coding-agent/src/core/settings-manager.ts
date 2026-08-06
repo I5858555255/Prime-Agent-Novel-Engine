@@ -828,7 +828,9 @@ export class SettingsManager {
 	}
 
 	getTelemetryEnabled(): boolean {
-		return this.settings.telemetry?.enabled ?? true;
+		const globalEnabled = this.globalSettings.telemetry?.enabled ?? true;
+		const projectEnabled = this.projectSettings.telemetry?.enabled ?? true;
+		return globalEnabled && projectEnabled;
 	}
 
 	private getOrCreateGlobalTelemetrySettings(): TelemetrySettings {
@@ -846,7 +848,7 @@ export class SettingsManager {
 	}
 
 	getTelemetryNoticeShown(): boolean {
-		return this.settings.telemetry?.noticeShown ?? false;
+		return this.globalSettings.telemetry?.noticeShown ?? false;
 	}
 
 	setTelemetryNoticeShown(shown: boolean): void {

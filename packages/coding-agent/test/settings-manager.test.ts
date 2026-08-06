@@ -526,4 +526,34 @@ describe("SettingsManager", () => {
 			expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).idleEvictionMinutes).toBe("off");
 		});
 	});
+
+	describe("telemetry privacy controls", () => {
+		it("does not let project settings override a global opt-out or disclosure state", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ telemetry: { enabled: false, noticeShown: false } }),
+			);
+			writeFileSync(
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({ telemetry: { enabled: true, noticeShown: true } }),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getTelemetryEnabled()).toBe(false);
+			expect(manager.getTelemetryNoticeShown()).toBe(false);
+		});
+
+		it("allows project settings to further disable globally enabled telemetry", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ telemetry: { enabled: true } }));
+			writeFileSync(
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({ telemetry: { enabled: false } }),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getTelemetryEnabled()).toBe(false);
+		});
+	});
 });

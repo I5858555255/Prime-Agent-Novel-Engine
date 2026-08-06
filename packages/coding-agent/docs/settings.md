@@ -70,6 +70,8 @@ Prime Agent sends pseudonymous, aggregate usage and performance events to Prime 
 
 Prime Agent does not send prompts, responses, thinking, tool arguments or results, command text, filenames, paths, repository information, environment variables, credentials, raw error messages, hostnames, usernames, emails, or hardware identifiers. A random installation ID is stored as `telemetry.json` in the configured agent directory (normally `~/.prime/agent/`).
 
+Telemetry can be disabled globally or for an individual project. Project settings can only further restrict telemetry: they cannot re-enable a global opt-out or suppress the global one-time disclosure.
+
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `telemetry.enabled` | boolean | `true` | Send pseudonymous aggregate usage and performance events |
