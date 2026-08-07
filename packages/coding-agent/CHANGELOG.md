@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed a session worker that dies during startup reporting `write after end` instead of its exit status ([#813](https://github.com/PrimeIntellect-ai/prime-agent/issues/813)).
 
 ## [0.7.0] - 2026-08-05
 
