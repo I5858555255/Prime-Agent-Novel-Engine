@@ -10,10 +10,10 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import { takeOverStdout, writeRawStdout } from "../../core/output-guard.js";
 import { InProcessAgentConnection } from "../agent-connection/in-process-agent-connection.js";
-import type { AgentConnection } from "../agent-connection/types.js";
+import type { AgentConnection, AgentConnectionRlmChildAgentSnapshot } from "../agent-connection/types.js";
 import { latestAutonomousGateAttempt } from "../headless-completion.js";
 import { type AcpEventMappingState, acpUpdatesForSessionEvent } from "./acp-events.js";
-import { primeAgentMeta } from "./acp-meta.js";
+import { type PrimeAgentAutonomousMeta, primeAgentMeta } from "./acp-meta.js";
 import { type AcpStopReason, acpStopReason } from "./acp-stop-reason.js";
 
 /**
@@ -137,18 +137,32 @@ function promptContent(blocks: readonly unknown[]): { text: string; images: Imag
 	return { text: texts.join("\n"), images };
 }
 
-function autonomousMeta(status: AgentAutonomousStatus | undefined): Record<string, unknown> | undefined {
+function autonomousMeta(status: AgentAutonomousStatus | undefined): PrimeAgentAutonomousMeta | undefined {
 	if (!status?.enabled) return undefined;
-	return primeAgentMeta({
-		autonomous: {
-			enabled: status.enabled,
-			continuationsUsed: status.continuationsUsed,
-			turnsUsed: status.turnsUsed,
-			tokensUsed: status.tokensUsed,
-			gateAttempt: latestAutonomousGateAttempt(status) || undefined,
-			gateFailure: status.lastGateFailure?.exitText,
-		},
-	});
+	return {
+		enabled: status.enabled,
+		continuationsUsed: status.continuationsUsed,
+		turnsUsed: status.turnsUsed,
+		tokensUsed: status.tokensUsed,
+		gateAttempt: latestAutonomousGateAttempt(status) || undefined,
+		gateFailure: status.lastGateFailure?.exitText,
+	};
+}
+
+function outstandingSubagentCount(children: readonly AgentConnectionRlmChildAgentSnapshot[] | undefined): number {
+	return (children ?? []).filter((child) => child.status === "queued" || child.status === "running").length;
+}
+
+function quiescenceMeta(
+	status: AgentAutonomousStatus,
+	children: readonly AgentConnectionRlmChildAgentSnapshot[] | undefined,
+): { outstandingSubagents: number; remainingAutonomousContinuations: number } {
+	return {
+		outstandingSubagents: outstandingSubagentCount(children),
+		remainingAutonomousContinuations: status.enabled
+			? Math.max(0, status.limits.maxContinuations - status.continuationsUsed)
+			: 0,
+	};
 }
 
 /**
@@ -248,6 +262,7 @@ export async function runAcpModeWithConnection(
 	// session keeps every event unambiguously attributable; a second session/new
 	// is refused rather than silently sharing conversation state, cwd, and queues.
 	let session: AcpSessionEntry | undefined;
+	let sessionNewInFlight = false;
 	let bound = false;
 
 	const stream =
@@ -270,64 +285,87 @@ export async function runAcpModeWithConnection(
 			_meta: primeAgentMeta({}),
 		}))
 		.onRequest("session/new", async (ctx: any) => {
-			if (!bound) {
-				// Only latch after a successful bind: a rejected bind must not leave
-				// extensions permanently unavailable for the rest of the process.
-				await options.bindHeadlessExtensions?.();
-				bound = true;
-			}
-			if (session) {
+			// Reserve the single-session slot before the first await. Otherwise two
+			// concurrent requests can both pass the empty-slot check while cwd or
+			// snapshot reads are in flight, then overwrite each other's session.
+			if (session || sessionNewInFlight) {
 				throw new Error(
 					"prime-agent ACP mode hosts one session per connection; " +
 						"start another prime-agent process for a second session",
 				);
 			}
-			// prime-agent's cwd is fixed at startup by the session it was launched
-			// with, so a client-supplied cwd cannot be adopted after the fact.
-			// Report the real cwd back in `_meta` rather than failing the request or
-			// letting the client assume a directory the agent is not using.
-			const requestedCwd = (ctx.params as { cwd?: unknown } | undefined)?.cwd;
-			let cwdMismatch: { requested: string; actual: string } | undefined;
-			if (typeof requestedCwd === "string" && requestedCwd.length > 0) {
-				const actual = await connection
-					.getState()
-					.then((state) => state.cwd)
-					.catch(() => undefined);
-				if (actual && !sameCwd(requestedCwd, actual)) {
-					cwdMismatch = { requested: requestedCwd, actual };
+			sessionNewInFlight = true;
+			try {
+				if (!bound) {
+					// Only latch after a successful bind: a rejected bind must not leave
+					// extensions permanently unavailable for the rest of the process.
+					await options.bindHeadlessExtensions?.();
+					bound = true;
 				}
+				// prime-agent's cwd is fixed at startup by the session it was launched
+				// with, so a client-supplied cwd cannot be adopted after the fact.
+				// Report the real cwd back in `_meta` rather than failing the request or
+				// letting the client assume a directory the agent is not using.
+				const requestedCwd = (ctx.params as { cwd?: unknown } | undefined)?.cwd;
+				let cwdMismatch: { requested: string; actual: string } | undefined;
+				if (typeof requestedCwd === "string" && requestedCwd.length > 0) {
+					const actual = await connection
+						.getState()
+						.then((state) => state.cwd)
+						.catch(() => undefined);
+					if (actual && !sameCwd(requestedCwd, actual)) {
+						cwdMismatch = { requested: requestedCwd, actual };
+					}
+				}
+				const sessionId = randomUUID();
+				// Install the listener before fetching the snapshot. Child updates can arrive
+				// while the snapshot request is in flight; the connection remains the
+				// authoritative source used when quiescence is emitted below.
+				const entry: AcpSessionEntry = { id: sessionId, abort: undefined, unsubscribe: undefined };
+				// Subscribe for the session lifetime, not per prompt turn: prime-agent
+				// subagents are fire-and-forget and keep reporting after the spawning turn
+				// ends, so a turn-scoped subscription would drop their updates. One
+				// mapping state per session keeps streaming bash output correlated with
+				// the run that produced it.
+				const mappingState: AcpEventMappingState = {};
+				const unsubscribe = connection.subscribe((event) => {
+					const notify = (update: Record<string, unknown>) =>
+						void ctx.client
+							.notify(acp.methods.client.session.update, { sessionId, update })
+							.catch(() => undefined);
+					// Heartbeats and cron schedules are connection-level rather than
+					// session events, but they drive the long-running work an ACP client
+					// most needs to observe.
+					if (event.type === "heartbeats_changed") {
+						notify({ sessionUpdate: "session_info_update", _meta: primeAgentMeta({ heartbeatsChanged: true }) });
+						return;
+					}
+					if (event.type !== "session_event") return;
+					for (const update of acpUpdatesForSessionEvent(event.event, mappingState)) {
+						notify(update);
+					}
+				});
+				try {
+					// Reconcile after subscribing so updates cannot be lost while the snapshot
+					// request is in flight. Do not turn a failed read into an empty roster.
+					await connection.getInitialSnapshot();
+				} catch (error) {
+					// A failed setup never claims the session slot, but it must still release
+					// the listener installed above.
+					unsubscribe();
+					throw error;
+				}
+				// Claim the single-session slot only once the subscription and snapshot are
+				// ready, so a failed setup cannot leave it occupied and unusable.
+				entry.unsubscribe = unsubscribe;
+				session = entry;
+				return {
+					sessionId,
+					...(cwdMismatch ? { _meta: primeAgentMeta({ cwd: cwdMismatch }) } : {}),
+				};
+			} finally {
+				sessionNewInFlight = false;
 			}
-			const sessionId = randomUUID();
-			const entry: AcpSessionEntry = { id: sessionId, abort: undefined, unsubscribe: undefined };
-			// Subscribe for the session lifetime, not per prompt turn: prime-agent
-			// subagents are fire-and-forget and keep reporting after the spawning turn
-			// ends, so a turn-scoped subscription would drop their updates. One
-			// mapping state per session keeps streaming bash output correlated with
-			// the run that produced it.
-			const mappingState: AcpEventMappingState = {};
-			const unsubscribe = connection.subscribe((event) => {
-				const notify = (update: Record<string, unknown>) =>
-					void ctx.client.notify(acp.methods.client.session.update, { sessionId, update }).catch(() => undefined);
-				// Heartbeats and cron schedules are connection-level rather than
-				// session events, but they drive the long-running work an ACP client
-				// most needs to observe.
-				if (event.type === "heartbeats_changed") {
-					notify({ sessionUpdate: "session_info_update", _meta: primeAgentMeta({ heartbeatsChanged: true }) });
-					return;
-				}
-				if (event.type !== "session_event") return;
-				for (const update of acpUpdatesForSessionEvent(event.event, mappingState)) {
-					notify(update);
-				}
-			});
-			// Claim the single-session slot only once the subscription exists, so a
-			// failed subscribe cannot leave the slot occupied and unusable.
-			entry.unsubscribe = unsubscribe;
-			session = entry;
-			return {
-				sessionId,
-				...(cwdMismatch ? { _meta: primeAgentMeta({ cwd: cwdMismatch }) } : {}),
-			};
 		})
 		.onRequest("session/prompt", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string; prompt: readonly unknown[] };
@@ -353,15 +391,23 @@ export async function runAcpModeWithConnection(
 				// Autonomous gates continue inside this same prompt turn: the turn is
 				// only over once the gate loop settles.
 				const status = await connection.waitForHeadlessCompletion();
-				const meta = autonomousMeta(status);
-				if (meta) {
-					await ctx.client
-						.notify(acp.methods.client.session.update, {
-							sessionId: params.sessionId,
-							update: { sessionUpdate: "session_info_update", _meta: meta },
-						})
-						.catch(() => undefined);
-				}
+				// Snapshot after headless completion: detached subagents can publish a
+				// terminal update after the parent model turn has gone idle.
+				const autonomous = autonomousMeta(status);
+				// Read the authoritative live roster at emission time. A session-local
+				// shadow map can miss detached children or updates during the turn.
+				const liveSnapshot = await connection.getInitialSnapshot();
+				const meta = primeAgentMeta({
+					...(autonomous ? { autonomous } : {}),
+					quiescence: quiescenceMeta(status, liveSnapshot.children),
+				});
+				await ctx.client
+					.notify(acp.methods.client.session.update, {
+						sessionId: params.sessionId,
+						update: { sessionUpdate: "session_info_update", _meta: meta },
+					})
+					.catch(() => undefined);
+
 				// A turn that failed (provider error, auth, no usable model) must not be
 				// reported as a clean end_turn. Print mode surfaces
 				// `stopReason: "error"` with its errorMessage; ACP previously dropped
