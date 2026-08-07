@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Sference as a supported provider (OpenAI-compatible Chat Completions API at `api.sference.com/v1`; uses `SFERENCE_API_KEY`; defaults to `moonshotai/Kimi-K3`).
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

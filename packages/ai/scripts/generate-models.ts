@@ -110,6 +110,38 @@ const ZAI_THINKING_COMPAT: OpenAICompletionsCompat = {
 	thinkingFormat: "zai",
 };
 
+const SFERENCE_BASE_URL = "https://api.sference.com/v1";
+// Sference speaks OpenAI Chat Completions but does not implement `store`, the
+// `developer` role, or per-tool `strict` schemas; `reasoning_effort` and
+// `max_completion_tokens` are both supported (verified against the published
+// OpenAPI spec for POST /v1/chat/completions).
+const SFERENCE_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: true,
+	maxTokensField: "max_completion_tokens",
+	supportsStrictMode: false,
+};
+// Sference's catalog publishes no per-model output cap, only a context window.
+const SFERENCE_DEFAULT_MAX_TOKENS = 32768;
+
+interface SferenceCatalogEntry {
+	id: string;
+	display_name?: string;
+	modality?: string;
+	context_tokens?: number | null;
+	pricing?: {
+		input_per_million_usd?: number | null;
+		output_per_million_usd?: number | null;
+		cached_input_per_million_usd?: number | null;
+	} | null;
+	capabilities?: {
+		image_input?: { supported?: boolean };
+		thinking?: { supported?: boolean };
+		tools?: { supported?: boolean };
+	} | null;
+}
+
 const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
 const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
@@ -622,6 +654,66 @@ function getPrimeInferenceOpenRouterMetadata(
 ): PrimeInferenceOpenRouterMetadata | undefined {
 	const id = modelId.toLowerCase();
 	return index.get(PRIME_INFERENCE_OPENROUTER_ALIASES[id] ?? id);
+}
+
+function getExistingSferenceModels(): Model<"openai-completions">[] {
+	const models = EXISTING_MODELS.sference as unknown as Record<string, Model<"openai-completions">> | undefined;
+	if (!models) return [];
+	return Object.values(models).map((model) => ({
+		...model,
+		input: [...model.input],
+		cost: { ...model.cost },
+	}));
+}
+
+function createSferenceModel(entry: SferenceCatalogEntry): Model<"openai-completions"> {
+	const vision = entry.capabilities?.image_input?.supported === true;
+	const contextWindow = entry.context_tokens ?? 131072;
+	const inputCost = entry.pricing?.input_per_million_usd ?? 0;
+	return {
+		id: entry.id,
+		name: entry.display_name || entry.id,
+		api: "openai-completions",
+		provider: "sference",
+		baseUrl: SFERENCE_BASE_URL,
+		reasoning: entry.capabilities?.thinking?.supported === true,
+		input: vision ? ["text", "image"] : ["text"],
+		cost: {
+			input: inputCost,
+			output: entry.pricing?.output_per_million_usd ?? 0,
+			// Sference bills cache reads at a published discount and never charges
+			// a separate cache-write rate — prefix caching is automatic.
+			cacheRead: entry.pricing?.cached_input_per_million_usd ?? 0,
+			cacheWrite: 0,
+		},
+		contextWindow,
+		maxTokens: Math.min(SFERENCE_DEFAULT_MAX_TOKENS, contextWindow),
+		compat: SFERENCE_COMPAT,
+	};
+}
+
+async function fetchSferenceModels(): Promise<Model<"openai-completions">[]> {
+	const apiKey = process.env.SFERENCE_API_KEY;
+	try {
+		console.log("Fetching models from Sference API...");
+		const response = await fetch(`${SFERENCE_BASE_URL}/models`, {
+			headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+		});
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		const payload = (await response.json()) as { data?: SferenceCatalogEntry[] };
+		const catalog = (payload.data ?? []).filter(
+			(entry) => entry.id && (entry.modality ?? "text_generation") === "text_generation",
+		);
+		if (catalog.length === 0) throw new Error("empty catalog");
+		const models = catalog.map(createSferenceModel);
+		console.log(`Loaded ${models.length} Sference models from the live catalog`);
+		return models;
+	} catch (error) {
+		// /v1/models requires a key and only lists non-deprecated models, so a
+		// failure here would silently drop the whole provider. Keep the snapshot.
+		console.error("Failed to fetch Sference models, keeping snapshot:", error);
+		return getExistingSferenceModels();
+	}
 }
 
 async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[]> {
@@ -2310,6 +2402,9 @@ async function generateModels() {
 
 	const primeInferenceModels = await fetchPrimeInferenceModels();
 	allModels.push(...primeInferenceModels);
+
+	const sferenceModels = await fetchSferenceModels();
+	allModels.push(...sferenceModels);
 
 	const azureOpenAiModels: Model<Api>[] = allModels
 		.filter((model) => model.provider === "openai" && model.api === "openai-responses")
