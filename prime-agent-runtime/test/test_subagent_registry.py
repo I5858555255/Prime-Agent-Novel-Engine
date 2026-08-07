@@ -191,7 +191,9 @@ class RlmSubagentRegistryTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "target must not be empty"):
             asyncio.run(rlm_module.delete_subagent("   "))
-        with self.assertRaisesRegex(TypeError, "target must be str or RLMSubagent"):
+        with self.assertRaisesRegex(
+            TypeError, "target must be str, RLMSubagent, or RLMSpawnHandle"
+        ):
             asyncio.run(rlm_module.delete_subagent(123))
 
     def test_rejects_invalid_registry_payload(self) -> None:
@@ -219,6 +221,87 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         with patch.object(rlm_module, "host_request", host_request):
             with self.assertRaisesRegex(RuntimeError, "missing session_name"):
                 asyncio.run(rlm_module.list_subagents())
+
+
+class RlmSpawnHandleInteropTest(unittest.TestCase):
+    """Regression tests for issue #824: handle/subagent name + delete interop."""
+
+    def _handle(self) -> "rlm_module.RLMSpawnHandle":
+        return rlm_module.RLMSpawnHandle(
+            rlm_child_id="sub-a1b2c3d4",
+            name="api-reviewer",
+            session_dir=Path("/tmp/parent/sub-a1b2c3d4"),
+            model="test/model",
+        )
+
+    def _subagent(self) -> "rlm_module.RLMSubagent":
+        return rlm_module.RLMSubagent(
+            rlm_child_id="sub-a1b2c3d4",
+            active_session_id="active-child",
+            session_id="session-child",
+            session_name="api-reviewer",
+            session_dir=Path("/tmp/parent/sub-a1b2c3d4"),
+            status="running",
+        )
+
+    def test_spawn_handle_exposes_session_name_alias(self) -> None:
+        handle = self._handle()
+        self.assertEqual(handle.session_name, "api-reviewer")
+        self.assertEqual(handle.session_name, handle.name)
+
+    def test_subagent_exposes_name_alias(self) -> None:
+        subagent = self._subagent()
+        self.assertEqual(subagent.name, "api-reviewer")
+        self.assertEqual(subagent.name, subagent.session_name)
+
+    def test_both_types_agree_on_the_same_child(self) -> None:
+        self.assertEqual(self._handle().session_name, self._subagent().session_name)
+        self.assertEqual(self._handle().name, self._subagent().name)
+
+    def test_delete_subagent_accepts_a_spawn_handle(self) -> None:
+        host_request = AsyncMock(
+            return_value={
+                "subagent": {
+                    "rlm_child_id": "sub-a1b2c3d4",
+                    "active_session_id": None,
+                    "session_id": "session-child",
+                    "session_name": "api-reviewer",
+                    "session_dir": "/tmp/parent/sub-a1b2c3d4",
+                    "status": "completed",
+                }
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            deleted = asyncio.run(rlm_module.rlm.delete_subagent(self._handle()))
+
+        host_request.assert_awaited_once_with(
+            "rlm.delete_subagent",
+            {"target": "sub-a1b2c3d4"},
+        )
+        self.assertEqual(deleted.rlm_child_id, "sub-a1b2c3d4")
+        self.assertEqual(deleted.name, "api-reviewer")
+
+    def test_spawn_handle_and_subagent_resolve_to_the_same_selector(self) -> None:
+        for target in (self._handle(), self._subagent()):
+            host_request = AsyncMock(
+                return_value={
+                    "subagent": {
+                        "rlm_child_id": "sub-a1b2c3d4",
+                        "active_session_id": None,
+                        "session_id": "session-child",
+                        "session_name": "api-reviewer",
+                        "session_dir": "/tmp/parent/sub-a1b2c3d4",
+                        "status": "completed",
+                    }
+                }
+            )
+            with patch.object(rlm_module, "host_request", host_request):
+                asyncio.run(rlm_module.delete_subagent(target))
+            host_request.assert_awaited_once_with(
+                "rlm.delete_subagent",
+                {"target": "sub-a1b2c3d4"},
+            )
 
 
 if __name__ == "__main__":
