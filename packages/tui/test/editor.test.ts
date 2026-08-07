@@ -862,6 +862,15 @@ describe("Editor component", () => {
 			assert.strictEqual(chunks[1]!.text, "world test");
 		});
 
+		it("wraps mixed Latin and CJK text at CJK boundaries", () => {
+			const chunks = wordWrapLine("This is an example 中文汉字测试段落内容中文汉字测试段落内容.", 40);
+
+			assert.deepStrictEqual(
+				chunks.map((chunk) => chunk.text),
+				["This is an example 中文汉字测试段落内容", "中文汉字测试段落内容."],
+			);
+		});
+
 		it("keeps whitespace at terminal width boundary on same line", () => {
 			// "hello world " is exactly 12 chars (including trailing space)
 			// The space at position 12 should stay on the first line

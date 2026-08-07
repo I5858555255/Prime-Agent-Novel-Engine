@@ -37,6 +37,10 @@ const rgiEmojiRegex = /^\p{RGI_Emoji}$/v;
 const WIDTH_CACHE_SIZE = 512;
 const widthCache = new Map<string, number>();
 
+// CJK scripts allow line breaks between adjacent graphemes, unlike Latin words.
+export const cjkBreakRegex =
+	/[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]/u;
+
 function isPrintableAscii(str: string): boolean {
 	for (let i = 0; i < str.length; i++) {
 		const code = str.charCodeAt(i);
@@ -738,48 +742,56 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 	const tokens: string[] = [];
 	let current = "";
 	let pendingAnsi = ""; // ANSI codes waiting to be attached to next visible content
-	let inWhitespace = false;
+	let currentKind: "space" | "word" | null = null;
 	let i = 0;
 	const extractAnsi = createAnsiCodeExtractor(text);
+
+	const flushCurrent = (): void => {
+		if (!current) return;
+		tokens.push(current);
+		current = "";
+		currentKind = null;
+	};
 
 	while (i < text.length) {
 		const ansiResult = extractAnsi(i);
 		if (ansiResult) {
-			// Hold ANSI codes separately - they'll be attached to the next visible char
 			pendingAnsi += ansiResult.code;
 			i += ansiResult.length;
 			continue;
 		}
 
-		const char = text[i];
-		const charIsSpace = char === " ";
+		let end = i;
+		while (end < text.length && !extractAnsi(end)) end++;
 
-		if (charIsSpace !== inWhitespace && current) {
-			// Switching between whitespace and non-whitespace, push current token
-			tokens.push(current);
-			current = "";
+		for (const { segment } of segmenter.segment(text.slice(i, end))) {
+			const segmentIsSpace = segment === " ";
+			if (!segmentIsSpace && cjkBreakRegex.test(segment)) {
+				flushCurrent();
+				const token = pendingAnsi + segment;
+				pendingAnsi = "";
+				tokens.push(token);
+				continue;
+			}
+
+			const segmentKind = segmentIsSpace ? "space" : "word";
+			if (current && currentKind !== segmentKind) flushCurrent();
+			if (pendingAnsi) {
+				current += pendingAnsi;
+				pendingAnsi = "";
+			}
+			currentKind = segmentKind;
+			current += segment;
 		}
-
-		// Attach any pending ANSI codes to this visible character
-		if (pendingAnsi) {
-			current += pendingAnsi;
-			pendingAnsi = "";
-		}
-
-		inWhitespace = charIsSpace;
-		current += char;
-		i++;
+		i = end;
 	}
 
-	// Handle any remaining pending ANSI codes (attach to last token)
 	if (pendingAnsi) {
-		current += pendingAnsi;
+		if (current) current += pendingAnsi;
+		else if (tokens.length > 0) tokens[tokens.length - 1] += pendingAnsi;
+		else current = pendingAnsi;
 	}
-
-	if (current) {
-		tokens.push(current);
-	}
-
+	if (current) tokens.push(current);
 	return tokens;
 }
 

@@ -112,6 +112,16 @@ describe("wrapTextWithAnsi", () => {
 			}
 		});
 
+		it("should break CJK runs at grapheme boundaries after Latin text", () => {
+			const text = "This is an example 中文汉字测试段落内容中文汉字测试段落内容.";
+			const wrapped = wrapTextWithAnsi(text, 40);
+
+			assert.deepStrictEqual(wrapped, ["This is an example 中文汉字测试段落内容", "中文汉字测试段落内容."]);
+			for (const line of wrapped) {
+				assert.ok(visibleWidth(line) <= 40);
+			}
+		});
+
 		it("should ignore OSC 133 semantic markers in visible width", () => {
 			const text = "\x1b]133;A\x07hello\x1b]133;B\x07";
 			assert.strictEqual(visibleWidth(text), 5);
