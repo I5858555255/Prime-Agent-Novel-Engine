@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 - Added a checksum-verifying PowerShell installer and Windows CI coverage ([#665](https://github.com/PrimeIntellect-ai/prime-agent/issues/665)).
 - Fixed managed kernel bootstrap using the Windows virtual-environment layout ([#660](https://github.com/PrimeIntellect-ai/prime-agent/issues/660)).
 - Fixed daemon command recovery compaction on platforms without directory fsync support ([#666](https://github.com/PrimeIntellect-ai/prime-agent/issues/666)).
