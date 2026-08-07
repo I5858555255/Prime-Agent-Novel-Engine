@@ -2861,6 +2861,7 @@ export class InteractiveMode {
 		await this.renderSessionContext(this.getSessionContextFromConnectionSnapshot(snapshot), {
 			clearChat: true,
 			updateFooter: true,
+			limitTranscript: true,
 		});
 		await this.restoreStreamingMessageFromSnapshot(snapshot.streamingMessage);
 		await this.refreshConnectionQueue();
