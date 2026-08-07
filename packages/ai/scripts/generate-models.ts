@@ -17,6 +17,7 @@ import {
 	KnownProvider,
 	Model,
 	type OpenAICompletionsCompat,
+	type OpenAIResponsesCompat,
 } from "../src/types.js";
 import { MODELS as EXISTING_MODELS } from "../src/models.generated.js";
 
@@ -99,6 +100,15 @@ const KIMI_K3_THINKING_LEVEL_MAP = {
 	xhigh: null,
 	max: "max",
 } as const;
+
+const XAI_RESPONSES_MODEL_ID = "grok-4.5";
+const XAI_RESPONSES_THINKING_LEVEL_MAP = {
+	off: null,
+	minimal: null,
+} as const;
+const XAI_RESPONSES_COMPAT: OpenAIResponsesCompat = {
+	supportsLongCacheRetention: false,
+};
 
 const DEEPSEEK_V4_COMPAT: OpenAICompletionsCompat = {
 	requiresReasoningContentOnAssistantMessages: true,
@@ -1109,14 +1119,17 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			for (const [modelId, model] of Object.entries(data.xai.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
+				const useResponsesApi = modelId === XAI_RESPONSES_MODEL_ID;
 
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
-					api: "openai-completions",
+					api: useResponsesApi ? "openai-responses" : "openai-completions",
 					provider: "xai",
 					baseUrl: "https://api.x.ai/v1",
+					...(useResponsesApi ? { compat: { ...XAI_RESPONSES_COMPAT } } : {}),
 					reasoning: m.reasoning === true,
+					...(useResponsesApi ? { thinkingLevelMap: { ...XAI_RESPONSES_THINKING_LEVEL_MAP } } : {}),
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: {
 						input: m.cost?.input || 0,

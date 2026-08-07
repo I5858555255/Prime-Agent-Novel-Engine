@@ -19858,10 +19858,12 @@ export const MODELS = {
 		"grok-4.5": {
 			id: "grok-4.5",
 			name: "Grok 4.5",
-			api: "openai-completions",
+			api: "openai-responses",
 			provider: "xai",
 			baseUrl: "https://api.x.ai/v1",
+			compat: {"supportsLongCacheRetention":false},
 			reasoning: true,
+			thinkingLevelMap: {"off":null,"minimal":null},
 			input: ["text", "image"],
 			cost: {
 				input: 2,
@@ -19871,7 +19873,7 @@ export const MODELS = {
 			},
 			contextWindow: 500000,
 			maxTokens: 500000,
-		} satisfies Model<"openai-completions">,
+		} satisfies Model<"openai-responses">,
 		"grok-build-0.1": {
 			id: "grok-build-0.1",
 			name: "Grok Build 0.1",
