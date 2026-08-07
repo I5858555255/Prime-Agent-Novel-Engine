@@ -12,6 +12,36 @@ function urlOf(input: unknown): string {
 	throw new Error(`Unsupported fetch input: ${String(input)}`);
 }
 
+/** Serves the listed documents and 404s everything else, the way a real host does. */
+function stubDiscoveryFetch(routes: Record<string, unknown>): { requested: string[] } {
+	const requested: string[] = [];
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: unknown): Promise<Response> => {
+			const url = urlOf(input);
+			requested.push(url);
+			const body = routes[url];
+			return body === undefined ? jsonResponse({ error: "not_found" }, 404) : jsonResponse(body);
+		}),
+	);
+	return { requested };
+}
+
+async function loginHeadless(provider: ReturnType<typeof createMcpOAuthProvider>) {
+	let authUrl = "";
+	const creds = await provider.login({
+		onAuth: (info) => {
+			authUrl = info.url;
+		},
+		onPrompt: async () => "",
+		onManualCodeInput: async () => {
+			const params = new URL(authUrl).searchParams;
+			return `${params.get("redirect_uri")}?code=the-code&state=${params.get("state")}`;
+		},
+	});
+	return { creds, authUrl };
+}
+
 const META = {
 	issuer: "https://srv.test",
 	authorization_endpoint: "https://srv.test/authorize",
@@ -156,6 +186,137 @@ describe.sequential("MCP OAuth provider", () => {
 		await expect(provider.login({ onAuth: () => {}, onPrompt: async () => "" })).rejects.toThrow(
 			"dynamic client registration",
 		);
+	});
+
+	// The MCP endpoint host publishes no authorization-server document; the authorization
+	// server lives on another host and is only reachable through RFC 9728 metadata.
+	it("resolves the authorization server from protected-resource metadata", async () => {
+		const as = {
+			issuer: "https://todoist.test",
+			authorization_endpoint: "https://todoist.test/oauth/authorize",
+			token_endpoint: "https://todoist.test/oauth/token",
+			registration_endpoint: "https://todoist.test/oauth/register",
+		};
+		const { requested } = stubDiscoveryFetch({
+			"https://ai.todoist.test/.well-known/oauth-protected-resource/mcp": {
+				resource: "https://ai.todoist.test/mcp",
+				authorization_servers: ["https://todoist.test"],
+			},
+			"https://todoist.test/.well-known/oauth-authorization-server": as,
+			// The endpoint origin also answers, so the assertions below pin precedence
+			// rather than merely proving the origin probe failed.
+			"https://ai.todoist.test/.well-known/oauth-authorization-server": {
+				issuer: "https://ai.todoist.test",
+				authorization_endpoint: "https://ai.todoist.test/stale/authorize",
+				token_endpoint: "https://ai.todoist.test/stale/token",
+				registration_endpoint: "https://ai.todoist.test/stale/register",
+			},
+			[as.registration_endpoint]: { client_id: "todoist-client" },
+			[as.token_endpoint]: { access_token: "access-1", refresh_token: "refresh-1", expires_in: 3600 },
+		});
+
+		const provider = createMcpOAuthProvider({ server: "todoist", url: "https://ai.todoist.test/mcp" });
+		const { creds, authUrl } = await loginHeadless(provider);
+
+		expect(creds.access).toBe("access-1");
+		expect(requested).toContain("https://ai.todoist.test/.well-known/oauth-protected-resource/mcp");
+		expect(new URL(authUrl).origin).toBe("https://todoist.test");
+	});
+
+	// RFC 8414 inserts the well-known segment between host and path, so an issuer of
+	// `https://host/oidc` publishes at `https://host/.well-known/...(/oidc)`, not `https://host/oidc/.well-known/...`.
+	it("resolves an issuer that carries a path", async () => {
+		const as = {
+			issuer: "https://auth.ashby.test/oidc",
+			authorization_endpoint: "https://auth.ashby.test/oidc/authorize",
+			token_endpoint: "https://auth.ashby.test/oidc/token",
+			registration_endpoint: "https://auth.ashby.test/oidc/register",
+		};
+		const { requested } = stubDiscoveryFetch({
+			"https://mcp.ashby.test/.well-known/oauth-protected-resource/mcp/v1": {
+				authorization_servers: ["https://auth.ashby.test/oidc"],
+			},
+			"https://auth.ashby.test/.well-known/oauth-authorization-server/oidc": as,
+			[as.registration_endpoint]: { client_id: "ashby-client" },
+			[as.token_endpoint]: { access_token: "access-2", expires_in: 3600 },
+		});
+
+		const provider = createMcpOAuthProvider({ server: "ashby", url: "https://mcp.ashby.test/mcp/v1" });
+		const { creds } = await loginHeadless(provider);
+
+		expect(creds.access).toBe("access-2");
+		expect(requested).toContain("https://auth.ashby.test/.well-known/oauth-authorization-server/oidc");
+	});
+
+	// Some servers publish only at the bare well-known even though their endpoint carries a path.
+	it("falls back to the bare protected-resource document when the path-suffixed one is absent", async () => {
+		const as = {
+			issuer: "https://ironclad.test",
+			authorization_endpoint: "https://ironclad.test/authorize",
+			token_endpoint: "https://ironclad.test/token",
+			registration_endpoint: "https://ironclad.test/register",
+		};
+		const { requested } = stubDiscoveryFetch({
+			"https://mcp.ironclad.test/.well-known/oauth-protected-resource": {
+				authorization_servers: ["https://ironclad.test"],
+			},
+			"https://ironclad.test/.well-known/oauth-authorization-server": as,
+			[as.registration_endpoint]: { client_id: "ironclad-client" },
+			[as.token_endpoint]: { access_token: "access-4", expires_in: 3600 },
+		});
+
+		const provider = createMcpOAuthProvider({ server: "ironclad", url: "https://mcp.ironclad.test/mcp" });
+		const { creds } = await loginHeadless(provider);
+
+		expect(creds.access).toBe("access-4");
+		expect(requested.slice(0, 2)).toEqual([
+			"https://mcp.ironclad.test/.well-known/oauth-protected-resource/mcp",
+			"https://mcp.ironclad.test/.well-known/oauth-protected-resource",
+		]);
+	});
+
+	// An MCP URL without a path publishes at the bare well-known, and issuers are
+	// commonly advertised with a trailing slash.
+	it("handles a pathless endpoint and a trailing slash on the advertised issuer", async () => {
+		const as = {
+			issuer: "https://api.box.test",
+			authorization_endpoint: "https://api.box.test/authorize",
+			token_endpoint: "https://api.box.test/token",
+			registration_endpoint: "https://api.box.test/register",
+		};
+		const { requested } = stubDiscoveryFetch({
+			"https://mcp.box.test/.well-known/oauth-protected-resource": {
+				authorization_servers: ["https://api.box.test/"],
+			},
+			"https://api.box.test/.well-known/oauth-authorization-server": as,
+			[as.registration_endpoint]: { client_id: "box-client" },
+			[as.token_endpoint]: { access_token: "access-3", expires_in: 3600 },
+		});
+
+		const provider = createMcpOAuthProvider({ server: "box", url: "https://mcp.box.test" });
+		const { creds } = await loginHeadless(provider);
+
+		expect(creds.access).toBe("access-3");
+		expect(requested.filter((url) => url.includes("//.well-known"))).toEqual([]);
+	});
+
+	it("reports a non-JSON metadata document distinctly from a transport failure", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				const url = urlOf(input);
+				if (url === "https://portal.test/.well-known/oauth-authorization-server") {
+					return new Response("<!doctype html><title>Sign in</title>", {
+						status: 200,
+						headers: { "Content-Type": "text/html" },
+					});
+				}
+				return jsonResponse({ error: "not_found" }, 404);
+			}),
+		);
+
+		const provider = createMcpOAuthProvider({ server: "portal", url: "https://portal.test/mcp" });
+		await expect(provider.login({ onAuth: () => {}, onPrompt: async () => "" })).rejects.toThrow(/non-JSON/);
 	});
 });
 

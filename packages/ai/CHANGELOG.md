@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed MCP OAuth discovery to follow RFC 9728 protected-resource metadata, so servers whose authorization server is on another host can be logged into ([#766](https://github.com/PrimeIntellect-ai/prime-agent/issues/766)).
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
