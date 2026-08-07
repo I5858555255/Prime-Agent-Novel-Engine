@@ -495,10 +495,21 @@ async function* mapCodexEvents(events: AsyncIterable<Record<string, unknown>>): 
 		if (!type) continue;
 
 		if (type === "error") {
-			const code = (event as { code?: string }).code || "";
-			const message = (event as { message?: string }).message || "";
-			throw new CodexApiError(`Codex error: ${message || code || JSON.stringify(event)}`, {
-				code: code || undefined,
+			const nested = (event as { error?: CodexErrorDetails }).error;
+			const topLevel = event as { code?: string; message?: string; status_code?: number };
+			const status = typeof topLevel.status_code === "number" ? topLevel.status_code : undefined;
+			const formatted = formatCodexError(
+				{
+					code: nested?.type ?? nested?.code ?? topLevel.code,
+					type: nested?.type ?? nested?.code ?? topLevel.code,
+					message: nested?.message ?? topLevel.message,
+					plan_type: nested?.plan_type,
+					resets_at: nested?.resets_at,
+				},
+				{ status, fallbackMessage: JSON.stringify(event) },
+			);
+			throw new CodexApiError(formatted.friendlyMessage || `Codex error: ${formatted.message}`, {
+				code: formatted.code,
 				payload: event,
 			});
 		}
@@ -1222,33 +1233,47 @@ async function processWebSocketStream(
 // Error Handling
 // ============================================================================
 
-async function parseErrorResponse(response: Response): Promise<{ message: string; friendlyMessage?: string }> {
-	const raw = await response.text();
-	let message = raw || response.statusText || "Request failed";
+type CodexErrorDetails = {
+	code?: string;
+	type?: string;
+	message?: string;
+	plan_type?: string;
+	resets_at?: number;
+};
+
+function formatCodexError(
+	err: CodexErrorDetails | undefined,
+	options?: { status?: number; fallbackMessage?: string },
+): { message: string; friendlyMessage?: string; code?: string } {
+	const code = err?.code || err?.type || "";
 	let friendlyMessage: string | undefined;
 
+	if (/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code) || options?.status === 429) {
+		const plan = err?.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
+		const mins = err?.resets_at ? Math.max(0, Math.round((err.resets_at * 1000 - Date.now()) / 60000)) : undefined;
+		const when = mins !== undefined ? ` Try again in ~${mins} min.` : "";
+		friendlyMessage = `You have hit your ChatGPT usage limit${plan}.${when}`.trim();
+	}
+
+	// Prefer the quota-aware text over vague server copy when we built one.
+	const message = friendlyMessage || err?.message || options?.fallbackMessage || "Request failed";
+	return { message, friendlyMessage, code: code || undefined };
+}
+
+async function parseErrorResponse(response: Response): Promise<{ message: string; friendlyMessage?: string }> {
+	const raw = await response.text();
+	const fallbackMessage = raw || response.statusText || "Request failed";
+
 	try {
-		const parsed = JSON.parse(raw) as {
-			error?: { code?: string; type?: string; message?: string; plan_type?: string; resets_at?: number };
-		};
-		const err = parsed?.error;
-		if (err) {
-			const code = err.code || err.type || "";
-			if (/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code) || response.status === 429) {
-				const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
-				const mins = err.resets_at
-					? Math.max(0, Math.round((err.resets_at * 1000 - Date.now()) / 60000))
-					: undefined;
-				const when = mins !== undefined ? ` Try again in ~${mins} min.` : "";
-				friendlyMessage = `You have hit your ChatGPT usage limit${plan}.${when}`.trim();
-			}
-			message = err.message || friendlyMessage || message;
+		const parsed = JSON.parse(raw) as { error?: CodexErrorDetails };
+		if (parsed?.error) {
+			return formatCodexError(parsed.error, { status: response.status, fallbackMessage });
 		}
 	} catch {
 		// Unparseable error body: fall back to the raw message.
 	}
 
-	return { message, friendlyMessage };
+	return { message: fallbackMessage };
 }
 
 // ============================================================================
