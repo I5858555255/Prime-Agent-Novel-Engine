@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added Cursor Agent CLI support for using Composer 2.5 and Cursor Grok 4.5 through a Cursor subscription while retaining the Prime Agent harness.
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 
 ## [0.7.0] - 2026-08-05

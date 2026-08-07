@@ -1,10 +1,11 @@
 # Providers
 
-Prime Agent supports subscription-based providers via OAuth and API key providers via environment variables or the auth file. Its built-in model catalog is updated with each Prime Agent release.
+Prime Agent supports subscription-based providers via OAuth or local provider CLIs and API key providers via environment variables or the auth file. Its built-in model catalog is updated with each Prime Agent release.
 
 ## Table of Contents
 
 - [Subscriptions](#subscriptions)
+- [Cursor CLI](#cursor-cli)
 - [API Keys](#api-keys)
 - [Auth File](#auth-file)
 - [Cloud Providers](#cloud-providers)
@@ -34,6 +35,25 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+
+## Cursor CLI
+
+Prime Agent can use Cursor Composer 2.5 and Cursor Grok 4.5 through the local Cursor Agent CLI while retaining Prime Agent's own prompts, tools, Python kernel, and subagents.
+
+1. [Install the Cursor CLI](https://cursor.com/docs/cli/installation).
+2. Authenticate it with `cursor-agent login` (or `agent login`).
+3. Select `cursor/composer-2.5` or `cursor/grok-4.5` in `/model`, or start directly:
+
+```bash
+prime-agent --provider cursor --model composer-2.5
+prime-agent --provider cursor --model grok-4.5
+```
+
+Prime Agent starts `cursor-agent acp` in Ask mode for each model request and uses the Cursor subscription already configured by the CLI. The Cursor process runs in an isolated temporary directory without Prime Agent's other provider credentials, and Prime Agent executes tool calls returned in the structured response. The selected Cursor model still receives the full Prime system prompt, conversation history, tool schemas, and attached images.
+
+Ask mode disables Cursor edits and command execution, and Prime Agent rejects ACP permission requests, but this is not an OS-level sandbox: Cursor retains its read/search behavior, and supplied context can contain absolute host paths. Use this integration only when you trust the installed Cursor CLI and the Cursor service with that context.
+
+Set `CURSOR_AGENT_PATH` when the executable is not named `cursor-agent` or is not on `PATH`. `CURSOR_API_KEY`, `CURSOR_API_ENDPOINT`, proxy settings, and Cursor's credential-store environment are inherited by the child process when configured. If Prime Agent is using an already-running daemon, restart it after changing these variables.
 
 ## API Keys
 

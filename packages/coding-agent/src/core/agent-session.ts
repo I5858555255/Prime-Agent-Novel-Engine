@@ -123,6 +123,7 @@ import {
 } from "./context-tree.js";
 import type { AgentCronJob, AgentRlmHeartbeatController, AgentRlmHeartbeatStatusUpdate } from "./cron-jobs.js";
 import { normalizeHeartbeatDeliveryMode } from "./cron-jobs.js";
+import { registerCursorCliProvider } from "./cursor-cli-provider.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
@@ -8773,6 +8774,7 @@ export class AgentSession {
 		// visible here so MCP skill gating sees the new credentials.
 		this._modelRegistry.authStorage.reload();
 		resetApiProviders();
+		registerCursorCliProvider();
 		// Re-read mcpServers and re-register user MCP providers from the reloaded settings.
 		this._mcpManager?.refresh();
 		await this._resourceLoader.reload();
