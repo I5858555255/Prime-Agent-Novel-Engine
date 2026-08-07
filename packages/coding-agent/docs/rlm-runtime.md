@@ -155,6 +155,8 @@ Supported `rlm.run` options are:
 
 Unknown options fail instead of being ignored. Model search is bounded to the user's configured model scope when one is active, then further limited to executable models with active, non-expired credentials. If no scope is configured, all executable models remain searchable. If an exact selection is outside the scope, unavailable, or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
 
+For advisory task-to-model selection, the bundled `model-fitness` skill exposes `recommend`, `explain`, and `record_outcome`. Its candidate metadata — including generation-time benchmark annotations — comes from the same scoped/executable catalog through the read-only `model_fitness.candidates` host request, then applies benchmark priors and independently verified local outcomes. The skill returns an exact selector only; admission still revalidates it, and omitting `model` preserves parent-model inheritance.
+
 ## Child Execution
 
 `AgentSession.runRlmChild()` performs the following sequence:

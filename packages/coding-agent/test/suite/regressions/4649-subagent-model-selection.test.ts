@@ -71,6 +71,16 @@ describe("ENG-4649 subagent model selection", () => {
 				`${provider}/parent-model`,
 				`${provider}/scoped-model`,
 			]);
+			const handlers = (
+				harness.session as unknown as { _createKernelHostHandlers(): HostRequestHandlers }
+			)._createKernelHostHandlers();
+			const fitnessCandidates = handlers["model_fitness.candidates"];
+			if (!fitnessCandidates) throw new Error("Missing model_fitness.candidates host handler");
+			const projected = await fitnessCandidates({});
+			expect((projected.models as Array<{ selector: string }>).map((model) => model.selector)).toEqual([
+				`${provider}/parent-model`,
+				`${provider}/scoped-model`,
+			]);
 			await expect(harness.session.findRlmModels("out of scope", 20)).resolves.toEqual({ models: [] });
 			await expect(
 				harness.session.runRlmChild("reject the out-of-scope model", {
@@ -123,6 +133,10 @@ describe("ENG-4649 subagent model selection", () => {
 				label: "expired",
 			});
 			await expect(harness.session.findRlmModels("", 8)).resolves.toEqual({ models: [] });
+			const handlers = (
+				harness.session as unknown as { _createKernelHostHandlers(): HostRequestHandlers }
+			)._createKernelHostHandlers();
+			await expect(handlers["model_fitness.candidates"]!({})).resolves.toEqual({ models: [] });
 		} finally {
 			harness.cleanup();
 		}

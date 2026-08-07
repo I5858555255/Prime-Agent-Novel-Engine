@@ -435,6 +435,16 @@ export interface VercelGatewayRouting {
 	order?: string[];
 }
 
+/** Benchmark indices attached at catalog generation time (0-100 scale). */
+export interface ModelBenchmarks {
+	/** Artificial Analysis Intelligence Index. */
+	intelligence?: number;
+	/** Artificial Analysis Coding Index. */
+	coding?: number;
+	/** Artificial Analysis Agentic Index. */
+	agentic?: number;
+}
+
 // Model interface for the unified model system
 export interface Model<TApi extends Api> {
 	id: string;
@@ -459,6 +469,13 @@ export interface Model<TApi extends Api> {
 	maxTokens: number;
 	/** Flagship model surfaced above non-featured models of the same provider in pickers. */
 	featured?: boolean;
+	/**
+	 * External benchmark indices (0-100 scale) attached at catalog generation time.
+	 * Currently sourced from Artificial Analysis scores embedded in the OpenRouter
+	 * catalog. Absent when no benchmark source covers the model; consumers must
+	 * treat absence as "unknown", never as a zero score.
+	 */
+	benchmarks?: ModelBenchmarks;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"

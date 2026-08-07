@@ -19,6 +19,7 @@ import {
 	type OpenAICompletionsCompat,
 } from "../src/types.js";
 import { MODELS as EXISTING_MODELS } from "../src/models.generated.js";
+import { buildOpenRouterBenchmarkIndex, matchOpenRouterBenchmarks } from "./openrouter-benchmarks.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2321,7 +2322,16 @@ async function generateModels() {
 		}));
 	allModels.push(...azureOpenAiModels);
 
+	// Attach external benchmark indices from the already-fetched OpenRouter
+	// catalog. Models without benchmark coverage simply omit the field.
+	const openRouterBenchmarkIndex = buildOpenRouterBenchmarkIndex(await fetchOpenRouterCatalog());
+	let benchmarkedModels = 0;
 	for (const model of allModels) {
+		const benchmarks = matchOpenRouterBenchmarks(openRouterBenchmarkIndex, model);
+		if (benchmarks) {
+			model.benchmarks = benchmarks;
+			benchmarkedModels++;
+		}
 		applyThinkingLevelMetadata(model);
 	}
 
@@ -2387,6 +2397,9 @@ export const MODELS = {
 			if (model.featured) {
 				output += `\t\t\tfeatured: true,\n`;
 			}
+			if (model.benchmarks) {
+				output += `\t\t\tbenchmarks: ${JSON.stringify(model.benchmarks)},\n`;
+			}
 			output += `\t\t} satisfies Model<"${model.api}">,\n`;
 		}
 
@@ -2407,6 +2420,7 @@ export const MODELS = {
 	console.log(`\nModel Statistics:`);
 	console.log(`  Total tool-capable models: ${totalModels}`);
 	console.log(`  Reasoning-capable models: ${reasoningModels}`);
+	console.log(`  Models with benchmark metadata: ${benchmarkedModels}`);
 
 	for (const [provider, models] of Object.entries(providers)) {
 		console.log(`  ${provider}: ${Object.keys(models).length} models`);

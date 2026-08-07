@@ -188,6 +188,7 @@ import {
 	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 	isSessionSlashCommandMessage,
 } from "./messages.js";
+import { createModelFitnessCandidatesHostHandler, projectModelFitnessCandidate } from "./model-fitness.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { throwIfPromptAdmissionCancelled } from "./prompt-admission.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -8666,6 +8667,9 @@ export class AgentSession {
 			"rlm.find_models": createRlmFindModelsHostHandler((query, limit) => this.findRlmModels(query, limit)),
 			"rlm.list_subagents": createRlmListSubagentsHostHandler(() => this.listRlmSubagents()),
 			"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) => this.deleteRlmSubagent(target)),
+			"model_fitness.candidates": createModelFitnessCandidatesHostHandler(async () => ({
+				models: (await this._availableRlmModels()).map(projectModelFitnessCandidate),
+			})),
 			"model.info": async () => ({
 				id: this.model?.id ?? null,
 				provider: this.model?.provider ?? null,
