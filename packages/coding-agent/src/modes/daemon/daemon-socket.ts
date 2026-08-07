@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
+import { getAgentDir } from "../../config.js";
 
 const DAEMON_SOCKET_MODE = 0o600;
 const DAEMON_SOCKET_DIR_MODE = 0o700;
@@ -34,10 +36,17 @@ export interface DaemonSocketIdentity {
 }
 
 export function defaultDaemonSocketPath(): string {
+	const suffix = agentDirSocketSuffix();
 	if (process.platform === "win32") {
-		return "\\\\.\\pipe\\prime-agent-daemon";
+		return `\\\\.\\pipe\\prime-agent-daemon-${suffix}`;
 	}
-	return join(defaultDaemonSocketDir(), "daemon.sock");
+	return join(defaultDaemonSocketDir(), `daemon-${suffix}.sock`);
+}
+
+function agentDirSocketSuffix(): string {
+	const agentDir = resolve(getAgentDir());
+	const normalized = process.platform === "win32" ? agentDir.toLowerCase() : agentDir;
+	return createHash("sha256").update(normalized).digest("hex").slice(0, 8);
 }
 
 export async function acquireDaemonSocketPathLease(socketPath: string): Promise<DaemonSocketPathLease | undefined> {

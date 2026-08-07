@@ -4,7 +4,8 @@ import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { ENV_AGENT_DIR } from "../src/config.js";
 import {
 	cleanupDaemonSocketPath,
 	defaultDaemonSocketPath,
@@ -13,24 +14,56 @@ import {
 } from "../src/modes/daemon/daemon-socket.js";
 
 describe("defaultDaemonSocketPath", () => {
-	it("uses a fixed Windows named pipe path", () => {
+	const originalAgentDir = process.env[ENV_AGENT_DIR];
+
+	afterEach(() => {
+		if (originalAgentDir === undefined) {
+			delete process.env[ENV_AGENT_DIR];
+		} else {
+			process.env[ENV_AGENT_DIR] = originalAgentDir;
+		}
+	});
+
+	it("namespaces the Windows named pipe path by agent directory", () => {
 		if (process.platform !== "win32") {
 			return;
 		}
 
-		expect(defaultDaemonSocketPath()).toBe("\\\\.\\pipe\\prime-agent-daemon");
+		process.env[ENV_AGENT_DIR] = "C:\\prime-a\\agent";
+		const first = defaultDaemonSocketPath();
+		process.env[ENV_AGENT_DIR] = "C:\\prime-b\\agent";
+		const second = defaultDaemonSocketPath();
+
+		expect(first).toMatch(/^\\\\\.\\pipe\\prime-agent-daemon-[a-f0-9]{8}$/);
+		expect(second).toMatch(/^\\\\\.\\pipe\\prime-agent-daemon-[a-f0-9]{8}$/);
+		expect(first).not.toBe(second);
 	});
 
-	it("uses a per-user Unix socket directory", () => {
+	it("uses a per-user Unix socket directory and namespaces the daemon socket by agent directory", () => {
 		if (process.platform === "win32") {
 			return;
 		}
 
 		const suffix = typeof process.getuid === "function" ? String(process.getuid()) : "user";
-		const socketPath = defaultDaemonSocketPath();
+		process.env[ENV_AGENT_DIR] = "/tmp/prime-a/agent";
+		const first = defaultDaemonSocketPath();
+		process.env[ENV_AGENT_DIR] = "/tmp/prime-b/agent";
+		const second = defaultDaemonSocketPath();
 
-		expect(dirname(socketPath)).toBe(join(tmpdir(), `prime-agent-${suffix}`));
-		expect(basename(socketPath)).toBe("daemon.sock");
+		expect(dirname(first)).toBe(join(tmpdir(), `prime-agent-${suffix}`));
+		expect(dirname(second)).toBe(join(tmpdir(), `prime-agent-${suffix}`));
+		expect(basename(first)).toMatch(/^daemon-[a-f0-9]{8}\.sock$/);
+		expect(basename(second)).toMatch(/^daemon-[a-f0-9]{8}\.sock$/);
+		expect(first).not.toBe(second);
+	});
+
+	it("keeps the agent-directory namespace stable for equivalent paths", () => {
+		const agentDir = process.platform === "win32" ? "C:\\prime-a\\agent\\.." : "/tmp/prime-a/agent/..";
+		process.env[ENV_AGENT_DIR] = agentDir;
+		const socketPath = defaultDaemonSocketPath();
+		process.env[ENV_AGENT_DIR] = agentDir;
+
+		expect(defaultDaemonSocketPath()).toBe(socketPath);
 	});
 
 	it("checks a live daemon before acquiring the socket path lock", async () => {
