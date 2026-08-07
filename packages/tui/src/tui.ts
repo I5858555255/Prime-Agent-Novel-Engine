@@ -751,14 +751,23 @@ export class TUI extends Container {
 		return this.fullscreen?.viewport.scrollInfo() ?? null;
 	}
 
-	private copySelection(text: string): void {
+	/**
+	 * Copy text to the user's clipboard. Uses the host-provided onCopy hook when
+	 * set; otherwise writes OSC 52, which works locally, over SSH, and through
+	 * tmux (set-clipboard) — i.e. it reaches the clipboard of the machine the
+	 * terminal is actually running on, not the (possibly headless) remote host.
+	 */
+	copyToClipboard(text: string): void {
 		if (this.onCopy) {
 			this.onCopy(text);
 			return;
 		}
-		// fallback: OSC 52 works locally, over SSH, and through tmux (set-clipboard)
 		const base64 = Buffer.from(text, "utf8").toString("base64");
 		this.terminal.write(`\x1b]52;c;${base64}\x07`);
+	}
+
+	private copySelection(text: string): void {
+		this.copyToClipboard(text);
 	}
 
 	private updateSelectionAutoScroll(viewport: FullscreenViewport, screenRow: number, screenColumn: number): void {

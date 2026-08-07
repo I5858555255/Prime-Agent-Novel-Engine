@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added a `c` shortcut to the `/login` browser sign-in screen that copies the sign-in URL to the terminal's clipboard via OSC 52 (reaches the local machine over SSH where supported), and made the sign-in link an OSC 8 hyperlink regardless of detected terminal capabilities so it stays clickable from headless sessions. Previously the hard-wrapped URL had to be selected line by line, which injected newlines into the paste.
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 
 ## [0.7.0] - 2026-08-05
