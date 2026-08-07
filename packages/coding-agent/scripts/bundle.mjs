@@ -14,11 +14,15 @@
 import { chmodSync, readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const outdir = join(packageDir, "dist", "bundle");
+const cliEntry = join(packageDir, "dist", "cli.js");
+// register-builtins keeps this import opaque so browser bundles do not resolve
+// Node-only dependencies. Emit the matching stable entry for the Node CLI bundle.
+const devinEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai/devin"));
 let buildId;
 try {
 	buildId = execFileSync("git", ["describe", "--tags", "--always", "--dirty"], {
@@ -32,7 +36,10 @@ try {
 rmSync(outdir, { recursive: true, force: true });
 
 await build({
-	entryPoints: [join(packageDir, "dist", "cli.js")],
+	entryPoints: {
+		cli: cliEntry,
+		devin: devinEntry,
+	},
 	outdir,
 	bundle: true,
 	splitting: true,
@@ -47,6 +54,10 @@ await build({
 	},
 	logLevel: "warning",
 });
+const devinModule = await import(pathToFileURL(join(outdir, "devin.js")).href);
+if (typeof devinModule.streamDevin !== "function" || typeof devinModule.streamSimpleDevin !== "function") {
+	throw new Error("Bundled Devin provider is missing its streaming exports");
+}
 
 chmodSync(join(outdir, "cli.js"), 0o755);
 console.log("bundled dist/cli.js -> dist/bundle/");

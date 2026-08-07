@@ -2308,6 +2308,19 @@ async function generateModels() {
 	];
 	allModels.push(...vertexModels);
 
+	allModels.push({
+		id: "swe-1-6-slow",
+		name: "SWE-1.6 Slow",
+		api: "devin-agent",
+		provider: "devin",
+		baseUrl: "https://server.codeium.com",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 64_000,
+	});
+
 	const primeInferenceModels = await fetchPrimeInferenceModels();
 	allModels.push(...primeInferenceModels);
 

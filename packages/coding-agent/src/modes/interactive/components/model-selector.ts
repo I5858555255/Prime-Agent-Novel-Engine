@@ -369,7 +369,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 			const isConfigured = this.isProviderConfigured(item);
-			const meta = isConfigured
+			const authMeta = isConfigured
 				? isCurrent
 					? theme.fg("success", "current")
 					: undefined
@@ -379,7 +379,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				new MenuRow({
 					primary: item.id,
 					secondary: item.provider,
-					meta,
+					meta: authMeta,
 					selected: isSelected,
 				}),
 			);

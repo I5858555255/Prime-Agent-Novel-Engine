@@ -4075,6 +4075,25 @@ export const MODELS = {
 			maxTokens: 384000,
 		} satisfies Model<"openai-completions">,
 	},
+	"devin": {
+		"swe-1-6-slow": {
+			id: "swe-1-6-slow",
+			name: "SWE-1.6 Slow",
+			api: "devin-agent",
+			provider: "devin",
+			baseUrl: "https://server.codeium.com",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 200000,
+			maxTokens: 64000,
+		} satisfies Model<"devin-agent">,
+	},
 	"fireworks": {
 		"accounts/fireworks/models/deepseek-v4-flash": {
 			id: "accounts/fireworks/models/deepseek-v4-flash",

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Devin subscription authentication, authenticated account-model discovery, and the `devin-agent` API backed by Widevin, including multimodal prompts, tool calls, usage accounting, and bounded frame parsing.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

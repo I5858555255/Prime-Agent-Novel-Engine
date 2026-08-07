@@ -13,6 +13,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import type { BedrockOptions } from "./amazon-bedrock.js";
 import type { AnthropicOptions } from "./anthropic.js";
 import type { AzureOpenAIResponsesOptions } from "./azure-openai-responses.js";
+import type { DevinOptions } from "./devin.js";
 import type { GoogleOptions } from "./google.js";
 import type { GoogleVertexOptions } from "./google-vertex.js";
 import type { MistralOptions } from "./mistral.js";
@@ -41,6 +42,11 @@ interface AnthropicProviderModule {
 interface AzureOpenAIResponsesProviderModule {
 	streamAzureOpenAIResponses: StreamFunction<"azure-openai-responses", AzureOpenAIResponsesOptions>;
 	streamSimpleAzureOpenAIResponses: StreamFunction<"azure-openai-responses", SimpleStreamOptions>;
+}
+
+interface DevinProviderModule {
+	streamDevin: StreamFunction<"devin-agent", DevinOptions>;
+	streamSimpleDevin: StreamFunction<"devin-agent", SimpleStreamOptions>;
 }
 
 interface GoogleProviderModule {
@@ -93,6 +99,9 @@ let anthropicProviderModulePromise:
 	| undefined;
 let azureOpenAIResponsesProviderModulePromise:
 	| Promise<LazyProviderModule<"azure-openai-responses", AzureOpenAIResponsesOptions, SimpleStreamOptions>>
+	| undefined;
+let devinProviderModulePromise:
+	| Promise<LazyProviderModule<"devin-agent", DevinOptions, SimpleStreamOptions>>
 	| undefined;
 let googleProviderModulePromise:
 	| Promise<LazyProviderModule<"google-generative-ai", GoogleOptions, SimpleStreamOptions>>
@@ -226,6 +235,18 @@ function loadAzureOpenAIResponsesProviderModule(): Promise<
 	return azureOpenAIResponsesProviderModulePromise;
 }
 
+function loadDevinProviderModule(): Promise<LazyProviderModule<"devin-agent", DevinOptions, SimpleStreamOptions>> {
+	// Devin depends on Node's compression and crypto modules, so keep it out of browser bundles until selected.
+	devinProviderModulePromise ||= importNodeOnlyProvider("./devin.js").then((module) => {
+		const provider = module as DevinProviderModule;
+		return {
+			stream: provider.streamDevin,
+			streamSimple: provider.streamSimpleDevin,
+		};
+	});
+	return devinProviderModulePromise;
+}
+
 function loadGoogleProviderModule(): Promise<
 	LazyProviderModule<"google-generative-ai", GoogleOptions, SimpleStreamOptions>
 > {
@@ -324,6 +345,8 @@ export const streamAnthropic = createLazyStream(loadAnthropicProviderModule);
 export const streamSimpleAnthropic = createLazySimpleStream(loadAnthropicProviderModule);
 export const streamAzureOpenAIResponses = createLazyStream(loadAzureOpenAIResponsesProviderModule);
 export const streamSimpleAzureOpenAIResponses = createLazySimpleStream(loadAzureOpenAIResponsesProviderModule);
+export const streamDevin = createLazyStream(loadDevinProviderModule);
+export const streamSimpleDevin = createLazySimpleStream(loadDevinProviderModule);
 export const streamGoogle = createLazyStream(loadGoogleProviderModule);
 export const streamSimpleGoogle = createLazySimpleStream(loadGoogleProviderModule);
 export const streamGoogleVertex = createLazyStream(loadGoogleVertexProviderModule);
@@ -344,6 +367,12 @@ export function registerBuiltInApiProviders(): void {
 		api: "anthropic-messages",
 		stream: streamAnthropic,
 		streamSimple: streamSimpleAnthropic,
+	});
+
+	registerApiProvider({
+		api: "devin-agent",
+		stream: streamDevin,
+		streamSimple: streamSimpleDevin,
 	});
 
 	registerApiProvider({
