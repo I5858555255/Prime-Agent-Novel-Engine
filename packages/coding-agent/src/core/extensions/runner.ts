@@ -201,7 +201,10 @@ const noOpUIContext: ExtensionUIContext = {
 	setFooter: () => {},
 	setHeader: () => {},
 	setTitle: () => {},
-	custom: async () => undefined as never,
+	supportsCustom: false,
+	custom: async () => {
+		throw new Error("ctx.ui.custom() is not available: no UI is attached to this session.");
+	},
 	pasteToEditor: () => {},
 	setEditorText: () => {},
 	getEditorText: () => "",

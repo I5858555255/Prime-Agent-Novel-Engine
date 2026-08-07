@@ -4,6 +4,7 @@
 
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+- Fixed `ctx.ui.custom()` silently no-opping under the daemon/worker architecture and over RPC instead of surfacing an error, and added `ctx.ui.supportsCustom` so extensions can detect terminal-takeover support instead of relying on `ctx.hasUI` ([#680](https://github.com/PrimeIntellect-ai/prime-agent/issues/680))
 
 ## [0.7.1] - 2026-08-07
 

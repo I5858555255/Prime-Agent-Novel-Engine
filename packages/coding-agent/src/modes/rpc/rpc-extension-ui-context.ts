@@ -108,7 +108,16 @@ export function createRpcExtensionUiBridge(output: (request: RpcExtensionUIReque
 		setFooter: (_factory: unknown) => {},
 		setHeader: (_factory: unknown) => {},
 		setTitle: (title) => fireAndForget({ method: "setTitle", title }),
-		custom: async () => undefined as never,
+		supportsCustom: false,
+		custom: async () => {
+			// The RPC client is a wire protocol, not a terminal; there's no
+			// mechanism to hand it a component to render. Reject rather than
+			// silently resolving so callers can detect the failure. Check
+			// ctx.ui.supportsCustom before calling custom() to avoid this.
+			throw new Error(
+				"ctx.ui.custom() is not supported over RPC. Check ctx.ui.supportsCustom before calling custom().",
+			);
+		},
 		pasteToEditor(text) {
 			this.setEditorText(text);
 		},
