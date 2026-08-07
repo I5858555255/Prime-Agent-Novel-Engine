@@ -236,21 +236,14 @@ export class ProcessTerminal implements Terminal {
 			}
 
 			// Check for Kitty protocol response (only if not already enabled)
-			if (!this._kittyProtocolActive) {
-				const match = sequence.match(kittyResponsePattern);
-				if (match) {
-					this.clearKeyboardProtocolFallbackTimer();
+			if (!this._kittyProtocolActive && kittyResponsePattern.test(sequence)) {
+				this.clearKeyboardProtocolFallbackTimer();
+				if (this.inputHandler) {
 					this._kittyProtocolActive = true;
 					setKittyProtocolActive(true);
-
-					// Enable Kitty keyboard protocol (push flags)
-					// Flag 1 = disambiguate escape codes
-					// Flag 2 = report event types (press/repeat/release)
-					// Flag 4 = report alternate keys (shifted key, base layout key)
-					// Base layout key enables shortcuts to work with non-Latin keyboard layouts
-					process.stdout.write("\x1b[>7u");
-					return; // Don't forward protocol response to TUI
+					this.pushKittyProtocol();
 				}
+				return; // Don't forward protocol response to TUI
 			}
 
 			if (this.inputHandler) {
@@ -293,7 +286,7 @@ export class ProcessTerminal implements Terminal {
 		this.clearKeyboardProtocolFallbackTimer();
 		this.keyboardProtocolFallbackTimer = setTimeout(() => {
 			this.keyboardProtocolFallbackTimer = undefined;
-			if (!this._kittyProtocolActive && !this._modifyOtherKeysActive) {
+			if (this.inputHandler && !this._kittyProtocolActive && !this._modifyOtherKeysActive) {
 				process.stdout.write("\x1b[>4;2m");
 				this._modifyOtherKeysActive = true;
 			}
@@ -306,6 +299,28 @@ export class ProcessTerminal implements Terminal {
 		}
 		clearTimeout(this.keyboardProtocolFallbackTimer);
 		this.keyboardProtocolFallbackTimer = undefined;
+	}
+
+	private pushKittyProtocol(): void {
+		// Flags: disambiguate escape codes, report event types, and report alternate keys.
+		process.stdout.write("\x1b[>7u");
+	}
+
+	private popKittyProtocol(): void {
+		process.stdout.write("\x1b[<u");
+	}
+
+	private disableKeyboardProtocols(): void {
+		this.clearKeyboardProtocolFallbackTimer();
+		if (this._kittyProtocolActive) {
+			this.popKittyProtocol();
+			this._kittyProtocolActive = false;
+			setKittyProtocolActive(false);
+		}
+		if (this._modifyOtherKeysActive) {
+			process.stdout.write("\x1b[>4;0m");
+			this._modifyOtherKeysActive = false;
+		}
 	}
 
 	private queryDefaultTerminalColors(): void {
@@ -380,17 +395,9 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	async drainInput(maxMs = 1000, idleMs = 50): Promise<void> {
-		if (this._kittyProtocolActive) {
-			// Disable Kitty keyboard protocol first so any late key releases
-			// do not generate new Kitty escape sequences.
-			process.stdout.write("\x1b[<u");
-			this._kittyProtocolActive = false;
-			setKittyProtocolActive(false);
-		}
-		if (this._modifyOtherKeysActive) {
-			process.stdout.write("\x1b[>4;0m");
-			this._modifyOtherKeysActive = false;
-		}
+		// Disable keyboard protocols first so late key releases do not generate
+		// new escape sequences while pending input is consumed.
+		this.disableKeyboardProtocols();
 
 		const previousHandler = this.inputHandler;
 		this.inputHandler = undefined;
@@ -421,7 +428,7 @@ export class ProcessTerminal implements Terminal {
 		const wasStarted = this.started;
 		this.started = false;
 		this.finishDefaultColorProbe();
-		this.clearKeyboardProtocolFallbackTimer();
+		this.disableKeyboardProtocols();
 
 		if (this.clearProgressInterval()) {
 			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
@@ -444,17 +451,6 @@ export class ProcessTerminal implements Terminal {
 
 		// Disable bracketed paste mode
 		process.stdout.write("\x1b[?2004l");
-
-		// Disable Kitty keyboard protocol if not already done by drainInput()
-		if (this._kittyProtocolActive) {
-			process.stdout.write("\x1b[<u");
-			this._kittyProtocolActive = false;
-			setKittyProtocolActive(false);
-		}
-		if (this._modifyOtherKeysActive) {
-			process.stdout.write("\x1b[>4;0m");
-			this._modifyOtherKeysActive = false;
-		}
 
 		// Clean up StdinBuffer
 		if (this.stdinBuffer) {
@@ -545,8 +541,7 @@ export class ProcessTerminal implements Terminal {
 			this._altScreenActive = true;
 			return;
 		}
-		this._altScreenActive = true;
-		this.write("\x1b[?1049h");
+		this.switchAltScreen(true, "\x1b[?1049h");
 	}
 
 	leaveAltScreen(): void {
@@ -556,12 +551,22 @@ export class ProcessTerminal implements Terminal {
 	private releaseAltScreen(): void {
 		const ownsPendingHandoff = this.ownsPendingAltScreenHandoff();
 		if (!this._altScreenActive && !ownsPendingHandoff) return;
-		this._altScreenActive = false;
 		if (ownsPendingHandoff) {
 			pendingAltScreenHandoff = undefined;
 			cancelInputHandoff(this.altScreenHandoffToken);
 		}
-		this.write("\x1b[?1049l");
+		this.switchAltScreen(false, "\x1b[?1049l");
+	}
+
+	private switchAltScreen(active: boolean, sequence: string): void {
+		if (this._kittyProtocolActive) {
+			this.popKittyProtocol();
+		}
+		this._altScreenActive = active;
+		this.write(sequence);
+		if (this._kittyProtocolActive) {
+			this.pushKittyProtocol();
+		}
 	}
 
 	get altScreenActive(): boolean {

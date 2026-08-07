@@ -218,6 +218,7 @@ import {
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
+import { runExternalEditor } from "./external-editor.js";
 import { FeatureHintDeck } from "./feature-hints.js";
 import { scopeHeartbeatsToSession } from "./heartbeat-scope.js";
 import {
@@ -3848,6 +3849,10 @@ export class InteractiveMode {
 					this.hideExtensionEditor();
 					resolve(undefined);
 				},
+				undefined,
+				(error) => {
+					this.showError(error instanceof Error ? error.message : String(error));
+				},
 			);
 
 			this.editorContainer.clear();
@@ -4110,7 +4115,11 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.heartbeats.open", () => {
 			void this.showHeartbeatManager();
 		});
-		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
+		this.defaultEditor.onAction("app.editor.external", () => {
+			void this.openExternalEditor().catch((error) => {
+				this.showError(error instanceof Error ? error.message : String(error));
+			});
+		});
 		this.defaultEditor.onAction("app.prompt.stash", () => this.handlePromptStash());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => {
@@ -6986,55 +6995,25 @@ export class InteractiveMode {
 		});
 	}
 
-	private openExternalEditor(): void {
-		// Determine editor (respect $VISUAL, then $EDITOR)
-		const editorCmd = process.env.VISUAL || process.env.EDITOR;
-		if (!editorCmd) {
+	private async openExternalEditor(): Promise<void> {
+		const command = process.env.VISUAL || process.env.EDITOR;
+		if (!command) {
 			this.showWarning("No editor configured. Set $VISUAL or $EDITOR environment variable.");
 			return;
 		}
 
-		const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
-		const tmpFile = path.join(os.tmpdir(), `pi-editor-${Date.now()}.pi.md`);
-
-		try {
-			// Write current content to temp file
-			fs.writeFileSync(tmpFile, currentText, "utf-8");
-
-			// Stop TUI to release terminal
-			this.ui.stop();
-
-			// Split by space to support editor arguments (e.g., "code --wait")
-			const [editor, ...editorArgs] = editorCmd.split(" ");
-
-			// Spawn editor synchronously with inherited stdio for interactive editing
-			const result = spawnSync(editor, [...editorArgs, tmpFile], {
-				stdio: "inherit",
-				shell: process.platform === "win32",
-			});
-
-			// On successful exit (status 0), replace editor content
-			if (result.status === 0) {
-				const newContent = fs.readFileSync(tmpFile, "utf-8").replace(/\n$/, "");
-				this.editor.setText(newContent);
-			}
-			// On non-zero exit, keep original text (no action needed)
-		} finally {
-			// Clean up temp file
-			try {
-				fs.unlinkSync(tmpFile);
-			} catch {
-				// Ignore cleanup errors
-			}
-
-			// Restart TUI
-			this.ui.start();
-			// ui.stop() left fullscreen so the editor got a clean terminal
-			if (this.fullscreenEnabled) {
-				this.applyFullscreen(true);
-			}
-			// Force full re-render since external editor uses alternate screen
-			this.ui.requestRender(true);
+		const content = await runExternalEditor({
+			tui: this.ui,
+			command,
+			content: this.editor.getExpandedText?.() ?? this.editor.getText(),
+			onTuiRestart: () => {
+				if (this.fullscreenEnabled) {
+					this.applyFullscreen(true);
+				}
+			},
+		});
+		if (content !== undefined) {
+			this.editor.setText(content);
 		}
 	}
 
