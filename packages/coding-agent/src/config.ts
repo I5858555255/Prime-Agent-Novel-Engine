@@ -201,6 +201,7 @@ function readCommandOutput(
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
 		shell: shouldUseWindowsShell(command),
+		windowsHide: true, // avoid console window flash on Windows (console-less daemon workers)
 	});
 	if (result.status === 0) return result.stdout.trim() || undefined;
 	if (options.requireSuccess) {

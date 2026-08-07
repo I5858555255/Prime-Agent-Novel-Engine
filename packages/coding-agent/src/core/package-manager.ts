@@ -2396,6 +2396,7 @@ export class DefaultPackageManager implements PackageManager {
 			cwd: options?.cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			shell: shouldUseWindowsShell(command),
+			windowsHide: true, // avoid console window flash on Windows (console-less daemon workers)
 			env: options?.env ? { ...baseEnv, ...options.env } : baseEnv,
 		});
 	}
@@ -2463,6 +2464,7 @@ export class DefaultPackageManager implements PackageManager {
 			stdio: ["ignore", "pipe", "pipe"],
 			encoding: "utf-8",
 			shell: shouldUseWindowsShell(command),
+			windowsHide: true,
 			env: getEnv(),
 		});
 		if (result.error || result.status !== 0) {

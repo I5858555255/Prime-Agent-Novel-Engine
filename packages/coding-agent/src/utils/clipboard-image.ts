@@ -98,6 +98,7 @@ function runCommand(
 		timeout: timeoutMs,
 		maxBuffer: maxBufferBytes,
 		env: options?.env,
+		windowsHide: true, // avoid console window flash on Windows (console-less daemon workers)
 	});
 
 	if (result.error) {

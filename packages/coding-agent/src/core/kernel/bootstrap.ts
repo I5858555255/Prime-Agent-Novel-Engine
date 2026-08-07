@@ -376,6 +376,7 @@ function run(command: string, args: string[], options: { stdio?: "ignore" | "inh
 		const child = spawn(command, args, {
 			env: process.env,
 			stdio: options.stdio ?? "ignore",
+			windowsHide: true, // avoid console window flash on Windows (console-less daemon workers)
 		});
 		child.on("error", reject);
 		child.on("exit", (code, signal) => {
@@ -495,6 +496,12 @@ async function acquireBootstrapLock(venv: string): Promise<() => Promise<void>> 
 			await sleep(BOOTSTRAP_LOCK_RETRY_MS);
 		}
 	}
+}
+
+// uv venv layouts differ by platform: POSIX puts the interpreter at bin/python,
+// Windows at Scripts/python.exe. Hardcoding "bin/python" breaks bootstrap on Windows.
+function venvPythonPath(venv: string): string {
+	return process.platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
 }
 
 async function findExecutable(name: string): Promise<string | null> {
@@ -725,7 +732,7 @@ async function bootstrapVenv(
 ): Promise<void> {
 	await mkdir(path.dirname(venv), { recursive: true });
 	const uv = await ensureUv(options);
-	const python = path.join(venv, "bin", "python");
+	const python = venvPythonPath(venv);
 	const sourceDir = await resolveRuntimeSourceDir();
 	const runtimeRequirement = sourceDir ?? RUNTIME_REQUIREMENT;
 	const runtimeIdentity = await resolveRuntimeIdentity();
@@ -886,7 +893,7 @@ async function ensureKernelPythonUncached(
 	}
 
 	const venv = await resolveWritableKernelVenvDir();
-	const python = path.join(venv, "bin", "python");
+	const python = venvPythonPath(venv);
 	const runtimeIdentity = await resolveRuntimeIdentity();
 	if (await kernelReady(python, venv, runtimeIdentity, pythonSkills)) return python;
 

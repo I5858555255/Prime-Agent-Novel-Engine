@@ -107,6 +107,7 @@ export class RpcClient {
 			cwd: this.options.cwd,
 			env: { ...process.env, ...this.options.env },
 			stdio: ["pipe", "pipe", "pipe"],
+			windowsHide: true, // avoid console window flash on Windows (console-less daemon workers)
 		});
 
 		// Collect stderr for debugging
