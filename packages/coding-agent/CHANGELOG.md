@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed interrupted Python harness writes truncating the last valid continual harness state ([#834](https://github.com/PrimeIntellect-ai/prime-agent/pull/834) by [@ssynb](https://github.com/ssynb)).
 
 ## [0.7.0] - 2026-08-05
 
