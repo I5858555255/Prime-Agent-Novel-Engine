@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added an xAI Grok OAuth provider so SuperGrok and X Premium subscriptions can be used without an `XAI_API_KEY`.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

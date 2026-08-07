@@ -2321,6 +2321,18 @@ async function generateModels() {
 		}));
 	allModels.push(...azureOpenAiModels);
 
+	// xAI subscription models (SuperGrok / X Premium). Same catalog as the
+	// metered xAI provider, but authenticated with an OAuth token and served
+	// over the Responses API.
+	const xaiOAuthModels: Model<Api>[] = allModels
+		.filter((model) => model.provider === "xai")
+		.map(({ compat: _compat, ...model }) => ({
+			...model,
+			api: "openai-responses",
+			provider: "xai-oauth",
+		}));
+	allModels.push(...xaiOAuthModels);
+
 	for (const model of allModels) {
 		applyThinkingLevelMetadata(model);
 	}

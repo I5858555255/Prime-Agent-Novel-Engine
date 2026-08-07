@@ -18,6 +18,7 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- xAI Grok (SuperGrok/X Premium)
 
 Use `/logout` to clear credentials. Tokens are stored in `~/.prime/agent/auth.json` and auto-refresh when expired.
 
@@ -29,6 +30,12 @@ Use `/logout` to clear credentials. Tokens are stored in `~/.prime/agent/auth.js
 ### Claude Pro/Max
 
 Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.
+
+### xAI Grok
+
+- Requires a SuperGrok or X Premium subscription with Grok access
+- Login uses the same OAuth flow as xAI's own CLI, so no `XAI_API_KEY` is needed and usage draws on the subscription instead of metered API credit
+- Models appear under the `xai-oauth` provider; the metered `xai` provider is unchanged
 
 ### GitHub Copilot
 
@@ -60,6 +67,7 @@ prime-agent
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`) | `cloudflare-ai-gateway` |
 | Cloudflare Workers AI | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`) | `cloudflare-workers-ai` |
 | xAI | `XAI_API_KEY` | `xai` |
+| xAI Grok subscription | `XAI_OAUTH_TOKEN` | `xai-oauth` |
 | OpenRouter | `OPENROUTER_API_KEY` | `openrouter` |
 | Vercel AI Gateway | `AI_GATEWAY_API_KEY` | `vercel-ai-gateway` |
 | ZAI | `ZAI_API_KEY` | `zai` |
