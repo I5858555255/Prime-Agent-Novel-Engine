@@ -60,6 +60,9 @@ case "\${1:-}" in
 		}
 		detect_shell_profile
 		;;
+	unsupported-shell-path)
+		configure_installed_command_path "$HOME/.local/bin"
+		;;
 	writable-prefix)
 		prime_agent_path_supports_install() {
 			return 0
@@ -138,6 +141,7 @@ esac
 	assertUserPrefixFallback();
 	assertBlockedFallbackPackageRejected();
 	assertBashProfileSelection();
+	assertUnsupportedShellPathInstructions();
 	assertWritablePrefixPreserved();
 } finally {
 	rmSync(tempDir, { recursive: true, force: true });
@@ -240,8 +244,30 @@ function assertBashProfileSelection() {
 	check(result.stdout === bashProfilePath, "macOS Bash did not default to .bash_profile");
 
 	writeFileSync(bashrcPath, "", "utf-8");
+	writeFileSync(posixProfilePath, "", "utf-8");
 	result = runHarness("shell-profile", { ...automaticProfile, PRIME_AGENT_TEST_UNAME: "Linux" });
-	check(result.stdout === bashrcPath, "non-macOS Bash did not retain .bashrc");
+	check(result.stdout === posixProfilePath, "Linux Bash did not select an existing login profile");
+
+	writeFileSync(bashProfilePath, "", "utf-8");
+	result = runHarness("shell-profile", { ...automaticProfile, PRIME_AGENT_TEST_UNAME: "Linux" });
+	check(result.stdout === bashProfilePath, "Linux Bash did not honor Bash login-profile precedence");
+
+	rmSync(bashProfilePath);
+	rmSync(posixProfilePath);
+	result = runHarness("shell-profile", { ...automaticProfile, PRIME_AGENT_TEST_UNAME: "Linux" });
+	check(result.stdout === bashrcPath, "Linux Bash did not default to .bashrc when no login profile exists");
+}
+
+function assertUnsupportedShellPathInstructions() {
+	const result = runHarness("unsupported-shell-path", {
+		PRIME_AGENT_TEST_NODE_VERSION: "22.8.0",
+		PRIME_AGENT_TEST_SHELL: "/usr/bin/fish",
+		PRIME_AGENT_TEST_SHELL_PROFILE_AUTO: "1",
+	});
+	check(result.status === 0, `unsupported-shell harness exited with ${result.status ?? "unknown"}: ${result.stderr}`);
+	check(result.stdout.includes(`Add ${join(homeDir, ".local/bin")} to PATH using your shell configuration.`), "unsupported shell did not receive shell-neutral PATH guidance");
+	check(result.stdout.includes(`Run Prime Agent now with: ${join(homeDir, ".local/bin/prime-agent")}`), "unsupported shell did not receive an immediately runnable command");
+	check(!result.stdout.includes("export PATH="), "unsupported shell received POSIX-only PATH syntax");
 }
 
 function assertWritablePrefixPreserved() {
@@ -266,7 +292,7 @@ function runHarness(testCase, overrides) {
 		PRIME_AGENT_INSTALLER_PLAIN: "1",
 		PRIME_AGENT_SHELL_PROFILE: profilePath,
 		PRIME_AGENT_TEST_NPM_LOG: npmLogPath,
-		SHELL: "/bin/bash",
+		SHELL: overrides.PRIME_AGENT_TEST_SHELL ?? "/bin/bash",
 	};
 	delete env.NPM_CONFIG_PREFIX;
 	if (env.PRIME_AGENT_TEST_SHELL_PROFILE_AUTO === "1") delete env.PRIME_AGENT_SHELL_PROFILE;

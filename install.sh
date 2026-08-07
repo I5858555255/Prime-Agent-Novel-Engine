@@ -1428,31 +1428,23 @@ detect_shell_profile() {
 			printf '%s/.zshrc' "${ZDOTDIR:-$HOME}"
 			;;
 		bash)
-			case "$(uname -s 2>/dev/null)" in
-				Darwin)
-					if [ -f "$HOME/.bash_profile" ]; then
-						printf '%s/.bash_profile' "$HOME"
-					elif [ -f "$HOME/.bash_login" ]; then
-						printf '%s/.bash_login' "$HOME"
-					elif [ -f "$HOME/.profile" ]; then
-						printf '%s/.profile' "$HOME"
-					else
-						printf '%s/.bash_profile' "$HOME"
-					fi
-					;;
-				*)
-					printf '%s/.bashrc' "$HOME"
-					;;
-			esac
+			if [ -f "$HOME/.bash_profile" ]; then
+				printf '%s/.bash_profile' "$HOME"
+			elif [ -f "$HOME/.bash_login" ]; then
+				printf '%s/.bash_login' "$HOME"
+			elif [ -f "$HOME/.profile" ]; then
+				printf '%s/.profile' "$HOME"
+			elif [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+				printf '%s/.bash_profile' "$HOME"
+			else
+				printf '%s/.bashrc' "$HOME"
+			fi
+			;;
+		sh|dash|ksh)
+			printf '%s/.profile' "$HOME"
 			;;
 		*)
-			if [ -f "$HOME/.zshrc" ]; then
-				printf '%s/.zshrc' "$HOME"
-			elif [ -f "$HOME/.bashrc" ]; then
-				printf '%s/.bashrc' "$HOME"
-			else
-				printf '%s/.profile' "$HOME"
-			fi
+			return 1
 			;;
 	esac
 }
@@ -1496,9 +1488,19 @@ prompt_add_install_path() {
 
 print_install_path_manual_instructions() {
 	install_bin="$1"
-	printf 'Add this to your shell profile to use %s from new shells:\n\n' "$prime_agent_cmd"
-	printf '  %s\n' "$(install_path_line "$install_bin")"
-	printf '\nThen restart your shell and run: %s\n' "$prime_agent_cmd"
+	shell_name="${SHELL:-}"
+	shell_name="${shell_name##*/}"
+	case "$shell_name" in
+		bash|zsh|sh|dash|ksh)
+			printf 'Add this to your shell profile to use %s from new shells:\n\n' "$prime_agent_cmd"
+			printf '  %s\n' "$(install_path_line "$install_bin")"
+			printf '\nThen restart your shell and run: %s\n' "$prime_agent_cmd"
+			;;
+		*)
+			printf 'Add %s to PATH using your shell configuration.\n' "$install_bin"
+			printf 'Run Prime Agent now with: %s/%s\n' "$install_bin" "$prime_agent_cmd"
+			;;
+	esac
 }
 
 install_path_line() {
