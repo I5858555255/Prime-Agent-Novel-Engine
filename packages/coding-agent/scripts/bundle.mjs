@@ -11,9 +11,9 @@
  * compiled Bun binary), keyed off the __PI_BUNDLED__ define below, so extension
  * imports of pi packages share the bundle's module instances.
  */
-import { chmodSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
@@ -29,10 +29,33 @@ try {
 	buildId = `release-${JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version}`;
 }
 
+function verifyNodeOnlyProviderAssets() {
+	const missing = new Set();
+	const referencePattern = /importNodeOnlyProvider\((['"])(\.\/[^'"]+\.js)\1\)/g;
+	for (const fileName of readdirSync(outdir)) {
+		if (!fileName.endsWith(".js")) continue;
+		const filePath = join(outdir, fileName);
+		const source = readFileSync(filePath, "utf8");
+		for (const match of source.matchAll(referencePattern)) {
+			const specifier = match[2];
+			const target = resolve(dirname(filePath), specifier);
+			if (!existsSync(target)) {
+				missing.add(`${fileName} -> ${specifier}`);
+			}
+		}
+	}
+	if (missing.size > 0) {
+		throw new Error(`Bundle contains missing node-only provider assets:\n${[...missing].map((entry) => `- ${entry}`).join("\n")}`);
+	}
+}
+
 rmSync(outdir, { recursive: true, force: true });
 
 await build({
-	entryPoints: [join(packageDir, "dist", "cli.js")],
+	entryPoints: {
+		cli: join(packageDir, "dist", "cli.js"),
+		"amazon-bedrock": join(packageDir, "..", "ai", "dist", "providers", "amazon-bedrock.js"),
+	},
 	outdir,
 	bundle: true,
 	splitting: true,
@@ -47,6 +70,8 @@ await build({
 	},
 	logLevel: "warning",
 });
+
+verifyNodeOnlyProviderAssets();
 
 chmodSync(join(outdir, "cli.js"), 0o755);
 console.log("bundled dist/cli.js -> dist/bundle/");
