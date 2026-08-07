@@ -135,6 +135,8 @@ delete_subagent(selector)
 host_request(request_type: str, payload: dict | None = None)
 RLMSpawnHandle
 RLMModel
+RLMModelPage
+RLMProviderModelCount
 RLMSubagent
 TokenUsage
 ```
@@ -154,6 +156,14 @@ Supported `rlm.run` options are:
 - `model`: an exact `provider/model` selector from `rlm.find_models()`.
 
 Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. If an exact selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
+
+`find_models` returns an `RLMModelPage`, a list of `RLMModel` carrying the match set the page was cut from:
+
+- `total`: matches before `limit` was applied;
+- `truncated`: whether matches were dropped; and
+- `providers`: `RLMProviderModelCount` entries counting every match per provider.
+
+A query ranks by exact, then prefix, then contiguous partial match over the selector, model id, and model name, then by an order-independent token match. Reordering the words of a query therefore changes ranking at most, never whether a model matches: `"gpt 5.6 sol"` and `"5.6 gpt sol"` return the same models. An empty query carries no ranking signal, so its page round-robins providers instead of returning the alphabetical head of one provider. An unqualified call is therefore a provider-balanced sample, not the catalog: read `total`, `truncated`, and `providers` before concluding what is reachable, and query a specific model id to confirm one model.
 
 ## Child Execution
 

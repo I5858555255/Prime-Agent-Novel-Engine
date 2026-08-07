@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed `rlm.find_models()` returning an alphabetical single-provider slice that read as the full reachable catalog; an unqualified call now samples every provider and every result reports `total`, `truncated`, and per-provider match counts ([#799](https://github.com/PrimeIntellect-ai/prime-agent/issues/799)).
+- Fixed `rlm.find_models()` model matching depending on query word order, so `"5.6 gpt sol"` now finds the same models as `"gpt 5.6 sol"` ([#810](https://github.com/PrimeIntellect-ai/prime-agent/issues/810)).
 
 ## [0.7.0] - 2026-08-05
 

@@ -36,6 +36,9 @@ describe("ENG-4649 subagent model selection", () => {
 						selector: `${provider}/model-319`,
 					},
 				],
+				total: 1,
+				truncated: false,
+				providers: [{ provider, count: 1 }],
 			});
 			await expect(findModels({ query: "model", limit: 21 })).rejects.toThrow("integer from 1 to 20");
 			harness.setResponses([fauxAssistantMessage("resolved child answer")]);
@@ -65,7 +68,12 @@ describe("ENG-4649 subagent model selection", () => {
 				source: "stale",
 				label: "expired",
 			});
-			await expect(harness.session.findRlmModels("", 8)).resolves.toEqual({ models: [] });
+			await expect(harness.session.findRlmModels("", 8)).resolves.toEqual({
+				models: [],
+				total: 0,
+				truncated: false,
+				providers: [],
+			});
 		} finally {
 			harness.cleanup();
 		}
@@ -158,7 +166,12 @@ describe("ENG-4649 subagent model selection", () => {
 			});
 
 			now += 300_001;
-			await expect(harness.session.findRlmModels("parent", 8)).resolves.toEqual({ models: [] });
+			await expect(harness.session.findRlmModels("parent", 8)).resolves.toEqual({
+				models: [],
+				total: 0,
+				truncated: false,
+				providers: [],
+			});
 			expect(fetchModels).toHaveBeenCalledTimes(2);
 		} finally {
 			dateNow.mockRestore();
@@ -174,7 +187,12 @@ describe("ENG-4649 subagent model selection", () => {
 		vi.stubGlobal("fetch", fetchModels);
 		try {
 			harness.authStorage.setRuntimeApiKey(codexProvider, openAICodexToken("account-1"));
-			await expect(harness.session.findRlmModels("parent", 8)).resolves.toEqual({ models: [] });
+			await expect(harness.session.findRlmModels("parent", 8)).resolves.toEqual({
+				models: [],
+				total: 0,
+				truncated: false,
+				providers: [],
+			});
 			harness.setResponses([fauxAssistantMessage("same parent answer")]);
 
 			const result = await harness.session.runRlmChild("keep the parent model", {

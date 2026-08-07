@@ -104,7 +104,10 @@ class RlmSubagentRegistryTest(unittest.TestCase):
                         "name": "Claude Opus 4.7",
                         "selector": "anthropic/claude-opus-4-7",
                     }
-                ]
+                ],
+                "total": 1,
+                "truncated": False,
+                "providers": [{"provider": "anthropic", "count": 1}],
             }
         )
 
@@ -120,6 +123,49 @@ class RlmSubagentRegistryTest(unittest.TestCase):
             {"query": "opus", "limit": 3},
         )
 
+    def test_reports_truncated_model_pages_with_provider_counts(self) -> None:
+        host_request = AsyncMock(
+            return_value={
+                "models": [
+                    {
+                        "provider": "anthropic",
+                        "id": "claude-opus-4-7",
+                        "name": "Claude Opus 4.7",
+                        "selector": "anthropic/claude-opus-4-7",
+                    },
+                    {
+                        "provider": "zai",
+                        "id": "glm-5",
+                        "name": "GLM 5",
+                        "selector": "zai/glm-5",
+                    },
+                ],
+                "total": 155,
+                "truncated": True,
+                "providers": [
+                    {"provider": "anthropic", "count": 42},
+                    {"provider": "zai", "count": 113},
+                ],
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            page = asyncio.run(rlm_module.find_models(limit=2))
+
+        self.assertEqual(len(page), 2)
+        self.assertEqual(page.total, 155)
+        self.assertTrue(page.truncated)
+        self.assertEqual(
+            page.providers,
+            (
+                rlm_module.RLMProviderModelCount(provider="anthropic", count=42),
+                rlm_module.RLMProviderModelCount(provider="zai", count=113),
+            ),
+        )
+        self.assertIn("total=155", repr(page))
+        self.assertIn("truncated=True", repr(page))
+        self.assertIn("anthropic=42", repr(page))
+
     def test_rejects_invalid_model_search_input_and_response(self) -> None:
         with self.assertRaisesRegex(TypeError, "query must be str"):
             asyncio.run(rlm_module.find_models(123))
@@ -129,6 +175,18 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         host_request = AsyncMock(return_value={"models": [{"provider": "anthropic"}]})
         with patch.object(rlm_module, "host_request", host_request):
             with self.assertRaisesRegex(RuntimeError, "invalid model entry"):
+                asyncio.run(rlm_module.find_models("opus"))
+
+        host_request = AsyncMock(return_value={"models": []})
+        with patch.object(rlm_module, "host_request", host_request):
+            with self.assertRaisesRegex(RuntimeError, "invalid page summary"):
+                asyncio.run(rlm_module.find_models("opus"))
+
+        host_request = AsyncMock(
+            return_value={"models": [], "total": 0, "truncated": False, "providers": [{"provider": "zai"}]}
+        )
+        with patch.object(rlm_module, "host_request", host_request):
+            with self.assertRaisesRegex(RuntimeError, "invalid provider entry"):
                 asyncio.run(rlm_module.find_models("opus"))
 
     def test_deletes_subagent_by_name_through_host(self) -> None:

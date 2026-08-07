@@ -129,6 +129,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			"A callable `rlm` is already in your global namespace. `await rlm('sub-task')` spawns a child and returns immediately after task admission with `rlm_child_id`, `name`, `session_dir`, and `model`; it never waits for or returns the child's answer.",
 			"Choose a stable child name with `await rlm('sub-task', name='api-reviewer')`; names must be unique among siblings. If omitted, the host generates a readable unique name.",
 			"A child inherits your model. If a different model is explicitly requested, use `await rlm.find_models(...)` and an exact returned selector. An unavailable requested model fails spawn; decide whether to retry or omit `model`.",
+			"`rlm.find_models()` returns one bounded page carrying `total`, `truncated`, and per-provider counts. An unqualified call samples every provider rather than listing the catalog, so query a model id before concluding a model is unreachable.",
 		);
 		if (hasAgentMessage) {
 			parts.push(
