@@ -132,7 +132,7 @@ Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.a
 Create an API key at [ollama.com/settings/keys](https://ollama.com/settings/keys), then save it with `/login ollama-cloud` or set `OLLAMA_API_KEY`:
 
 ```bash
-prime-agent --provider ollama-cloud --model gpt-oss:120b
+prime-agent --provider ollama-cloud --model glm-5.2
 ```
 
 Prime Agent uses Ollama's OpenAI-compatible Cloud endpoint at `https://ollama.com/v1`. Local Ollama is separate: configure `http://localhost:11434/v1` and locally installed models in [models.md](models.md).

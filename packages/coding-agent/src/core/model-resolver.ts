@@ -43,7 +43,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	fireworks: "accounts/fireworks/models/kimi-k2p6",
 	opencode: "kimi-k2.6",
 	"opencode-go": "kimi-k2.6",
-	"ollama-cloud": "gpt-oss:120b",
+	"ollama-cloud": "glm-5.2",
 	"kimi-coding": "kimi-for-coding",
 	"cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
 	"cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",

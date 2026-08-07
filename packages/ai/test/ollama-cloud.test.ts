@@ -97,8 +97,7 @@ describe("Ollama Cloud", () => {
 	});
 
 	it("registers the default Cloud model with the required compatibility contract", () => {
-		const model = getModel("ollama-cloud", "gpt-oss:120b");
-		const glm = getModel("ollama-cloud", "glm-5.2");
+		const model = getModel("ollama-cloud", "glm-5.2");
 		const ids = getModels("ollama-cloud").map((candidate) => candidate.id);
 
 		expect(getModels("ollama-cloud")).toContain(model);
@@ -122,7 +121,7 @@ describe("Ollama Cloud", () => {
 			"nemotron-3-ultra",
 			"qwen3.5:397b",
 		]);
-		expect(glm).toMatchObject({
+		expect(model).toMatchObject({
 			id: "glm-5.2",
 			contextWindow: 976000,
 			maxTokens: 131072,

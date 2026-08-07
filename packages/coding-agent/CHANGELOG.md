@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Added Ollama Cloud API-key setup and model selection.
+- Added Ollama Cloud API-key setup and model selection, defaulting to `glm-5.2`.
 
 ## [0.7.0] - 2026-08-05
 
