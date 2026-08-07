@@ -626,6 +626,13 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(result.value).toBe("rejected");
 		expect(result.error).not.toBe(timeoutError);
 		expect(result.error).toBeInstanceOf(Error);
+		// The gate write fails with ERR_STREAM_WRITE_AFTER_END only because the worker already
+		// closed its end. That says nothing about why it died, so the exit status has to survive.
+		const gateError = result.error as NodeJS.ErrnoException;
+		expect(gateError.code).not.toBe("ERR_STREAM_WRITE_AFTER_END");
+		expect(gateError.message).toContain("exited during startup");
+		expect(gateError.message).toMatch(/exit code \d+|signal \w+/);
+		expect((gateError.cause as NodeJS.ErrnoException | undefined)?.code).toBe("ERR_STREAM_WRITE_AFTER_END");
 		expect(connectWorker).not.toHaveBeenCalled();
 		expect(workers.size).toBe(0);
 		expect(readdirSync(descriptorDir).filter((name) => name.endsWith(".json"))).toEqual([]);

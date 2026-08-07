@@ -358,6 +358,24 @@ function unrefDelay(ms: number): Promise<void> {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms).unref());
 }
 
+type WorkerExitStatus = { code: number | null; signal: NodeJS.Signals | null };
+
+/**
+ * A worker that dies before the gate is committed closes its end of the pipe first, so the commit
+ * write rejects with ERR_STREAM_WRITE_AFTER_END. That reports the symptom, not the cause: the exit
+ * status does, and the worker's stderr is already in the daemon log.
+ */
+function describeStartupGateFailure(workerId: string, error: unknown, exit: WorkerExitStatus | undefined): Error {
+	if (!exit || (exit.code === null && exit.signal === null)) {
+		return error instanceof Error ? error : new Error(String(error));
+	}
+	const cause = exit.signal === null ? `exit code ${exit.code}` : `signal ${exit.signal}`;
+	return new Error(
+		`Session worker ${workerId} exited during startup (${cause}) before committing its startup gate. See the daemon log for the worker's stderr.`,
+		{ cause: error },
+	);
+}
+
 function commitWorkerStartupGate(gate: Writable): Promise<void> {
 	return new Promise((resolveCommit, rejectCommit) => {
 		let settled = false;
@@ -2139,7 +2157,13 @@ export class DaemonSupervisor {
 				})
 			: () => {};
 		child.once("close", detachWorkerStderr);
-		const childClosed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
+		let childExit: WorkerExitStatus | undefined;
+		const childClosed = new Promise<void>((resolveClose) =>
+			child.once("close", (code, signal) => {
+				childExit = { code, signal };
+				resolveClose();
+			}),
+		);
 		child.on("error", (error) => {
 			this.log(
 				`Session worker ${workerId} process error: ${error instanceof Error ? error.message : String(error)}`,
@@ -2227,7 +2251,7 @@ export class DaemonSupervisor {
 			} catch (error) {
 				startupGate.destroy();
 				await childClosed;
-				throw error;
+				throw describeStartupGateFailure(workerId, error, childExit);
 			} finally {
 				child.unref();
 			}
