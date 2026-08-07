@@ -29,6 +29,15 @@ import type { Validator } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { getAgentDir, VERSION } from "../config.js";
 import type { AuthSourceToken, AuthStatus, AuthStorage } from "./auth-storage.js";
+import {
+	CURSOR_CLI_AUTH_TOKEN,
+	CURSOR_CLI_PROVIDER_ID,
+	getCursorCliCommand,
+	getCursorCliModels,
+	isCursorCliAvailable,
+	isCursorCliModel,
+	registerCursorCliProvider,
+} from "./cursor-cli-provider.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "./prime-inference-auth.js";
 import {
 	fetchAuthorizedPrivatePrimeInferenceModelIds,
@@ -445,6 +454,7 @@ export class ModelRegistry {
 		readonly authStorage: AuthStorage,
 		private modelsJsonPath: string | undefined,
 	) {
+		registerCursorCliProvider();
 		this.loadModels();
 	}
 
@@ -478,6 +488,7 @@ export class ModelRegistry {
 
 		// Ensure dynamic API/OAuth registrations are rebuilt from current provider state.
 		resetApiProviders();
+		registerCursorCliProvider();
 		resetOAuthProviders();
 		// reset drops everything but model-provider built-ins; re-add MCP integrations
 		// (built-in catalog + this session's user-declared servers via the hook).
@@ -520,7 +531,11 @@ export class ModelRegistry {
 		this.explicitPrivatePrimeInferenceModelIds = new Set(
 			customModels.filter(isPrivatePrimeInferenceModel).map((model) => model.id),
 		);
-		const builtInModels = [...this.loadBuiltInModels(overrides, modelOverrides), ...getPrivatePrimeInferenceModels()];
+		const builtInModels = [
+			...this.loadBuiltInModels(overrides, modelOverrides),
+			...getPrivatePrimeInferenceModels(),
+			...getCursorCliModels(),
+		];
 		let combined = this.mergeCustomModels(builtInModels, customModels);
 
 		// Let OAuth providers modify their models (e.g., update baseUrl)
@@ -1024,6 +1039,9 @@ export class ModelRegistry {
 	 * Get API key for a model.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
+		if (isCursorCliModel(model)) {
+			return isCursorCliAvailable();
+		}
 		return this.authStorage.hasAuth(model.provider) || this.hasConfiguredProviderRequestAuth(model.provider);
 	}
 
@@ -1295,6 +1313,14 @@ export class ModelRegistry {
 	 * Get API key and request headers for a model.
 	 */
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
+		if (isCursorCliModel(model)) {
+			return isCursorCliAvailable()
+				? { ok: true, apiKey: CURSOR_CLI_AUTH_TOKEN }
+				: {
+						ok: false,
+						error: `Cursor Agent CLI was not found. Install cursor-agent or set CURSOR_AGENT_PATH.`,
+					};
+		}
 		try {
 			const providerConfig = this.providerRequestConfigs.get(model.provider);
 			const authStorageAuth = await this.authStorage.getApiKeyWithSourceToken(model.provider, {
@@ -1356,6 +1382,11 @@ export class ModelRegistry {
 	 * This intentionally does not execute command-backed config values.
 	 */
 	getProviderAuthStatus(provider: string): AuthStatus {
+		if (provider === CURSOR_CLI_PROVIDER_ID) {
+			return isCursorCliAvailable()
+				? { configured: true, source: "environment", label: getCursorCliCommand() }
+				: { configured: false };
+		}
 		const authStatus = this.authStorage.getAuthStatus(provider);
 		if (authStatus.source && authStatus.source !== "stale") {
 			return authStatus;
@@ -1397,6 +1428,9 @@ export class ModelRegistry {
 	 * Get API key for a provider.
 	 */
 	async getApiKeyForProvider(provider: string): Promise<string | undefined> {
+		if (provider === CURSOR_CLI_PROVIDER_ID) {
+			return isCursorCliAvailable() ? CURSOR_CLI_AUTH_TOKEN : undefined;
+		}
 		const authStorageAuth = await this.authStorage.getApiKeyWithSourceToken(provider, { includeFallback: false });
 		if (authStorageAuth.apiKey !== undefined) {
 			this.setLastProviderAuthSourceToken(provider, authStorageAuth.sourceToken);

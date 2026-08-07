@@ -74,12 +74,15 @@ The Python kernel runtime is set up automatically on first invocation. Set `PRIM
 
 ## Providers & Models
 
-For each built-in provider, Prime Agent maintains a list of tool-capable models, updated with every release. Authenticate via subscription (`/login`) or API key, then select any model from that provider via `/model` (or Ctrl+L).
+For each built-in provider, Prime Agent maintains a list of tool-capable models, updated with every release. Authenticate via `/login`, an API key, or a supported provider CLI, then select any model from that provider via `/model` (or Ctrl+L).
 
-**Subscriptions:**
+**Subscriptions (`/login`):**
 - Anthropic Claude Pro/Max
 - OpenAI ChatGPT Plus/Pro (Codex)
 - GitHub Copilot
+
+**Local CLI subscriptions:**
+- Cursor CLI (Composer 2.5 and Cursor Grok 4.5)
 
 **API keys:**
 - Anthropic
@@ -676,6 +679,7 @@ prime-agent --thinking high "Solve this complex problem"
 | `PI_SKIP_VERSION_CHECK` | Skip the Prime Agent version update check at startup. This prevents the release manifest request |
 | `PRIME_AGENT_DOWNLOAD_BASE_URL` | Override the Prime Agent release manifest and tarball base URL |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
+| `CURSOR_AGENT_PATH` | Override the `cursor-agent` executable used for Cursor CLI models |
 | `PRIME_API_KEY` | Prime Inference API key; also used for trace sharing if it has `agent_traces` scope |
 | `PRIME_AGENT_TRACES_API_KEY` | Prime API key used only for opt-in trace sharing |
 | `PRIME_AGENT_TRACES_BASE_URL` | Override the Prime Agent trace upload API base URL |
