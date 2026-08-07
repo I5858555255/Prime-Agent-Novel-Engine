@@ -2093,6 +2093,22 @@ export class AgentsViewMode implements Component, Focusable {
 		message: string,
 		streamingBehavior?: "steer" | "followUp",
 	): Promise<void> {
+		if (this.options.config.telemetryDisabled) {
+			const client = await this.connectDedicatedClient();
+			const connection = await DaemonAgentConnection.attach(client, activeSessionId, {
+				closeClientOnDispose: true,
+				supportsExtensionUi: false,
+				recoverDaemon: this.options.recoverDaemon,
+				reconnectTimeoutMs: this.options.reconnectTimeoutMs,
+				telemetryDisabled: true,
+			});
+			try {
+				await connection.prompt(message, streamingBehavior === undefined ? undefined : { streamingBehavior });
+			} finally {
+				await connection.dispose();
+			}
+			return;
+		}
 		const command: PromptCommand = { type: "prompt", activeSessionId, message };
 		if (streamingBehavior) command.streamingBehavior = streamingBehavior;
 		const response = await this.requireClient().request(command);

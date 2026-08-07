@@ -21,6 +21,7 @@ const modeMocks = vi.hoisted(() => ({
 	interactiveRun: vi.fn<() => Promise<never>>(),
 	teardownSessionUi: vi.fn(async () => undefined),
 	dispose: vi.fn(async () => undefined),
+	connectionPrompt: vi.fn(async () => undefined),
 	clientRequest: vi.fn<() => Promise<unknown>>(),
 }));
 
@@ -40,7 +41,7 @@ vi.mock("../src/modes/daemon/daemon-client.js", () => ({
 
 vi.mock("../src/modes/agent-connection/daemon-agent-connection.js", () => ({
 	DaemonAgentConnection: Object.assign(function DaemonAgentConnection() {}, {
-		attach: vi.fn(async () => ({ dispose: modeMocks.dispose })),
+		attach: vi.fn(async () => ({ prompt: modeMocks.connectionPrompt, dispose: modeMocks.dispose })),
 	}),
 }));
 
@@ -228,6 +229,52 @@ describe("AgentsViewMode", () => {
 			render: false,
 			tone: "warning",
 		});
+	});
+
+	it("checks telemetry policy before replying from an opted-out agents view", async () => {
+		const client = { close: vi.fn() };
+		const connectDedicatedClient = vi.fn(async () => client);
+		const self = {
+			options: {
+				config: { telemetryDisabled: true },
+				recoverDaemon: vi.fn(async () => undefined),
+				reconnectTimeoutMs: 1234,
+			},
+			connectDedicatedClient,
+		};
+
+		await invoke("sendPrompt", self, "active-1", "private prompt", "followUp");
+
+		expect(connectDedicatedClient).toHaveBeenCalledOnce();
+		expect(DaemonAgentConnection.attach).toHaveBeenCalledWith(client, "active-1", {
+			closeClientOnDispose: true,
+			supportsExtensionUi: false,
+			recoverDaemon: self.options.recoverDaemon,
+			reconnectTimeoutMs: 1234,
+			telemetryDisabled: true,
+		});
+		expect(modeMocks.connectionPrompt).toHaveBeenCalledWith("private prompt", {
+			streamingBehavior: "followUp",
+		});
+		expect(modeMocks.dispose).toHaveBeenCalledOnce();
+	});
+
+	it("keeps direct agents-view replies when telemetry is enabled", async () => {
+		const request = vi.fn(async () => ({ success: true as const, data: undefined }));
+		const self = {
+			options: { config: {} },
+			requireClient: () => ({ request }),
+		};
+
+		await invoke("sendPrompt", self, "active-1", "private prompt", "steer");
+
+		expect(request).toHaveBeenCalledWith({
+			type: "prompt",
+			activeSessionId: "active-1",
+			message: "private prompt",
+			streamingBehavior: "steer",
+		});
+		expect(DaemonAgentConnection.attach).not.toHaveBeenCalled();
 	});
 
 	it("uses the opened session as the crash-path back target", async () => {
