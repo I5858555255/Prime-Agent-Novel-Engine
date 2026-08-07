@@ -34,88 +34,60 @@ try:
 except Exception:
     pass
 
-def _prime_agent_setup_process_group_patch():
-    try:
-        import os as _os
-        import signal as _signal
-        import sys as _sys
-        import time as _time
-        import subprocess as _subprocess
+try:
+    import signal as _prime_agent_signal
+    import subprocess as _prime_agent_subprocess
+    import sys as _prime_agent_sys
+    import threading as _prime_agent_threading
+    from IPython.core.magics.script import ScriptMagics as _PrimeAgentScriptMagics
 
-        _orig_popen = _subprocess.Popen
+    _prime_agent_tls = _prime_agent_threading.local()
+    _prime_agent_orig_popen = _prime_agent_subprocess.Popen
 
-        def _kill_process_tree(p):
-            if p is None or p.poll() is not None:
-                return
-            pid = getattr(p, "pid", None)
-            if not pid:
-                return
-            if _sys.platform != "win32":
-                try:
-                    pgid = _os.getpgid(pid)
-                    _os.killpg(pgid, _signal.SIGINT)
-                except Exception:
-                    try:
-                        p.send_signal(_signal.SIGINT)
-                    except Exception:
-                        pass
-                _time.sleep(0.05)
-                if p.poll() is None:
-                    try:
-                        pgid = _os.getpgid(pid)
-                        _os.killpg(pgid, _signal.SIGKILL)
-                    except Exception:
+    def _prime_agent_pgroup_popen(*args, **kwargs):
+        if getattr(_prime_agent_tls, "in_shebang", False):
+            if _prime_agent_sys.platform == "win32":
+                kwargs["creationflags"] = kwargs.get("creationflags", 0) | _prime_agent_subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            proc = _prime_agent_orig_popen(*args, **kwargs)
+            _prime_agent_tls.active_procs.append(proc)
+            return proc
+        return _prime_agent_orig_popen(*args, **kwargs)
+
+    _prime_agent_subprocess.Popen = _prime_agent_pgroup_popen
+    _prime_agent_orig_shebang = _PrimeAgentScriptMagics.shebang
+
+    def _prime_agent_wrapped_shebang(self, line, cell="", posix=None):
+        _prime_agent_tls.in_shebang = True
+        _prime_agent_tls.active_procs = []
+        try:
+            return _prime_agent_orig_shebang(self, line, cell=cell, posix=posix)
+        except KeyboardInterrupt:
+            for proc in getattr(_prime_agent_tls, "active_procs", []):
+                if proc.poll() is None:
+                    if _prime_agent_sys.platform == "win32":
                         try:
-                            p.kill()
+                            _prime_agent_subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+                        except Exception:
+                            proc.kill()
+                    else:
+                        try:
+                            _prime_agent_os.killpg(_prime_agent_os.getpgid(proc.pid), _prime_agent_signal.SIGINT)
+                            try:
+                                proc.wait(timeout=0.5)
+                            except Exception:
+                                _prime_agent_os.killpg(_prime_agent_os.getpgid(proc.pid), _prime_agent_signal.SIGKILL)
                         except Exception:
                             pass
-            else:
-                try:
-                    p.send_signal(_signal.CTRL_BREAK_EVENT)
-                except Exception:
-                    pass
-                _time.sleep(0.05)
-                if p.poll() is None:
-                    try:
-                        p.kill()
-                    except Exception:
-                        pass
-                try:
-                    _subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(pid)],
-                        stdout=_subprocess.DEVNULL,
-                        stderr=_subprocess.DEVNULL,
-                    )
-                except Exception:
-                    pass
+            raise
+        finally:
+            _prime_agent_tls.in_shebang = False
+            _prime_agent_tls.active_procs = []
 
-        class _PrimeAgentPopen(_orig_popen):
-            def __init__(self, *args, **kwargs):
-                if _sys.platform != "win32":
-                    kwargs.setdefault("start_new_session", True)
-                else:
-                    kwargs.setdefault("creationflags", _subprocess.CREATE_NEW_PROCESS_GROUP)
-                super().__init__(*args, **kwargs)
-
-            def communicate(self, *args, **kwargs):
-                try:
-                    return super().communicate(*args, **kwargs)
-                except KeyboardInterrupt:
-                    _kill_process_tree(self)
-                    raise
-
-            def wait(self, *args, **kwargs):
-                try:
-                    return super().wait(*args, **kwargs)
-                except KeyboardInterrupt:
-                    _kill_process_tree(self)
-                    raise
-
-        _subprocess.Popen = _PrimeAgentPopen
-    except Exception:
-        pass
-
-_prime_agent_setup_process_group_patch()
+    _PrimeAgentScriptMagics.shebang = _prime_agent_wrapped_shebang
+except Exception:
+    pass
 
 try:
     import rlm as _prime_agent_rlm_module

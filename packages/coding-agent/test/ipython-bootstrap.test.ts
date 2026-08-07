@@ -23,11 +23,11 @@ describe("IPython RLM bootstrap", () => {
 		expect(buildRlmBootstrapCode()).toContain('_prime_agent_os.environ["NO_COLOR"] = "1"');
 	});
 
-	it("patches subprocess Popen for process group isolation and signal handling", () => {
+	it("patches ScriptMagics shebang for process group isolation and signal handling", () => {
 		const code = buildRlmBootstrapCode();
-		expect(code).toContain("_prime_agent_setup_process_group_patch()");
-		expect(code).toContain("_kill_process_tree(p)");
-		expect(code).toContain("_PrimeAgentPopen(_orig_popen)");
+		expect(code).toContain("_PrimeAgentScriptMagics.shebang = _prime_agent_wrapped_shebang");
+		expect(code).toContain("_prime_agent_pgroup_popen");
+		expect(code).toContain("KeyboardInterrupt");
 	});
 
 	it("guards Python skill imports so a broken skill does not abort bootstrap", () => {
