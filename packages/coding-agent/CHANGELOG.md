@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added live OpenRouter model discovery so the model browser reflects OpenRouter’s current catalog, with the generated snapshot retained as an offline/failure fallback.
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 
 ## [0.7.0] - 2026-08-05
