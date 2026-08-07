@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added config-gated per-spawn RLM service-tier selection with validation, inheritance, and fast-mode clamping.
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 
 ## [0.7.0] - 2026-08-05
