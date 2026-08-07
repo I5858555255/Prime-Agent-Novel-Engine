@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed default daemon sockets sharing one supervisor across distinct `PRIME_AGENT_CODING_AGENT_DIR` values ([#768](https://github.com/PrimeIntellect-ai/prime-agent/issues/768)).
 
 ## [0.7.0] - 2026-08-05
 
