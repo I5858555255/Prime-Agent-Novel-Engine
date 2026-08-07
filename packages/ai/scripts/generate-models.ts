@@ -1240,6 +1240,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				if (m.tool_call !== true) continue;
 
 				const isDeepSeekV4 = modelId.toLowerCase().includes("deepseek-v4");
+				const contextWindow = m.limit?.context || 4096;
 				const nebiusModel: Model<"openai-completions"> = {
 					id: modelId,
 					name: m.name || modelId,
@@ -1261,8 +1262,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						...NEBIUS_COMPAT,
 						...(isDeepSeekV4 ? DEEPSEEK_V4_COMPAT : {}),
 					},
-					contextWindow: m.limit?.context || 4096,
-					maxTokens: m.limit?.output || 4096,
+					contextWindow,
+					maxTokens: Math.min(m.limit?.output || 4096, contextWindow),
 				};
 
 				if (isDeepSeekV4) {

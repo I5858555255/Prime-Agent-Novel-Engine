@@ -212,6 +212,29 @@ describe("openai-completions tool_choice", () => {
 		expect(params.tools?.[0]?.function?.strict).toBe(false);
 	});
 
+	it("omits a default output budget that fills the model context window", async () => {
+		const model = getModel("nebius", "MiniMaxAI/MiniMax-M2.5-fast")!;
+		let payload: unknown;
+
+		expect(model.maxTokens).toBe(model.contextWindow);
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { max_tokens?: number };
+		expect(params.max_tokens).toBeUndefined();
+	});
+
 	it("keeps normal reasoning_effort for groq models without compat mapping", async () => {
 		const model = getModel("groq", "openai/gpt-oss-20b")!;
 		let payload: unknown;

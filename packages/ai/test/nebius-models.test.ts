@@ -40,6 +40,7 @@ describe("Nebius Token Factory models", () => {
 		expect(models.length).toBeGreaterThanOrEqual(30);
 		expect(models.every((model) => model.api === "openai-completions")).toBe(true);
 		expect(models.every((model) => model.baseUrl === "https://api.tokenfactory.nebius.com/v1")).toBe(true);
+		expect(models.every((model) => model.maxTokens <= model.contextWindow)).toBe(true);
 	});
 
 	it("preserves DeepSeek V4 reasoning replay compatibility", () => {
