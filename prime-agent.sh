@@ -29,6 +29,7 @@ if [[ "$NO_ENV" == "true" ]]; then
   unset PRIME_API_KEY
   unset GEMINI_API_KEY
   unset GROQ_API_KEY
+  unset GREENPT_API_KEY
   unset CEREBRAS_API_KEY
   unset XAI_API_KEY
   unset OPENROUTER_API_KEY

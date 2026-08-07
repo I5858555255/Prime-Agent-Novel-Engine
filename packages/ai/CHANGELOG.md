@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added GreenPT as a built-in OpenAI-compatible provider with `glm-5.2` and `kimi-k2.7-code`.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

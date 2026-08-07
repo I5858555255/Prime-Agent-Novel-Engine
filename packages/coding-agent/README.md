@@ -103,6 +103,7 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 - OpenCode Go
 - Hugging Face
 - Fireworks
+- GreenPT
 - Kimi For Coding
 - MiniMax
 - Xiaomi MiMo
