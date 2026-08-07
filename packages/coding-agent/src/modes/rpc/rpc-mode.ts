@@ -11,7 +11,7 @@ import type {
 	AgentConnectionExtensionUiResponse,
 	AgentConnectionSessionWatcher,
 } from "../agent-connection/types.js";
-import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
+import { attachJsonlLineReader, serializeJsonLine, UNTRUSTED_JSONL_MAX_LINE_CHARS } from "./jsonl.js";
 import { createRpcExtensionUiBridge } from "./rpc-extension-ui-context.js";
 import type {
 	RpcCommand,
@@ -542,7 +542,13 @@ async function runRpcModeWithConnectionInternal(
 	};
 	process.stdin.on("end", onInputEnd);
 	detachInput = (() => {
-		const detachJsonl = attachJsonlLineReader(process.stdin, dispatchInputLine);
+		const detachJsonl = attachJsonlLineReader(process.stdin, dispatchInputLine, {
+			maxLineLength: UNTRUSTED_JSONL_MAX_LINE_CHARS,
+			onLineOverflow: () =>
+				process.stderr.write(
+					`prime-agent: dropping oversized RPC input line (exceeded ${UNTRUSTED_JSONL_MAX_LINE_CHARS} chars)\n`,
+				),
+		});
 		return () => {
 			detachJsonl();
 			process.stdin.off("end", onInputEnd);

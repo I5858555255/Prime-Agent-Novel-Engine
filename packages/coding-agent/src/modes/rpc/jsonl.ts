@@ -17,6 +17,14 @@ export interface JsonlLineReaderOptions {
 }
 
 /**
+ * Ceiling for a single JSONL record accepted from an untrusted local peer
+ * (daemon sockets, RPC stdin). Prevents a newline-free stream from growing
+ * process memory without bound, while staying generous enough for legitimate
+ * large commands such as a big prompt.
+ */
+export const UNTRUSTED_JSONL_MAX_LINE_CHARS = 16 * 1024 * 1024;
+
+/**
  * Attach an LF-only JSONL reader to a stream.
  *
  * This intentionally does not use Node readline. Readline splits on additional
