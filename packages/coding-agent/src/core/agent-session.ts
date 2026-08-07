@@ -9549,9 +9549,7 @@ export class AgentSession {
 	}
 
 	async findRlmModels(query: string, limit: number): Promise<RlmFindModelsResult> {
-		return {
-			models: findRlmModelMatches(query, await this._authenticatedRlmModels(), limit),
-		};
+		return findRlmModelMatches(query, await this._authenticatedRlmModels(), limit);
 	}
 
 	private async _resolveRlmSubagentModel(reference: string | undefined): Promise<RlmSubagentModelSelection> {

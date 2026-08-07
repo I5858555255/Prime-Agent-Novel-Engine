@@ -45,8 +45,18 @@ export interface RlmModelMatch {
 	selector: string;
 }
 
+export interface RlmProviderModelCount {
+	provider: string;
+	count: number;
+}
+
 export interface RlmFindModelsResult {
 	models: RlmModelMatch[];
+	/** Matches before the limit was applied, so a caller can tell a page from the whole catalog. */
+	total: number;
+	truncated: boolean;
+	/** Match counts per provider across every match, not just the returned page. */
+	providers: RlmProviderModelCount[];
 }
 
 export type RlmRunHandler = (request: RlmRunRequest) => Promise<Record<string, unknown>>;
@@ -119,10 +129,63 @@ function normalizeModelSearchText(value: string): string {
 	return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
-export function findRlmModelMatches(query: string, models: Model<Api>[], limit: number): RlmModelMatch[] {
+/** Split a query into normalized tokens so word order cannot decide whether a model matches. */
+function modelSearchTokens(value: string): string[] {
+	return value
+		.toLowerCase()
+		.split(/[^a-z0-9]+/)
+		.filter((token) => token.length > 0);
+}
+
+interface RlmModelCandidate {
+	model: Model<Api>;
+	selector: string;
+	score: number;
+}
+
+/** Round-robin ranked candidates by provider so a bounded page reaches every provider. */
+function interleaveCandidatesByProvider(candidates: RlmModelCandidate[]): RlmModelCandidate[] {
+	const byProvider = new Map<string, RlmModelCandidate[]>();
+	for (const candidate of candidates) {
+		const bucket = byProvider.get(candidate.model.provider);
+		if (bucket) bucket.push(candidate);
+		else byProvider.set(candidate.model.provider, [candidate]);
+	}
+	const buckets = [...byProvider.values()];
+	const interleaved: RlmModelCandidate[] = [];
+	for (let depth = 0; interleaved.length < candidates.length; depth++) {
+		for (const bucket of buckets) {
+			const candidate = bucket[depth];
+			if (candidate) interleaved.push(candidate);
+		}
+	}
+	return interleaved;
+}
+
+function countCandidatesByProvider(candidates: RlmModelCandidate[]): RlmProviderModelCount[] {
+	const counts = new Map<string, number>();
+	for (const candidate of candidates) {
+		counts.set(candidate.model.provider, (counts.get(candidate.model.provider) ?? 0) + 1);
+	}
+	return [...counts]
+		.map(([provider, count]) => ({ provider, count }))
+		.sort((a, b) => a.provider.localeCompare(b.provider));
+}
+
+/**
+ * Rank authenticated models into one bounded page.
+ *
+ * A query ranks by exact, then prefix, then contiguous partial match, then by an
+ * order-independent token match, so reordering the words of a query changes ranking at
+ * most and never turns a hit into an empty result. An empty query carries no ranking
+ * signal, so its page round-robins providers instead of returning the alphabetical head
+ * of a single provider, and the result reports the match set the page was cut from.
+ */
+export function findRlmModelMatches(query: string, models: Model<Api>[], limit: number): RlmFindModelsResult {
 	const normalizedQuery = normalizeModelSearchText(query.trim());
-	return models
-		.map((model) => {
+	const queryTokens = modelSearchTokens(query);
+	const ranked = models
+		.map((model): RlmModelCandidate => {
 			const selector = `${model.provider}/${model.id}`;
 			const fields = [selector, model.id, model.name || model.id];
 			const normalizedFields = fields.map(normalizeModelSearchText);
@@ -131,21 +194,30 @@ export function findRlmModelMatches(query: string, models: Model<Api>[], limit: 
 				const exactIndex = normalizedFields.indexOf(normalizedQuery);
 				const prefixIndex = normalizedFields.findIndex((field) => field.startsWith(normalizedQuery));
 				const partialIndex = normalizedFields.findIndex((field) => field.includes(normalizedQuery));
+				const tokenIndex = normalizedFields.findIndex((field) =>
+					queryTokens.every((token) => field.includes(token)),
+				);
 				if (exactIndex >= 0) score = exactIndex;
 				else if (prefixIndex >= 0) score = 3 + prefixIndex;
 				else if (partialIndex >= 0) score = 6 + partialIndex;
+				else if (tokenIndex >= 0) score = 9 + tokenIndex;
 			}
 			return { model, selector, score };
 		})
 		.filter((candidate) => Number.isFinite(candidate.score))
-		.sort((a, b) => a.score - b.score || a.selector.localeCompare(b.selector))
-		.slice(0, limit)
-		.map(({ model, selector }) => ({
+		.sort((a, b) => a.score - b.score || a.selector.localeCompare(b.selector));
+	const ordered = normalizedQuery ? ranked : interleaveCandidatesByProvider(ranked);
+	return {
+		models: ordered.slice(0, limit).map(({ model, selector }) => ({
 			provider: model.provider,
 			id: model.id,
 			name: model.name || model.id,
 			selector,
-		}));
+		})),
+		total: ranked.length,
+		truncated: ranked.length > limit,
+		providers: countCandidatesByProvider(ranked),
+	};
 }
 
 /** Adapt an RlmRunHandler into the typed "rlm.run" handler for the kernel host bridge. */
@@ -175,7 +247,8 @@ export function createRlmFindModelsHostHandler(handler: RlmFindModelsHandler): H
 		if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > MAX_RLM_MODEL_SEARCH_LIMIT) {
 			throw new Error(`rlm.find_models limit must be an integer from 1 to ${MAX_RLM_MODEL_SEARCH_LIMIT}`);
 		}
-		return { models: (await handler(payload.query, limit as number)).models };
+		const { models, total, truncated, providers } = await handler(payload.query, limit as number);
+		return { models, total, truncated, providers };
 	};
 }
 

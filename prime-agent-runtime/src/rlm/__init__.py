@@ -41,6 +41,40 @@ class RLMModel:
 
 
 @dataclass(frozen=True)
+class RLMProviderModelCount:
+    provider: str
+    count: int
+
+
+class RLMModelPage(list[RLMModel]):
+    """One page of model matches plus the match set it was cut from.
+
+    ``total`` and ``providers`` describe every match, not the returned page, so a
+    truncated page cannot be mistaken for the full reachable catalog.
+    """
+
+    def __init__(
+        self,
+        models: list[RLMModel],
+        *,
+        total: int,
+        truncated: bool,
+        providers: tuple[RLMProviderModelCount, ...],
+    ) -> None:
+        super().__init__(models)
+        self.total = total
+        self.truncated = truncated
+        self.providers = providers
+
+    def __repr__(self) -> str:
+        providers = ", ".join(f"{entry.provider}={entry.count}" for entry in self.providers)
+        return (
+            f"RLMModelPage(returned={len(self)}, total={self.total}, truncated={self.truncated}, "
+            f"providers=[{providers}], models={list.__repr__(self)})"
+        )
+
+
+@dataclass(frozen=True)
 class RLMSubagent:
     rlm_child_id: str
     active_session_id: str | None
@@ -163,8 +197,25 @@ def _model_from_payload(payload: Any) -> RLMModel:
     return RLMModel(provider=provider, id=model_id, name=name, selector=selector)
 
 
-async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
-    """Search a bounded list of models backed by active user credentials."""
+def _provider_count_from_payload(payload: Any) -> RLMProviderModelCount:
+    if not isinstance(payload, dict):
+        raise RuntimeError("rlm.find_models returned an invalid provider entry")
+    provider = payload.get("provider")
+    count = payload.get("count")
+    if not isinstance(provider, str) or not provider:
+        raise RuntimeError("rlm.find_models returned an invalid provider entry")
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise RuntimeError("rlm.find_models returned an invalid provider entry")
+    return RLMProviderModelCount(provider=provider, count=count)
+
+
+async def find_models(query: str = "", limit: int = 8) -> RLMModelPage:
+    """Search models backed by active user credentials and return one bounded page.
+
+    An unqualified call samples every provider instead of listing the catalog. Read
+    ``total``, ``truncated``, and ``providers`` on the result before concluding what is
+    reachable, and query a specific model id to confirm one model.
+    """
     if not isinstance(query, str):
         raise TypeError(f"query must be str, got {type(query).__name__}")
     if not isinstance(limit, int):
@@ -173,7 +224,20 @@ async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
     models = payload.get("models")
     if not isinstance(models, list):
         raise RuntimeError("rlm.find_models returned an invalid models list")
-    return [_model_from_payload(model) for model in models]
+    matches = [_model_from_payload(model) for model in models]
+    total = payload.get("total")
+    truncated = payload.get("truncated")
+    providers = payload.get("providers")
+    if not isinstance(total, int) or isinstance(total, bool) or not isinstance(truncated, bool):
+        raise RuntimeError("rlm.find_models returned an invalid page summary")
+    if not isinstance(providers, list):
+        raise RuntimeError("rlm.find_models returned an invalid provider summary")
+    return RLMModelPage(
+        matches,
+        total=total,
+        truncated=truncated,
+        providers=tuple(_provider_count_from_payload(provider) for provider in providers),
+    )
 
 
 def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") -> RLMSubagent:
@@ -288,7 +352,7 @@ class _RLMCallable:
     async def run(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
-    async def find_models(self, query: str = "", limit: int = 8) -> list[RLMModel]:
+    async def find_models(self, query: str = "", limit: int = 8) -> RLMModelPage:
         return await find_models(query, limit)
 
     async def list_subagents(self) -> list[RLMSubagent]:
@@ -320,6 +384,8 @@ __all__ = [
     "McpToolError",
     "NotEnabled",
     "RLMModel",
+    "RLMModelPage",
+    "RLMProviderModelCount",
     "RLMSpawnHandle",
     "RLMSubagent",
     "RefinementEvent",
