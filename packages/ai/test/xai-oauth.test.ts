@@ -339,7 +339,7 @@ describe("xAI OAuth device flow", () => {
 			vi.fn(async () => jsonResponse({ error: "invalid_grant", error_description: "refresh token revoked" }, 400)),
 		);
 		await expect(refreshXaiForTest("old-refresh")).rejects.toThrow(
-			"xAI OAuth token refresh failed (HTTP 400): invalid_grant: refresh token revoked",
+			"xAI OAuth token refresh failed (HTTP 400): invalid_grant: refresh token revoked. Run /login and sign in to xAI again.",
 		);
 	});
 });

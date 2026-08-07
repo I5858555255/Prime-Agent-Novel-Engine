@@ -108,4 +108,25 @@ describe("xAI Responses routing", () => {
 		const captured = await captureRequest({ apiKey: "xai-test-token" });
 		expect(captured.body.include).toEqual(["reasoning.encrypted_content"]);
 	});
+
+	it("explains how to recover from rejected xAI credentials", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ error: { message: "Invalid bearer token", type: "authentication_error" } }), {
+				status: 401,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+
+		const model = getModel("xai", "grok-4.5") as Model<"openai-responses">;
+		const result = await streamOpenAIResponses(
+			model,
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{ apiKey: "expired-xai-token" },
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe(
+			"xAI authentication failed. Run /login and sign in to xAI again, or update XAI_API_KEY if you use API billing.",
+		);
+	});
 });

@@ -17,6 +17,7 @@ import type {
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import {
+	extractStreamFailureInfo,
 	formatStreamFailureMessage,
 	recordStreamFailure,
 	streamFailureFromStopReason,
@@ -136,7 +137,11 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 				delete (block as { partialJson?: string }).partialJson;
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = formatStreamFailureMessage(error);
+			const failure = extractStreamFailureInfo(error);
+			output.errorMessage =
+				model.provider === "xai" && failure.kind === "auth"
+					? "xAI authentication failed. Run /login and sign in to xAI again, or update XAI_API_KEY if you use API billing."
+					: formatStreamFailureMessage(error);
 			recordStreamFailure(model, output, error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

@@ -91,7 +91,12 @@ function requestFailure(action: string, response: OAuthHttpResponse): Error {
 	const description =
 		typeof response.body.error_description === "string" ? response.body.error_description : undefined;
 	const detail = [error, description].filter(Boolean).join(": ");
-	return new Error(`xAI OAuth ${action} failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`);
+	const loginHint =
+		action === "token refresh" &&
+		(error === "invalid_grant" || error === "invalid_token" || response.status === 401 || response.status === 403)
+			? ". Run /login and sign in to xAI again."
+			: "";
+	return new Error(`xAI OAuth ${action} failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}${loginHint}`);
 }
 
 function parseDeviceCode(body: JsonObject): XaiDeviceCode {
