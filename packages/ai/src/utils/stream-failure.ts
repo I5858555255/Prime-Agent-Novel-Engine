@@ -25,6 +25,8 @@ export interface StreamFailureInfo {
 	providerErrorType?: string;
 	status?: number;
 	requestId?: string;
+	/** Server-requested retry delay from `retry-after`/`retry-after-ms` response headers. */
+	retryAfterMs?: number;
 	/** Truncated raw provider payload for post-mortems. */
 	raw?: string;
 }
@@ -114,6 +116,31 @@ export function truncateRawPayload(raw: string): string {
 	return raw.length > MAX_RAW_LENGTH ? `${raw.slice(0, MAX_RAW_LENGTH)}…` : raw;
 }
 
+function headerValue(headers: unknown, name: string): string | undefined {
+	if (!headers || typeof headers !== "object") return undefined;
+	if (typeof (headers as Headers).get === "function") {
+		return (headers as Headers).get(name) ?? undefined;
+	}
+	for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+		if (key.toLowerCase() === name && typeof value === "string") return value;
+	}
+	return undefined;
+}
+
+/** Parse `retry-after-ms` (milliseconds) or `retry-after` (delta-seconds or HTTP-date) into milliseconds. */
+function parseRetryAfterMs(headers: unknown): number | undefined {
+	const explicitMs = headerValue(headers, "retry-after-ms");
+	if (explicitMs !== undefined) {
+		const ms = Number(explicitMs);
+		if (Number.isFinite(ms) && ms >= 0) return Math.round(ms);
+	}
+	const value = headerValue(headers, "retry-after")?.trim();
+	if (!value) return undefined;
+	if (/^\d+$/.test(value)) return Number(value) * 1000;
+	const deltaMs = Date.parse(value) - Date.now();
+	return Number.isFinite(deltaMs) && deltaMs > 0 ? deltaMs : undefined;
+}
+
 function extractStreamFailureParts(error: unknown): { info: StreamFailureInfo; detail?: string } {
 	if (error instanceof StreamFailureError) return { info: error.info };
 	if (!(error instanceof Error)) return { info: { kind: "unknown" } };
@@ -150,13 +177,7 @@ function extractStreamFailureParts(error: unknown): { info: StreamFailureInfo; d
 					: undefined;
 
 	const headers = err.headers;
-	const headerRequestId =
-		headers && typeof (headers as Headers).get === "function"
-			? ((headers as Headers).get("request-id") ?? (headers as Headers).get("x-request-id"))
-			: headers && typeof headers === "object"
-				? ((headers as Record<string, unknown>)["request-id"] ??
-					(headers as Record<string, unknown>)["x-request-id"])
-				: undefined;
+	const headerRequestId = headerValue(headers, "request-id") ?? headerValue(headers, "x-request-id");
 	const rawRequestId = err.requestID ?? err.request_id ?? err.$metadata?.requestId ?? headerRequestId;
 	const requestId = typeof rawRequestId === "string" ? rawRequestId : undefined;
 
@@ -166,6 +187,7 @@ function extractStreamFailureParts(error: unknown): { info: StreamFailureInfo; d
 			providerErrorType,
 			status,
 			requestId,
+			retryAfterMs: parseRetryAfterMs(headers),
 		},
 		detail: typeof bodyMessage === "string" ? bodyMessage : undefined,
 	};

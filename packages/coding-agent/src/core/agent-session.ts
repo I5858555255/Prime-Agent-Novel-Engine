@@ -10001,6 +10001,30 @@ export class AgentSession {
 		return this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message);
 	}
 
+	private _getProviderStreamFailureRetryAfterMs(message: AssistantMessage): number | undefined {
+		const value = this._getProviderStreamFailureDetails(message)?.retryAfterMs;
+		return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+	}
+
+	/**
+	 * Exponential backoff with full jitter, capped at maxBackoffMs. A server
+	 * Retry-After (surfaced via the provider_stream_failure diagnostic) sets the
+	 * floor so we never retry before the provider asked, but the cap still wins.
+	 */
+	private _computeRetryDelayMs(
+		settings: { baseDelayMs: number; maxBackoffMs: number },
+		message: AssistantMessage,
+	): number {
+		const cap = settings.maxBackoffMs > 0 ? settings.maxBackoffMs : Number.POSITIVE_INFINITY;
+		const exponentialMs = Math.min(settings.baseDelayMs * 2 ** (this._retryAttempt - 1), cap);
+		const jitteredMs = Math.round(Math.random() * exponentialMs);
+		const retryAfterMs = this._getProviderStreamFailureRetryAfterMs(message);
+		if (retryAfterMs === undefined) {
+			return jitteredMs;
+		}
+		return Math.round(Math.min(Math.max(retryAfterMs, jitteredMs), cap));
+	}
+
 	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
 		const details = this._getProviderStreamFailureDetails(message);
 		if (!details) {
@@ -10160,7 +10184,7 @@ export class AgentSession {
 			return false;
 		}
 
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const delayMs = this._computeRetryDelayMs(settings, message);
 
 		this._emit({
 			type: "auto_retry_start",

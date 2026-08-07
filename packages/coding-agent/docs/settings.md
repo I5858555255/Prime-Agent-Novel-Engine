@@ -108,11 +108,14 @@ The stable `latest.json` and beta `beta.json` manifests use the same JSON shape:
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `retry.enabled` | boolean | `true` | Enable automatic agent-level retry on transient errors |
-| `retry.maxRetries` | number | `3` | Maximum agent-level retry attempts |
-| `retry.baseDelayMs` | number | `2000` | Base delay for agent-level exponential backoff (2s, 4s, 8s) |
+| `retry.maxRetries` | number | `10` | Maximum agent-level retry attempts |
+| `retry.baseDelayMs` | number | `2000` | Base delay for agent-level exponential backoff with full jitter |
+| `retry.maxBackoffMs` | number | `60000` | Cap on a single agent-level retry delay; `0` disables the cap |
 | `retry.provider.timeoutMs` | number | SDK default | Provider/SDK request timeout in milliseconds |
 | `retry.provider.maxRetries` | number | SDK default | Provider/SDK retry attempts |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s) |
+
+Agent-level retry delays are drawn uniformly from `[0, min(baseDelayMs * 2^(attempt-1), maxBackoffMs)]` (full jitter). When the provider sends a `Retry-After` header, it becomes the delay floor, still capped at `retry.maxBackoffMs`.
 
 When a provider requests a retry delay longer than `retry.provider.maxRetryDelayMs` (e.g., Google's "quota will reset after 5h"), the request fails immediately with an informative error instead of waiting silently. Set to `0` to disable the cap.
 
@@ -120,8 +123,9 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
 {
   "retry": {
     "enabled": true,
-    "maxRetries": 3,
+    "maxRetries": 10,
     "baseDelayMs": 2000,
+    "maxBackoffMs": 60000,
     "provider": {
       "timeoutMs": 3600000,
       "maxRetries": 0,

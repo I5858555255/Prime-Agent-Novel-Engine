@@ -106,6 +106,50 @@ describe("extractStreamFailureInfo", () => {
 		expect(extractStreamFailureInfo(new Error("provider overloaded, retry later")).kind).toBe("overloaded");
 		expect(extractStreamFailureInfo("not an error").kind).toBe("unknown");
 	});
+
+	test("parses delta-seconds retry-after from Headers instances", () => {
+		const error = Object.assign(new Error("529 overloaded"), {
+			status: 529,
+			headers: new Headers({ "retry-after": "30" }),
+		});
+		expect(extractStreamFailureInfo(error).retryAfterMs).toBe(30_000);
+	});
+
+	test("parses retry-after from plain header records case-insensitively", () => {
+		const error = Object.assign(new Error("429 rate limited"), {
+			status: 429,
+			headers: { "Retry-After": "5" },
+		});
+		expect(extractStreamFailureInfo(error).retryAfterMs).toBe(5_000);
+	});
+
+	test("prefers retry-after-ms over retry-after", () => {
+		const error = Object.assign(new Error("429 rate limited"), {
+			status: 429,
+			headers: { "retry-after-ms": "1500", "retry-after": "30" },
+		});
+		expect(extractStreamFailureInfo(error).retryAfterMs).toBe(1500);
+	});
+
+	test("parses HTTP-date retry-after relative to now", () => {
+		const error = Object.assign(new Error("503 unavailable"), {
+			status: 503,
+			headers: new Headers({ "retry-after": new Date(Date.now() + 30_000).toUTCString() }),
+		});
+		const retryAfterMs = extractStreamFailureInfo(error).retryAfterMs;
+		expect(retryAfterMs).toBeGreaterThan(25_000);
+		expect(retryAfterMs).toBeLessThanOrEqual(30_000);
+	});
+
+	test("ignores invalid or past retry-after values", () => {
+		const invalid = Object.assign(new Error("429"), { status: 429, headers: { "retry-after": "soon" } });
+		expect(extractStreamFailureInfo(invalid).retryAfterMs).toBeUndefined();
+		const past = Object.assign(new Error("429"), {
+			status: 429,
+			headers: new Headers({ "retry-after": new Date(Date.now() - 60_000).toUTCString() }),
+		});
+		expect(extractStreamFailureInfo(past).retryAfterMs).toBeUndefined();
+	});
 });
 
 describe("formatStreamFailureMessage", () => {
