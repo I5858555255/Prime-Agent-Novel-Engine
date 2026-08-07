@@ -188,6 +188,7 @@ import {
 	IPYTHON_STATE_RESTORED_CUSTOM_TYPE,
 	isSessionSlashCommandMessage,
 } from "./messages.js";
+import { createModelFitnessCandidatesHostHandler, projectModelFitnessCandidate } from "./model-fitness.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { throwIfPromptAdmissionCancelled } from "./prompt-admission.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
@@ -411,7 +412,7 @@ export interface AgentSessionConfig {
 	cwd: string;
 	/** Config dir backing credentials (auth.json); exported to the kernel for skills. */
 	agentDir?: string;
-	/** Models to cycle through with Ctrl+P (from --models flag) */
+	/** User-scoped models for cycling and agent-driven model selection. */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	/** Resource loader for skills, prompts, themes, context files, system prompt */
 	resourceLoader: ResourceLoader;
@@ -4207,7 +4208,7 @@ export class AgentSession {
 		this._autonomousContinuationSuppressedMessages.add(message);
 	}
 
-	/** Scoped models for cycling (from --models flag) */
+	/** User-scoped models for cycling and agent-driven model selection. */
 	get scopedModels(): ReadonlyArray<{
 		model: Model<any>;
 		thinkingLevel?: ThinkingLevel;
@@ -4215,7 +4216,7 @@ export class AgentSession {
 		return this._scopedModels;
 	}
 
-	/** Update scoped models for cycling */
+	/** Update the models available for cycling and agent-driven model selection. */
 	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>): void {
 		this._scopedModels = scopedModels;
 	}
@@ -8666,6 +8667,9 @@ export class AgentSession {
 			"rlm.find_models": createRlmFindModelsHostHandler((query, limit) => this.findRlmModels(query, limit)),
 			"rlm.list_subagents": createRlmListSubagentsHostHandler(() => this.listRlmSubagents()),
 			"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) => this.deleteRlmSubagent(target)),
+			"model_fitness.candidates": createModelFitnessCandidatesHostHandler(async () => ({
+				models: (await this._availableRlmModels()).map(projectModelFitnessCandidate),
+			})),
 			"model.info": async () => ({
 				id: this.model?.id ?? null,
 				provider: this.model?.provider ?? null,
@@ -9541,16 +9545,22 @@ export class AgentSession {
 		assertAgentSessionNameAvailable(catalog, input);
 	}
 
-	private async _authenticatedRlmModels(): Promise<Model<Api>[]> {
+	private _isRlmModelInScope(model: Model<Api>): boolean {
+		return (
+			this._scopedModels.length === 0 || this._scopedModels.some((scoped) => modelsAreEqual(scoped.model, model))
+		);
+	}
+
+	private async _availableRlmModels(): Promise<Model<Api>[]> {
 		return (await this._modelRegistry.getExecutableModels()).filter((model) => {
 			const status = this._modelRegistry.getProviderAuthStatus(model.provider);
-			return status.source !== "stale" && status.label !== "expired";
+			return status.source !== "stale" && status.label !== "expired" && this._isRlmModelInScope(model);
 		});
 	}
 
 	async findRlmModels(query: string, limit: number): Promise<RlmFindModelsResult> {
 		return {
-			models: findRlmModelMatches(query, await this._authenticatedRlmModels(), limit),
+			models: findRlmModelMatches(query, await this._availableRlmModels(), limit),
 		};
 	}
 
@@ -9564,10 +9574,13 @@ export class AgentSession {
 		}
 
 		const normalizedReference = reference.toLowerCase();
-		if (`${parentModel.provider}/${parentModel.id}`.toLowerCase() === normalizedReference) {
+		if (
+			`${parentModel.provider}/${parentModel.id}`.toLowerCase() === normalizedReference &&
+			this._isRlmModelInScope(parentModel)
+		) {
 			return { model: parentModel };
 		}
-		const model = (await this._authenticatedRlmModels()).find(
+		const model = (await this._availableRlmModels()).find(
 			(candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === normalizedReference,
 		);
 		if (!model) {

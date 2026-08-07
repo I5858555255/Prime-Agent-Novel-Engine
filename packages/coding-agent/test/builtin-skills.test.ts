@@ -254,6 +254,15 @@ describe("builtin skills", () => {
 			expect(rlmHeartbeat?.kind === "python" && rlmHeartbeat.python.importName).toBe("rlm_heartbeat");
 		});
 
+		it("loads the bundled model-fitness skill as a python skill", () => {
+			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
+
+			const modelFitness = skills.find((s) => s.name === "model-fitness");
+			expect(modelFitness).toBeDefined();
+			expect(modelFitness?.kind).toBe("python");
+			expect(modelFitness?.kind === "python" && modelFitness.python.importName).toBe("model_fitness");
+		});
+
 		it("does not ship orchestration heartbeat as a built-in skill", () => {
 			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
 

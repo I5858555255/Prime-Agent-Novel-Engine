@@ -50,9 +50,38 @@ Prime Agent ships with built-in skills that load by default:
 
 - `prime-intellect` - Prime Intellect products and workflows via the prime CLI: verifiers environments and the Environments Hub, evaluations (local and hosted), Hosted Training and prime-rl, sandboxes, tunnels, Prime Inference, GPU compute, and storage. Reference docs for each area load on demand from the skill's `references/` directory.
 - `skill-creator` - teaches the agent to create new skills: markdown skill layout, frontmatter rules, placement and precedence, and the full Python-backed skill contract (package layout, `run()` convention, optional CLI, kernel venv behavior) with a working template in `references/python-skills.md`.
+- `model-fitness` - a Python-backed advisory model selector for delegated tasks, combining OpenRouter benchmark priors, scoped model metadata, cost, and verified local outcomes.
 - `websearch` - a Python-backed Google search skill using the [Serper](https://serper.dev) API.
 
 Built-in skills behave like any other skill but have the lowest precedence: a user, project, package, or `--skill` skill with the same name overrides the built-in one.
+
+### model-fitness
+
+Use `model-fitness` when delegating work and the task may warrant a model other
+than the parent's. The skill is advisory: it returns an exact scoped model
+selector and score breakdown, and the agent still passes it explicitly to
+`rlm(..., model=selector)`. If no model clears the task requirements, omit the
+`model` argument to keep normal parent-model inheritance.
+
+```python
+recommendation = await model_fitness.recommend(
+    "Review the refactor for correctness and regressions",
+    task_family="code_review",
+)
+if recommendation["recommended"] is not None:
+    child = await rlm(
+        "Review the refactor for correctness and regressions",
+        model=recommendation["recommended"]["selector"],
+    )
+```
+
+Benchmark scores are baked into the generated model catalog at build time (see
+`packages/ai/scripts/generate-models.ts`), sourced from the OpenRouter catalog's
+embedded Artificial Analysis intelligence/coding/agentic indices. Coverage is
+partial: models without benchmark data are scored with a neutral low-confidence
+prior, and unpriced models are flagged rather than treated as free. Independently
+verified local outcomes can be recorded with `model_fitness.record_outcome(...)`;
+ordinary child completion is not treated as proof of quality.
 
 ### websearch
 

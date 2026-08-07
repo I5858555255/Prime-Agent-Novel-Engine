@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+<<<<<<< HEAD
+=======
+- Added an OpenRouter OAuth provider so OpenRouter can be authenticated with a browser sign-in instead of an API key ([#775](https://github.com/PrimeIntellect-ai/prime-agent/pull/775) by [@andrew-scott-fischer](https://github.com/andrew-scott-fischer)).
+- Added optional `benchmarks` metadata (Artificial Analysis intelligence/coding/agentic indices) to `Model`, populated at catalog generation time from the already-fetched OpenRouter catalog.
+
+>>>>>>> a986fbc4 (feat(ai,coding-agent): add advisory model-fitness skill for delegation)
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

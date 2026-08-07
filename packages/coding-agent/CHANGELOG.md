@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Changed agent-driven model discovery and subagent selection to honor the user's configured model scope.
+- Added an advisory `model-fitness` skill that recommends task-appropriate subagent models from scoped candidates, generation-time benchmark annotations, cost, and recorded outcomes.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
