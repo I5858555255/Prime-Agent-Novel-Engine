@@ -15,6 +15,10 @@ fi
 prime_agent_release_channel="${PRIME_AGENT_RELEASE_CHANNEL:-$prime_agent_default_release_channel}"
 prime_agent_package="${PRIME_AGENT_PACKAGE:-prime-agent}"
 prime_agent_cmd="${PRIME_AGENT_CMD:-prime-agent}"
+prime_agent_min_node_major=22
+prime_agent_min_node_minor=8
+prime_agent_min_node_patch=0
+prime_agent_min_node_version="$prime_agent_min_node_major.$prime_agent_min_node_minor.$prime_agent_min_node_patch"
 prime_agent_esc=$(printf '\033')
 prime_agent_original_path="${PATH:-}"
 prime_agent_reset="${prime_agent_esc}[0m"
@@ -33,7 +37,8 @@ prime_agent_color_dim="${prime_agent_esc}[38;2;113;113;122m"
 prime_agent_color_primary="${prime_agent_esc}[38;2;127;91;213m"
 prime_agent_color_scan="${prime_agent_esc}[38;2;14;165;233m"
 prime_agent_color_warning="${prime_agent_esc}[38;2;245;158;11m"
-readonly prime_agent_unconfigured_base_url prime_agent_unconfigured_default_release_channel prime_agent_base_url prime_agent_default_release_channel prime_agent_release_channel prime_agent_package prime_agent_cmd prime_agent_esc prime_agent_original_path
+readonly prime_agent_unconfigured_base_url prime_agent_unconfigured_default_release_channel prime_agent_base_url prime_agent_default_release_channel prime_agent_release_channel prime_agent_package prime_agent_cmd
+readonly prime_agent_min_node_major prime_agent_min_node_minor prime_agent_min_node_patch prime_agent_min_node_version prime_agent_esc prime_agent_original_path
 readonly prime_agent_reset prime_agent_bold prime_agent_italic prime_agent_hide_cursor prime_agent_show_cursor prime_agent_home_cursor prime_agent_clear_screen prime_agent_clear_line
 readonly prime_agent_sync_start prime_agent_sync_end
 readonly prime_agent_color_text prime_agent_color_muted prime_agent_color_dim prime_agent_color_primary prime_agent_color_scan prime_agent_color_warning
@@ -57,6 +62,8 @@ prime_agent_screen_status=
 prime_agent_screen_detail=
 prime_agent_screen_question=
 prime_agent_animation_frame=0
+prime_agent_npm_prefix=
+prime_agent_install_bin=
 
 main() {
 	if [ "$prime_agent_base_url" = "$prime_agent_unconfigured_base_url" ]; then
@@ -98,6 +105,8 @@ main() {
 		fi
 	fi
 
+	configure_npm_install_environment
+
 	version="$(resolve_prime_agent_version "$@")"
 	tarball_name="$prime_agent_package-$version.tgz"
 	tarball_url="$prime_agent_base_url/releases/v$version/$tarball_name"
@@ -114,32 +123,8 @@ main() {
 	rm -rf "$download_dir"
 	prime_agent_download_dir=
 
-	if [ "${PRIME_AGENT_NODE_INSTALLED_STANDALONE:-0}" = 1 ]; then
-		prime_agent_screen "Prime Agent installed" "" "Checking your shell PATH." ""
-		configure_standalone_node_path
-	elif command -v "$prime_agent_cmd" >/dev/null 2>&1; then
-		if [ "$prime_agent_screen_enabled" = 1 ]; then
-			prime_agent_screen "Prime Agent installed" "" "Run it with: $prime_agent_cmd" ""
-		else
-			printf '\nPrime Agent was installed successfully.\n'
-			printf '\nRun it with: %s\n' "$prime_agent_cmd"
-		fi
-	else
-		if [ "$prime_agent_screen_enabled" = 1 ]; then
-			prime_agent_screen "Prime Agent installed" "" "PATH update needed for $prime_agent_cmd." ""
-			prime_agent_restore_terminal
-		else
-			printf '\nPrime Agent was installed successfully.\n'
-		fi
-		cat <<EOF
-The $prime_agent_cmd command was installed, but it is not on your PATH yet.
-Check npm's global bin directory with:
-
-  npm bin -g
-
-Then add that directory to your shell PATH.
-EOF
-	fi
+	prime_agent_screen "Prime Agent installed" "" "Checking your shell PATH." ""
+	configure_installed_command_path "$prime_agent_install_bin"
 }
 
 create_temp_dir() {
@@ -874,7 +859,7 @@ finish_preflight_checks() {
 	if [ "$prime_agent_screen_enabled" = 1 ]; then
 		if [ "$preflight_status" -ne 0 ]; then
 			preflight_summary=$(sed -n '1p' "$preflight_file")
-			prime_agent_screen "Node.js 20.6.0 or newer is required" "" "$preflight_summary" ""
+			prime_agent_screen "Node.js $prime_agent_min_node_version or newer is required" "" "$preflight_summary" ""
 			sleep 0.4
 		elif [ -s "$preflight_file" ]; then
 			preflight_summary="Existing $prime_agent_cmd command found on PATH."
@@ -895,12 +880,12 @@ run_preflight_checks() {
 
 	if command -v node >/dev/null 2>&1; then
 		node_version=$(node --version)
-		if ! node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && (minor > 6 || (minor === 6 && patch >= 0))) ? 0 : 1)' >/dev/null; then
-			printf 'error: Prime Agent requires Node.js 20.6.0 or newer. Found %s.\n' "$node_version"
+		if ! node_version_string_is_new_enough "$node_version"; then
+			printf 'error: Prime Agent requires Node.js %s or newer. Found %s.\n' "$prime_agent_min_node_version" "$node_version"
 			status=1
 		fi
 	else
-		printf 'error: Node.js 20.6.0 or newer is required to install Prime Agent.\n'
+		printf 'error: Node.js %s or newer is required to install Prime Agent.\n' "$prime_agent_min_node_version"
 		status=1
 	fi
 
@@ -919,6 +904,63 @@ run_preflight_checks() {
 	fi
 
 	return "$status"
+}
+
+configure_npm_install_environment() {
+	if ! npm_prefix=$(npm prefix --global 2>/dev/null) || [ -z "$npm_prefix" ]; then
+		printf 'error: could not resolve npm global prefix.\n' >&2
+		return 1
+	fi
+	if ! npm_root=$(npm root --global 2>/dev/null) || [ -z "$npm_root" ]; then
+		printf 'error: could not resolve npm global package directory.\n' >&2
+		return 1
+	fi
+
+	case "$npm_prefix" in
+		/*) ;;
+		*)
+			printf 'error: npm returned a non-absolute global prefix: %s\n' "$npm_prefix" >&2
+			return 1
+			;;
+	esac
+
+	if ! prime_agent_path_supports_install "$npm_root" ||
+		! prime_agent_path_supports_install "$npm_root/$prime_agent_package" ||
+		! prime_agent_path_supports_install "$npm_prefix/bin"; then
+		if [ -z "${HOME:-}" ]; then
+			printf 'error: npm global prefix %s is not writable and HOME is not set.\n' "$npm_prefix" >&2
+			return 1
+		fi
+		fallback_prefix="$HOME/.local"
+		if ! prime_agent_path_supports_install "$fallback_prefix/lib/node_modules" ||
+			! prime_agent_path_supports_install "$fallback_prefix/lib/node_modules/$prime_agent_package" ||
+			! prime_agent_path_supports_install "$fallback_prefix/bin"; then
+			printf 'error: npm global prefix %s and fallback prefix %s are not writable.\n' "$npm_prefix" "$fallback_prefix" >&2
+			return 1
+		fi
+
+		prime_agent_npm_prefix="$fallback_prefix"
+		npm_prefix="$fallback_prefix"
+		if [ "$prime_agent_screen_enabled" = 1 ]; then
+			prime_agent_screen "Using a user-local npm install" "" "$npm_prefix" ""
+		else
+			printf 'npm global prefix is not writable; installing Prime Agent under %s instead.\n' "$npm_prefix"
+		fi
+	fi
+
+	prime_agent_install_bin="$npm_prefix/bin"
+}
+
+prime_agent_path_supports_install() {
+	install_path="$1"
+	while [ ! -e "$install_path" ]; do
+		parent_path=$(dirname "$install_path")
+		if [ "$parent_path" = "$install_path" ]; then
+			return 1
+		fi
+		install_path="$parent_path"
+	done
+	[ -d "$install_path" ] && [ -w "$install_path" ] && [ -x "$install_path" ]
 }
 
 resolve_prime_agent_version() {
@@ -1010,9 +1052,9 @@ install_node_npm_interactive() {
 		prompt_status=$?
 	fi
 	if [ "$prompt_status" -eq 2 ]; then
-		printf 'No terminal detected; install Node.js 20.6.0 or newer and npm, then run this installer again.\n'
+		printf 'No terminal detected; install Node.js %s or newer and npm, then run this installer again.\n' "$prime_agent_min_node_version"
 	else
-		printf '\nInstall Node.js 20.6.0 or newer and npm, then run this installer again.\n'
+		printf '\nInstall Node.js %s or newer and npm, then run this installer again.\n' "$prime_agent_min_node_version"
 	fi
 	return 1
 }
@@ -1069,9 +1111,9 @@ node_version_string_is_new_enough() {
 	case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
 	case "$patch" in ''|*[!0-9]*) patch=0 ;; esac
 
-	[ "$major" -gt 20 ] && return 0
-	[ "$major" -eq 20 ] && [ "$minor" -gt 6 ] && return 0
-	[ "$major" -eq 20 ] && [ "$minor" -eq 6 ] && [ "$patch" -ge 0 ] && return 0
+	[ "$major" -gt "$prime_agent_min_node_major" ] && return 0
+	[ "$major" -eq "$prime_agent_min_node_major" ] && [ "$minor" -gt "$prime_agent_min_node_minor" ] && return 0
+	[ "$major" -eq "$prime_agent_min_node_major" ] && [ "$minor" -eq "$prime_agent_min_node_minor" ] && [ "$patch" -ge "$prime_agent_min_node_patch" ] && return 0
 	return 1
 }
 
@@ -1308,13 +1350,15 @@ run_with_sudo() {
 	fi
 }
 
-configure_standalone_node_path() {
+configure_installed_command_path() {
+	install_bin="$1"
 	if original_prime_agent_path=$(resolve_prime_agent_with_original_path); then
 		case "$original_prime_agent_path" in
-			"$PRIME_AGENT_STANDALONE_NODE_BIN/"*)
+			"$install_bin/"*)
 				if [ "$prime_agent_screen_enabled" = 1 ]; then
 					prime_agent_screen "Prime Agent installed" "" "Run it with: $prime_agent_cmd" ""
 				else
+					printf '\nPrime Agent was installed successfully.\n'
 					printf '\nRun it with: %s\n' "$prime_agent_cmd"
 				fi
 				return 0
@@ -1339,21 +1383,21 @@ configure_standalone_node_path() {
 			prime_agent_restore_terminal
 			printf '\n'
 		fi
-		print_standalone_path_manual_instructions
+		print_install_path_manual_instructions "$install_bin"
 		return 0
 	}
 
-	if shell_profile_has_standalone_node_path "$profile"; then
+	if shell_profile_has_install_path "$profile" "$install_bin"; then
 		if [ "$prime_agent_screen_enabled" = 1 ]; then
 			prime_agent_screen "Prime Agent installed" "" "Run: $(prime_agent_source_profile_command "$profile")" ""
 		else
-			printf '%s already contains %s.\n' "$profile" "$PRIME_AGENT_STANDALONE_NODE_BIN"
+			printf '%s already contains %s.\n' "$profile" "$install_bin"
 			printf 'Restart your shell or run: %s\n' "$(prime_agent_source_profile_command "$profile")"
 		fi
 		return 0
 	fi
 
-	prompt_add_standalone_node_path "$profile"
+	prompt_add_install_path "$profile" "$install_bin"
 }
 
 resolve_prime_agent_with_original_path() {
@@ -1384,62 +1428,83 @@ detect_shell_profile() {
 			printf '%s/.zshrc' "${ZDOTDIR:-$HOME}"
 			;;
 		bash)
-			printf '%s/.bashrc' "$HOME"
+			if [ -f "$HOME/.bash_profile" ]; then
+				printf '%s/.bash_profile' "$HOME"
+			elif [ -f "$HOME/.bash_login" ]; then
+				printf '%s/.bash_login' "$HOME"
+			elif [ -f "$HOME/.profile" ]; then
+				printf '%s/.profile' "$HOME"
+			elif [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+				printf '%s/.bash_profile' "$HOME"
+			else
+				printf '%s/.bashrc' "$HOME"
+			fi
+			;;
+		sh|dash|ksh)
+			printf '%s/.profile' "$HOME"
 			;;
 		*)
-			if [ -f "$HOME/.zshrc" ]; then
-				printf '%s/.zshrc' "$HOME"
-			elif [ -f "$HOME/.bashrc" ]; then
-				printf '%s/.bashrc' "$HOME"
-			else
-				printf '%s/.profile' "$HOME"
-			fi
+			return 1
 			;;
 	esac
 }
 
-shell_profile_has_standalone_node_path() {
+shell_profile_has_install_path() {
 	profile="$1"
-	[ -f "$profile" ] && grep -F "$PRIME_AGENT_STANDALONE_NODE_BIN" "$profile" >/dev/null 2>&1
+	install_bin="$2"
+	path_line=$(install_path_line "$install_bin")
+	[ -f "$profile" ] && grep -F -x "$path_line" "$profile" >/dev/null 2>&1
 }
 
-prompt_add_standalone_node_path() {
+prompt_add_install_path() {
 	profile="$1"
-	path_line=$(standalone_node_path_line)
+	install_bin="$2"
+	path_line=$(install_path_line "$install_bin")
 
 	if ! prime_agent_prompt_yes_no \
-		"Add standalone Node.js to your PATH?" \
+		"Add Prime Agent to your PATH?" \
 		"Updates $profile so future shells can run $prime_agent_cmd." \
 		"Update PATH? [Y/n]"; then
 		if [ "$prime_agent_screen_enabled" = 1 ]; then
 			prime_agent_restore_terminal
 			printf '\n'
 		fi
-		print_standalone_path_manual_instructions
+		print_install_path_manual_instructions "$install_bin"
 		return 0
 	fi
 
 	mkdir -p "$(dirname "$profile")"
 	{
-		printf '\n# Prime Agent standalone Node.js\n'
+		printf '\n# Prime Agent command\n'
 		printf '%s\n' "$path_line"
 	} >>"$profile"
 	if [ "$prime_agent_screen_enabled" = 1 ]; then
 		prime_agent_screen "Prime Agent installed" "" "Run: $(prime_agent_source_profile_command "$profile")" ""
 	else
-		printf 'Added %s to %s.\n' "$PRIME_AGENT_STANDALONE_NODE_BIN" "$profile"
+		printf 'Added %s to %s.\n' "$install_bin" "$profile"
 		printf 'Restart your shell or run: %s\n' "$(prime_agent_source_profile_command "$profile")"
 	fi
 }
 
-print_standalone_path_manual_instructions() {
-	printf 'Add this to your shell profile to use %s from new shells:\n\n' "$prime_agent_cmd"
-	printf '  %s\n' "$(standalone_node_path_line)"
-	printf '\nThen restart your shell and run: %s\n' "$prime_agent_cmd"
+print_install_path_manual_instructions() {
+	install_bin="$1"
+	shell_name="${SHELL:-}"
+	shell_name="${shell_name##*/}"
+	case "$shell_name" in
+		bash|zsh|sh|dash|ksh)
+			printf 'Add this to your shell profile to use %s from new shells:\n\n' "$prime_agent_cmd"
+			printf '  %s\n' "$(install_path_line "$install_bin")"
+			printf '\nThen restart your shell and run: %s\n' "$prime_agent_cmd"
+			;;
+		*)
+			printf 'Add %s to PATH using your shell configuration.\n' "$install_bin"
+			printf 'Run Prime Agent now with: %s/%s\n' "$install_bin" "$prime_agent_cmd"
+			;;
+	esac
 }
 
-standalone_node_path_line() {
-	printf 'export PATH="%s:$PATH"' "$PRIME_AGENT_STANDALONE_NODE_BIN"
+install_path_line() {
+	printf 'export PATH=%s:"$PATH"' "$(prime_agent_shell_quote "$1")"
 }
 
 prime_agent_shell_quote() {
@@ -1602,7 +1667,7 @@ Finalizing npm install."
 			"Installing Prime Agent" \
 			"Installing Prime Agent" \
 			"$npm_install_details" \
-			env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1 PRIME_AGENT_INSTALL_UV=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+			run_prime_agent_npm_install env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1 PRIME_AGENT_INSTALL_UV=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
 	else
 		npm_install_details="Preparing global install.
 Linking command binaries.
@@ -1613,7 +1678,15 @@ Finalizing npm install."
 			"Installing Prime Agent" \
 			"Installing Prime Agent" \
 			"$npm_install_details" \
-			env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+			run_prime_agent_npm_install env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+	fi
+}
+
+run_prime_agent_npm_install() {
+	if [ -n "$prime_agent_npm_prefix" ]; then
+		env NPM_CONFIG_PREFIX="$prime_agent_npm_prefix" "$@" --prefix "$prime_agent_npm_prefix"
+	else
+		"$@"
 	fi
 }
 

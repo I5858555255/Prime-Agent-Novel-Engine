@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed the installer failing on protected npm global prefixes and accepting unsupported Node.js versions ([#705](https://github.com/PrimeIntellect-ai/prime-agent/issues/705)).
 
 ## [0.7.0] - 2026-08-05
 
