@@ -3,7 +3,13 @@
 ## [Unreleased]
 
 - Added a `c` shortcut to the `/login` browser sign-in screen that copies the sign-in URL to the clipboard (over SSH the copy reaches the local machine via OSC 52 where supported), and made the sign-in link an OSC 8 hyperlink regardless of detected terminal capabilities so it stays clickable from headless sessions. Previously the hard-wrapped URL had to be selected line by line, which injected newlines into the paste.
+- Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
+- Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+
+## [0.7.1] - 2026-08-07
+
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed `retry_worker` cancelling its own recovery when a stopped session worker left a saved stop marker behind, leaving the session stuck at "Session worker is not connected".
 
 ## [0.7.0] - 2026-08-05
 
