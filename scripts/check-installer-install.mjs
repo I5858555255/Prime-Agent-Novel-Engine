@@ -190,6 +190,7 @@ function assertUserPrefixFallback() {
 
 	const npmLog = readFileSync(npmLogPath, "utf-8");
 	check(npmLog.includes(`prefix=${expectedPrefix}\n`), "npm install did not receive the fallback NPM_CONFIG_PREFIX");
+	check(npmLog.includes("<--prefix>"), "npm install did not force the fallback prefix with --prefix");
 	check(npmLog.includes("<install> <-g>"), "npm install did not run as a global install");
 	check(npmLog.includes("</fixture/prime-agent.tgz>"), "npm install did not receive the release tarball");
 

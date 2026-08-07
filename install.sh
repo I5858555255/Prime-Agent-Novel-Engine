@@ -1682,7 +1682,7 @@ Finalizing npm install."
 
 run_prime_agent_npm_install() {
 	if [ -n "$prime_agent_npm_prefix" ]; then
-		env NPM_CONFIG_PREFIX="$prime_agent_npm_prefix" "$@"
+		env NPM_CONFIG_PREFIX="$prime_agent_npm_prefix" "$@" --prefix "$prime_agent_npm_prefix"
 	else
 		"$@"
 	fi
