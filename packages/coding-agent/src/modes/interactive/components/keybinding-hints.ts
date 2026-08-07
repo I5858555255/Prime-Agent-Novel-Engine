@@ -36,6 +36,10 @@ function formatKeyPart(part: string, platform: NodeJS.Platform): string {
 	if (platform === "darwin" && normalized === "alt") {
 		return "Option";
 	}
+	// Command is the macOS paste shortcut (super in keybinding ids).
+	if (platform === "darwin" && normalized === "super") {
+		return "Cmd";
+	}
 	return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
