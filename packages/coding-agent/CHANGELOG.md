@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed `Ctrl+C` leaving draft input in the interactive prompt instead of clearing it.
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 
 ## [0.7.0] - 2026-08-05

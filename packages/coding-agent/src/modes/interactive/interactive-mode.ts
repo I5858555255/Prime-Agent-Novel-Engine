@@ -6592,7 +6592,7 @@ export class InteractiveMode {
 	}
 
 	private handleInterruptKey(): void {
-		this.clearEscapeRepeat();
+		this.clearInputBar();
 		this.interruptOrClearInput();
 		this.showCtrlCExitHint();
 	}

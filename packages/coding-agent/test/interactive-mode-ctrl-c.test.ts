@@ -199,7 +199,7 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		const mode = createInteractiveFake({ editorText: "draft" });
 
 		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
-		expect(mode.editor.getText()).toBe("draft");
+		expect(mode.editor.getText()).toBe("");
 		expect(Reflect.get(InteractiveMode.prototype, "getTrayOverrideLabel").call(mode)).toBe(
 			"Press Ctrl+C again to exit",
 		);
@@ -211,12 +211,12 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		expect(mode.ui.requestRender).toHaveBeenCalled();
 	});
 
-	it("preserves idle draft input on first Ctrl+C", () => {
+	it("clears idle draft input on first Ctrl+C", () => {
 		const mode = createInteractiveFake({ editorText: "draft" });
 
 		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
 
-		expect(mode.editor.getText()).toBe("draft");
+		expect(mode.editor.getText()).toBe("");
 		expect(mode.restoreQueuedMessagesToEditor).not.toHaveBeenCalled();
 		expect(mode.shutdown).not.toHaveBeenCalled();
 	});
