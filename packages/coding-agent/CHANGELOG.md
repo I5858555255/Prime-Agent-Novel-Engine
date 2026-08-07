@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed reconnecting to long sessions replaying the entire transcript and making the UI unresponsive ([#774](https://github.com/PrimeIntellect-ai/prime-agent/issues/774)).
+- Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 
 ## [0.7.0] - 2026-08-05
 
