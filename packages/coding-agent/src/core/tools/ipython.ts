@@ -34,6 +34,89 @@ try:
 except Exception:
     pass
 
+def _prime_agent_setup_process_group_patch():
+    try:
+        import os as _os
+        import signal as _signal
+        import sys as _sys
+        import time as _time
+        import subprocess as _subprocess
+
+        _orig_popen = _subprocess.Popen
+
+        def _kill_process_tree(p):
+            if p is None or p.poll() is not None:
+                return
+            pid = getattr(p, "pid", None)
+            if not pid:
+                return
+            if _sys.platform != "win32":
+                try:
+                    pgid = _os.getpgid(pid)
+                    _os.killpg(pgid, _signal.SIGINT)
+                except Exception:
+                    try:
+                        p.send_signal(_signal.SIGINT)
+                    except Exception:
+                        pass
+                _time.sleep(0.05)
+                if p.poll() is None:
+                    try:
+                        pgid = _os.getpgid(pid)
+                        _os.killpg(pgid, _signal.SIGKILL)
+                    except Exception:
+                        try:
+                            p.kill()
+                        except Exception:
+                            pass
+            else:
+                try:
+                    p.send_signal(_signal.CTRL_BREAK_EVENT)
+                except Exception:
+                    pass
+                _time.sleep(0.05)
+                if p.poll() is None:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+                try:
+                    _subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        stdout=_subprocess.DEVNULL,
+                        stderr=_subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+
+        class _PrimeAgentPopen(_orig_popen):
+            def __init__(self, *args, **kwargs):
+                if _sys.platform != "win32":
+                    kwargs.setdefault("start_new_session", True)
+                else:
+                    kwargs.setdefault("creationflags", _subprocess.CREATE_NEW_PROCESS_GROUP)
+                super().__init__(*args, **kwargs)
+
+            def communicate(self, *args, **kwargs):
+                try:
+                    return super().communicate(*args, **kwargs)
+                except KeyboardInterrupt:
+                    _kill_process_tree(self)
+                    raise
+
+            def wait(self, *args, **kwargs):
+                try:
+                    return super().wait(*args, **kwargs)
+                except KeyboardInterrupt:
+                    _kill_process_tree(self)
+                    raise
+
+        _subprocess.Popen = _PrimeAgentPopen
+    except Exception:
+        pass
+
+_prime_agent_setup_process_group_patch()
+
 try:
     import rlm as _prime_agent_rlm_module
     rlm = _prime_agent_rlm_module.rlm
