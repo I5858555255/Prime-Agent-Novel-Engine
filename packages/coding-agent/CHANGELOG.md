@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed `openai-codex` models being invisible to `find_models` and rlm subagents because model discovery sent the prime-agent version as the codex `client_version`, and treated an empty catalog as a successful result ([#702](https://github.com/PrimeIntellect-ai/prime-agent/issues/702)).
 
 ## [0.7.0] - 2026-08-05
 
