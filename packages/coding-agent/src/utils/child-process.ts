@@ -1,8 +1,9 @@
-import type { ChildProcess } from "node:child_process";
+import { type ChildProcess, spawnSync } from "node:child_process";
 import { constants } from "node:os";
 import { basename } from "node:path";
 
 const EXIT_STDIO_GRACE_MS = 100;
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 5000;
 
 const WINDOWS_SHELL_COMMANDS = new Set(["npm", "npx", "pnpm", "yarn", "yarnpkg", "corepack"]);
 
@@ -12,17 +13,37 @@ export function shouldUseWindowsShell(command: string): boolean {
 	return commandName.endsWith(".cmd") || commandName.endsWith(".bat") || WINDOWS_SHELL_COMMANDS.has(commandName);
 }
 
-export function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
+export function signalProcessTree(pid: number, signal: NodeJS.Signals): boolean {
+	if (process.platform === "win32") {
+		const result = spawnSync("taskkill.exe", ["/F", "/T", "/PID", String(pid)], {
+			stdio: "ignore",
+			timeout: WINDOWS_TREE_KILL_TIMEOUT_MS,
+			windowsHide: true,
+		});
+		return !result.error && result.status === 0;
+	}
 	try {
 		process.kill(-pid, signal);
-		return;
+		return true;
 	} catch {
 		// Fall back when process groups are unavailable or the group already exited.
 	}
 	try {
 		process.kill(pid, signal);
+		return true;
 	} catch {
 		// The process may already be fully reaped.
+		return false;
+	}
+}
+
+export function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): boolean {
+	if (process.platform !== "win32") return signalProcessTree(pid, signal);
+	try {
+		process.kill(pid, signal);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
