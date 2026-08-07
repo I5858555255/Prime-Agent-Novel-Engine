@@ -8,7 +8,6 @@ import {
 import { getEnvApiKey } from "../env-api-keys.js";
 import { calculateCost } from "../models.js";
 import type {
-	Api,
 	AssistantMessage,
 	Context,
 	Message,
@@ -30,20 +29,13 @@ import { transformMessages } from "./transform-messages.js";
 export const DEVIN_API_URL = "https://server.codeium.com";
 
 export interface DevinOptions extends StreamOptions {
-	/** Cascade conversation id; reused so the server threads turns. */
 	conversationId?: string;
-	/** Wire model uid selected after thinking-effort routing. */
 	chatModelUid?: string;
-	/** Injectable transport for tests and custom runtimes. */
 	fetch?: FetchLike;
 	topP?: number;
 	stopSequences?: string[];
 }
 type DevinInputContent = Extract<Message, { role: "user" | "toolResult" }>["content"];
-
-const DEVIN_CHAT_PATH = "/exa.api_server_pb.ApiServerService/GetChatMessage";
-const MAX_CONNECT_FRAME_PAYLOAD = 16 * 1024 * 1024;
-const LARGE_HISTORY_RECOVERY_BYTES = 512 * 1024;
 
 export const streamDevin: StreamFunction<"devin-agent", DevinOptions> = (
 	model: Model<"devin-agent">,
@@ -56,7 +48,7 @@ export const streamDevin: StreamFunction<"devin-agent", DevinOptions> = (
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
-			api: "devin-agent" as Api,
+			api: "devin-agent",
 			provider: model.provider,
 			model: model.id,
 			usage: {
@@ -236,11 +228,7 @@ export const streamDevin: StreamFunction<"devin-agent", DevinOptions> = (
 			stream.end();
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			const message = error instanceof Error ? error.message : String(error);
-			output.errorMessage =
-				isLargeContextFailure(message, context) && !message.startsWith("Devin context window exceeds limit:")
-					? `Devin context window exceeds limit: ${message}`
-					: message;
+			output.errorMessage = error instanceof Error ? error.message : String(error);
 			recordStreamFailure(model, output, error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
@@ -330,71 +318,14 @@ function toToolArguments(value: unknown): ToolCall["arguments"] {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as ToolCall["arguments"]) : {};
 }
 
-function isLargeContextFailure(message: string, context: Context): boolean {
-	if (!/invalid_argument/i.test(message) || !/\binternal error\b/i.test(message)) return false;
-	const history = context.messages.at(-1)?.role === "user" ? context.messages.slice(0, -1) : context.messages;
-	return new TextEncoder().encode(JSON.stringify(history)).byteLength >= LARGE_HISTORY_RECOVERY_BYTES;
-}
-
 function createDevinFetch(fetchImpl: FetchLike, extraHeaders?: Record<string, string>): FetchLike {
-	return async (input, init) => {
+	if (!extraHeaders || Object.keys(extraHeaders).length === 0) return fetchImpl;
+	return (input, init) => {
 		const headers = new Headers(input instanceof Request ? input.headers : undefined);
 		new Headers(init?.headers).forEach((value, key) => {
 			headers.set(key, value);
 		});
-		for (const [key, value] of Object.entries(extraHeaders ?? {})) headers.set(key, value);
-		const response = await fetchImpl(input, { ...init, headers });
-		const url = input instanceof Request ? input.url : String(input);
-		return url.includes(DEVIN_CHAT_PATH) ? limitConnectFrameSize(response) : response;
-	};
-}
-
-function limitConnectFrameSize(response: Response): Response {
-	if (!response.body) return response;
-
-	const inspect = createConnectFrameInspector();
-	const body = response.body.pipeThrough(
-		new TransformStream<Uint8Array, Uint8Array>({
-			transform(chunk, controller) {
-				inspect(chunk);
-				controller.enqueue(chunk);
-			},
-		}),
-	);
-	return new Response(body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: response.headers,
-	});
-}
-
-function createConnectFrameInspector(): (chunk: Uint8Array) => void {
-	const header = new Uint8Array(5);
-	let headerLength = 0;
-	let payloadRemaining = 0;
-
-	return (chunk) => {
-		let offset = 0;
-		while (offset < chunk.length) {
-			if (payloadRemaining > 0) {
-				const consumed = Math.min(payloadRemaining, chunk.length - offset);
-				payloadRemaining -= consumed;
-				offset += consumed;
-				continue;
-			}
-
-			const copied = Math.min(5 - headerLength, chunk.length - offset);
-			header.set(chunk.subarray(offset, offset + copied), headerLength);
-			headerLength += copied;
-			offset += copied;
-			if (headerLength < 5) continue;
-
-			const length = new DataView(header.buffer).getUint32(1, false);
-			headerLength = 0;
-			if (length > MAX_CONNECT_FRAME_PAYLOAD) {
-				throw new Error(`Devin Connect frame length ${length} exceeds ${MAX_CONNECT_FRAME_PAYLOAD}-byte cap`);
-			}
-			payloadRemaining = length;
-		}
+		for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
+		return fetchImpl(input, { ...init, headers });
 	};
 }

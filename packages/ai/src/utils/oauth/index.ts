@@ -11,7 +11,7 @@
 // Anthropic
 export { anthropicOAuthProvider, loginAnthropic, refreshAnthropicToken } from "./anthropic.js";
 // Devin
-export { devinOAuthProvider, exchangeDevinCliToken, loginDevin } from "./devin.js";
+export { devinOAuthProvider } from "./devin.js";
 // GitHub Copilot
 export {
 	getGitHubCopilotBaseUrl,

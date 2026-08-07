@@ -61,7 +61,6 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 	const rows = filteredModels.map((m) => ({
 		provider: m.provider,
 		model: m.id,
-		free: m.free === undefined ? "-" : m.free ? "yes" : "no",
 		context: formatTokenCount(m.contextWindow),
 		maxOut: formatTokenCount(m.maxTokens),
 		thinking: m.reasoning ? "yes" : "no",
@@ -71,7 +70,6 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 	const headers = {
 		provider: "provider",
 		model: "model",
-		free: "free",
 		context: "context",
 		maxOut: "max-out",
 		thinking: "thinking",
@@ -81,7 +79,6 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 	const widths = {
 		provider: Math.max(headers.provider.length, ...rows.map((r) => r.provider.length)),
 		model: Math.max(headers.model.length, ...rows.map((r) => r.model.length)),
-		free: Math.max(headers.free.length, ...rows.map((r) => r.free.length)),
 		context: Math.max(headers.context.length, ...rows.map((r) => r.context.length)),
 		maxOut: Math.max(headers.maxOut.length, ...rows.map((r) => r.maxOut.length)),
 		thinking: Math.max(headers.thinking.length, ...rows.map((r) => r.thinking.length)),
@@ -92,7 +89,6 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 	const headerLine = [
 		headers.provider.padEnd(widths.provider),
 		headers.model.padEnd(widths.model),
-		headers.free.padEnd(widths.free),
 		headers.context.padEnd(widths.context),
 		headers.maxOut.padEnd(widths.maxOut),
 		headers.thinking.padEnd(widths.thinking),
@@ -105,7 +101,6 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 		const line = [
 			row.provider.padEnd(widths.provider),
 			row.model.padEnd(widths.model),
-			row.free.padEnd(widths.free),
 			row.context.padEnd(widths.context),
 			row.maxOut.padEnd(widths.maxOut),
 			row.thinking.padEnd(widths.thinking),

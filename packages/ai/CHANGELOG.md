@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added Devin subscription authentication, authenticated account-model and pricing-tier discovery, and the `devin-agent` API backed by Widevin's Connect transport, including multimodal prompts, tool calls, usage accounting, and bounded frame parsing.
+- Added Devin subscription authentication, authenticated account-model discovery, and the `devin-agent` API backed by Widevin, including multimodal prompts, tool calls, usage accounting, and bounded frame parsing.
 
 ## [0.7.0] - 2026-08-05
 

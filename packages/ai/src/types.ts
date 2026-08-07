@@ -461,8 +461,6 @@ export interface Model<TApi extends Api> {
 	maxTokens: number;
 	/** Flagship model surfaced above non-featured models of the same provider in pickers. */
 	featured?: boolean;
-	/** Provider-reported pricing status. Undefined when the provider does not report it. */
-	free?: boolean;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"

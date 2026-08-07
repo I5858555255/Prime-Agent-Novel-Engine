@@ -40,9 +40,7 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Requires a Devin account
 - Opens Devin's CLI authorization flow in the browser and handles the localhost callback automatically
-- If the callback cannot reach Prime Agent, paste the redirect URL into the login dialog
-- `/model` lists the models currently enabled for the authenticated Devin account and marks models Devin reports as free
-- `prime-agent model list` exposes the same status in its `free` column
+- `/model` and `prime-agent model list` show the models currently enabled for the authenticated Devin account
 
 ## API Keys
 

@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added Devin to the built-in `/login` providers with dynamic discovery of every model enabled for the authenticated account and free-model labels in model lists.
+- Added Devin to the built-in `/login` providers with dynamic discovery of every model enabled for the authenticated account.
 
 ### Fixed
 
