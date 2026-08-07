@@ -39,6 +39,9 @@ describe("classifyStreamFailure", () => {
 		[undefined, 529, "overloaded"],
 		["rate_limit_error", undefined, "rate_limit"],
 		[undefined, 429, "rate_limit"],
+		["insufficient_quota", undefined, "quota"],
+		["quota_exceeded", 429, "quota"],
+		[undefined, 402, "quota"],
 		["refusal", undefined, "refusal"],
 		["sensitive", undefined, "safety"],
 		["SAFETY", undefined, "safety"],
@@ -52,6 +55,35 @@ describe("classifyStreamFailure", () => {
 		["something_else", undefined, "unknown"],
 	])("classifies %s / %s as %s", (type, status, expected) => {
 		expect(classifyStreamFailure(type, status)).toBe(expected);
+	});
+
+	test("lets quota detail override a generic 429 error type", () => {
+		expect(classifyStreamFailure("rate_limit_error", 429, "premium request quota exceeded")).toBe("quota");
+		expect(classifyStreamFailure("rate_limit_error", 429, "you exceeded your monthly premium request quota")).toBe(
+			"quota",
+		);
+	});
+
+	test("does not treat temporary quota-service unavailability as quota exhaustion", () => {
+		expect(classifyStreamFailure("server_error", 503, "quota service temporarily unavailable")).toBe("server_error");
+	});
+
+	test.each([
+		"Quota exceeded for quota metric 'GenerateRequestsPerMinutePerProjectPerBaseModel': requests per minute",
+		"Resource has been exhausted (e.g. check quota)",
+	])("treats transient quota throttling as a rate limit: %s", (detail) => {
+		expect(classifyStreamFailure("RESOURCE_EXHAUSTED", 429, detail)).toBe("rate_limit");
+	});
+
+	test("keeps explicit account-capacity exhaustion classified as quota", () => {
+		expect(classifyStreamFailure("rate_limit_error", 429, "premium request quota exceeded")).toBe("quota");
+		expect(
+			classifyStreamFailure(
+				"rate_limit_error",
+				429,
+				"You exceeded your current quota. Please check your plan and billing details.",
+			),
+		).toBe("quota");
 	});
 });
 
@@ -105,6 +137,23 @@ describe("extractStreamFailureInfo", () => {
 	test("falls back to classifying the message text", () => {
 		expect(extractStreamFailureInfo(new Error("provider overloaded, retry later")).kind).toBe("overloaded");
 		expect(extractStreamFailureInfo("not an error").kind).toBe("unknown");
+	});
+
+	test("classifies quota language from a nested SDK error message", () => {
+		const sdkError = Object.assign(new Error("429 request failed"), {
+			status: 429,
+			error: {
+				type: "error",
+				error: { type: "rate_limit_error", message: "premium request quota exceeded" },
+			},
+			requestID: "req_quota",
+		});
+		expect(extractStreamFailureInfo(sdkError)).toMatchObject({
+			kind: "quota",
+			providerErrorType: "rate_limit_error",
+			status: 429,
+			requestId: "req_quota",
+		});
 	});
 });
 

@@ -44,6 +44,7 @@ import {
 	cleanupSessionResources,
 	getSupportedThinkingLevels,
 	isContextOverflow,
+	isQuotaExhaustionMessage,
 	modelsAreEqual,
 	resetApiProviders,
 	supportsFastMode,
@@ -469,6 +470,8 @@ export interface AgentSessionConfig {
 	rlmParentNodeId?: string;
 	/** Parent agent name/id shown in child communication doctrine. */
 	rlmParentAgent?: string;
+	/** Live parent session used to share family-wide safety state. */
+	rlmParentSession?: AgentSession;
 	/** Host responsible for creating RLM subagent runtimes. */
 	subagentRuntimeHost?: SubagentRuntimeHost;
 	/** Host-side autonomous continuation policy. */
@@ -549,6 +552,8 @@ export interface PromptOptions {
 	followUpQueueKey?: string;
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
+	/** Host-generated recurring work must not clear a tripped provider quota circuit. */
+	automatic?: boolean;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean, queued?: boolean) => void;
 	/** Queue instead of starting immediately when the session is idle but already has queued work. */
@@ -575,6 +580,25 @@ interface InternalPromptOptions extends PromptOptions {
 	returnAfterAccepted?: boolean;
 	agentMessageId?: string;
 }
+
+interface ProviderQuotaFailure {
+	timestamp: number;
+	sessionId: string;
+	sessionName?: string;
+	childId?: string;
+	provider: string;
+	model: string;
+	status?: number;
+	requestId?: string;
+	errorMessage: string;
+}
+
+type ProviderQuotaCircuitEntry =
+	| { state: "tripped"; failure: ProviderQuotaFailure }
+	| { state: "reset"; timestamp: number };
+
+const PROVIDER_QUOTA_CIRCUIT_CUSTOM_TYPE = "prime-agent.provider-quota-circuit";
+const PROVIDER_QUOTA_NOTICE_CUSTOM_TYPE = "provider_quota_exhausted";
 
 type SubmissionExtensionCommandPolicy = "execute" | "reject" | "ignore";
 
@@ -661,6 +685,21 @@ interface PreparedCommandPayload extends SessionCommandPayload {
 }
 
 type QueuedSessionAction = SessionAction<PreparedTurnPayload | PreparedCommandPayload>;
+
+function sessionCommandUsesProvider(command: SessionSlashCommand): boolean {
+	if (command.name === "compact") return true;
+	if (command.name !== "refine") return false;
+	try {
+		return parseRefineCommandOptions(command.args).rollbackId === undefined;
+	} catch {
+		// Invalid rollback syntax fails during command execution without inference.
+		return false;
+	}
+}
+
+function sessionActionUsesProvider(action: QueuedSessionAction): boolean {
+	return action.payload.kind === "turn" || sessionCommandUsesProvider(action.payload.command);
+}
 
 interface PreparedPromptPreparation {
 	result: Awaited<ReturnType<ExtensionRunner["emitBeforeAgentStart"]>>;
@@ -1207,6 +1246,7 @@ export class AgentSession {
 	private _rlmSessionDir?: string;
 	private _rlmParentNodeId?: string;
 	private _rlmParentAgent?: string;
+	private _rlmParentSession?: AgentSession;
 	private _repliedToParentSinceTask: boolean | undefined;
 	private _parentReplyCount = 0;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
@@ -1231,6 +1271,7 @@ export class AgentSession {
 	private _rlmChildUnsubscribes = new Map<string, () => void>();
 	/** Latest recap for this session, written by the daemon summarizer; read by a parent to label its child snapshots. */
 	private _currentRecap?: string;
+	private _providerQuotaFailure?: ProviderQuotaFailure;
 
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
@@ -1320,6 +1361,10 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._rlmParentAgent = config.rlmParentAgent;
+		this._rlmParentSession = config.rlmParentSession;
+		if (!this._rlmParentSession) {
+			this._providerQuotaFailure = this._loadProviderQuotaCircuit();
+		}
 		// A resumed child may have replied before this process started; false would
 		// claim knowledge that is not present in the session transcript.
 		this._repliedToParentSinceTask =
@@ -3503,6 +3548,9 @@ export class AgentSession {
 				this._lastAssistantMessage = event.message;
 
 				const assistantMsg = event.message as AssistantMessage;
+				if (this._isProviderQuotaExhausted(assistantMsg)) {
+					this._tripProviderQuotaCircuit(assistantMsg);
+				}
 				if (assistantMsg.stopReason !== "error") {
 					addAutonomousUsage(this._autonomousState, assistantMsg.usage);
 				}
@@ -4457,6 +4505,7 @@ export class AgentSession {
 			options?.customMessage && isAgentSessionMessage(options.customMessage) ? options.customMessage : undefined;
 		await this._prompt(text, {
 			...options,
+			internalPrompt: true,
 			expandPromptTemplates: false,
 			skipInputHandlers: true,
 			skipPrePromptWork: true,
@@ -4503,6 +4552,7 @@ export class AgentSession {
 		message: CustomMessage,
 		options?: InternalPromptOptions & { executionPolicy?: TurnExecutionPolicy },
 	): Promise<void> {
+		this._assertProviderQuotaCircuitClosed();
 		if (!this.isStreaming && options?.resumeIfIdle) this._sessionInputPumpSuspended = false;
 		const admissionFence = await this._acquireDirectTurnAdmissionFence(options?.signal).catch((error: unknown) => {
 			throwIfPromptAdmissionCancelled(options?.signal);
@@ -4571,6 +4621,9 @@ export class AgentSession {
 	}
 
 	private async _prompt(text: string, options?: InternalPromptOptions): Promise<void> {
+		const explicitUserPrompt =
+			options?.automatic !== true && options?.internalPrompt !== true && options?.source !== "extension";
+		if (!explicitUserPrompt) this._assertProviderQuotaCircuitClosed();
 		if (!this.isStreaming) {
 			this._sessionInputPumpSuspended = false;
 			this._assertSessionActionAdmissionAvailable();
@@ -4644,6 +4697,7 @@ export class AgentSession {
 					await this.waitForSessionInputIdle();
 					return;
 				}
+				if (explicitUserPrompt) this._resetProviderQuotaCircuit();
 
 				const queueForStreaming = this.isStreaming;
 				const queueForBusy = options?.queueIfBusy === true && this._isBusyForSessionInput("preflight");
@@ -4963,6 +5017,9 @@ export class AgentSession {
 				...(recovered.suppressAutonomousContinuation ? { suppressAutonomousContinuation: true } : {}),
 			};
 		});
+		if (actions.some(sessionActionUsesProvider) && this.isProviderQuotaCircuitOpen) {
+			this._assertProviderQuotaCircuitClosed();
+		}
 		for (const action of actions) this._admitSessionInput(action, { restore: true });
 		return actions.length;
 	}
@@ -5282,6 +5339,9 @@ export class AgentSession {
 		if (this._disposed || this._disposing) {
 			throw new Error("Cannot admit a session action because the session is disposing or disposed.");
 		}
+		if (sessionActionUsesProvider(action) && this.isProviderQuotaCircuitOpen) {
+			this._assertProviderQuotaCircuitClosed();
+		}
 		const coalescedOwner = options.restore ? undefined : this._coalescedFollowUpOwner(action);
 		if (coalescedOwner) {
 			if (action.agentMessageId !== coalescedOwner.agentMessageId) {
@@ -5575,6 +5635,7 @@ export class AgentSession {
 				this._notifySessionInputCheckpointChange();
 				this._emitQueueUpdate();
 				try {
+					if (sessionCommandUsesProvider(input.command)) this._assertProviderQuotaCircuitClosed();
 					this._appendDurableSessionCommandMessage(input.text, input.command, false);
 					this._actionStore.ticketFor(action).settleDelivered({ status: "not_applicable" });
 					this._settleAgentMessage(action.agentMessageId, "delivery");
@@ -5651,6 +5712,7 @@ export class AgentSession {
 	}
 
 	private async _startPreparedTurnActions(actions: QueuedSessionAction[], epoch: number): Promise<void> {
+		this._assertProviderQuotaCircuitClosed();
 		let nextTurnMessages: CustomMessage[] = [];
 		const activeTurns = () =>
 			actions.filter(
@@ -5717,6 +5779,7 @@ export class AgentSession {
 			let promptPromise: Promise<void>;
 			try {
 				promptPromise = this._sessionActionCommitContext.run(commitFence.owner, () => {
+					this._assertProviderQuotaCircuitClosed();
 					if (
 						this._isSessionInputHandoffDeferred(epoch) ||
 						this.isStreaming ||
@@ -5932,13 +5995,13 @@ export class AgentSession {
 				admissionFence.release();
 			}
 		} else {
-			this.agent.state.messages.push(appMessage);
-			this.sessionManager.appendCustomMessageEntry(
+			this.sessionManager.appendCustomMessageEntryWithRollback(
 				message.customType,
 				message.content,
 				message.display,
 				message.details,
 			);
+			this.agent.state.messages.push(appMessage);
 			this._emit({ type: "message_start", message: appMessage });
 			this._emit({ type: "message_end", message: appMessage });
 		}
@@ -6979,6 +7042,7 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string, options: { skipAbort?: boolean } = {}): Promise<CompactionResult> {
+		this._assertProviderQuotaCircuitClosed();
 		if (options.skipAbort && this.isStreaming) {
 			throw new Error("Cannot compact without aborting while the agent is running.");
 		}
@@ -7109,9 +7173,12 @@ export class AgentSession {
 			}
 		}
 
-		const { summary, firstKeptEntryId, tokensBefore, details } =
-			extensionCompaction ??
-			(await compact(preparation, model, apiKey, headers, customInstructions, signal, this.thinkingLevel));
+		let result = extensionCompaction;
+		if (!result) {
+			this._assertProviderQuotaCircuitClosed();
+			result = await compact(preparation, model, apiKey, headers, customInstructions, signal, this.thinkingLevel);
+		}
+		const { summary, firstKeptEntryId, tokensBefore, details } = result;
 
 		if (signal.aborted) {
 			throw new Error("Compaction cancelled");
@@ -7531,6 +7598,7 @@ export class AgentSession {
 			return { shouldRefine: false, rationale: "No model selected." };
 		}
 		const { apiKey, headers } = await this._getRequiredRequestAuth(model);
+		this._assertProviderQuotaCircuitClosed();
 		return reviewAutoRefine(
 			this.agent.state.messages,
 			this._loadMergedHarnessState(),
@@ -7576,6 +7644,7 @@ export class AgentSession {
 		} = {},
 		internal: { skipAbort?: boolean } = {},
 	): Promise<RefinementResult> {
+		if (!options.rollbackId) this._assertProviderQuotaCircuitClosed();
 		// Queued /refine executes from the session-input pump between turns;
 		// refine never aborts the agent (planning is backgrounded and the apply
 		// phase waits for quiescence), so skipAbort only asserts the pump's
@@ -7711,7 +7780,7 @@ export class AgentSession {
 		}
 
 		const model = this.model;
-		const { apiKey, headers } = await this._getRequiredRequestAuth(model);
+		const requestAuth = options.rollbackId ? undefined : await this._getRequiredRequestAuth(model);
 		const globalHarnessStateDir = getGlobalHarnessStateDir();
 		const localHarnessStateDir = this._localHarnessStateDir();
 		const requestedScope = options.global ? "global" : "local";
@@ -7742,14 +7811,15 @@ export class AgentSession {
 			: baselineScope === "global"
 				? globalPlanningState
 				: localPlanningState!;
+		if (!options.rollbackId) this._assertProviderQuotaCircuitClosed();
 		const plan = await planRefinement(
 			this.agent.state.messages,
 			planningState,
 			history,
 			model,
-			apiKey,
+			requestAuth?.apiKey ?? "",
 			options,
-			headers,
+			requestAuth?.headers,
 			signal,
 			this.thinkingLevel,
 		);
@@ -8906,6 +8976,152 @@ export class AgentSession {
 			.find((entry): entry is SessionMessageEntry => entry.type === "message" && entry.message === message);
 	}
 
+	private _familyRootSession(): AgentSession {
+		let root: AgentSession = this;
+		while (root._rlmParentSession) root = root._rlmParentSession;
+		return root;
+	}
+
+	private _loadProviderQuotaCircuit(): ProviderQuotaFailure | undefined {
+		let failure: ProviderQuotaFailure | undefined;
+		for (const entry of this.sessionManager.getBranch()) {
+			if (entry.type !== "custom" || entry.customType !== PROVIDER_QUOTA_CIRCUIT_CUSTOM_TYPE) continue;
+			const data = entry.data;
+			if (!data || typeof data !== "object") continue;
+			const circuit = data as Partial<ProviderQuotaCircuitEntry>;
+			if (circuit.state === "reset") {
+				failure = undefined;
+				continue;
+			}
+			if (circuit.state !== "tripped" || !("failure" in circuit)) continue;
+			const candidate = circuit.failure;
+			if (
+				candidate &&
+				typeof candidate.timestamp === "number" &&
+				typeof candidate.sessionId === "string" &&
+				typeof candidate.provider === "string" &&
+				typeof candidate.model === "string" &&
+				typeof candidate.errorMessage === "string"
+			) {
+				failure = candidate;
+			}
+		}
+		return failure;
+	}
+
+	private _providerQuotaCircuitFailure(): ProviderQuotaFailure | undefined {
+		return this._familyRootSession()._providerQuotaFailure;
+	}
+
+	get isProviderQuotaCircuitOpen(): boolean {
+		return this._providerQuotaCircuitFailure() !== undefined;
+	}
+
+	private _formatProviderQuotaFailure(failure: ProviderQuotaFailure): string {
+		const source = failure.childId
+			? `subagent ${failure.sessionName ?? failure.sessionId} (${failure.childId})`
+			: `session ${failure.sessionName ?? failure.sessionId}`;
+		const status = failure.status === undefined ? "" : `, status ${failure.status}`;
+		const requestId = failure.requestId ? ` [request_id: ${failure.requestId}]` : "";
+		return `Provider quota exhausted in ${source} using ${failure.provider}/${failure.model}${status}${requestId}. All agent-family background work was stopped. Send a new user prompt to retry explicitly.`;
+	}
+
+	private _assertProviderQuotaCircuitClosed(): void {
+		const failure = this._providerQuotaCircuitFailure();
+		if (failure) throw new Error(this._formatProviderQuotaFailure(failure));
+	}
+
+	private _appendProviderQuotaNotice(failure: ProviderQuotaFailure): void {
+		const content = this._formatProviderQuotaFailure(failure);
+		try {
+			this.sessionManager.appendCustomEntryWithRollback(PROVIDER_QUOTA_CIRCUIT_CUSTOM_TYPE, {
+				state: "tripped",
+				failure,
+			} satisfies ProviderQuotaCircuitEntry);
+		} catch {
+			// The in-memory circuit remains authoritative if persistence is unavailable.
+		}
+		const message = {
+			role: "custom" as const,
+			customType: PROVIDER_QUOTA_NOTICE_CUSTOM_TYPE,
+			content,
+			display: true,
+			details: failure,
+			timestamp: Date.now(),
+		} satisfies CustomMessage<ProviderQuotaFailure>;
+		try {
+			this.sessionManager.appendCustomMessageEntryWithRollback(
+				message.customType,
+				message.content,
+				message.display,
+				message.details,
+			);
+		} catch {
+			// The live event still makes the failure visible to attached clients.
+		}
+		this._emit({ type: "message_start", message });
+		this._emit({ type: "message_end", message });
+	}
+
+	private _failClosedForProviderQuota(failure: ProviderQuotaFailure): void {
+		const error = new Error(this._formatProviderQuotaFailure(failure));
+		this.requestAbort();
+		this._cancelSessionActions(sessionActionUsesProvider, error);
+		this.agent.clearAllQueues();
+		this._pendingNextTurnMessages = [];
+		const descendants = new Set<AgentSession>();
+		for (const run of this._activeRlmChildRuns.values()) {
+			if (run.session) descendants.add(run.session);
+		}
+		for (const child of this._rlmChildSessions.values()) descendants.add(child);
+		for (const child of descendants) child._failClosedForProviderQuota(failure);
+		this._cancelActiveRlmChildRuns(error.message);
+		this._emitQueueUpdate();
+	}
+
+	private _tripProviderQuotaCircuit(message: AssistantMessage): void {
+		const root = this._familyRootSession();
+		if (root._providerQuotaFailure) return;
+		const details = this._getProviderStreamFailureDetails(message);
+		const rawStatus = details?.status;
+		const status =
+			typeof rawStatus === "number"
+				? rawStatus
+				: typeof rawStatus === "string" && Number.isInteger(Number(rawStatus))
+					? Number(rawStatus)
+					: undefined;
+		const rawRequestId = details?.requestId;
+		const failure: ProviderQuotaFailure = {
+			timestamp: Date.now(),
+			sessionId: this.sessionId,
+			...(this.sessionName ? { sessionName: this.sessionName } : {}),
+			...(this._rlmParentNodeId ? { childId: this._rlmParentNodeId } : {}),
+			provider: message.provider,
+			model: message.model,
+			...(status !== undefined ? { status } : {}),
+			...(typeof rawRequestId === "string" ? { requestId: rawRequestId } : {}),
+			errorMessage: message.errorMessage ?? "Provider quota exhausted",
+		};
+		root._providerQuotaFailure = failure;
+		root._appendProviderQuotaNotice(failure);
+		root._failClosedForProviderQuota(failure);
+	}
+
+	private _resetProviderQuotaCircuit(): void {
+		const root = this._familyRootSession();
+		if (!root._providerQuotaFailure) return;
+		try {
+			root.sessionManager.appendCustomEntryWithRollback(PROVIDER_QUOTA_CIRCUIT_CUSTOM_TYPE, {
+				state: "reset",
+				timestamp: Date.now(),
+			} satisfies ProviderQuotaCircuitEntry);
+		} catch {
+			// Explicit user authorization clears the live latch. Without a durable reset,
+			// a later reload remains conservatively fail-closed on the persisted trip.
+		}
+		root._providerQuotaFailure = undefined;
+	}
+
 	private _createRlmSubagentRuntimeOptions(options: {
 		id: string;
 		prompt: string;
@@ -8999,6 +9215,7 @@ export class AgentSession {
 			rlmSessionDir: options.sessionDir,
 			rlmParentNodeId: options.rlmParentNodeId,
 			rlmParentAgent: options.parentSession.sessionName ?? options.parentSession.sessionId,
+			rlmParentSession: options.parentSession,
 			sessionStartEvent: { type: "session_start", reason: "startup" },
 		});
 		if (child.sessionName !== options.sessionName) {
@@ -9599,6 +9816,7 @@ export class AgentSession {
 				`RLM recursion depth limit reached (RLM_DEPTH=${this._rlmDepth}, RLM_MAX_DEPTH=${this._rlmMaxDepth})`,
 			);
 		}
+		this._assertProviderQuotaCircuitClosed();
 		if (requestedSessionName) {
 			if (this._pendingRlmSubagentSessionNames.has(requestedSessionName)) {
 				throw new Error(formatAgentSessionNameUnavailable(requestedSessionName, this._rlmDepth + 1));
@@ -9618,6 +9836,7 @@ export class AgentSession {
 		const childNodeId = basename(childSessionDir);
 		const sessionName = requestedSessionName ?? createDefaultRlmSubagentSessionName(prompt, childNodeId);
 		if (!requestedSessionName) await this._assertRlmSubagentSessionNameAvailable(sessionName);
+		this._assertProviderQuotaCircuitClosed();
 		const startedAt = Date.now();
 		const parentAssistantForUsage = this._findLastAssistantMessage();
 		const label = rlmChildLabel(prompt);
@@ -9963,11 +10182,21 @@ export class AgentSession {
 			return false;
 		}
 
+		if (this._isProviderQuotaExhausted(message)) {
+			return false;
+		}
+
 		if (this._isStructuredPermanentProviderRetryExhausted(message)) {
 			return false;
 		}
 
 		return true;
+	}
+
+	private _isProviderQuotaExhausted(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error") return false;
+		if (this._getProviderStreamFailureKind(message) === "quota") return true;
+		return isQuotaExhaustionMessage(message.errorMessage ?? "");
 	}
 
 	private _isFauxProviderQueueExhausted(message: AssistantMessage): boolean {
