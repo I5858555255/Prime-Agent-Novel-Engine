@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Added Chutes as a built-in API-key provider (OpenAI-compatible endpoint at `https://llm.chutes.ai/v1`) with the 11 tool-capable models from the models.dev catalog, resolved via `CHUTES_API_KEY` / the `chutes` auth.json key.
+- Added "Sign in with Chutes" OAuth (authorization code + PKCE S256) for the `chutes` provider, so users can log in with their Chutes account instead of pasting an API key. The token carries the `chutes:invoke` scope and is accepted verbatim by `https://llm.chutes.ai/v1`, so inference is served and billed by the signed-in user's own Chutes account.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
