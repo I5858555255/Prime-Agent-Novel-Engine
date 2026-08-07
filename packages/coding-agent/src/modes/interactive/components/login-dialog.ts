@@ -4,7 +4,6 @@ import {
 	type Component,
 	Container,
 	type Focusable,
-	getCapabilities,
 	getKeybindings,
 	Spacer,
 	Text,
@@ -72,6 +71,9 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private inputVisible = false;
 	private continueResolver?: () => void;
 	private continueRejecter?: (error: Error) => void;
+	// Set while the sign-in URL is on screen; enables the "c copy link" action.
+	private authUrl?: string;
+	private authHint?: Text;
 
 	// Focusable implementation - propagate to input for IME cursor positioning
 	private _focused = false;
@@ -147,9 +149,17 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.addMutedText("The sign-in page should already be opening. If it did not open, use the link below.");
 		this.contentContainer.addChild(new Spacer(1));
 		this.addLabel("Sign-in link");
-		const linkedUrl = getCapabilities().hyperlinks ? `\x1b]8;;${url}\x07${url}\x1b]8;;\x07` : url;
+		// Always emit OSC 8, bypassing the conservative capability gate: here the
+		// visible label IS the URL, so terminals without OSC 8 support degrade to
+		// plain text (the gate exists for labeled links whose URL would vanish).
+		// On headless SSH this lets a modern local terminal ctrl+click the link
+		// even when TERM detection can't identify it; the browser then opens
+		// locally and the "paste the redirect URL" fallback completes the flow.
+		const linkedUrl = `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("text", linkedUrl), 0, 0));
-		this.contentContainer.addChild(new Text(theme.fg("muted", keyHint("tui.select.cancel", "cancel")), 0, 0));
+		this.authUrl = url;
+		this.authHint = new Text(theme.fg("muted", `c copy link  ${keyHint("tui.select.cancel", "cancel")}`), 0, 0);
+		this.contentContainer.addChild(this.authHint);
 
 		if (instructions) {
 			this.contentContainer.addChild(new Spacer(1));
@@ -181,6 +191,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.addMutedText(prompt);
 		this.contentContainer.addChild(this.input);
 		this.inputVisible = true;
+		// With the paste field shown, "c" types into it instead of copying.
+		this.authHint?.setText(theme.fg("muted", keyHint("tui.select.cancel", "cancel")));
 		this.contentContainer.addChild(new Text(theme.fg("muted", keyHint("tui.select.cancel", "cancel")), 0, 0));
 		this.tui.requestRender();
 
@@ -209,6 +221,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 		}
 		this.contentContainer.addChild(this.input);
 		this.inputVisible = true;
+		// With the paste field shown, "c" types into it instead of copying.
+		this.authHint?.setText(theme.fg("muted", keyHint("tui.select.cancel", "cancel")));
 		this.contentContainer.addChild(
 			new Text(
 				theme.fg("muted", `${keyHint("tui.select.confirm", "submit")}  ${keyHint("tui.select.cancel", "cancel")}`),
@@ -283,8 +297,10 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 	private startContent(): void {
 		this.contentContainer.clear();
-		// The cleared panel no longer shows the paste field.
+		// The cleared panel no longer shows the paste field or the sign-in link.
 		this.inputVisible = false;
+		this.authUrl = undefined;
+		this.authHint = undefined;
 		if (this.isPrimeInference) {
 			this.contentContainer.addChild(new PrimeLoginHeader());
 			this.contentContainer.addChild(new Spacer(1));
@@ -341,6 +357,23 @@ export class LoginDialogComponent extends Container implements Focusable {
 			this.continueResolver = undefined;
 			this.continueRejecter = undefined;
 			resolve();
+			return;
+		}
+
+		// Copy the sign-in URL to the local terminal's clipboard (OSC 52 reaches
+		// through SSH), so headless users don't have to select a hard-wrapped URL.
+		// Only while no paste field is shown — device codes may contain "c".
+		if (!this.inputVisible && this.authUrl && (data === "c" || data === "C")) {
+			this.tui.copyToClipboard(this.authUrl);
+			// Neutral wording: in the app the copy goes through the host onCopy hook
+			// (native clipboard); OSC 52 is only the library fallback.
+			this.authHint?.setText(
+				theme.fg(
+					"muted",
+					`Copied link — if pasting shows nothing, your terminal may have blocked the copy (tmux: set-clipboard on).  ${keyHint("tui.select.cancel", "cancel")}`,
+				),
+			);
+			this.tui.requestRender();
 			return;
 		}
 

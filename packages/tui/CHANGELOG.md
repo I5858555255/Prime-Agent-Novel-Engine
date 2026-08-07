@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added a public `TUI.copyToClipboard(text)` method that routes through the host `onCopy` hook when set and falls back to an OSC 52 clipboard write (previously this fallback was only reachable from fullscreen mouse selection).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

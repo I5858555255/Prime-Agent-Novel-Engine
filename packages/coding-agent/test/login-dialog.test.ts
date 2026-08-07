@@ -13,9 +13,10 @@ vi.mock("child_process", () => ({
 	execFile: mocks.execFile,
 }));
 
-function createFakeTui(): TUI {
+function createFakeTui(copied?: string[]): TUI {
 	return {
 		requestRender: vi.fn(),
+		copyToClipboard: (text: string) => copied?.push(text),
 	} as unknown as TUI;
 }
 
@@ -86,7 +87,9 @@ describe("LoginDialogComponent", () => {
 		expect(stripAnsi(rawOutput)).toContain(url);
 	});
 
-	it("renders plain sign-in URLs when OSC 8 hyperlinks are unsupported", () => {
+	it("renders sign-in URLs as OSC 8 hyperlinks even when capability detection says unsupported", () => {
+		// The label IS the URL, so OSC-8-ignorant terminals degrade to plain text;
+		// headless SSH sessions (unknown TERM) keep a clickable link.
 		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
 		const dialog = new LoginDialogComponent(createFakeTui(), "anthropic", () => {}, "Anthropic");
 		const url = "https://example.com/oauth?client_id=test";
@@ -94,8 +97,22 @@ describe("LoginDialogComponent", () => {
 		dialog.showAuth(url, "Complete login in your browser.");
 		const rawOutput = dialog.render(88).join("\n");
 
-		expect(rawOutput).not.toContain("\x1b]8;;");
+		expect(rawOutput).toContain(`\x1b]8;;${url}\x07`);
 		expect(stripAnsi(rawOutput)).toContain(url);
+	});
+
+	it("keeps the full URL text intact when hard-wrapped at narrow widths", () => {
+		const dialog = new LoginDialogComponent(createFakeTui(), "anthropic", () => {}, "Anthropic");
+		const url =
+			"https://example.com/oauth/authorize?client_id=abc123&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A53692%2Fcallback&scope=org%3Acreate_api_key&state=averylongstatetokenvalue";
+
+		dialog.showAuth(url);
+		const joined = dialog
+			.render(44)
+			.map((line) => stripAnsi(line).trim())
+			.join("");
+
+		expect(joined).toContain(url);
 	});
 
 	it("renders verification codes as a distinct field", () => {
@@ -175,5 +192,54 @@ describe("LoginDialogComponent", () => {
 		expect(output).toContain("Enter API key:");
 		expect(output).not.toContain("─");
 		expect(output).not.toContain("> ");
+	});
+
+	describe("copy link", () => {
+		const AUTH_URL =
+			"https://example.com/oauth?client_id=test&redirect_uri=http%3A%2F%2Flocalhost%3A53692%2Fcallback&state=xyz";
+
+		it("copies the sign-in URL on 'c' while the link is shown", () => {
+			const copied: string[] = [];
+			const dialog = new LoginDialogComponent(createFakeTui(copied), "anthropic", () => {}, "Anthropic");
+
+			dialog.showAuth(AUTH_URL);
+			dialog.handleInput("c");
+
+			expect(copied).toEqual([AUTH_URL]);
+			expect(stripAnsi(dialog.render(88).join("\n"))).toContain("Copied link");
+		});
+
+		it("shows the copy hint alongside the link", () => {
+			const dialog = new LoginDialogComponent(createFakeTui([]), "anthropic", () => {}, "Anthropic");
+
+			dialog.showAuth(AUTH_URL);
+
+			expect(stripAnsi(dialog.render(88).join("\n"))).toContain("copy link");
+		});
+
+		it("routes 'c' to the paste field while manual input is shown", async () => {
+			const copied: string[] = [];
+			const dialog = new LoginDialogComponent(createFakeTui(copied), "anthropic", () => {}, "Anthropic");
+
+			dialog.showAuth(AUTH_URL);
+			const prompt = dialog.showPrompt("Paste the authorization code:");
+			expect(stripAnsi(dialog.render(88).join("\n"))).not.toContain("copy link");
+			dialog.handleInput("c");
+			dialog.handleInput("\r");
+
+			await expect(prompt).resolves.toBe("c");
+			expect(copied).toEqual([]);
+		});
+
+		it("does not copy a stale URL after the screen is replaced", () => {
+			const copied: string[] = [];
+			const dialog = new LoginDialogComponent(createFakeTui(copied), "anthropic", () => {}, "Anthropic");
+
+			dialog.showAuth(AUTH_URL);
+			dialog.showInfo(["done"]);
+			dialog.handleInput("c");
+
+			expect(copied).toEqual([]);
+		});
 	});
 });
