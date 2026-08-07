@@ -127,6 +127,30 @@ describe("AgentSession concurrent prompt guard", () => {
 		return session;
 	}
 
+	it("awaits asynchronous dispose callbacks during graceful disposal", async () => {
+		createSession();
+		let releaseCallback: () => void = () => {};
+		const callbackGate = new Promise<void>((resolve) => {
+			releaseCallback = resolve;
+		});
+		let callbackStarted = false;
+		session.registerDisposeCallback(async () => {
+			callbackStarted = true;
+			await callbackGate;
+		});
+
+		let disposed = false;
+		const disposal = session.disposeAsync().then(() => {
+			disposed = true;
+		});
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(callbackStarted).toBe(true);
+		expect(disposed).toBe(false);
+		releaseCallback();
+		await disposal;
+		expect(disposed).toBe(true);
+	});
+
 	it("should throw when prompt() called while streaming", async () => {
 		createSession();
 

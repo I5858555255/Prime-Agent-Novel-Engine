@@ -69,7 +69,7 @@ class FakeTelemetrySink implements TelemetrySink {
 
 class FakeAgentSession {
 	private listener?: (event: AgentSessionEvent) => void;
-	private disposeCallback?: () => void;
+	private disposeCallback?: () => void | Promise<void>;
 
 	subscribe(listener: (event: AgentSessionEvent) => void): () => void {
 		this.listener = listener;
@@ -78,7 +78,7 @@ class FakeAgentSession {
 		};
 	}
 
-	registerDisposeCallback(callback: () => void): void {
+	registerDisposeCallback(callback: () => void | Promise<void>): void {
 		this.disposeCallback = callback;
 	}
 
@@ -87,7 +87,11 @@ class FakeAgentSession {
 	}
 
 	dispose(): void {
-		this.disposeCallback?.();
+		void this.disposeCallback?.();
+	}
+
+	async disposeAsync(): Promise<void> {
+		await this.disposeCallback?.();
 	}
 }
 
@@ -489,5 +493,36 @@ describe("agent telemetry aggregation", () => {
 		const runs = sink.events.filter((event) => event.name === "agent run completed");
 		expect(runs).toHaveLength(1);
 		expect(runs[0].properties).toMatchObject({ outcome: "success", retry_count: 1, model_call_count: 2 });
+	});
+
+	it("awaits the final telemetry flush during async session disposal", async () => {
+		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
+		const sink = new FakeTelemetrySink();
+		const fakeSession = new FakeAgentSession();
+		let releaseFlush: () => void = () => {};
+		const flushGate = new Promise<void>((resolve) => {
+			releaseFlush = resolve;
+		});
+		let flushStarted = false;
+		vi.spyOn(sink, "flush").mockImplementation(async () => {
+			flushStarted = true;
+			await flushGate;
+		});
+
+		installAgentTelemetry(fakeSession as unknown as AgentSession, {
+			agentDir: "/not-used",
+			settingsManager: SettingsManager.inMemory(),
+			sink,
+		});
+
+		let disposed = false;
+		const disposal = fakeSession.disposeAsync().then(() => {
+			disposed = true;
+		});
+		await vi.waitFor(() => expect(flushStarted).toBe(true));
+		expect(disposed).toBe(false);
+		releaseFlush();
+		await disposal;
+		expect(disposed).toBe(true);
 	});
 });

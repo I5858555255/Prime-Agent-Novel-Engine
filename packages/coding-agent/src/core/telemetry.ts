@@ -772,7 +772,7 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 		}
 	});
 
-	session.registerDisposeCallback(() => {
+	session.registerDisposeCallback(async () => {
 		unsubscribe();
 		finalizeRun();
 		sink.capture("agent session ended", {
@@ -792,6 +792,6 @@ export function installAgentTelemetry(session: AgentSession, options: InstallAge
 			cache_write_tokens: sessionTotals.usage.cacheWrite,
 			total_tokens: sessionTotals.usage.totalTokens,
 		});
-		void sink.flush();
+		await sink.flush();
 	});
 }
