@@ -169,6 +169,14 @@ describe("Tool Call Without Result Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.OLLAMA_API_KEY)("Ollama Cloud Provider", () => {
+		const model = getModel("ollama-cloud", "gpt-oss:120b");
+
+		it("should filter out tool calls without corresponding tool results", { retry: 3, timeout: 30000 }, async () => {
+			await testToolCallWithoutResult(model);
+		});
+	});
+
 	describe.skipIf(!hasCloudflareWorkersAICredentials())("Cloudflare Workers AI Provider", () => {
 		const model = getModel("cloudflare-workers-ai", "@cf/moonshotai/kimi-k2.6");
 

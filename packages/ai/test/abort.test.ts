@@ -129,6 +129,18 @@ describe("AI Providers Abort Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.OLLAMA_API_KEY)("Ollama Cloud Provider Abort", () => {
+		const llm = getModel("ollama-cloud", "gpt-oss:120b");
+
+		it("should abort mid-stream", { retry: 3 }, async () => {
+			await testAbortSignal(llm);
+		});
+
+		it("should handle immediate abort", { retry: 3 }, async () => {
+			await testImmediateAbort(llm);
+		});
+	});
+
 	describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Responses Provider Abort", () => {
 		const llm = getModel("openai", "gpt-5-mini");
 

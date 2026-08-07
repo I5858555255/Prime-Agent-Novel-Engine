@@ -57,6 +57,7 @@ prime-agent
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | Groq | `GROQ_API_KEY` | `groq` |
 | Cerebras | `CEREBRAS_API_KEY` | `cerebras` |
+| Ollama Cloud | `OLLAMA_API_KEY` | `ollama-cloud` |
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`) | `cloudflare-ai-gateway` |
 | Cloudflare Workers AI | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`) | `cloudflare-workers-ai` |
 | xAI | `XAI_API_KEY` | `xai` |
@@ -90,6 +91,7 @@ Store credentials in `~/.prime/agent/auth.json`:
   "google": { "type": "api_key", "key": "..." },
   "opencode": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
+  "ollama-cloud": { "type": "api_key", "key": "..." },
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },
@@ -124,6 +126,16 @@ OAuth credentials are also stored here after `/login` and managed automatically.
 Prime Inference uses the OpenAI-compatible endpoint at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or store an API key for `prime-inference` via `/login`.
 
 ## Cloud Providers
+
+### Ollama Cloud
+
+Create an API key at [ollama.com/settings/keys](https://ollama.com/settings/keys), then save it with `/login ollama-cloud` or set `OLLAMA_API_KEY`:
+
+```bash
+prime-agent --provider ollama-cloud --model gpt-oss:120b
+```
+
+Prime Agent uses Ollama's OpenAI-compatible Cloud endpoint at `https://ollama.com/v1`. Local Ollama is separate: configure `http://localhost:11434/v1` and locally installed models in [models.md](models.md).
 
 ### Azure OpenAI
 
@@ -233,7 +245,7 @@ Or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file.
 
 ## Custom Providers
 
-**Via models.json:** Add Ollama, LM Studio, vLLM, or any provider that speaks a supported API (OpenAI Completions, OpenAI Responses, Anthropic Messages, Google Generative AI). See [models.md](models.md).
+**Via models.json:** Add local Ollama, LM Studio, vLLM, or any provider that speaks a supported API (OpenAI Completions, OpenAI Responses, Anthropic Messages, Google Generative AI). See [models.md](models.md).
 
 **Via extensions:** For providers that need custom API implementations or OAuth flows, create an extension. See [custom-provider.md](custom-provider.md) and [examples/extensions/custom-provider-gitlab-duo](../examples/extensions/custom-provider-gitlab-duo/).
 

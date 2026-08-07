@@ -312,6 +312,21 @@ describe("Context overflow error handling", () => {
 	});
 
 	// =============================================================================
+	// Ollama Cloud
+	// =============================================================================
+
+	describe.skipIf(!process.env.OLLAMA_API_KEY)("Ollama Cloud", () => {
+		it("gpt-oss:120b - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("ollama-cloud", "gpt-oss:120b");
+			const result = await testContextOverflow(model, process.env.OLLAMA_API_KEY!);
+			logResult(result);
+
+			expect(result.stopReason).toBe("error");
+			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+		}, 120000);
+	});
+
+	// =============================================================================
 	// Hugging Face
 	// Uses OpenAI-compatible Inference Router
 	// =============================================================================

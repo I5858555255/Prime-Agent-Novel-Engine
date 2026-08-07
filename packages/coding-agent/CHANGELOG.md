@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Ollama Cloud API-key setup and model selection.
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes

@@ -118,6 +118,262 @@ const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
 };
+
+const OLLAMA_CLOUD_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: true,
+	maxTokensField: "max_tokens",
+	supportsStrictMode: false,
+	supportsLongCacheRetention: false,
+};
+
+const OLLAMA_CLOUD_DEEPSEEK_COMPAT: OpenAICompletionsCompat = {
+	...OLLAMA_CLOUD_COMPAT,
+	requiresReasoningContentOnAssistantMessages: true,
+	thinkingFormat: "deepseek",
+};
+
+// Seed the catalog from the authenticated Cloud model list. models.dev enriches
+// matching seed entries with published metadata when available.
+const OLLAMA_CLOUD_SEED_MODELS: Model<"openai-completions">[] = [
+	{
+		id: "nemotron-3-super",
+		name: "nemotron-3-super",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+		maxTokens: 65536,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "kimi-k3",
+		name: "kimi-k3",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1048576,
+		maxTokens: 131072,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "deepseek-v4-flash:0731",
+		name: "DeepSeek V4 Flash 0731",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1048576,
+		maxTokens: 1048576,
+		compat: OLLAMA_CLOUD_DEEPSEEK_COMPAT,
+	},
+	{
+		id: "deepseek-v4-pro",
+		name: "deepseek-v4-pro",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1048576,
+		maxTokens: 1048576,
+		compat: OLLAMA_CLOUD_DEEPSEEK_COMPAT,
+	},
+	{
+		id: "gemma4:31b",
+		name: "gemma4:31b",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+		maxTokens: 262144,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "nemotron-3-nano:30b",
+		name: "nemotron-3-nano:30b",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1048576,
+		maxTokens: 131072,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "glm-5.1",
+		name: "glm-5.1",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 202752,
+		maxTokens: 131072,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "kimi-k2.6",
+		name: "kimi-k2.6",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+		maxTokens: 262144,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "minimax-m2.7",
+		name: "minimax-m2.7",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 196608,
+		maxTokens: 196608,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "mistral-large-3:675b",
+		name: "mistral-large-3:675b",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: false,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+		maxTokens: 262144,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "deepseek-v4-flash:preview",
+		name: "DeepSeek V4 Flash Preview",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1048576,
+		maxTokens: 1048576,
+		compat: OLLAMA_CLOUD_DEEPSEEK_COMPAT,
+	},
+	{
+		id: "kimi-k2.7-code",
+		name: "kimi-k2.7-code",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+		maxTokens: 262144,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "gpt-oss:20b",
+		name: "gpt-oss:20b",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 131072,
+		maxTokens: 32768,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "qwen3.5:397b",
+		name: "qwen3.5:397b",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+		maxTokens: 65536,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "nemotron-3-ultra",
+		name: "nemotron-3-ultra",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+		maxTokens: 128000,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "minimax-m3",
+		name: "minimax-m3",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 512000,
+		maxTokens: 131072,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "glm-5.2",
+		name: "GLM-5.2",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 976000,
+		maxTokens: 131072,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+	{
+		id: "gpt-oss:120b",
+		name: "GPT-OSS 120B",
+		api: "openai-completions",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 131072,
+		maxTokens: 32768,
+		compat: OLLAMA_CLOUD_COMPAT,
+	},
+];
+const OLLAMA_CLOUD_SEED_MODEL_IDS = new Set(OLLAMA_CLOUD_SEED_MODELS.map((model) => model.id));
+
 interface PrimeInferenceCatalogEntry {
 	id: string;
 	input: number;
@@ -274,6 +530,9 @@ function isGemma4Model(modelId: string): boolean {
 }
 
 function applyThinkingLevelMetadata(model: Model<any>): void {
+	if (model.provider === "ollama-cloud" && model.reasoning) {
+		mergeThinkingLevelMap(model, { off: "none" });
+	}
 	if (
 		(model.api === "openai-responses" || model.api === "azure-openai-responses") &&
 		model.id.startsWith("gpt-5")
@@ -1130,6 +1389,34 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// Process Ollama Cloud models. The service exposes an OpenAI-compatible
+		// endpoint, but does not accept every optional OpenAI request field.
+		if (data["ollama-cloud"]?.models) {
+			for (const [modelId, model] of Object.entries(data["ollama-cloud"].models)) {
+				const m = model as ModelsDevModel;
+				if (!OLLAMA_CLOUD_SEED_MODEL_IDS.has(modelId) || m.tool_call !== true) continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "ollama-cloud",
+					baseUrl: "https://ollama.com/v1",
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+					compat: OLLAMA_CLOUD_COMPAT,
+				});
+			}
+		}
+
 		// Process zAi models
 		if (data["zai-coding-plan"]?.models) {
 			for (const [modelId, model] of Object.entries(data["zai-coding-plan"].models)) {
@@ -1556,6 +1843,10 @@ async function generateModels() {
 		(model) =>
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
 	);
+	const ollamaCloudModelIds = new Set(
+		allModels.filter((model) => model.provider === "ollama-cloud").map((model) => model.id),
+	);
+	allModels.push(...OLLAMA_CLOUD_SEED_MODELS.filter((model) => !ollamaCloudModelIds.has(model.id)));
 
 	// Fix incorrect cache pricing for Claude Opus 4.5 from models.dev
 	// models.dev has 3x the correct pricing (1.5/18.75 instead of 0.5/6.25)

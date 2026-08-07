@@ -93,6 +93,7 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 - Mistral
 - Groq
 - Cerebras
+- Ollama Cloud
 - Cloudflare AI Gateway
 - Cloudflare Workers AI
 - xAI

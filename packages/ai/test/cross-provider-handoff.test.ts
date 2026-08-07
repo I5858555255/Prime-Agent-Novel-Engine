@@ -108,6 +108,16 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	},
 	// Groq
 	{ provider: "groq", model: "openai/gpt-oss-120b", label: "groq-gpt-oss-120b" },
+	// Ollama Cloud
+	{ provider: "ollama-cloud", model: "deepseek-v4-flash:0731", label: "ollama-cloud-deepseek-v4-flash" },
+	{ provider: "ollama-cloud", model: "gemma4:31b", label: "ollama-cloud-gemma4-31b" },
+	{ provider: "ollama-cloud", model: "glm-5.2", label: "ollama-cloud-glm-5.2" },
+	{ provider: "ollama-cloud", model: "gpt-oss:120b", label: "ollama-cloud-gpt-oss-120b" },
+	{ provider: "ollama-cloud", model: "kimi-k3", label: "ollama-cloud-kimi-k3" },
+	{ provider: "ollama-cloud", model: "minimax-m3", label: "ollama-cloud-minimax-m3" },
+	{ provider: "ollama-cloud", model: "mistral-large-3:675b", label: "ollama-cloud-mistral-large-3" },
+	{ provider: "ollama-cloud", model: "nemotron-3-super", label: "ollama-cloud-nemotron-3-super" },
+	{ provider: "ollama-cloud", model: "qwen3.5:397b", label: "ollama-cloud-qwen3.5-397b" },
 	// Hugging Face
 	{ provider: "huggingface", model: "moonshotai/Kimi-K2.5", label: "huggingface-kimi-k2.5" },
 	// Kimi For Coding

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Ollama Cloud as a built-in OpenAI-compatible provider using `OLLAMA_API_KEY`.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
