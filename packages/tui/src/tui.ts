@@ -763,11 +763,10 @@ export class TUI extends Container {
 			return;
 		}
 		const base64 = Buffer.from(text, "utf8").toString("base64");
+		// Terminals cap OSC 52 payloads (~100 KB in xterm), and oversized writes
+		// can desynchronize rendering — drop the copy instead.
+		if (base64.length > 100_000) return;
 		this.terminal.write(`\x1b]52;c;${base64}\x07`);
-	}
-
-	private copySelection(text: string): void {
-		this.copyToClipboard(text);
 	}
 
 	private updateSelectionAutoScroll(viewport: FullscreenViewport, screenRow: number, screenColumn: number): void {
@@ -922,7 +921,7 @@ export class TUI extends Container {
 				} else if (!event.press && viewport.hasSelection()) {
 					this.stopSelectionAutoScroll();
 					const text = viewport.endActiveSelection();
-					if (text) this.copySelection(text);
+					if (text) this.copyToClipboard(text);
 					this.requestRender();
 				} else if (!event.press) {
 					this.stopSelectionAutoScroll();
@@ -941,7 +940,7 @@ export class TUI extends Container {
 					this.requestRender();
 				} else if (!event.press && viewport.hasSelection()) {
 					const text = viewport.endActiveSelection();
-					if (text) this.copySelection(text);
+					if (text) this.copyToClipboard(text);
 					this.requestRender();
 				} else if (!event.press) {
 					viewport.clearSelection();

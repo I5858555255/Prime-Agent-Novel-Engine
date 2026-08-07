@@ -13,9 +13,10 @@ vi.mock("child_process", () => ({
 	execFile: mocks.execFile,
 }));
 
-function createFakeTui(): TUI {
+function createFakeTui(copied?: string[]): TUI {
 	return {
 		requestRender: vi.fn(),
+		copyToClipboard: (text: string) => copied?.push(text),
 	} as unknown as TUI;
 }
 
@@ -197,26 +198,19 @@ describe("LoginDialogComponent", () => {
 		const AUTH_URL =
 			"https://example.com/oauth?client_id=test&redirect_uri=http%3A%2F%2Flocalhost%3A53692%2Fcallback&state=xyz";
 
-		function createCopyTui(copied: string[]): TUI {
-			return {
-				requestRender: vi.fn(),
-				copyToClipboard: (text: string) => copied.push(text),
-			} as unknown as TUI;
-		}
-
 		it("copies the sign-in URL on 'c' while the link is shown", () => {
 			const copied: string[] = [];
-			const dialog = new LoginDialogComponent(createCopyTui(copied), "anthropic", () => {}, "Anthropic");
+			const dialog = new LoginDialogComponent(createFakeTui(copied), "anthropic", () => {}, "Anthropic");
 
 			dialog.showAuth(AUTH_URL);
 			dialog.handleInput("c");
 
 			expect(copied).toEqual([AUTH_URL]);
-			expect(stripAnsi(dialog.render(88).join("\n"))).toContain("Copy sent via OSC 52");
+			expect(stripAnsi(dialog.render(88).join("\n"))).toContain("Copied link");
 		});
 
 		it("shows the copy hint alongside the link", () => {
-			const dialog = new LoginDialogComponent(createCopyTui([]), "anthropic", () => {}, "Anthropic");
+			const dialog = new LoginDialogComponent(createFakeTui([]), "anthropic", () => {}, "Anthropic");
 
 			dialog.showAuth(AUTH_URL);
 
@@ -225,10 +219,11 @@ describe("LoginDialogComponent", () => {
 
 		it("routes 'c' to the paste field while manual input is shown", async () => {
 			const copied: string[] = [];
-			const dialog = new LoginDialogComponent(createCopyTui(copied), "anthropic", () => {}, "Anthropic");
+			const dialog = new LoginDialogComponent(createFakeTui(copied), "anthropic", () => {}, "Anthropic");
 
 			dialog.showAuth(AUTH_URL);
 			const prompt = dialog.showPrompt("Paste the authorization code:");
+			expect(stripAnsi(dialog.render(88).join("\n"))).not.toContain("copy link");
 			dialog.handleInput("c");
 			dialog.handleInput("\r");
 
@@ -238,7 +233,7 @@ describe("LoginDialogComponent", () => {
 
 		it("does not copy a stale URL after the screen is replaced", () => {
 			const copied: string[] = [];
-			const dialog = new LoginDialogComponent(createCopyTui(copied), "anthropic", () => {}, "Anthropic");
+			const dialog = new LoginDialogComponent(createFakeTui(copied), "anthropic", () => {}, "Anthropic");
 
 			dialog.showAuth(AUTH_URL);
 			dialog.showInfo(["done"]);

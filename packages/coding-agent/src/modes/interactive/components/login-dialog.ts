@@ -191,6 +191,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.addMutedText(prompt);
 		this.contentContainer.addChild(this.input);
 		this.inputVisible = true;
+		// With the paste field shown, "c" types into it instead of copying.
+		this.authHint?.setText(theme.fg("muted", keyHint("tui.select.cancel", "cancel")));
 		this.contentContainer.addChild(new Text(theme.fg("muted", keyHint("tui.select.cancel", "cancel")), 0, 0));
 		this.tui.requestRender();
 
@@ -219,6 +221,8 @@ export class LoginDialogComponent extends Container implements Focusable {
 		}
 		this.contentContainer.addChild(this.input);
 		this.inputVisible = true;
+		// With the paste field shown, "c" types into it instead of copying.
+		this.authHint?.setText(theme.fg("muted", keyHint("tui.select.cancel", "cancel")));
 		this.contentContainer.addChild(
 			new Text(
 				theme.fg("muted", `${keyHint("tui.select.confirm", "submit")}  ${keyHint("tui.select.cancel", "cancel")}`),
@@ -361,10 +365,12 @@ export class LoginDialogComponent extends Container implements Focusable {
 		// Only while no paste field is shown — device codes may contain "c".
 		if (!this.inputVisible && this.authUrl && (data === "c" || data === "C")) {
 			this.tui.copyToClipboard(this.authUrl);
+			// Neutral wording: in the app the copy goes through the host onCopy hook
+			// (native clipboard); OSC 52 is only the library fallback.
 			this.authHint?.setText(
 				theme.fg(
 					"muted",
-					`Copy sent via OSC 52 — if pasting shows nothing, your terminal blocked it (tmux: set-clipboard on).  ${keyHint("tui.select.cancel", "cancel")}`,
+					`Copied link — if pasting shows nothing, your terminal may have blocked the copy (tmux: set-clipboard on).  ${keyHint("tui.select.cancel", "cancel")}`,
 				),
 			);
 			this.tui.requestRender();
