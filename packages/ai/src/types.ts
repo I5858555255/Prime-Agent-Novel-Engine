@@ -332,6 +332,8 @@ export interface OpenAIResponsesCompat {
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
 	supportsLongCacheRetention?: boolean;
+	/** Whether the provider accepts the `service_tier` request field. Default: true (false for GitHub Copilot). */
+	supportsServiceTier?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */
