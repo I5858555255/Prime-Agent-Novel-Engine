@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed `rlm.delete_subagent()` rejecting the handle returned by `rlm(...)`, and added matching `name`/`session_name` aliases so either spelling works on spawn handles and subagent records ([#854](https://github.com/PrimeIntellect-ai/prime-agent/pull/854) by [@sashankh](https://github.com/sashankh)).
 
 ## [0.7.0] - 2026-08-05
 
