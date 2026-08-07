@@ -2389,7 +2389,7 @@ export class AgentDaemon {
 					runtime.session.setSessionName(options.sessionName);
 				}
 				if (runtime.session.sessionFile) {
-					this.recordRlmSubagentRegistryEntry(parentState, {
+					const persisted = this.recordRlmSubagentRegistryEntry(parentState, {
 						childId: options.id,
 						sessionName: options.sessionName,
 						sessionDir: options.sessionDir,
@@ -2406,6 +2406,15 @@ export class AgentDaemon {
 						status: "running",
 						createdAt: runtime.metadata.createdAt,
 					});
+					if (!persisted) {
+						this.log(
+							`RLM subagent ${options.sessionName} (${options.id}) published without durable registry persistence; parent may not rediscover it after restart`,
+						);
+					}
+				} else {
+					this.log(
+						`RLM subagent ${options.sessionName} (${options.id}) published before its session file existed; skipping durable registry persistence`,
+					);
 				}
 				options.onSessionPublished?.(runtime.session);
 			},
