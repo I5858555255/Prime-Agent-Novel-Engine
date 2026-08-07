@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added Impossibl as a built-in provider (`IMPOSSIBL_API_KEY`), with models sourced from models.dev and Anthropic-style prompt-cache breakpoints.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

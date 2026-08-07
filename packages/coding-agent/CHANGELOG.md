@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added Impossibl as a built-in provider, configurable via `/login` or `IMPOSSIBL_API_KEY`.
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 
 ## [0.7.0] - 2026-08-05

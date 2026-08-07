@@ -46,6 +46,12 @@ interface ModelsDevModel {
 	provider?: {
 		npm?: string;
 	};
+	reasoning_options?: {
+		type: string;
+		values?: string[];
+		min?: number;
+		max?: number;
+	}[];
 }
 
 interface AiGatewayModel {
@@ -109,6 +115,59 @@ const ZAI_THINKING_COMPAT: OpenAICompletionsCompat = {
 	supportsReasoningEffort: false,
 	thinkingFormat: "zai",
 };
+
+const IMPOSSIBL_BASE_URL = "https://api.impossibl.com/v1";
+const IMPOSSIBL_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: false,
+	supportsDeveloperRole: true,
+	supportsReasoningEffort: true,
+	maxTokensField: "max_tokens",
+	supportsStrictMode: false,
+	// Anthropic-style cache_control breakpoints are accepted on message content;
+	// markers on tool definitions and cache_control.ttl are ignored upstream.
+	cacheControlFormat: "anthropic",
+	supportsLongCacheRetention: false,
+};
+
+/**
+ * Derive a thinking-level map from the models.dev `reasoning_options` declaration
+ * for an Impossibl route. The gateway normalizes `reasoning_effort` per model, so
+ * the declared effort values are the wire values; levels a route does not declare
+ * are marked unsupported. Routes declaring only `budget_tokens` or `toggle`
+ * options keep pi's default ladder (the gateway maps effort onto them), and an
+ * empty declaration means reasoning happens but exposes no client control.
+ */
+function impossiblThinkingLevelMap(
+	m: ModelsDevModel,
+): NonNullable<Model<any>["thinkingLevelMap"]> | undefined {
+	const options = m.reasoning_options;
+	if (options === undefined) return undefined;
+
+	const effort = options.find((o) => o.type === "effort");
+	const budget = options.find((o) => o.type === "budget_tokens");
+	const hasToggle = options.some((o) => o.type === "toggle");
+
+	if (effort?.values) {
+		const values = new Set(effort.values);
+		const map: NonNullable<Model<any>["thinkingLevelMap"]> = {};
+		if (values.has("none")) {
+			map.off = "none";
+		} else if (!hasToggle && !budget) {
+			map.off = null;
+		}
+		for (const level of ["minimal", "low", "medium", "high"] as const) {
+			if (!values.has(level)) map[level] = null;
+		}
+		if (values.has("xhigh")) map.xhigh = "xhigh";
+		if (values.has("max")) map.max = "max";
+		return map;
+	}
+	if (budget) {
+		return !hasToggle && (budget.min ?? 0) > 0 ? { off: null } : undefined;
+	}
+	if (hasToggle) return undefined;
+	return { minimal: null, low: null, medium: null, high: null };
+}
 
 const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
 const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
@@ -274,6 +333,11 @@ function isGemma4Model(modelId: string): boolean {
 }
 
 function applyThinkingLevelMetadata(model: Model<any>): void {
+	// Impossibl thinking-level maps are derived from that route's models.dev
+	// reasoning_options declaration (see impossiblThinkingLevelMap). The gateway
+	// normalizes reasoning_effort itself, so the per-family heuristics below —
+	// which assume each provider's native wire values — do not apply.
+	if (model.provider === "impossibl") return;
 	if (
 		(model.api === "openai-responses" || model.api === "azure-openai-responses") &&
 		model.id.startsWith("gpt-5")
@@ -1217,6 +1281,35 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// Process Impossibl models
+		if (data.impossibl?.models) {
+			for (const [modelId, model] of Object.entries(data.impossibl.models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				const thinkingLevelMap = m.reasoning === true ? impossiblThinkingLevelMap(m) : undefined;
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "impossibl",
+					baseUrl: IMPOSSIBL_BASE_URL,
+					reasoning: m.reasoning === true,
+					...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					compat: { ...IMPOSSIBL_COMPAT },
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+				});
+			}
+		}
+
 		// Process Fireworks models
 		if (data["fireworks-ai"]?.models) {
 			for (const [modelId, model] of Object.entries(data["fireworks-ai"].models)) {
@@ -1879,6 +1972,10 @@ async function generateModels() {
 	allModels.push(...deepseekV4Models);
 
 	for (const candidate of allModels) {
+		// Impossibl normalizes DeepSeek routes to plain OpenAI-compatible semantics
+		// (no native thinking params); its reasoning support comes from the models.dev
+		// reasoning_options declaration instead (see impossiblThinkingLevelMap).
+		if (candidate.provider === "impossibl") continue;
 		if (candidate.api === "openai-completions" && candidate.id.includes("deepseek-v4")) {
 			candidate.compat = {
 				...candidate.compat,
