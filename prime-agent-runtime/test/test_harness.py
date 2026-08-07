@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from rlm import harness as package_harness
 from rlm import rlm as callable_rlm
@@ -133,6 +134,27 @@ class HarnessStateTest(unittest.TestCase):
             self.assertIn("await rlm.list_subagents()", overview)
             self.assertIn("receiver_role='child'", overview)
             self.assertIn("refinements: 1", reloaded.overview())
+
+    def test_interrupted_save_preserves_last_valid_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            state = HarnessState(state_path)
+            state.create_memory("Existing", "Must survive a failed save.", id="existing")
+            original = state_path.read_bytes()
+
+            def interrupted_dump(data, file, **kwargs):
+                file.write('{"schema":')
+                file.flush()
+                raise OSError("simulated interrupted write")
+
+            with patch.object(json, "dump", side_effect=interrupted_dump):
+                with self.assertRaisesRegex(OSError, "simulated interrupted write"):
+                    state.create_memory("New", "Must not replace valid state.", id="new")
+
+            self.assertEqual(state_path.read_bytes(), original)
+            reloaded = HarnessState(state_path)
+            self.assertEqual(reloaded.get("memory", "existing").content, "Must survive a failed save.")
+            self.assertIsNone(reloaded.get("memory", "new"))
 
     def test_load_ignores_unknown_json_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

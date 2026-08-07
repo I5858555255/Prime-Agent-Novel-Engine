@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -294,8 +295,25 @@ class HarnessState:
             },
             "refinements": [asdict(event) for event in self.refinements],
         }
-        with self.file_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        existing_mode = self.file_path.stat().st_mode & 0o777 if self.file_path.exists() else None
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self.file_path.parent,
+                prefix=f".{self.file_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                temp_path = Path(f.name)
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            if existing_mode is not None:
+                temp_path.chmod(existing_mode)
+            os.replace(temp_path, self.file_path)
+        finally:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink()
         self._loaded_mtime = self._disk_mtime()
         return self
 
