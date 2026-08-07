@@ -1,6 +1,15 @@
 import { parse as partialParse } from "partial-json";
 
-const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+const VALID_JSON_ESCAPES: Record<string, true> = {
+	'"': true,
+	"\\": true,
+	"/": true,
+	b: true,
+	f: true,
+	n: true,
+	r: true,
+	t: true,
+};
 
 function isControlCharacter(char: string): boolean {
 	const codePoint = char.codePointAt(0);
@@ -66,7 +75,7 @@ export function repairJson(json: string): string {
 				}
 			}
 
-			if (VALID_JSON_ESCAPES.has(nextChar)) {
+			if (VALID_JSON_ESCAPES[nextChar]) {
 				repaired += `\\${nextChar}`;
 				index += 1;
 				continue;

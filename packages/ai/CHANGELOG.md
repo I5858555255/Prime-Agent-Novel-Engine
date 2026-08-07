@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed malformed Unicode escape prefixes causing streamed tool-call arguments such as Windows paths to be discarded.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05
