@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Added OpenRouter session grouping and sticky routing through each request's opaque Prime session identifier.
+- Added an optional stateless OpenRouter Responses transport with a pre-stream Chat Completions fallback.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

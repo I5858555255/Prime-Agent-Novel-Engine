@@ -184,6 +184,16 @@ describe("SettingsManager", () => {
 			expect(manager.getDefaultModel()).toBe("claude-sonnet");
 		});
 
+		it("reads the OpenRouter transport setting from disk on each request", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ openRouter: { responses: false } }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getOpenRouterResponses()).toBe(false);
+			writeFileSync(settingsPath, JSON.stringify({ openRouter: { responses: true } }));
+			expect(manager.getOpenRouterResponses()).toBe(true);
+		});
+
 		it("should keep previous settings when file is invalid", async () => {
 			const settingsPath = join(agentDir, "settings.json");
 			writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));
@@ -194,6 +204,13 @@ describe("SettingsManager", () => {
 			await manager.reload();
 
 			expect(manager.getTheme()).toBe("dark");
+		});
+	});
+
+	describe("OpenRouter Responses transport", () => {
+		it("defaults to Chat Completions and accepts an explicit opt-in", () => {
+			expect(SettingsManager.inMemory().getOpenRouterResponses()).toBe(false);
+			expect(SettingsManager.inMemory({ openRouter: { responses: true } }).getOpenRouterResponses()).toBe(true);
 		});
 	});
 
