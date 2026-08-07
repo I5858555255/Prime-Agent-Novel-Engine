@@ -26,12 +26,17 @@ interface AuthServerMetadata {
 	scopes_supported?: string[];
 }
 
+/** Protected-resource metadata (RFC 9728). The resource names its authorization servers. */
+interface ProtectedResourceMetadata {
+	authorization_servers?: string[];
+}
+
 export interface McpOAuthConfig {
 	/** MCP server name; provider id becomes `mcp:<server>`. */
 	server: string;
 	/** Human label for UI. */
 	label?: string;
-	/** The MCP endpoint URL — discovery is rooted at its origin. */
+	/** The MCP endpoint URL — discovery starts from its protected-resource metadata. */
 	url: string;
 	/** Pre-registered client id (servers without DCR, e.g. Slack). */
 	clientId?: string;
@@ -47,10 +52,19 @@ interface McpCredentials extends OAuthCredentials {
 
 async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
 	const res = await fetch(url, init);
+	const body = await res.text();
 	if (!res.ok) {
-		throw new Error(`${init?.method ?? "GET"} ${url} failed: ${res.status} ${await res.text()}`);
+		throw new Error(`${init?.method ?? "GET"} ${url} failed: ${res.status} ${body}`);
 	}
-	return res.json();
+	try {
+		return JSON.parse(body);
+	} catch {
+		// A sign-in page served at a well-known URI is a different failure from a 404,
+		// and saying so is the difference between a fixable report and "could not discover".
+		throw new Error(
+			`${init?.method ?? "GET"} ${url} returned non-JSON (content-type ${res.headers.get("content-type") ?? "unset"})`,
+		);
+	}
 }
 
 /** Random, URL-safe CSRF `state` value, independent of the PKCE verifier. */
@@ -63,28 +77,76 @@ function randomState(): string {
 		.replace(/=/g, "");
 }
 
-/** Try the protected-resource and auth-server well-known docs at the URL's origin. */
+/** Path a well-known URI is suffixed with, normalized so a bare origin contributes nothing. */
+function wellKnownSuffix(url: URL): string {
+	return url.pathname.replace(/\/+$/, "");
+}
+
+/** Protected-resource metadata locations for an MCP endpoint (RFC 9728 section 3.1). */
+function protectedResourceUrls(endpoint: URL): string[] {
+	const base = `${endpoint.origin}/.well-known/oauth-protected-resource`;
+	const suffix = wellKnownSuffix(endpoint);
+	return suffix ? [`${base}${suffix}`, base] : [base];
+}
+
+/**
+ * Authorization-server metadata locations for an issuer. RFC 8414 inserts the well-known
+ * segment between host and path; OpenID Connect Discovery appends it to the issuer instead.
+ */
+function authServerUrls(issuer: string): string[] {
+	let url: URL;
+	try {
+		url = new URL(issuer);
+	} catch {
+		return [];
+	}
+	const oauth = `${url.origin}/.well-known/oauth-authorization-server`;
+	const oidc = `${url.origin}/.well-known/openid-configuration`;
+	const suffix = wellKnownSuffix(url);
+	if (!suffix) return [oauth, oidc];
+	return [`${oauth}${suffix}`, `${oidc}${suffix}`, `${url.origin}${suffix}/.well-known/openid-configuration`];
+}
+
+/**
+ * Resolve the authorization server for an MCP endpoint. The endpoint's protected-resource
+ * document is authoritative and routinely names a different host, so it is consulted first;
+ * the endpoint's own origin remains the fallback for servers that publish no such document.
+ */
 async function discover(url: string): Promise<AuthServerMetadata> {
-	const origin = new URL(url).origin;
-	const candidates = [
-		`${origin}/.well-known/oauth-authorization-server`,
-		`${origin}/.well-known/openid-configuration`,
-	];
-	let lastError: unknown;
-	for (const candidate of candidates) {
+	const endpoint = new URL(url);
+	const failures: string[] = [];
+	const attempt = async <T>(candidate: string): Promise<T | undefined> => {
 		try {
-			const meta = (await fetchJson(candidate)) as AuthServerMetadata;
-			if (meta.authorization_endpoint && meta.token_endpoint) {
-				return meta;
-			}
+			return (await fetchJson(candidate)) as T;
 		} catch (error) {
-			lastError = error;
+			failures.push(`${candidate} (${error instanceof Error ? error.message : String(error)})`);
+			return undefined;
+		}
+	};
+
+	const issuers: string[] = [];
+	for (const candidate of protectedResourceUrls(endpoint)) {
+		const meta = await attempt<ProtectedResourceMetadata>(candidate);
+		// The document is server-controlled, so a malformed field must not cost us the origin fallback.
+		const listed = meta?.authorization_servers;
+		const advertised = Array.isArray(listed) ? listed.filter((issuer) => typeof issuer === "string" && issuer) : [];
+		if (advertised.length) {
+			issuers.push(...advertised);
+			break;
 		}
 	}
-	throw new Error(
-		`Could not discover OAuth metadata for ${origin}. ` +
-			`Tried ${candidates.join(", ")}. Last error: ${String(lastError)}`,
-	);
+
+	const seen = new Set<string>();
+	for (const candidate of [...issuers.flatMap(authServerUrls), ...authServerUrls(endpoint.origin)]) {
+		if (seen.has(candidate)) continue;
+		seen.add(candidate);
+		const meta = await attempt<AuthServerMetadata>(candidate);
+		if (!meta) continue;
+		if (meta.authorization_endpoint && meta.token_endpoint) return meta;
+		failures.push(`${candidate} (no authorization_endpoint or token_endpoint)`);
+	}
+
+	throw new Error(`Could not discover OAuth metadata for ${endpoint.origin}. Tried ${failures.join("; ")}`);
 }
 
 /** Dynamic client registration (RFC 7591). Returns the issued client_id. */
