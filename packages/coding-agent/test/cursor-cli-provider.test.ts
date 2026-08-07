@@ -244,7 +244,28 @@ describe("Cursor CLI provider", () => {
 			],
 			tools: [{ name: "ipython", description: "Run Python", parameters: Type.Object({ code: Type.String() }) }],
 		};
-		const { events, message } = await collectStream(streamCursorCli(model!, context, { reasoning: "medium" }));
+		let hookCalls = 0;
+		const { events, message } = await collectStream(
+			streamCursorCli(model!, context, {
+				reasoning: "medium",
+				onPayload: (payload) => {
+					hookCalls++;
+					const cursorPayload = payload as {
+						sessionId: string;
+						prompt: Array<{ type: string; text?: string; [key: string]: unknown }>;
+					};
+					return {
+						...cursorPayload,
+						prompt: cursorPayload.prompt.map((block, index) =>
+							index === 0 && block.type === "text"
+								? { ...block, text: `${block.text ?? ""}\nprovider-hook-applied` }
+								: block,
+						),
+					};
+				},
+			}),
+		);
+		expect(hookCalls).toBe(1);
 		expect(message.stopReason).toBe("toolUse");
 		expect(message.content.map((block) => block.type)).toEqual(["text", "toolCall"]);
 		expect(events.map((event) => event.type)).toEqual([
@@ -278,6 +299,7 @@ describe("Cursor CLI provider", () => {
 		expect(prompt).not.toContain("thoughtSignature");
 		expect(prompt).not.toContain("partial");
 		expect(prompt).toContain("No result provided");
+		expect(prompt).toContain("provider-hook-applied");
 		expect(log[0]?.cwd).toMatch(/prime-agent-cursor-/);
 		expect(existsSync(log[0]?.cwd ?? "")).toBe(false);
 	});

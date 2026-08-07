@@ -177,6 +177,18 @@ interface SerializedContext {
 	images: ImageContent[];
 }
 
+interface CursorPromptPayload {
+	sessionId: string;
+	prompt: acp.ContentBlock[];
+}
+
+function parseCursorPromptPayload(value: unknown, sessionId: string): CursorPromptPayload {
+	if (!isRecord(value) || value.sessionId !== sessionId || !Array.isArray(value.prompt)) {
+		throw new Error("before_provider_request returned an invalid Cursor ACP prompt payload");
+	}
+	return { sessionId, prompt: value.prompt as acp.ContentBlock[] };
+}
+
 function serializeContent(
 	content: string | Array<TextContent | ThinkingContent | ToolCall | ImageContent>,
 	images: ImageContent[],
@@ -662,15 +674,20 @@ async function runCursor(
 				const configOptions = session.newSessionResponse.configOptions ?? [];
 				await configureCursorSession(ctx, session.sessionId, configOptions, model, options, requestSignal);
 				const serialized = serializeContext(context);
-				const prompt: acp.ContentBlock[] = [
-					{ type: "text", text: serialized.text },
-					...serialized.images.map((image) => ({
-						type: "image" as const,
-						mimeType: image.mimeType,
-						data: image.data,
-					})),
-				];
-				void session.prompt(prompt, requestOptions);
+				let promptPayload: CursorPromptPayload = {
+					sessionId: session.sessionId,
+					prompt: [
+						{ type: "text", text: serialized.text },
+						...serialized.images.map((image) => ({
+							type: "image" as const,
+							mimeType: image.mimeType,
+							data: image.data,
+						})),
+					],
+				};
+				const nextPromptPayload = await options?.onPayload?.(promptPayload, model);
+				promptPayload = parseCursorPromptPayload(nextPromptPayload ?? promptPayload, session.sessionId);
+				void session.prompt(promptPayload.prompt, requestOptions);
 				let output = "";
 				for (;;) {
 					const update = await session.nextUpdate();
