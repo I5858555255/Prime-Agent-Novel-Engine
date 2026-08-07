@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added OpenRouter session grouping and sticky routing through each request's opaque Prime session identifier.
+
 ## [0.7.0] - 2026-08-05
 
 ## [0.6.1] - 2026-08-05

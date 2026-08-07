@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added OpenRouter dashboard grouping and sticky routing through the existing opaque Prime session identifier.
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
 
 ## [0.7.0] - 2026-08-05
