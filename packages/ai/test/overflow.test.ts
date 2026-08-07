@@ -35,6 +35,11 @@ describe("isContextOverflow", () => {
 		expect(isContextOverflow(message, 32768)).toBe(true);
 	});
 
+	it("detects explicit Nebius input-length errors", () => {
+		const message = createErrorMessage("400 Input length (161637) exceeds model's maximum context length (131072).");
+		expect(isContextOverflow(message, 128000)).toBe(true);
+	});
+
 	it("does not treat generic non-overflow Ollama errors as overflow", () => {
 		const message = createErrorMessage("500 `model runner crashed unexpectedly`");
 		expect(isContextOverflow(message, 32768)).toBe(false);

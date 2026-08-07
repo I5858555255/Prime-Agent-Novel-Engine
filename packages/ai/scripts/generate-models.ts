@@ -110,6 +110,22 @@ const ZAI_THINKING_COMPAT: OpenAICompletionsCompat = {
 	thinkingFormat: "zai",
 };
 
+const NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1";
+// Nebius /v1/models?verbose=true reports Kimi K3 as text+image while models.dev currently marks it text-only.
+const NEBIUS_MULTIMODAL_MODEL_OVERRIDES = new Set(["moonshotai/Kimi-K3"]);
+// https://api.tokenfactory.nebius.com/openapi.json
+// ChatCompletionRequest supports store, max_tokens, reasoning_effort, stream usage, and strict tools;
+// ChatMessageRole omits developer, and Chat Completions does not expose OpenAI's 24h cache controls.
+const NEBIUS_COMPAT: OpenAICompletionsCompat = {
+	supportsStore: true,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: true,
+	supportsUsageInStreaming: true,
+	maxTokensField: "max_tokens",
+	supportsStrictMode: true,
+	supportsLongCacheRetention: false,
+};
+
 const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
 const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
@@ -1214,6 +1230,46 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
 				});
+			}
+		}
+
+		// Process Nebius Token Factory models
+		if (data.nebius?.models) {
+			for (const [modelId, model] of Object.entries(data.nebius.models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				const isDeepSeekV4 = modelId.toLowerCase().includes("deepseek-v4");
+				const contextWindow = m.limit?.context || 4096;
+				const nebiusModel: Model<"openai-completions"> = {
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-completions",
+					provider: "nebius",
+					baseUrl: NEBIUS_BASE_URL,
+					reasoning: m.reasoning === true,
+					input:
+						m.modalities?.input?.includes("image") || NEBIUS_MULTIMODAL_MODEL_OVERRIDES.has(modelId)
+							? ["text", "image"]
+							: ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					compat: {
+						...NEBIUS_COMPAT,
+						...(isDeepSeekV4 ? DEEPSEEK_V4_COMPAT : {}),
+					},
+					contextWindow,
+					maxTokens: Math.min(m.limit?.output || 4096, contextWindow),
+				};
+
+				if (isDeepSeekV4) {
+					mergeThinkingLevelMap(nebiusModel, DEEPSEEK_V4_THINKING_LEVEL_MAP);
+				}
+				models.push(nebiusModel);
 			}
 		}
 

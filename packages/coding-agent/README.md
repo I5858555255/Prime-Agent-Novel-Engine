@@ -102,6 +102,7 @@ For each built-in provider, Prime Agent maintains a list of tool-capable models,
 - OpenCode Zen
 - OpenCode Go
 - Hugging Face
+- Nebius Token Factory
 - Fireworks
 - Kimi For Coding
 - MiniMax
@@ -677,6 +678,7 @@ prime-agent --thinking high "Solve this complex problem"
 | `PRIME_AGENT_DOWNLOAD_BASE_URL` | Override the Prime Agent release manifest and tarball base URL |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
 | `PRIME_API_KEY` | Prime Inference API key; also used for trace sharing if it has `agent_traces` scope |
+| `NEBIUS_API_KEY` | Nebius Token Factory API key |
 | `PRIME_AGENT_TRACES_API_KEY` | Prime API key used only for opt-in trace sharing |
 | `PRIME_AGENT_TRACES_BASE_URL` | Override the Prime Agent trace upload API base URL |
 | `PRIME_AGENT_KERNEL_PYTHON` | Use an existing Python environment with `ipykernel` instead of auto-bootstrapping `~/.prime/agent/kernel-venv` |

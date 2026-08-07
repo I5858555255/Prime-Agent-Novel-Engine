@@ -191,6 +191,18 @@ describe("AI Providers Abort Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory Provider Abort", () => {
+		const llm = getModel("nebius", "moonshotai/Kimi-K2.7-Code");
+
+		it("should abort mid-stream", { retry: 3 }, async () => {
+			await testAbortSignal(llm);
+		});
+
+		it("should handle immediate abort", { retry: 3 }, async () => {
+			await testImmediateAbort(llm);
+		});
+	});
+
 	describe.skipIf(!process.env.XIAOMI_API_KEY)("Xiaomi MiMo (API billing) Provider Abort", () => {
 		const llm = getModel("xiaomi", "mimo-v2.5-pro");
 

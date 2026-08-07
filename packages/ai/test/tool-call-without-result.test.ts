@@ -193,6 +193,14 @@ describe("Tool Call Without Result Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.NEBIUS_API_KEY)("Nebius Token Factory Provider", () => {
+		const model = getModel("nebius", "moonshotai/Kimi-K2.7-Code");
+
+		it("should filter out tool calls without corresponding tool results", { retry: 3, timeout: 30000 }, async () => {
+			await testToolCallWithoutResult(model);
+		});
+	});
+
 	describe.skipIf(!process.env.ZAI_API_KEY)("zAI Provider", () => {
 		const model = getZaiTestModel({ toolStream: true });
 

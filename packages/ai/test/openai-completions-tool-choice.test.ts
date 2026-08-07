@@ -156,6 +156,85 @@ describe("openai-completions tool_choice", () => {
 		expect("strict" in (tool ?? {})).toBe(false);
 	});
 
+	it("uses Nebius Token Factory's documented chat-completions request shape", async () => {
+		const model = getModel("nebius", "moonshotai/Kimi-K2.7-Code")!;
+		const tools: Tool[] = [
+			{
+				name: "ping",
+				description: "Ping tool",
+				parameters: Type.Object({
+					ok: Type.Boolean(),
+				}),
+			},
+		];
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				systemPrompt: "Use tools when appropriate.",
+				messages: [{ role: "user", content: "Call ping", timestamp: Date.now() }],
+				tools,
+			},
+			{
+				apiKey: "test",
+				cacheRetention: "long",
+				sessionId: "test-session",
+				maxTokens: 17,
+				reasoning: "medium",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as {
+			store?: boolean;
+			max_tokens?: number;
+			max_completion_tokens?: number;
+			reasoning_effort?: string;
+			stream_options?: { include_usage?: boolean };
+			prompt_cache_key?: string;
+			prompt_cache_retention?: string;
+			messages?: Array<{ role?: string }>;
+			tools?: Array<{ function?: { strict?: boolean } }>;
+		};
+		expect(params).toMatchObject({
+			store: false,
+			max_tokens: 17,
+			reasoning_effort: "medium",
+			stream_options: { include_usage: true },
+		});
+		expect(params.max_completion_tokens).toBeUndefined();
+		expect(params.prompt_cache_key).toBeUndefined();
+		expect(params.prompt_cache_retention).toBeUndefined();
+		expect(params.messages?.[0]?.role).toBe("system");
+		expect(params.tools?.[0]?.function?.strict).toBe(false);
+	});
+
+	it("omits a default output budget that fills the model context window", async () => {
+		const model = getModel("nebius", "MiniMaxAI/MiniMax-M2.5-fast")!;
+		let payload: unknown;
+
+		expect(model.maxTokens).toBe(model.contextWindow);
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { max_tokens?: number };
+		expect(params.max_tokens).toBeUndefined();
+	});
+
 	it("keeps normal reasoning_effort for groq models without compat mapping", async () => {
 		const model = getModel("groq", "openai/gpt-oss-20b")!;
 		let payload: unknown;
