@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added OSC 8 hyperlink support for tmux clients that advertise the `hyperlinks` terminal feature ([#686](https://github.com/PrimeIntellect-ai/prime-agent/issues/686)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

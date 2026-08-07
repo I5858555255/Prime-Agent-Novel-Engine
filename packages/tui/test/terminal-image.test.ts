@@ -3,6 +3,10 @@
  */
 
 import assert from "node:assert";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { Image } from "../src/components/image.js";
 import {
@@ -28,6 +32,7 @@ const ENV_KEYS = [
 	"WEZTERM_PANE",
 	"ITERM_SESSION_ID",
 	"CMUX_WORKSPACE_ID",
+	"PATH",
 ] as const;
 
 function withEnv(overrides: Record<string, string | undefined>, fn: () => void): void {
@@ -197,6 +202,38 @@ describe("isImageLine", () => {
 });
 
 describe("detectCapabilities", () => {
+	function withFakeTmux(output: string, fn: () => void, exitCode = 0, delaySeconds = 0): void {
+		const directory = mkdtempSync(join(tmpdir(), "prime-agent-tmux-"));
+		const executable = join(directory, "tmux");
+		const originalPath = process.env.PATH ?? "";
+		writeFileSync(
+			executable,
+			`#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(output)}\n${
+				delaySeconds > 0 ? `sleep ${delaySeconds}` : ":"
+			}\nexit ${exitCode}\n`,
+		);
+		chmodSync(executable, 0o755);
+		try {
+			withEnv(
+				{
+					TMUX: "/tmp/tmux/default,1234,0",
+					TERM_PROGRAM: "ghostty",
+					PATH: `${directory}:${originalPath}`,
+				},
+				() => {
+					// Warm up command lookup for newly-created test executables on macOS.
+					spawnSync("tmux", ["display-message", "-p", "#{client_termfeatures}"], {
+						encoding: "utf8",
+						timeout: 250,
+					});
+					fn();
+				},
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}
+
 	it("defaults to hyperlinks: false for unknown terminals", () => {
 		withEnv({}, () => {
 			const caps = detectCapabilities();
@@ -206,11 +243,56 @@ describe("detectCapabilities", () => {
 	});
 
 	it("forces hyperlinks: false under tmux even if outer terminal supports OSC 8", () => {
-		withEnv({ TMUX: "/tmp/tmux-1000/default,1234,0", TERM_PROGRAM: "ghostty" }, () => {
+		withFakeTmux("RGB", () => {
 			const caps = detectCapabilities();
 			assert.strictEqual(caps.hyperlinks, false);
 			assert.strictEqual(caps.images, null);
 		});
+	});
+
+	it("enables hyperlinks when tmux negotiates the feature", () => {
+		withFakeTmux("RGB,hyperlinks", () => {
+			const caps = detectCapabilities();
+			assert.strictEqual(caps.hyperlinks, true);
+			assert.strictEqual(caps.images, null);
+		});
+	});
+
+	it("parses hyperlinks embedded in a tmux feature group", () => {
+		withFakeTmux("RGB:hyperlinks", () => {
+			const caps = detectCapabilities();
+			assert.strictEqual(caps.hyperlinks, true);
+		});
+	});
+
+	it("keeps hyperlinks disabled when tmux does not report support", () => {
+		withFakeTmux("RGB,256", () => {
+			const caps = detectCapabilities();
+			assert.strictEqual(caps.hyperlinks, false);
+		});
+	});
+
+	it("keeps hyperlinks disabled when the tmux probe fails", () => {
+		withFakeTmux(
+			"hyperlinks",
+			() => {
+				const caps = detectCapabilities();
+				assert.strictEqual(caps.hyperlinks, false);
+			},
+			1,
+		);
+	});
+
+	it("keeps hyperlinks disabled when the tmux probe times out", () => {
+		withFakeTmux(
+			"hyperlinks",
+			() => {
+				const caps = detectCapabilities();
+				assert.strictEqual(caps.hyperlinks, false);
+			},
+			0,
+			1,
+		);
 	});
 
 	it("forces hyperlinks: false when TERM starts with 'tmux'", () => {
