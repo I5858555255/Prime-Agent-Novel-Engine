@@ -11,6 +11,7 @@ import {
 	type DaemonCommand,
 	type DaemonResponse,
 } from "../src/modes/daemon/daemon-protocol.js";
+import { daemonSocketEndpoint } from "../src/modes/daemon/daemon-socket.js";
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
 import { MutationDrainLatch } from "../src/modes/daemon/mutation-drain-latch.js";
 import { removeTempDirSync } from "./utils/temp-fs.js";
@@ -135,7 +136,7 @@ describe("daemon supervisor side-question routing", () => {
 		let socket: Socket | undefined;
 		try {
 			await supervisor.start();
-			const connectedSocket = createConnection(socketPath);
+			const connectedSocket = createConnection(daemonSocketEndpoint(socketPath));
 			socket = connectedSocket;
 			await new Promise<void>((resolve, reject) => {
 				connectedSocket.once("connect", resolve);

@@ -1141,17 +1141,22 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 
 	it("unwinds real pre-bind and post-bind startup failures before retry", async () => {
 		const paths = await createPaths();
-		writeFileSync(paths.socketPath, "not a socket");
-		const preBindFailure = spawnFixture("supervisor", paths);
-		await waitForType(preBindFailure, "booted");
-		send(preBindFailure, "go");
-		expect(await waitForType(preBindFailure, "failed")).toMatchObject({
-			error: expect.stringContaining("is not a socket"),
-		});
-		await waitForExit(preBindFailure);
-		expect(listOwnerRecords(paths.registryDir)).toEqual([]);
-		expect(existsSync(`${paths.socketPath}.lock`)).toBe(false);
-		rmSync(paths.socketPath, { force: true });
+		// The pre-bind failure is a stale *file* sitting where the socket belongs.
+		// Windows binds a named pipe instead, which no file can occupy, so only the
+		// post-bind half of this scenario exists there.
+		if (process.platform !== "win32") {
+			writeFileSync(paths.socketPath, "not a socket");
+			const preBindFailure = spawnFixture("supervisor", paths);
+			await waitForType(preBindFailure, "booted");
+			send(preBindFailure, "go");
+			expect(await waitForType(preBindFailure, "failed")).toMatchObject({
+				error: expect.stringContaining("is not a socket"),
+			});
+			await waitForExit(preBindFailure);
+			expect(listOwnerRecords(paths.registryDir)).toEqual([]);
+			expect(existsSync(`${paths.socketPath}.lock`)).toBe(false);
+			rmSync(paths.socketPath, { force: true });
+		}
 
 		writeFileSync(getCronJobsPath(paths.agentDir), "{ malformed\n");
 		const postBindFailure = spawnFixture("supervisor", paths);
@@ -1163,7 +1168,9 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 		await waitForExit(postBindFailure);
 		expect(listOwnerRecords(paths.registryDir)).toEqual([]);
 		expect(existsSync(`${paths.socketPath}.lock`)).toBe(false);
-		expect(existsSync(paths.socketPath)).toBe(false);
+		if (process.platform !== "win32") {
+			expect(existsSync(paths.socketPath)).toBe(false);
+		}
 		const cacheRoot = join(paths.descriptorDir, "snapshot-cache");
 		expect(existsSync(cacheRoot) ? readdirSync(cacheRoot) : []).toEqual([]);
 		rmSync(getCronJobsPath(paths.agentDir), { force: true });
