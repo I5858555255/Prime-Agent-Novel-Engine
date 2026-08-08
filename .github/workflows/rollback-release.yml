@@ -1,0 +1,103 @@
+name: Rollback Prime Agent stable channel
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  authorize:
+    if: startsWith(github.event.comment.body, '/prime-agent release rollback ')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      confirmation: ${{ steps.context.outputs.confirmation }}
+      release_tag: ${{ steps.context.outputs.release_tag }}
+      source_sha: ${{ steps.context.outputs.source_sha }}
+    steps:
+      - name: Checkout protected release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Authorize rollback comment
+        id: authorization
+        env:
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq .permission)
+          case "$permission" in
+            admin|maintain) ;;
+            *) echo "Release commands require admin or maintain permission." >&2; exit 1 ;;
+          esac
+          echo "permission=$permission" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Parse and verify rollback request
+        id: context
+        env:
+          ACTOR_PERMISSION: ${{ steps.authorization.outputs.permission }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: node scripts/resolve-rollback-context.mjs
+
+  rollback:
+    needs: authorize
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: release-prime-agent
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected release tooling and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Verify rollback GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        run: |
+          node scripts/publish-release.mjs rollback-github-verify \
+            --release-tag "${{ needs.authorize.outputs.release_tag }}" \
+            --confirmation "${{ needs.authorize.outputs.confirmation }}" \
+            --source-sha "${{ needs.authorize.outputs.source_sha }}" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --artifacts-dir rollback-artifacts
+
+      - name: Promote verified stable pointers in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        run: |
+          node scripts/publish-release.mjs rollback-r2-promote \
+            --release-tag "${{ needs.authorize.outputs.release_tag }}" \
+            --confirmation "${{ needs.authorize.outputs.confirmation }}" \
+            --source-sha "${{ needs.authorize.outputs.source_sha }}" \
+            --artifacts-dir rollback-artifacts

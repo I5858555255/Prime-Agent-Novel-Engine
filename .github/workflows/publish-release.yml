@@ -1,0 +1,580 @@
+name: Publish Prime Agent release
+
+on:
+  workflow_run:
+    workflows: [Release Prime Agent]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: >-
+    ${{ github.event.workflow_run.conclusion == 'success' &&
+    github.event.workflow_run.path == '.github/workflows/build-binaries.yml' &&
+    github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+    github.event.workflow_run.head_repository.full_name == github.repository &&
+    startsWith(github.event.workflow_run.display_title, 'Prime Agent release candidate ') &&
+    'release-prime-agent' || format('rejected-release-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  authorize-publication:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.path == '.github/workflows/build-binaries.yml' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.display_title, 'Prime Agent release candidate ') &&
+      (github.event.workflow_run.event == 'workflow_run' ||
+      github.event.workflow_run.event == 'issue_comment')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      beta_version: ${{ steps.context.outputs.beta_version }}
+      build_sha: ${{ steps.context.outputs.build_sha }}
+      default_branch: ${{ steps.context.outputs.default_branch }}
+      production_version: ${{ steps.context.outputs.production_version }}
+      publish_beta: ${{ steps.context.outputs.publish_beta }}
+      publish_production: ${{ steps.context.outputs.publish_production }}
+      source_run_id: ${{ steps.context.outputs.source_run_id }}
+      tooling_sha: ${{ steps.context.outputs.tooling_sha }}
+    steps:
+      - name: Checkout protected release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: release-tooling
+          persist-credentials: false
+
+      - name: Download gated publication context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          artifact_ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" \
+            --paginate \
+            --jq '.artifacts[] | select(.name == "prime-agent-publication-context" and .expired == false) | .id')
+          test "$(printf '%s\n' "$artifact_ids" | sed '/^$/d' | wc -l | tr -d ' ')" = "1"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_ids}/zip" > /tmp/publication-context.zip
+          unzip -q /tmp/publication-context.zip -d /tmp/publication-context
+          test "$(find /tmp/publication-context -type f | wc -l | tr -d ' ')" = "1"
+          test -f /tmp/publication-context/publication-context.json
+
+      - name: Authorize completed release gate
+        id: context
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          UPSTREAM_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
+          UPSTREAM_EVENT: ${{ github.event.workflow_run.event }}
+          UPSTREAM_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          UPSTREAM_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          UPSTREAM_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id }}
+          UPSTREAM_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
+        run: >-
+          node release-tooling/scripts/release-publication-context.mjs validate
+          /tmp/publication-context/publication-context.json
+
+  production-github-prepare:
+    if: needs.authorize-publication.outputs.publish_production == 'true'
+    needs: authorize-publication
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: write
+    env:
+      BUILD_SHA: ${{ needs.authorize-publication.outputs.build_sha }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
+      PRODUCTION_VERSION: ${{ needs.authorize-publication.outputs.production_version }}
+      SOURCE_RUN_ID: ${{ needs.authorize-publication.outputs.source_run_id }}
+      TOOLING_SHA: ${{ needs.authorize-publication.outputs.tooling_sha }}
+    steps:
+      - name: Prepare production GitHub release
+        env:
+          ARTIFACT_DIRECTORY: release-artifacts/production
+          ARTIFACT_NAME: prime-agent-production-${{ env.BUILD_SHA }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          checkout_exact() {
+            directory="$1"
+            sha="$2"
+            git init --quiet "$directory"
+            git -C "$directory" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            git -C "$directory" fetch --quiet --depth=1 origin "$sha"
+            git -C "$directory" checkout --quiet --detach FETCH_HEAD
+            test "$(git -C "$directory" rev-parse HEAD)" = "$sha"
+          }
+          checkout_exact release-tooling "$TOOLING_SHA"
+          checkout_exact release-source "$BUILD_SHA"
+          mkdir -p "$ARTIFACT_DIRECTORY"
+          artifact_ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" \
+            --paginate \
+            --jq '.artifacts[] | select(.name == env.ARTIFACT_NAME and .expired == false) | .id')
+          test "$(printf '%s\n' "$artifact_ids" | sed '/^$/d' | wc -l | tr -d ' ')" = "1"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_ids}/zip" > /tmp/release-artifact.zip
+          unzip -q /tmp/release-artifact.zip -d "$ARTIFACT_DIRECTORY"
+          node release-tooling/scripts/verify-release-artifacts.mjs \
+            --channel stable \
+            --directory "$ARTIFACT_DIRECTORY" \
+            --source-sha "$BUILD_SHA" \
+            --version "$PRODUCTION_VERSION"
+          awk "/^## \[${PRODUCTION_VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" \
+            release-source/packages/coding-agent/CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "Release v${PRODUCTION_VERSION}" > /tmp/release-notes.md
+          fi
+          (
+            cd release-source
+            node ../release-tooling/scripts/publish-release.mjs production-github-prepare \
+              --artifacts-dir "../$ARTIFACT_DIRECTORY" \
+              --version "$PRODUCTION_VERSION" \
+              --build-ref "$BUILD_SHA" \
+              --source-sha "$BUILD_SHA" \
+              --notes-file /tmp/release-notes.md
+          )
+
+  production-r2-immutable:
+    if: needs.authorize-publication.outputs.publish_production == 'true'
+    needs: [authorize-publication, production-github-prepare]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+    env:
+      BUILD_SHA: ${{ needs.authorize-publication.outputs.build_sha }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
+      PRODUCTION_VERSION: ${{ needs.authorize-publication.outputs.production_version }}
+      SOURCE_RUN_ID: ${{ needs.authorize-publication.outputs.source_run_id }}
+      TOOLING_SHA: ${{ needs.authorize-publication.outputs.tooling_sha }}
+    steps:
+      - name: Checkout protected release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TOOLING_SHA }}
+          path: release-tooling
+          persist-credentials: false
+
+      - name: Checkout validated release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_SHA }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Download production artifacts
+        uses: actions/download-artifact@3e5f45b3455f8bb19e09b3fb854d966fb27682a2 # v8.0.1
+        with:
+          name: prime-agent-production-${{ env.BUILD_SHA }}
+          path: release-artifacts/production
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify production artifact provenance
+        run: >-
+          node release-tooling/scripts/verify-release-artifacts.mjs
+          --channel stable
+          --directory release-artifacts/production
+          --source-sha "$BUILD_SHA"
+          --version "$PRODUCTION_VERSION"
+
+      - name: Publish production immutable objects to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        working-directory: release-source
+        run: |
+          node ../release-tooling/scripts/publish-release.mjs production-r2-immutable \
+            --artifacts-dir ../release-artifacts/production \
+            --version "$PRODUCTION_VERSION" \
+            --build-ref "$BUILD_SHA" \
+            --source-sha "$BUILD_SHA"
+
+  production-github-assets:
+    if: needs.authorize-publication.outputs.publish_production == 'true'
+    needs: [authorize-publication, production-r2-immutable]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: write
+    env:
+      BUILD_SHA: ${{ needs.authorize-publication.outputs.build_sha }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
+      PRODUCTION_VERSION: ${{ needs.authorize-publication.outputs.production_version }}
+      SOURCE_RUN_ID: ${{ needs.authorize-publication.outputs.source_run_id }}
+      TOOLING_SHA: ${{ needs.authorize-publication.outputs.tooling_sha }}
+    steps:
+      - name: Publish production GitHub assets
+        env:
+          ARTIFACT_DIRECTORY: release-artifacts/production
+          ARTIFACT_NAME: prime-agent-production-${{ env.BUILD_SHA }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          checkout_exact() {
+            directory="$1"
+            sha="$2"
+            git init --quiet "$directory"
+            git -C "$directory" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            git -C "$directory" fetch --quiet --depth=1 origin "$sha"
+            git -C "$directory" checkout --quiet --detach FETCH_HEAD
+            test "$(git -C "$directory" rev-parse HEAD)" = "$sha"
+          }
+          checkout_exact release-tooling "$TOOLING_SHA"
+          checkout_exact release-source "$BUILD_SHA"
+          mkdir -p "$ARTIFACT_DIRECTORY"
+          artifact_ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" \
+            --paginate \
+            --jq '.artifacts[] | select(.name == env.ARTIFACT_NAME and .expired == false) | .id')
+          test "$(printf '%s\n' "$artifact_ids" | sed '/^$/d' | wc -l | tr -d ' ')" = "1"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_ids}/zip" > /tmp/release-artifact.zip
+          unzip -q /tmp/release-artifact.zip -d "$ARTIFACT_DIRECTORY"
+          node release-tooling/scripts/verify-release-artifacts.mjs \
+            --channel stable \
+            --directory "$ARTIFACT_DIRECTORY" \
+            --source-sha "$BUILD_SHA" \
+            --version "$PRODUCTION_VERSION"
+          awk "/^## \[${PRODUCTION_VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" \
+            release-source/packages/coding-agent/CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "Release v${PRODUCTION_VERSION}" > /tmp/release-notes.md
+          fi
+          (
+            cd release-source
+            node ../release-tooling/scripts/publish-release.mjs production-github-assets \
+              --artifacts-dir "../$ARTIFACT_DIRECTORY" \
+              --version "$PRODUCTION_VERSION" \
+              --build-ref "$BUILD_SHA" \
+              --source-sha "$BUILD_SHA" \
+              --notes-file /tmp/release-notes.md
+          )
+
+  production-r2-finalize:
+    if: needs.authorize-publication.outputs.publish_production == 'true'
+    needs: [authorize-publication, production-github-assets]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+    env:
+      BUILD_SHA: ${{ needs.authorize-publication.outputs.build_sha }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
+      PRODUCTION_VERSION: ${{ needs.authorize-publication.outputs.production_version }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      SOURCE_RUN_ID: ${{ needs.authorize-publication.outputs.source_run_id }}
+      TOOLING_SHA: ${{ needs.authorize-publication.outputs.tooling_sha }}
+    steps:
+      - name: Checkout protected release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TOOLING_SHA }}
+          path: release-tooling
+          persist-credentials: false
+
+      - name: Checkout validated release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_SHA }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Download production artifacts
+        uses: actions/download-artifact@3e5f45b3455f8bb19e09b3fb854d966fb27682a2 # v8.0.1
+        with:
+          name: prime-agent-production-${{ env.BUILD_SHA }}
+          path: release-artifacts/production
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify production artifact provenance
+        run: >-
+          node release-tooling/scripts/verify-release-artifacts.mjs
+          --channel stable
+          --directory release-artifacts/production
+          --source-sha "$BUILD_SHA"
+          --version "$PRODUCTION_VERSION"
+
+      - name: Prepare installers
+        working-directory: release-source
+        run: |
+          INSTALL_BASE_URL="${R2_PUBLIC_BASE_URL%/}"
+          test -n "$INSTALL_BASE_URL"
+          node ../release-tooling/scripts/render-release-installers.mjs \
+            "$INSTALL_BASE_URL" \
+            /tmp/prime-agent-install.sh \
+            /tmp/prime-agent-install-beta.sh
+
+      - name: Publish production installers to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        working-directory: release-source
+        run: |
+          node ../release-tooling/scripts/publish-release.mjs production-r2-installers \
+            --artifacts-dir ../release-artifacts/production \
+            --version "$PRODUCTION_VERSION" \
+            --build-ref "$BUILD_SHA" \
+            --source-sha "$BUILD_SHA" \
+            --stable-installer /tmp/prime-agent-install.sh \
+            --beta-installer /tmp/prime-agent-install-beta.sh
+
+      - name: Promote production channel in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        working-directory: release-source
+        run: |
+          node ../release-tooling/scripts/publish-release.mjs production-r2-promote \
+            --artifacts-dir ../release-artifacts/production \
+            --version "$PRODUCTION_VERSION" \
+            --build-ref "$BUILD_SHA" \
+            --source-sha "$BUILD_SHA"
+
+  beta-r2-immutable:
+    if: >-
+      always() && needs.authorize-publication.outputs.publish_beta == 'true' &&
+      needs.authorize-publication.result == 'success' &&
+      (needs.authorize-publication.outputs.publish_production != 'true' ||
+      needs.production-r2-finalize.result == 'success')
+    needs: [authorize-publication, production-r2-finalize]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+    env:
+      BETA_VERSION: ${{ needs.authorize-publication.outputs.beta_version }}
+      BUILD_SHA: ${{ needs.authorize-publication.outputs.build_sha }}
+      DEFAULT_BRANCH: ${{ needs.authorize-publication.outputs.default_branch }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
+      SOURCE_RUN_ID: ${{ needs.authorize-publication.outputs.source_run_id }}
+      TOOLING_SHA: ${{ needs.authorize-publication.outputs.tooling_sha }}
+    steps:
+      - name: Checkout protected release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TOOLING_SHA }}
+          path: release-tooling
+          persist-credentials: false
+
+      - name: Checkout validated release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_SHA }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Download beta artifacts
+        uses: actions/download-artifact@3e5f45b3455f8bb19e09b3fb854d966fb27682a2 # v8.0.1
+        with:
+          name: prime-agent-beta-${{ env.BUILD_SHA }}
+          path: release-artifacts/beta
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify beta artifact provenance
+        run: >-
+          node release-tooling/scripts/verify-release-artifacts.mjs
+          --channel beta
+          --directory release-artifacts/beta
+          --source-sha "$BUILD_SHA"
+          --version "$BETA_VERSION"
+
+      - name: Publish beta immutable objects to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        working-directory: release-source
+        run: |
+          node ../release-tooling/scripts/publish-release.mjs beta-r2-immutable \
+            --artifacts-dir ../release-artifacts/beta \
+            --version "$BETA_VERSION" \
+            --build-ref "$BUILD_SHA" \
+            --source-sha "$BUILD_SHA"
+
+  beta-github:
+    if: needs.authorize-publication.outputs.publish_beta == 'true'
+    needs: [authorize-publication, beta-r2-immutable]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: write
+    env:
+      BETA_VERSION: ${{ needs.authorize-publication.outputs.beta_version }}
+      BUILD_SHA: ${{ needs.authorize-publication.outputs.build_sha }}
+      DEFAULT_BRANCH: ${{ needs.authorize-publication.outputs.default_branch }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
+      SOURCE_RUN_ID: ${{ needs.authorize-publication.outputs.source_run_id }}
+      TOOLING_SHA: ${{ needs.authorize-publication.outputs.tooling_sha }}
+    steps:
+      - name: Advance beta GitHub release
+        env:
+          ARTIFACT_DIRECTORY: release-artifacts/beta
+          ARTIFACT_NAME: prime-agent-beta-${{ env.BUILD_SHA }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          checkout_exact() {
+            directory="$1"
+            sha="$2"
+            git init --quiet "$directory"
+            git -C "$directory" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            git -C "$directory" fetch --quiet --depth=1 origin "$sha"
+            git -C "$directory" checkout --quiet --detach FETCH_HEAD
+            test "$(git -C "$directory" rev-parse HEAD)" = "$sha"
+          }
+          checkout_exact release-tooling "$TOOLING_SHA"
+          checkout_exact release-source "$BUILD_SHA"
+          mkdir -p "$ARTIFACT_DIRECTORY"
+          artifact_ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" \
+            --paginate \
+            --jq '.artifacts[] | select(.name == env.ARTIFACT_NAME and .expired == false) | .id')
+          test "$(printf '%s\n' "$artifact_ids" | sed '/^$/d' | wc -l | tr -d ' ')" = "1"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_ids}/zip" > /tmp/release-artifact.zip
+          unzip -q /tmp/release-artifact.zip -d "$ARTIFACT_DIRECTORY"
+          node release-tooling/scripts/verify-release-artifacts.mjs \
+            --channel beta \
+            --directory "$ARTIFACT_DIRECTORY" \
+            --source-sha "$BUILD_SHA" \
+            --version "$BETA_VERSION"
+          (
+            cd release-source
+            node ../release-tooling/scripts/publish-release.mjs beta-github \
+              --artifacts-dir "../$ARTIFACT_DIRECTORY" \
+              --version "$BETA_VERSION" \
+              --build-ref "$BUILD_SHA" \
+              --source-sha "$BUILD_SHA" \
+              --default-branch "$DEFAULT_BRANCH"
+          )
+
+  beta-r2-finalize:
+    if: needs.authorize-publication.outputs.publish_beta == 'true'
+    needs: [authorize-publication, beta-github]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+    env:
+      BETA_VERSION: ${{ needs.authorize-publication.outputs.beta_version }}
+      BUILD_SHA: ${{ needs.authorize-publication.outputs.build_sha }}
+      DEFAULT_BRANCH: ${{ needs.authorize-publication.outputs.default_branch }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      SOURCE_RUN_ID: ${{ needs.authorize-publication.outputs.source_run_id }}
+      TOOLING_SHA: ${{ needs.authorize-publication.outputs.tooling_sha }}
+    steps:
+      - name: Checkout protected release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TOOLING_SHA }}
+          path: release-tooling
+          persist-credentials: false
+
+      - name: Checkout validated release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_SHA }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Download beta artifacts
+        uses: actions/download-artifact@3e5f45b3455f8bb19e09b3fb854d966fb27682a2 # v8.0.1
+        with:
+          name: prime-agent-beta-${{ env.BUILD_SHA }}
+          path: release-artifacts/beta
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify beta artifact provenance
+        run: >-
+          node release-tooling/scripts/verify-release-artifacts.mjs
+          --channel beta
+          --directory release-artifacts/beta
+          --source-sha "$BUILD_SHA"
+          --version "$BETA_VERSION"
+
+      - name: Prepare installers
+        working-directory: release-source
+        run: |
+          INSTALL_BASE_URL="${R2_PUBLIC_BASE_URL%/}"
+          test -n "$INSTALL_BASE_URL"
+          node ../release-tooling/scripts/render-release-installers.mjs \
+            "$INSTALL_BASE_URL" \
+            /tmp/prime-agent-install.sh \
+            /tmp/prime-agent-install-beta.sh
+
+      - name: Advance beta installers in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        working-directory: release-source
+        run: |
+          node ../release-tooling/scripts/publish-release.mjs beta-r2-installers \
+            --artifacts-dir ../release-artifacts/beta \
+            --version "$BETA_VERSION" \
+            --build-ref "$BUILD_SHA" \
+            --source-sha "$BUILD_SHA" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --stable-installer /tmp/prime-agent-install.sh \
+            --beta-installer /tmp/prime-agent-install-beta.sh
+
+      - name: Advance beta channel in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        working-directory: release-source
+        run: |
+          node ../release-tooling/scripts/publish-release.mjs beta-r2-promote \
+            --artifacts-dir ../release-artifacts/beta \
+            --version "$BETA_VERSION" \
+            --build-ref "$BUILD_SHA" \
+            --source-sha "$BUILD_SHA" \
+            --default-branch "$DEFAULT_BRANCH"
