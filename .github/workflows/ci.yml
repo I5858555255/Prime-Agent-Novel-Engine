@@ -167,7 +167,7 @@ jobs:
           uv venv $venv --python 3.11.15 --seed --relocatable
           $env:VIRTUAL_ENV = $venv
           uv sync --project prime-agent-runtime/kernel --locked --active --no-dev --no-install-project --no-build --exclude-newer $cutoff --python-platform x86_64-pc-windows-msvc
-          uv pip install --python "$venv/Scripts/python.exe" --no-build-isolation --no-deps prime-agent-runtime
+          uv pip install --python "$venv/Scripts/python.exe" --no-build-isolation --no-deps ./prime-agent-runtime
           uv pip check --python "$venv/Scripts/python.exe"
           & "$venv/Scripts/python.exe" -c "import httpx, ipykernel, lxml, numpy, pandas, pydantic, rlm, scipy"
 
