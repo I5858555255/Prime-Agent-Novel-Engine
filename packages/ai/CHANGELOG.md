@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Fixed OpenAI Responses incomplete events dropping final usage and response IDs.
+- Fixed OpenAI Responses incomplete events dropping final usage and response IDs ([#914](https://github.com/PrimeIntellect-ai/prime-agent/pull/914) by [@paulbrav](https://github.com/paulbrav)).
 
 ## [0.7.1] - 2026-08-07
 
