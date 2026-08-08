@@ -9,6 +9,7 @@ import type { ModelRegistry } from "../src/core/model-registry.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "../src/core/prime-inference-auth.js";
 import { ProviderAuthFlows, type ProviderAuthFlowsHost } from "../src/modes/interactive/auth-flows.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { setTestHomeDir } from "./utils/home-env.js";
 
 function jsonResponse(body: unknown, status: number = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -76,7 +77,7 @@ describe("ProviderAuthFlows", () => {
 	let tempDir: string;
 	let authJsonPath: string;
 	let primeConfigPath: string;
-	let originalHome: string | undefined;
+	let restoreHome: (() => void) | undefined;
 	let originalPrimeTeamId: string | undefined;
 
 	beforeAll(() => {
@@ -89,16 +90,12 @@ describe("ProviderAuthFlows", () => {
 		authJsonPath = join(tempDir, "auth.json");
 		primeConfigPath = join(tempDir, "prime-config.json");
 		writeFileSync(authJsonPath, "{}");
-		originalHome = process.env.HOME;
 		originalPrimeTeamId = process.env.PRIME_TEAM_ID;
 	});
 
 	afterEach(() => {
-		if (originalHome === undefined) {
-			delete process.env.HOME;
-		} else {
-			process.env.HOME = originalHome;
-		}
+		restoreHome?.();
+		restoreHome = undefined;
 		if (originalPrimeTeamId === undefined) {
 			delete process.env.PRIME_TEAM_ID;
 		} else {
@@ -157,7 +154,7 @@ describe("ProviderAuthFlows", () => {
 	});
 
 	it("stores a reused Prime CLI key when Prime CLI config sync is disabled", async () => {
-		process.env.HOME = tempDir;
+		restoreHome = setTestHomeDir(tempDir);
 		process.env.PRIME_TEAM_ID = "env-team";
 		const defaultPrimeDir = join(tempDir, ".prime");
 		mkdirSync(defaultPrimeDir, { recursive: true });

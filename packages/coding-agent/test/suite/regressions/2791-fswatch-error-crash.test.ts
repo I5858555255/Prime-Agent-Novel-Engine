@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../../../src/config.js";
+import { shouldUseWindowsShell } from "../../../src/utils/child-process.js";
 import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 /**
@@ -41,7 +43,9 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 	});
 
 	it("process should survive an error event on the theme FSWatcher", () => {
-		const themeModulePath = join(__dirname, "../../../src/modes/interactive/theme/theme.js").replace(/\\/g, "/");
+		// An ESM specifier must be a file:// URL; the loader rejects a bare
+		// "C:/..." path as an unsupported scheme.
+		const themeModulePath = pathToFileURL(join(__dirname, "../../../src/modes/interactive/theme/theme.js")).href;
 		const agentDir = join(tempRoot, "agent").replace(/\\/g, "/");
 
 		// Script that sets up the watcher and emits a synthetic error on it.
@@ -94,6 +98,8 @@ process.exit(0);
 				encoding: "utf-8",
 				env: { ...process.env, [ENV_AGENT_DIR]: agentDir },
 				stdio: ["pipe", "pipe", "pipe"],
+				// npx is a .cmd shim on Windows, which Node will not exec directly.
+				shell: shouldUseWindowsShell("npx"),
 			});
 			exitCode = 0;
 		} catch (err: unknown) {
