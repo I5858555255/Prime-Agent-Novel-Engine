@@ -209,8 +209,12 @@ describe("Real-process serializedRefine — JSON mode", () => {
 		expect(result).toMatchObject({ code: 0, signal: null });
 		expect(result.stderr).not.toContain("Timed out waiting for daemon");
 
-		// Daemon socket exists — the daemon path was used.
-		expect(existsSync(socketPath)).toBe(true);
+		// Daemon socket exists — the daemon path was used. Windows binds a named
+		// pipe instead, which has no filesystem presence; the worker-produced event
+		// log read below is the evidence there.
+		if (process.platform !== "win32") {
+			expect(existsSync(socketPath)).toBe(true);
+		}
 
 		// Read the event log recorded by the extension in the real worker.
 		const events = readEventLog(eventLogPath);

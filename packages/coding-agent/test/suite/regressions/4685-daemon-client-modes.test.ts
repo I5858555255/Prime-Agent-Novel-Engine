@@ -13,6 +13,7 @@ import { DaemonSupervisor } from "../../../src/modes/daemon/daemon-supervisor.js
 import { waitForHeadlessCompletion } from "../../../src/modes/headless-completion.js";
 import { RpcClient } from "../../../src/modes/rpc/rpc-client.js";
 import { createRpcExtensionUiBridge } from "../../../src/modes/rpc/rpc-extension-ui-context.js";
+import { bashCommandPath } from "../../utils/shell-command.js";
 import { removeTempDirSync } from "../../utils/temp-fs.js";
 import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "../harness.js";
 
@@ -207,7 +208,7 @@ describe("ENG-4685 daemon-backed client modes", () => {
 	});
 
 	it("runs host-owned autonomous gate retries through the shared completion loop", async () => {
-		const gate = `${process.execPath} -e "process.exit(0)"`;
+		const gate = `${bashCommandPath(process.execPath)} -e "process.exit(0)"`;
 		const harness = await createHarness({
 			autonomous: {
 				enabled: true,
@@ -285,7 +286,12 @@ describe("ENG-4685 daemon-backed client modes", () => {
 				expect(result.stdout).toContain('"command":"get_state","success":true');
 			}
 		}
-		expect(existsSync(socketPath)).toBe(true);
+		// A Unix socket leaves a file behind; Windows binds a named pipe, which has
+		// no filesystem presence. The daemon having served every client above is
+		// the real evidence it bound.
+		if (process.platform !== "win32") {
+			expect(existsSync(socketPath)).toBe(true);
+		}
 	}, 90_000);
 
 	it("keeps the rollback frontend fully off the daemon path", async () => {

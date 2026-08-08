@@ -11,20 +11,11 @@ import {
 	shouldAutonomouslyContinue,
 } from "../../src/core/autonomous.js";
 import type { AgentCronJob } from "../../src/core/cron-jobs.js";
+import { bashCommandPath, bashLiteralPath } from "../utils/shell-command.js";
 import { removeTempDirSync } from "../utils/temp-fs.js";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
 
-/**
- * Gate commands run through bash on every platform, so a native Windows path
- * has to lose its backslashes (bash reads them as escapes) and gain quotes
- * (`C:\Program Files\...` would otherwise split on the space). The same applies
- * to paths embedded in the `-e` JavaScript these gates run.
- */
-function toShellPath(nativePath: string): string {
-	return nativePath.replaceAll("\\", "/");
-}
-
-const nodeCommand = `"${toShellPath(process.execPath)}"`;
+const nodeCommand = bashCommandPath(process.execPath);
 
 function isProcessRunning(pid: number): boolean {
 	try {
@@ -362,7 +353,7 @@ describe("AgentSession autonomous mode", () => {
 		});
 		try {
 			const counter = join(tempDir, "verification", "public_feedback_scores.jsonl");
-			const gate = `${nodeCommand} -e "const fs=require('fs'); const p='${toShellPath(counter)}'; const n=fs.existsSync(p)?fs.readFileSync(p,'utf8').trim().split(/\\n/).filter(Boolean).length:0; fs.appendFileSync(p,JSON.stringify({run:n+1,score:0})+'\\n'); process.exit(1);"`;
+			const gate = `${nodeCommand} -e "const fs=require('fs'); const p='${bashLiteralPath(counter)}'; const n=fs.existsSync(p)?fs.readFileSync(p,'utf8').trim().split(/\\n/).filter(Boolean).length:0; fs.appendFileSync(p,JSON.stringify({run:n+1,score:0})+'\\n'); process.exit(1);"`;
 			const state = createAutonomousRuntimeState(
 				{ enabled: true, maxContinuations: 3, gates: { commands: [gate], maxRetries: 3 } },
 				{ cwd: tempDir },
@@ -548,7 +539,7 @@ describe("AgentSession autonomous mode", () => {
 		});
 		try {
 			const generated = join(tempDir, "generated.txt");
-			const gate = `${nodeCommand} -e "const fs=require('fs'); fs.appendFileSync('${toShellPath(generated)}', 'run\\n'); process.exit(1);"`;
+			const gate = `${nodeCommand} -e "const fs=require('fs'); fs.appendFileSync('${bashLiteralPath(generated)}', 'run\\n'); process.exit(1);"`;
 			const state = createAutonomousRuntimeState(
 				{ enabled: true, maxContinuations: 3, gates: { commands: [gate], maxRetries: 3 } },
 				{ cwd: tempDir },

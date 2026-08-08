@@ -1961,8 +1961,13 @@ describe("daemon worker supervisor monitoring", () => {
 		mutationDrain.end();
 	});
 
-	it("limits abort admission to mutation drain", async () => {
-		const root = mkdtempSync(`/tmp/prime-update-drain-${process.pid}-`);
+	// Both requests are written back-to-back and this asserts the abort lands
+	// while the drain is still open. Windows named pipes deliver them in one
+	// read, so the drain — with nothing to wait for — closes before the abort is
+	// handled and the window is not observable. The admission rule itself has no
+	// platform-specific branch and is covered by the mocked drain test above.
+	it.skipIf(process.platform === "win32")("limits abort admission to mutation drain", async () => {
+		const root = mkdtempSync(join(tmpdir(), `prime-update-drain-${process.pid}-`));
 		const socketPath = join(root, "supervisor.sock");
 		const supervisor = new DaemonSupervisor(socketPath, {
 			defaultSessionConfig: { cwd: root, agentDir: root },
