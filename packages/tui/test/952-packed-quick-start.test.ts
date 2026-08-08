@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -14,7 +14,24 @@ const tsgoCli = resolve(
 	dirname(fileURLToPath(import.meta.resolve("@typescript/native-preview/package.json"))),
 	"bin/tsgo.js",
 );
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+
+function resolveNpmCli(): string {
+	const candidates = [
+		process.env.npm_execpath,
+		resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"),
+		resolve(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
+	];
+	const npmCli = candidates.find(
+		(candidate): candidate is string =>
+			typeof candidate === "string" && [".cjs", ".js"].includes(extname(candidate)) && existsSync(candidate),
+	);
+	if (!npmCli) {
+		throw new Error(`Could not resolve npm's JavaScript CLI from ${candidates.filter(Boolean).join(", ")}`);
+	}
+	return realpathSync(npmCli);
+}
+
+const npmCli = resolveNpmCli();
 
 interface PackageManifest {
 	dependencies?: Record<string, string>;
@@ -237,8 +254,8 @@ test("issue #952: packed Quick Start compiles, renders, and stops on Ctrl+C", { 
 			packageRoot,
 		);
 		const tarballName = run(
-			npmCommand,
-			["pack", stagingDir, "--ignore-scripts", "--silent", "--pack-destination", artifactDir],
+			process.execPath,
+			[npmCli, "pack", stagingDir, "--ignore-scripts", "--silent", "--pack-destination", artifactDir],
 			repositoryRoot,
 			{ npm_config_cache: npmCacheDir },
 		)
