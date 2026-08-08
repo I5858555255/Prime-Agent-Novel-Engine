@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
@@ -10,6 +10,7 @@ import type { AgentSessionRuntime } from "../../src/core/agent-session-runtime.j
 import { PRIME_AGENT_META_NAMESPACE } from "../../src/modes/acp/acp-meta.js";
 import { runAcpModeWithConnection } from "../../src/modes/acp/index.js";
 import { InProcessAgentConnection } from "../../src/modes/agent-connection/in-process-agent-connection.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 import { createHarness, type Harness } from "./harness.js";
 
 /**
@@ -459,7 +460,7 @@ describe("ACP mode preserves prime-agent features", () => {
 		} finally {
 			if (previousAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
 			else process.env[ENV_AGENT_DIR] = previousAgentDir;
-			rmSync(agentDir, { recursive: true, force: true });
+			removeTempDirSync(agentDir);
 			harness.cleanup();
 		}
 	}, 60_000);

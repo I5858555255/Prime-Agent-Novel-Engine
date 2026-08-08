@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, existsSync, readdirSync, readFileSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { stderr, stdin } from "node:process";
@@ -9,6 +9,7 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from "../../config.js";
+import { removePath } from "../../utils/durable-fs.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 
 const BOOTSTRAP_SCHEMA = 8;
@@ -36,6 +37,7 @@ export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) =>
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
 export const DEFAULT_RLM_EXTRA_IMPORT_LABELS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.promptLabel);
 const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
+const UV_INSTALL_WINDOWS_COMMAND = "irm https://astral.sh/uv/install.ps1 | iex";
 const REQUIRED_HARNESS_METHODS = [
 	"create_memory",
 	"update_memory",
@@ -58,6 +60,23 @@ const BOOTSTRAP_LOCK_RETRY_MS = 100;
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS = 30_000;
 
 let inFlightEnsureKernelPython: { key: string; promise: Promise<string> } | null = null;
+
+export function getUvInstallCommand(platformName: NodeJS.Platform = process.platform): {
+	command: string;
+	args: string[];
+} {
+	if (platformName === "win32") {
+		return {
+			command: "powershell.exe",
+			args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", UV_INSTALL_WINDOWS_COMMAND],
+		};
+	}
+	return { command: "sh", args: ["-c", UV_INSTALL_COMMAND] };
+}
+
+function formatCommand(command: { command: string; args: readonly string[] }): string {
+	return [command.command, ...command.args].join(" ");
+}
 
 export type KernelPythonSkill = PythonSkillRuntimeInfo;
 export type KernelBootstrapProgressHandler = (message: string) => void;
@@ -376,6 +395,7 @@ function run(command: string, args: string[], options: { stdio?: "ignore" | "inh
 		const child = spawn(command, args, {
 			env: process.env,
 			stdio: options.stdio ?? "ignore",
+			windowsHide: true,
 		});
 		child.on("error", reject);
 		child.on("exit", (code, signal) => {
@@ -482,13 +502,13 @@ async function acquireBootstrapLock(venv: string): Promise<() => Promise<void>> 
 		try {
 			await mkdir(lockDir);
 			await writeFile(path.join(lockDir, "pid"), `${process.pid}\n`, "utf8");
-			return () => rm(lockDir, { recursive: true, force: true });
+			return () => removePath(lockDir);
 		} catch (error) {
 			if (!isNodeError(error, "EEXIST")) throw error;
 
 			const pid = await readLockPid(lockDir);
 			if (pid === null ? await lockMissingPidIsStale(lockDir) : !processIsRunning(pid)) {
-				await rm(lockDir, { recursive: true, force: true });
+				await removePath(lockDir);
 				continue;
 			}
 
@@ -521,25 +541,27 @@ async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 	const shouldInstallUv =
 		process.env.PRIME_AGENT_INSTALL_UV === "1" || (!options.onProgress && (await confirmUvInstall()));
 	if (!shouldInstallUv) {
+		const installCommand = getUvInstallCommand();
 		throw new Error(
-			`uv is required to set up the Python kernel. Install uv yourself: ${UV_INSTALL_COMMAND}, ` +
+			`uv is required to set up the Python kernel. Install uv yourself: ${formatCommand(installCommand)}, ` +
 				"or set PRIME_AGENT_INSTALL_UV=1 to let prime-agent run that installer.",
 		);
 	}
 
 	reportProgress(options, "› installing uv (one-time)…");
+	const installCommand = getUvInstallCommand();
 	try {
-		await run("sh", ["-c", UV_INSTALL_COMMAND], { stdio: options.onProgress ? "ignore" : "inherit" });
+		await run(installCommand.command, installCommand.args, { stdio: options.onProgress ? "ignore" : "inherit" });
 	} catch (error) {
 		throw new Error(
-			`couldn't install uv from astral.sh; install it yourself: ${UV_INSTALL_COMMAND}, then re-run prime-agent. ${errorMessage(error)}`,
+			`couldn't install uv from astral.sh; install it yourself: ${formatCommand(installCommand)}, then re-run prime-agent. ${errorMessage(error)}`,
 		);
 	}
 
 	if (await isExecutable(localUv)) return localUv;
 	const installedFromPath = await findExecutable("uv");
 	if (installedFromPath) return installedFromPath;
-	throw new Error("uv install completed but binary not found at ~/.local/bin/uv");
+	throw new Error(`uv install completed but binary not found at ${localUv}`);
 }
 
 async function confirmUvInstall(): Promise<boolean> {
@@ -718,6 +740,11 @@ async function hashRuntimeSource(sourceDir: string): Promise<string> {
 	return `sha256:${hash.digest("hex")}`;
 }
 
+// uv venv uses a Scripts\ layout on Windows and bin/ elsewhere.
+export function getKernelVenvPythonPath(venv: string, platformName: NodeJS.Platform = process.platform): string {
+	return platformName === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
+}
+
 async function bootstrapVenv(
 	venv: string,
 	pythonSkills: readonly BootstrapPythonSkill[],
@@ -725,7 +752,7 @@ async function bootstrapVenv(
 ): Promise<void> {
 	await mkdir(path.dirname(venv), { recursive: true });
 	const uv = await ensureUv(options);
-	const python = path.join(venv, "bin", "python");
+	const python = getKernelVenvPythonPath(venv);
 	const sourceDir = await resolveRuntimeSourceDir();
 	const runtimeRequirement = sourceDir ?? RUNTIME_REQUIREMENT;
 	const runtimeIdentity = await resolveRuntimeIdentity();
@@ -886,7 +913,7 @@ async function ensureKernelPythonUncached(
 	}
 
 	const venv = await resolveWritableKernelVenvDir();
-	const python = path.join(venv, "bin", "python");
+	const python = getKernelVenvPythonPath(venv);
 	const runtimeIdentity = await resolveRuntimeIdentity();
 	if (await kernelReady(python, venv, runtimeIdentity, pythonSkills)) return python;
 
@@ -902,7 +929,7 @@ async function ensureKernelPythonUncached(
 		reportProgress(options, "› setting up python kernel (one-time, ~30s)…");
 		if (hadVenv) {
 			reportProgress(options, "rebuilding kernel venv");
-			await rm(venv, { recursive: true, force: true });
+			await removePath(venv);
 		}
 
 		await bootstrapVenv(venv, pythonSkills, options);

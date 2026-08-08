@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import {
 } from "../src/modes/daemon/daemon-protocol.js";
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
 import { MutationDrainLatch } from "../src/modes/daemon/mutation-drain-latch.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 interface SupervisorHarness {
 	handleLine(client: DaemonSocketClient, line: string): Promise<void>;
@@ -178,7 +179,7 @@ describe("daemon supervisor side-question routing", () => {
 			socket?.destroy();
 			await Reflect.apply(Reflect.get(supervisor, "cleanupSupervisorResources"), supervisor, []);
 			catalogStart.mockRestore();
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 });

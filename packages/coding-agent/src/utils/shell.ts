@@ -9,6 +9,21 @@ export interface ShellConfig {
 	args: string[];
 }
 
+const BASH_PROBE_TIMEOUT_MS = 5000;
+
+export function isBashUsable(shellPath: string): boolean {
+	try {
+		const result = spawnSync(shellPath, ["-c", "exit 0"], {
+			stdio: "ignore",
+			timeout: BASH_PROBE_TIMEOUT_MS,
+			windowsHide: true,
+		});
+		return result.status === 0 && !result.error;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Find bash executable on PATH (cross-platform)
  */
@@ -16,11 +31,13 @@ function findBashOnPath(): string | null {
 	if (process.platform === "win32") {
 		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
 		try {
-			const result = spawnSync("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000 });
+			const result = spawnSync("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000, windowsHide: true });
 			if (result.status === 0 && result.stdout) {
-				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-				if (firstMatch && existsSync(firstMatch)) {
-					return firstMatch;
+				for (const match of result.stdout.trim().split(/\r?\n/)) {
+					const candidate = match.trim();
+					if (candidate && existsSync(candidate) && isBashUsable(candidate)) {
+						return candidate;
+					}
 				}
 			}
 		} catch {
@@ -31,10 +48,10 @@ function findBashOnPath(): string | null {
 
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)
 	try {
-		const result = spawnSync("which", ["bash"], { encoding: "utf-8", timeout: 5000 });
+		const result = spawnSync("which", ["bash"], { encoding: "utf-8", timeout: 5000, windowsHide: true });
 		if (result.status === 0 && result.stdout) {
 			const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-			if (firstMatch) {
+			if (firstMatch && isBashUsable(firstMatch)) {
 				return firstMatch;
 			}
 		}
@@ -54,8 +71,11 @@ function findBashOnPath(): string | null {
 export function getShellConfig(customShellPath?: string): ShellConfig {
 	// 1. Check user-specified shell path
 	if (customShellPath) {
-		if (existsSync(customShellPath)) {
+		if (existsSync(customShellPath) && isBashUsable(customShellPath)) {
 			return { shell: customShellPath, args: ["-c"] };
+		}
+		if (existsSync(customShellPath)) {
+			throw new Error(`Custom shell path cannot execute bash: ${customShellPath}`);
 		}
 		throw new Error(`Custom shell path not found: ${customShellPath}`);
 	}
@@ -73,7 +93,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		}
 
 		for (const path of paths) {
-			if (existsSync(path)) {
+			if (existsSync(path) && isBashUsable(path)) {
 				return { shell: path, args: ["-c"] };
 			}
 		}
@@ -85,7 +105,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		}
 
 		throw new Error(
-			`No bash shell found. Options:\n` +
+			`No usable bash shell found. Options:\n` +
 				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
 				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
 				"  3. Set shellPath in settings.json\n\n" +
@@ -194,6 +214,7 @@ export function killProcessTree(pid: number): void {
 			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
 				detached: true,
+				windowsHide: true,
 			});
 		} catch {
 			// Ignore errors if taskkill fails

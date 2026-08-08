@@ -1,14 +1,16 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	createHerdrAgentStateExtension,
+	getHerdrSocketEndpoint,
 	hasFileBasedHerdrIntegration,
 	herdrAgentStateExtension,
 } from "../src/core/extensions/builtin/herdr-agent-state.js";
 import type { ExtensionAPI } from "../src/core/extensions/types.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 interface RecordedRequest {
 	method: string;
@@ -76,7 +78,7 @@ async function startFakeHerdrServer(socketPath: string): Promise<{
 
 	await new Promise<void>((resolve, reject) => {
 		server.on("error", reject);
-		server.listen(socketPath, resolve);
+		server.listen(getHerdrSocketEndpoint(socketPath)!, resolve);
 	});
 
 	const waitForRequests = (count: number, timeoutMs = 3000): Promise<void> => {
@@ -130,7 +132,7 @@ describe("herdrAgentStateExtension", () => {
 		while (cleanupPaths.length > 0) {
 			const path = cleanupPaths.pop();
 			if (path) {
-				rmSync(path, { recursive: true, force: true });
+				removeTempDirSync(path);
 			}
 		}
 	});
@@ -145,6 +147,16 @@ describe("herdrAgentStateExtension", () => {
 
 		expect(handlers.size).toBe(0);
 		expect(busHandlers.size).toBe(0);
+	});
+
+	it("maps Herdr's Windows socket path to its named-pipe endpoint", () => {
+		expect(getHerdrSocketEndpoint(undefined, "win32")).toBeUndefined();
+		expect(getHerdrSocketEndpoint("/tmp/herdr.sock", "linux")).toBe("/tmp/herdr.sock");
+		expect(getHerdrSocketEndpoint("C:\\Users\\test\\herdr.sock", "win32")).toBe(
+			"\\\\.\\pipe\\C:\\Users\\test\\herdr.sock",
+		);
+		expect(getHerdrSocketEndpoint("\\\\.\\pipe\\herdr", "win32")).toBe("\\\\.\\pipe\\herdr");
+		expect(getHerdrSocketEndpoint("\\\\?\\pipe\\herdr", "win32")).toBe("\\\\?\\pipe\\herdr");
 	});
 
 	it("detects the file-based herdr integration among loaded extension paths", () => {
@@ -242,9 +254,10 @@ describe("herdrAgentStateExtension", () => {
 		expect(handlers.has("agent_end")).toBe(true);
 		expect(handlers.has("session_shutdown")).toBe(true);
 
+		const sessionFile = "C:\\tmp\\session.jsonl";
 		const ctx = {
 			sessionManager: {
-				getSessionFile: () => "/tmp/session.jsonl",
+				getSessionFile: () => sessionFile,
 				getSessionId: () => "session-1",
 			},
 		};
@@ -255,7 +268,7 @@ describe("herdrAgentStateExtension", () => {
 		expect(requests[0]?.params.agent).toBe("prime-agent");
 		expect(requests[0]?.params.pane_id).toBe("w1:p1");
 		expect(requests[0]?.params.state).toBe("idle");
-		expect(requests[0]?.params.agent_session_path).toBe("/tmp/session.jsonl");
+		expect(requests[0]?.params.agent_session_path).toBe(sessionFile);
 
 		handlers.get("agent_start")?.[0]?.({ type: "agent_start" }, ctx);
 		await waitForRequests(2);

@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import { type ChildProcess, spawnSync } from "node:child_process";
 import { constants } from "node:os";
 import { basename } from "node:path";
 
@@ -13,6 +13,20 @@ export function shouldUseWindowsShell(command: string): boolean {
 }
 
 export function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
+	if (process.platform === "win32") {
+		const args = ["/T", "/PID", String(pid)];
+		if (signal === "SIGKILL") {
+			args.unshift("/F");
+		}
+		try {
+			const result = spawnSync("taskkill", args, { stdio: "ignore", windowsHide: true });
+			if (!result.error && result.status === 0) {
+				return;
+			}
+		} catch {
+			// Fall back to process.kill when taskkill is unavailable.
+		}
+	}
 	try {
 		process.kill(-pid, signal);
 		return;

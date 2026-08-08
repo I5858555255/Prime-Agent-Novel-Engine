@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,7 @@ import {
 	type KernelPythonSkill,
 	resolveRuntimeIdentity,
 } from "../src/core/kernel/bootstrap.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 let tempDir = "";
 let originalEnv: NodeJS.ProcessEnv;
@@ -162,7 +163,7 @@ describe("kernel bootstrap", () => {
 	afterEach(() => {
 		process.env = originalEnv;
 		if (tempDir) {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 			tempDir = "";
 		}
 	});

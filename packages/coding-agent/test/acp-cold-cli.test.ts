@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 /**
  * Cold real-CLI ACP coverage.
@@ -27,7 +28,7 @@ afterEach(async () => {
 		await new Promise<void>((done) => server.close(() => done()));
 	}
 	for (const dir of tempDirs.splice(0)) {
-		rmSync(dir, { recursive: true, force: true });
+		removeTempDirSync(dir);
 	}
 });
 

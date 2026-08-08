@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -29,6 +29,7 @@ import {
 	saveHarnessState,
 } from "../src/core/refinement/index.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const { completeSimpleMock } = vi.hoisted(() => ({
 	completeSimpleMock: vi.fn(),
@@ -50,7 +51,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	if (tempDir) {
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 		tempDir = undefined;
 	}
 });

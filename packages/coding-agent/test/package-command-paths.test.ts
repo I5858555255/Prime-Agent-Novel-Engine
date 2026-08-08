@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_NAME, ENV_AGENT_DIR, PACKAGE_NAME, SELF_UPDATE_INTERACTIVE_CHILD_ENV, VERSION } from "../src/config.js";
 import { main } from "../src/main.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 function restoreEnv(name: string, value: string | undefined): void {
 	if (value === undefined) {
@@ -72,7 +73,7 @@ describe("package commands", () => {
 		restoreEnv("PRIME_AGENT_DOWNLOAD_BASE_URL", originalPrimeAgentDownloadBaseUrl);
 		restoreEnv("TMPDIR", originalTmpDir);
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	it("should persist global relative local package paths relative to settings.json", async () => {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
@@ -10,6 +10,7 @@ import {
 	mergeTurnFileChanges,
 } from "../src/modes/interactive/components/edit-summary.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { removeTempDirSync, symlinkDirSync } from "./utils/temp-fs.js";
 
 const usage: Usage = {
 	input: 0,
@@ -113,7 +114,7 @@ describe("edit summaries", () => {
 			const file = join(realCwd, "same.ts");
 			mkdirSync(realCwd);
 			writeFileSync(file, "old");
-			symlinkSync(realCwd, linkedCwd, "dir");
+			symlinkDirSync(realCwd, linkedCwd);
 
 			const message = assistant([
 				{ type: "toolCall", id: "one", name: "ipython", arguments: {} },
@@ -132,7 +133,7 @@ describe("edit summaries", () => {
 
 			expect([...changes.values()]).toEqual([{ path: realpathSync(file), added: 2, removed: 2 }]);
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 });

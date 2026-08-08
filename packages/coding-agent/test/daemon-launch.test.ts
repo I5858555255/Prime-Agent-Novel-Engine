@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,6 +13,7 @@ import {
 } from "../src/cli/daemon-launch.js";
 import { ENV_AGENT_DIR, getDaemonLogPath, VERSION } from "../src/config.js";
 import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../src/modes/daemon/daemon-protocol.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 interface FakeDaemonOptions {
 	/** Sessions returned for a `list` command. */
@@ -102,7 +103,7 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 		close: () =>
 			new Promise<void>((resolve) => {
 				server.close(() => resolve());
-				rmSync(dir, { recursive: true, force: true });
+				removeTempDirSync(dir);
 			}),
 	};
 }
@@ -153,7 +154,7 @@ server.listen(socketPath, () => process.stdout.write("ready\\n"));`,
 				child.kill("SIGKILL");
 				await new Promise<void>((resolve) => child.once("close", () => resolve()));
 			}
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		},
 	};
 }
@@ -296,7 +297,7 @@ describe("ensureInteractiveDaemonRunning", () => {
 			process.argv[1] = originalEntrypoint;
 			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
 			else process.env[ENV_AGENT_DIR] = originalAgentDir;
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -318,7 +319,7 @@ describe("ensureInteractiveDaemonRunning", () => {
 			process.argv[1] = originalEntrypoint;
 			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
 			else process.env[ENV_AGENT_DIR] = originalAgentDir;
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -335,7 +336,7 @@ describe("ensureInteractiveDaemonRunning", () => {
 		} finally {
 			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
 			else process.env[ENV_AGENT_DIR] = originalAgentDir;
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -373,7 +374,7 @@ describe("ensureInteractiveDaemonRunning", () => {
 			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
 			else process.env[ENV_AGENT_DIR] = originalAgentDir;
 			await new Promise<void>((resolve) => server.close(() => resolve()));
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -398,7 +399,7 @@ describe("ensureInteractiveDaemonRunning", () => {
 			process.argv[1] = originalEntrypoint;
 			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
 			else process.env[ENV_AGENT_DIR] = originalAgentDir;
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 });

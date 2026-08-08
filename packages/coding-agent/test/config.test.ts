@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -12,6 +12,7 @@ import {
 	getUpdateInstruction,
 } from "../src/config.js";
 import { getDefaultSessionDir } from "../src/core/session-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const execPathDescriptor = Object.getOwnPropertyDescriptor(process, "execPath");
 const originalPath = process.env.PATH;
@@ -53,7 +54,7 @@ afterEach(() => {
 	}
 	if (tempDir) {
 		chmodSync(tempDir, 0o700);
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 		tempDir = undefined;
 	}
 });

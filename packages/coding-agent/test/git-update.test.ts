@@ -8,12 +8,13 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultPackageManager } from "../src/core/package-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 // Helper to run git commands in a directory
 function git(args: string[], cwd: string): string {
@@ -85,7 +86,7 @@ describe("DefaultPackageManager git update", () => {
 
 	afterEach(() => {
 		if (tempDir && existsSync(tempDir)) {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -318,7 +319,7 @@ describe("DefaultPackageManager git update", () => {
 			const cachedDir = join(tmpdir(), "pi-extensions", `git-${gitHost}`, hash, gitPath);
 			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
 
-			rmSync(cachedDir, { recursive: true, force: true });
+			removeTempDirSync(cachedDir);
 			mkdirSync(join(cachedDir, "pi-extensions"), { recursive: true });
 			writeFileSync(
 				join(cachedDir, "package.json"),
@@ -365,7 +366,7 @@ describe("DefaultPackageManager git update", () => {
 			const cachedDir = join(tmpdir(), "pi-extensions", `git-${gitHost}`, hash, gitPath);
 			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
 
-			rmSync(cachedDir, { recursive: true, force: true });
+			removeTempDirSync(cachedDir);
 			mkdirSync(join(cachedDir, "pi-extensions"), { recursive: true });
 			writeFileSync(
 				join(cachedDir, "package.json"),

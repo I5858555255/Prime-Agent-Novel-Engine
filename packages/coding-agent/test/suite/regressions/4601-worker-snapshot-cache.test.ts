@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import {
 	SnapshotTranscriptCache,
 	type SnapshotTranscriptChunkSource,
 } from "../../../src/modes/daemon/snapshot-transcript-cache.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 const tempDirectories: string[] = [];
 const activeSessionId = "active-4601";
@@ -24,7 +25,7 @@ const snapshotId = "snapshot-4601";
 
 afterEach(() => {
 	for (const directory of tempDirectories.splice(0)) {
-		rmSync(directory, { recursive: true, force: true });
+		removeTempDirSync(directory);
 	}
 });
 

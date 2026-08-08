@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	addReachableDefaultDaemonSocket,
 	type DaemonInfo,
 	evaluateShutdownQuietPeriod,
 	isWorkerSocketPath,
@@ -17,6 +18,18 @@ import {
 } from "../src/cli/daemon-ps.js";
 import { getProcessStartId } from "../src/core/session-lease.js";
 import { defaultDaemonSocketDir } from "../src/modes/daemon/daemon-socket.js";
+
+describe("Windows default daemon socket discovery", () => {
+	it("adds a live default named pipe without inventing an offline service", () => {
+		const sockets = new Set<string>();
+		const defaultSocket = String.raw`\\.\pipe\prime-agent-daemon`;
+		addReachableDefaultDaemonSocket(sockets, defaultSocket, false);
+		expect(sockets).toEqual(new Set());
+
+		addReachableDefaultDaemonSocket(sockets, defaultSocket, true);
+		expect(sockets).toEqual(new Set([defaultSocket]));
+	});
+});
 
 describe("worker socket classification", () => {
 	it.runIf(process.platform !== "win32")("recognizes only worker sockets in the default service directory", () => {

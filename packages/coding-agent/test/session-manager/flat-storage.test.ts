@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "../../src/core/session-manager.js";
 import { assistantMsg, userMsg } from "../utilities.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 describe("SessionManager flat storage", () => {
 	it("stores sessions directly in the session root and filters current-cwd lists", async () => {
@@ -35,7 +36,7 @@ describe("SessionManager flat storage", () => {
 
 			expect(sessionA.getSessionArtifactDir()).toBe(join(tempDir, "session-artifacts", sessionA.getSessionId()));
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -59,7 +60,7 @@ describe("SessionManager flat storage", () => {
 			expect(sessions[0].firstMessage).toBe("small prompt");
 			expect(sessions[0].allMessagesText).toBe("small prompt");
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -97,7 +98,7 @@ describe("SessionManager flat storage", () => {
 			expect(sessions[0].allMessagesText).toBe("");
 			expect(sessions[0].modified.toISOString()).toBe("2026-01-02T00:00:00.000Z");
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -143,7 +144,7 @@ describe("SessionManager flat storage", () => {
 			expect(sessions[0].allMessagesText).toBe("small prompt");
 			expect(sessions[0].modified.toISOString()).toBe("2026-01-02T00:00:00.000Z");
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 });

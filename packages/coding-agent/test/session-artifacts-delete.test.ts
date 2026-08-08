@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deleteSessionFile } from "../src/core/session-file-actions.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 let root = "";
 
@@ -12,7 +13,7 @@ describe("deleteSessionFile removes the session artifact directory", () => {
 	});
 
 	afterEach(() => {
-		if (root) rmSync(root, { recursive: true, force: true });
+		if (root) removeTempDirSync(root);
 		root = "";
 	});
 

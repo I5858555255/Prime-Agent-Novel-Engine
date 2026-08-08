@@ -38,6 +38,7 @@ import {
 	type PrivateFrame,
 	PrivateFrameDecoder,
 } from "../../../src/modes/session-worker/private-framing.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 import { createHarness, type Harness } from "../harness.js";
 
 interface OwnerRecord {
@@ -911,7 +912,7 @@ describe("ENG-4603 worker recovery convergence", () => {
 		expect(staleResponse).toMatchObject({ success: false, error: "supervisor_generation_stale" });
 		socket.destroy();
 		await oldOwner.release();
-		rmSync(ownerDirectory, { recursive: true, force: true });
+		removeTempDirSync(ownerDirectory);
 		await terminateTrackedFixtureProcess(worker);
 
 		const publicPaths = await createPaths();
@@ -939,7 +940,7 @@ describe("ENG-4603 worker recovery convergence", () => {
 		expect(existsSync(journalPath) ? readFileSync(journalPath, "utf8") : "").toBe(journalBefore);
 		publicClient.close();
 		await replacementOwner.release();
-		rmSync(displacedOwnerDir, { recursive: true, force: true });
+		removeTempDirSync(displacedOwnerDir);
 		await terminateTrackedFixtureProcess(staleSupervisor);
 	}, 90_000);
 

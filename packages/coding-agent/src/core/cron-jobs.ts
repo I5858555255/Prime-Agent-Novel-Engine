@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { lockSync } from "proper-lockfile";
+import { syncDirectory } from "../utils/durable-fs.js";
 
 export type AgentCronJobStatus = "active" | "paused" | "completed" | "cancelled";
 export type AgentCronScheduleKind = "once" | "cron" | "interval";
@@ -1559,16 +1560,7 @@ function writeJobsState(path: string, state: CronJobsState): void {
 		closeSync(descriptor);
 	}
 	renameSync(tempPath, path);
-	try {
-		const directoryDescriptor = openSync(directory, "r");
-		try {
-			fsyncSync(directoryDescriptor);
-		} finally {
-			closeSync(directoryDescriptor);
-		}
-	} catch {
-		// Directory fsync is unavailable on some platforms; the atomic rename still protects readers.
-	}
+	syncDirectory(directory);
 }
 
 function claimDueInState(state: CronJobsState, dueAt: Date, claimedAt: Date): AgentCronDispatch[] {

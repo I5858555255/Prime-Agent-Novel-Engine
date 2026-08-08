@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import type { ResourceLoader } from "../src/core/resource-loader.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("createAgentSession skills option", () => {
 	let tempDir: string;
@@ -34,7 +35,7 @@ This is a test skill.
 
 	afterEach(() => {
 		if (tempDir) {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 

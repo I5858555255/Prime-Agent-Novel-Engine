@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { PassThrough } from "node:stream";
@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultPackageManager, type ProgressEvent, type ResolvedResource } from "../src/core/package-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { shouldUseWindowsShell } from "../src/utils/child-process.js";
+import { setTestHomeDir } from "./utils/home-env.js";
+import { removeTempDirSync, symlinkDirSync } from "./utils/temp-fs.js";
 
 function normalizeForMatch(value: string): string {
 	return value.replace(/\\/g, "/");
@@ -75,7 +77,7 @@ describe("DefaultPackageManager", () => {
 		}
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	describe("resolve", () => {
@@ -161,8 +163,7 @@ Content`,
 		});
 
 		it("should resolve symlinked user and project resources once", async () => {
-			const previousHome = process.env.HOME;
-			process.env.HOME = tempDir;
+			const restoreHome = setTestHomeDir(tempDir);
 
 			try {
 				const sharedDir = join(tempDir, "shared-resources");
@@ -190,14 +191,14 @@ Content`,
 
 				mkdirSync(join(agentDir), { recursive: true });
 				mkdirSync(join(tempDir, ".prime", "agent"), { recursive: true });
-				symlinkSync(sharedExtensionsDir, join(agentDir, "extensions"), "dir");
-				symlinkSync(sharedSkillsDir, join(agentDir, "skills"), "dir");
-				symlinkSync(sharedPromptsDir, join(agentDir, "prompts"), "dir");
-				symlinkSync(sharedThemesDir, join(agentDir, "themes"), "dir");
-				symlinkSync(sharedExtensionsDir, join(tempDir, ".prime", "agent", "extensions"), "dir");
-				symlinkSync(sharedSkillsDir, join(tempDir, ".prime", "agent", "skills"), "dir");
-				symlinkSync(sharedPromptsDir, join(tempDir, ".prime", "agent", "prompts"), "dir");
-				symlinkSync(sharedThemesDir, join(tempDir, ".prime", "agent", "themes"), "dir");
+				symlinkDirSync(sharedExtensionsDir, join(agentDir, "extensions"));
+				symlinkDirSync(sharedSkillsDir, join(agentDir, "skills"));
+				symlinkDirSync(sharedPromptsDir, join(agentDir, "prompts"));
+				symlinkDirSync(sharedThemesDir, join(agentDir, "themes"));
+				symlinkDirSync(sharedExtensionsDir, join(tempDir, ".prime", "agent", "extensions"));
+				symlinkDirSync(sharedSkillsDir, join(tempDir, ".prime", "agent", "skills"));
+				symlinkDirSync(sharedPromptsDir, join(tempDir, ".prime", "agent", "prompts"));
+				symlinkDirSync(sharedThemesDir, join(tempDir, ".prime", "agent", "themes"));
 
 				const result = await packageManager.resolve();
 
@@ -220,11 +221,7 @@ Content`,
 				expect(result.prompts[0].metadata.scope).toBe("project");
 				expect(result.themes[0].metadata.scope).toBe("project");
 			} finally {
-				if (previousHome === undefined) {
-					delete process.env.HOME;
-				} else {
-					process.env.HOME = previousHome;
-				}
+				restoreHome();
 			}
 		});
 
@@ -351,8 +348,7 @@ Content`,
 		});
 
 		it("should keep ~/.agents/skills user-scoped when cwd is under home in a non-git directory", async () => {
-			const previousHome = process.env.HOME;
-			process.env.HOME = tempDir;
+			const restoreHome = setTestHomeDir(tempDir);
 
 			try {
 				const cwd = join(tempDir, "scratch", "nested");
@@ -378,17 +374,12 @@ Content`,
 				expect(matchingSkills[0]?.metadata.scope).toBe("user");
 				expect(matchingSkills[0]?.metadata.source).toBe("auto");
 			} finally {
-				if (previousHome === undefined) {
-					delete process.env.HOME;
-				} else {
-					process.env.HOME = previousHome;
-				}
+				restoreHome();
 			}
 		});
 
 		it("should dedupe user skill entries when ~/.pi/agent/skills is a symlink to ~/.agents/skills", async () => {
-			const previousHome = process.env.HOME;
-			process.env.HOME = tempDir;
+			const restoreHome = setTestHomeDir(tempDir);
 
 			try {
 				const agentSkillsDir = join(agentDir, "skills");
@@ -407,11 +398,7 @@ Content`,
 
 				expect(fooSkills).toHaveLength(1);
 			} finally {
-				if (previousHome === undefined) {
-					delete process.env.HOME;
-				} else {
-					process.env.HOME = previousHome;
-				}
+				restoreHome();
 			}
 		});
 	});

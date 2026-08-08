@@ -7,7 +7,7 @@
  * config and creates real AgentSession instances via the test harness.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
@@ -17,6 +17,7 @@ import { SessionManager } from "../../src/core/session-manager.js";
 import type { ActiveSessionState } from "../../src/modes/daemon/active-session-state.js";
 import { AgentDaemon } from "../../src/modes/daemon/daemon-mode.js";
 import type { DaemonCommand } from "../../src/modes/daemon/daemon-protocol.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 import { createHarness, type Harness } from "./harness.js";
 
 type SerializedInternals = {
@@ -36,7 +37,7 @@ describe("Daemon-backed serializedRefine propagation", () => {
 
 	afterEach(() => {
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 

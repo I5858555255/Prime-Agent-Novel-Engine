@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
@@ -7,6 +7,7 @@ import { AuthStorage } from "../src/core/auth-storage.js";
 import { McpManager } from "../src/core/mcp/mcp-manager.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import type { McpServerConfig } from "../src/core/settings-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("McpManager", () => {
 	let tempDir: string;
@@ -20,7 +21,7 @@ describe("McpManager", () => {
 
 	afterEach(() => {
 		resetOAuthProviders();
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	it("disables every built-in integration when no credentials exist", () => {

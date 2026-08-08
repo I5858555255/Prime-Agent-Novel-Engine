@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
@@ -24,6 +24,7 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "../../src/index.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 type RecordedSessionEvent =
 	| SessionBeforeSwitchEvent
@@ -140,7 +141,7 @@ describe("AgentSessionRuntime characterization", () => {
 			await runtime.dispose();
 			faux.unregister();
 			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true, force: true });
+				removeTempDirSync(tempDir);
 			}
 		});
 

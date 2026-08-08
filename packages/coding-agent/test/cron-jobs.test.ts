@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,7 @@ import {
 	SESSION_SCHEDULED_JOBS_FILENAME,
 	shouldDeferHeartbeatCronJob,
 } from "../src/core/cron-jobs.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const start = new Date("2026-01-01T12:34:00.000Z");
 
@@ -160,7 +161,7 @@ describe("AgentCronJobStore", () => {
 
 	afterEach(() => {
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -915,7 +916,7 @@ describe("AgentCronScheduler", () => {
 
 	afterEach(() => {
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 

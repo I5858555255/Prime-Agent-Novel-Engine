@@ -28,6 +28,7 @@ import { MutationDrainLatch } from "../src/modes/daemon/mutation-drain-latch.js"
 import { WorkerRecoveryJournal } from "../src/modes/daemon/worker-recovery-journal.js";
 import type { PrivateFrame } from "../src/modes/session-worker/private-framing.js";
 import { createDeferred } from "./suite/scheduling.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const workerLaunchTestState = vi.hoisted(() => ({
 	capture: false,
@@ -288,7 +289,7 @@ describe("daemon worker supervisor monitoring", () => {
 		workerLaunchTestState.spawned.length = 0;
 		vi.useRealTimers();
 		for (const registryDir of supervisorRegistryDirs) {
-			rmSync(registryDir, { recursive: true, force: true });
+			removeTempDirSync(registryDir);
 		}
 		supervisorRegistryDirs.clear();
 		if (previousSupervisorRegistryDir === undefined) {
@@ -1000,7 +1001,7 @@ describe("daemon worker supervisor monitoring", () => {
 		});
 		const registryDir = process.env[supervisorRegistryDirEnv];
 		if (!registryDir) throw new Error("Supervisor registry test directory was not set");
-		rmSync(registryDir, { recursive: true, force: true });
+		removeTempDirSync(registryDir);
 		writeFileSync(registryDir, "not a directory");
 
 		daemon.scheduleSupervisorAvailabilityCheck("/tmp/supervisor.sock", 0);
@@ -1496,7 +1497,7 @@ describe("daemon worker supervisor monitoring", () => {
 
 			expect(supervisor.workers.size).toBe(0);
 		} finally {
-			rmSync(descriptorDir, { recursive: true, force: true });
+			removeTempDirSync(descriptorDir);
 		}
 	});
 
@@ -1772,7 +1773,7 @@ describe("daemon worker supervisor monitoring", () => {
 			expect(markInterrupted).toHaveBeenCalledWith("/tmp/child.jsonl", "child-active", ["tool_execution"]);
 		} finally {
 			kill.mockRestore();
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 	it.each([
@@ -1875,7 +1876,7 @@ describe("daemon worker supervisor monitoring", () => {
 			expect(mutationDrain.begin).not.toHaveBeenCalled();
 			expect(mutationDrain.end).not.toHaveBeenCalled();
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 
@@ -1919,7 +1920,7 @@ describe("daemon worker supervisor monitoring", () => {
 			expect(mutationDrain.begin).not.toHaveBeenCalled();
 			expect(mutationDrain.end).not.toHaveBeenCalled();
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 
@@ -1983,7 +1984,7 @@ describe("daemon worker supervisor monitoring", () => {
 		} finally {
 			client.close();
 			await Reflect.apply(Reflect.get(supervisor, "cleanupSupervisorResources"), supervisor, []);
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 

@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "../../src/core/session-manager.js";
 import { userMsg } from "../utilities.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 describe("SessionManager.hasUserContent", () => {
 	function withSession(run: (session: SessionManager) => void): void {
@@ -11,7 +12,7 @@ describe("SessionManager.hasUserContent", () => {
 		try {
 			run(SessionManager.create(join(tempDir, "project"), join(tempDir, "sessions")));
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	}
 

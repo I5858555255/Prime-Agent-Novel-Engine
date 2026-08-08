@@ -87,6 +87,13 @@ function normalizeSocketPath(socketPath: string): string {
 	return resolve(socketPath);
 }
 
+/** Add the Windows default named pipe only when a live daemon answered its probe. */
+export function addReachableDefaultDaemonSocket(sockets: Set<string>, defaultSocket: string, reachable: boolean): void {
+	if (reachable) {
+		sockets.add(defaultSocket);
+	}
+}
+
 function processNameMatches(name: string, appName: string): boolean {
 	return name === appName || appName.slice(0, MAX_COMM_LENGTH) === name;
 }
@@ -178,19 +185,23 @@ function scanListeningDaemons(): DiscoveredDaemonProcess[] {
 	if (process.platform === "win32") {
 		return [];
 	}
-	const ss = spawnSync("ss", ["-lxp"], { encoding: "utf8" });
+	const ss = spawnSync("ss", ["-lxp"], { encoding: "utf8", windowsHide: true });
 	if (!ss.error && ss.status === 0 && typeof ss.stdout === "string") {
 		return enrichUptimes(parseSsListeners(ss.stdout, APP_NAME));
 	}
-	const lsof = spawnSync("lsof", ["-nP", "-F", "pn", "-U", "-a", "-c", APP_NAME], { encoding: "utf8" });
+	const lsof = spawnSync("lsof", ["-nP", "-F", "pn", "-U", "-a", "-c", APP_NAME], {
+		encoding: "utf8",
+		windowsHide: true,
+	});
 	const byName = !lsof.error && typeof lsof.stdout === "string" ? parseLsofListeners(lsof.stdout) : [];
 	let byPid: DiscoveredDaemonProcess[] = [];
-	const ps = spawnSync("ps", ["-axo", "pid=,comm=,args="], { encoding: "utf8" });
+	const ps = spawnSync("ps", ["-axo", "pid=,comm=,args="], { encoding: "utf8", windowsHide: true });
 	if (!ps.error && ps.status === 0 && typeof ps.stdout === "string") {
 		const pids = parsePrimeAgentProcessIds(ps.stdout, APP_NAME);
 		if (pids.length > 0) {
 			const lsofByPid = spawnSync("lsof", ["-nP", "-F", "pn", "-U", "-a", "-p", pids.join(",")], {
 				encoding: "utf8",
+				windowsHide: true,
 			});
 			if (!lsofByPid.error && typeof lsofByPid.stdout === "string") {
 				byPid = parseLsofListeners(lsofByPid.stdout);
@@ -210,7 +221,10 @@ function enrichUptimes(daemons: DiscoveredDaemonProcess[]): DiscoveredDaemonProc
 	if (pids.length === 0) {
 		return daemons;
 	}
-	const ps = spawnSync("ps", ["-o", "pid=,etimes=", "-p", pids.join(",")], { encoding: "utf8" });
+	const ps = spawnSync("ps", ["-o", "pid=,etimes=", "-p", pids.join(",")], {
+		encoding: "utf8",
+		windowsHide: true,
+	});
 	if (ps.error || typeof ps.stdout !== "string") {
 		return daemons;
 	}
@@ -354,17 +368,26 @@ export async function discoverDaemons(): Promise<DaemonInfo[]> {
 	const workerSockets = new Set(
 		findAllTrackedWorkers().map((worker) => normalizeSocketPath(worker.descriptor.supervisorSocketPath)),
 	);
+	const defaultSocket = normalizeSocketPath(defaultDaemonSocketPath());
 	const sockets = new Set<string>([
 		...processBySocket.keys(),
 		...scanSocketDir().filter((socketPath) => !isWorkerSocketPath(socketPath)),
 		...workerSockets,
 	]);
-	const defaultSocket = normalizeSocketPath(defaultDaemonSocketPath());
+	// Windows named pipes cannot be enumerated like Unix socket files. Probe the
+	// default pipe explicitly so a live supervisor with no worker descriptors is
+	// still visible to `status`, `doctor`, and `shutdown`.
+	const probed = new Map<string, ProbeResult>();
+	if (process.platform === "win32" && !sockets.has(defaultSocket)) {
+		const defaultProbe = await probeDaemon(defaultSocket);
+		addReachableDefaultDaemonSocket(sockets, defaultSocket, defaultProbe.reachable);
+		if (defaultProbe.reachable) probed.set(defaultSocket, defaultProbe);
+	}
 
 	const infos = await Promise.all(
 		[...sockets].map(async (socketPath): Promise<DaemonInfo> => {
 			const proc = processBySocket.get(socketPath);
-			const probe = await probeDaemon(socketPath);
+			const probe = probed.get(socketPath) ?? (await probeDaemon(socketPath));
 			const pid = proc?.pid ?? verifyHelloSupervisorPid(probe.supervisorPid, probe.supervisorProcessStartId);
 			const hasTrackedWorkers = workerSockets.has(socketPath);
 			const status: DaemonStatus = probe.reachable
@@ -806,7 +829,10 @@ function recordResidualListenerFailures(
 	}
 }
 function describeDaemonParent(pid: number): string {
-	const result = spawnSync("ps", ["-o", "ppid=,tty=,command=", "-p", String(pid)], { encoding: "utf8" });
+	const result = spawnSync("ps", ["-o", "ppid=,tty=,command=", "-p", String(pid)], {
+		encoding: "utf8",
+		windowsHide: true,
+	});
 	if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
 		return "";
 	}
@@ -850,11 +876,7 @@ async function terminateVerifiedListener(
 		if (getProcessStartId(listener.pid) !== processStartId) {
 			return false;
 		}
-		try {
-			process.kill(listener.pid, "SIGKILL");
-		} catch {
-			// The verified process exited between the identity check and signal.
-		}
+		signalProcessGroupOrProcess(listener.pid, "SIGKILL");
 	}
 	return getProcessStartId(listener.pid) !== processStartId;
 }
@@ -1181,11 +1203,7 @@ function removeSocketFile(socketPath: string): boolean {
 }
 
 function killDaemon(pid: number): void {
-	try {
-		process.kill(pid, "SIGTERM");
-	} catch {
-		// Process already gone or not permitted; the socket file cleanup still runs.
-	}
+	signalProcessGroupOrProcess(pid, "SIGTERM");
 }
 
 async function forceKillDaemon(pid: number): Promise<void> {
@@ -1197,11 +1215,7 @@ async function forceKillDaemon(pid: number): Promise<void> {
 		}
 		await delay(50);
 	}
-	try {
-		process.kill(pid, "SIGKILL");
-	} catch {
-		// Process already exited between the liveness check and the kill.
-	}
+	signalProcessGroupOrProcess(pid, "SIGKILL");
 }
 
 function isProcessAlive(pid: number): boolean {

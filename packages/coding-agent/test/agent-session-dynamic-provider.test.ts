@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai";
@@ -9,6 +9,7 @@ import type { ExtensionFactory } from "../src/core/sdk.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("AgentSession dynamic provider registration", () => {
 	let tempDir: string;
@@ -22,7 +23,7 @@ describe("AgentSession dynamic provider registration", () => {
 
 	afterEach(() => {
 		if (tempDir && existsSync(tempDir)) {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 

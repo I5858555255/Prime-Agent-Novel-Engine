@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
@@ -15,6 +15,7 @@ import { addAssistantUsage, cloneUsage, emptyUsage } from "../src/core/usage.js"
 import { formatContextTree } from "../src/modes/interactive/components/context-tree-format.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { createTestResourceLoader } from "./utilities.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -91,7 +92,7 @@ function makeTempDir(): string {
 
 afterEach(() => {
 	for (const dir of tempDirs) {
-		rmSync(dir, { recursive: true, force: true });
+		removeTempDirSync(dir);
 	}
 	tempDirs = [];
 });

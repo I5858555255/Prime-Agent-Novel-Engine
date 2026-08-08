@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -24,6 +24,7 @@ import {
 	shouldUseEphemeralSessionManagerForDaemonInteractive,
 } from "../src/main.js";
 import type { SessionSummary } from "../src/modes/index.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("interactive startup routing", () => {
 	test.each(["interactive", "print", "json", "rpc"] as const)(
@@ -317,7 +318,7 @@ describe("daemon-backed interactive session manager routing", () => {
 
 			expect(findActiveDaemonSessionSummaryForSessionFile([activeSummary], symlink)).toBe(activeSummary);
 		} finally {
-			rmSync(directory, { recursive: true, force: true });
+			removeTempDirSync(directory);
 		}
 	});
 });

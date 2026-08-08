@@ -1,8 +1,9 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultResourceLoader } from "../../../src/core/resource-loader.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 describe("issue #2781 skill collision precedence: user skills should override package skills", () => {
 	let tempDir: string;
@@ -18,7 +19,7 @@ describe("issue #2781 skill collision precedence: user skills should override pa
 	});
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	function createPackageWithSkill(name: string, description: string): string {

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { DefaultPackageManager } from "../src/core/package-manager.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { loadSkillsFromDir } from "../src/core/skills.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 function writeSkill(dir: string, name: string, description = `Description for ${name}`): void {
 	const skillDir = join(dir, name);
@@ -40,7 +41,7 @@ describe("builtin skills", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	describe("DefaultPackageManager", () => {

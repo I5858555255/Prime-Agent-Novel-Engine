@@ -1,5 +1,6 @@
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+import { syncDirectory } from "../../utils/durable-fs.js";
 import type { DaemonClientId, DaemonCommandId, DaemonResponse } from "./daemon-protocol.js";
 
 interface ReceivedRecord {
@@ -206,12 +207,7 @@ export class CommandRecoveryJournal {
 			closeSync(descriptor);
 		}
 		renameSync(tempPath, this.path);
-		const directoryDescriptor = openSync(dirname(this.path), "r");
-		try {
-			fsyncSync(directoryDescriptor);
-		} finally {
-			closeSync(directoryDescriptor);
-		}
+		syncDirectory(dirname(this.path));
 		this.recordCount = records.length;
 	}
 }

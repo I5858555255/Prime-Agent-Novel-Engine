@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.js";
 import { getThemeExportColors } from "../src/modes/interactive/theme/theme.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 type ThemeFile = {
 	name: string;
@@ -30,7 +31,7 @@ describe("getThemeExportColors", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tempRoot, { recursive: true, force: true });
+		removeTempDirSync(tempRoot);
 		if (previousAgentDir === undefined) {
 			delete process.env[ENV_AGENT_DIR];
 		} else {

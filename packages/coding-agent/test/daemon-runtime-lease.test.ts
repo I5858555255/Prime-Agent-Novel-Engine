@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import type { ActiveSessionState } from "../src/modes/daemon/active-session-stat
 import { AgentDaemon } from "../src/modes/daemon/daemon-mode.js";
 import type { DaemonCommand } from "../src/modes/daemon/daemon-protocol.js";
 import { userMsg } from "./utilities.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("daemon runtime session leases", () => {
 	afterEach(() => {
@@ -47,7 +48,7 @@ describe("daemon runtime session leases", () => {
 			expect(reopened).toBeDefined();
 			reopened?.release();
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 });

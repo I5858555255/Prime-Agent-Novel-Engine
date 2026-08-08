@@ -1,8 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const fixturePath = resolve(__dirname, "fixtures/owned-session-worker-fixture.ts");
 const tsxPath = resolve(__dirname, "../../../node_modules/tsx/dist/cli.mjs");
@@ -35,7 +36,7 @@ afterEach(async () => {
 	}
 	workerPids.clear();
 	for (const directory of tempDirs.splice(0)) {
-		rmSync(directory, { recursive: true, force: true });
+		removeTempDirSync(directory);
 	}
 });
 

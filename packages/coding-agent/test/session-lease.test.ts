@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { lockSync } from "proper-lockfile";
@@ -12,12 +12,13 @@ import {
 	SESSION_LEASES_ENABLED_ENV,
 	SessionAlreadyActiveError,
 } from "../src/core/session-lease.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
 	for (const directory of tempDirs.splice(0)) {
-		rmSync(directory, { recursive: true, force: true });
+		removeTempDirSync(directory);
 	}
 });
 

@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { execCommand } from "../src/core/exec.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const SIGKILL_EXIT_CODE = 128 + constants.signals.SIGKILL;
 
@@ -46,7 +47,7 @@ describe.skipIf(process.platform === "win32")("execCommand", () => {
 			vi.useRealTimers();
 			controller.abort();
 			await resultPromise;
-			rmSync(testDir, { recursive: true, force: true });
+			removeTempDirSync(testDir);
 		}
 	});
 });

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFauxProvider } from "@earendil-works/pi-ai";
@@ -11,6 +11,7 @@ import {
 } from "../../../src/core/agent-session-runtime.js";
 import { AuthStorage } from "../../../src/core/auth-storage.js";
 import { SessionManager } from "../../../src/core/session-manager.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 describe("issue #2753 reload stale resource settings", () => {
 	const cleanups: Array<() => void> = [];
@@ -84,7 +85,7 @@ describe("issue #2753 reload stale resource settings", () => {
 			runtime.session.dispose();
 			faux.unregister();
 			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true, force: true });
+				removeTempDirSync(tempDir);
 			}
 		});
 

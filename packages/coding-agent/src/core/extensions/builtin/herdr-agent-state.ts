@@ -2,7 +2,7 @@
  * Built-in Herdr integration extension.
  *
  * Reports agent lifecycle state (working/idle/blocked) to the Herdr terminal
- * workspace manager via its Unix socket. This is the in-tree equivalent of
+ * workspace manager via its local socket endpoint. This is the in-tree equivalent of
  * the extension that `herdr integration install pi` writes, so Prime Agent
  * works inside Herdr panes out of the box without a manual install step.
  *
@@ -17,10 +17,29 @@
  */
 
 import { createConnection } from "node:net";
-import { basename } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "../types.js";
 
 type AgentState = "working" | "blocked" | "idle";
+
+/**
+ * Herdr exposes its Windows API socket as a filesystem path but serves it as
+ * a named pipe. Node needs the `\\.\pipe\` endpoint form to connect.
+ */
+export function getHerdrSocketEndpoint(
+	socketPath: string | undefined,
+	platform: NodeJS.Platform = process.platform,
+): string | undefined {
+	if (
+		!socketPath ||
+		platform !== "win32" ||
+		socketPath.startsWith("\\\\.\\pipe\\") ||
+		socketPath.startsWith("\\\\?\\pipe\\")
+	) {
+		return socketPath;
+	}
+	return `\\\\.\\pipe\\${socketPath}`;
+}
 
 /**
  * True when Herdr's own file-based Pi integration (`herdr integration
@@ -125,9 +144,9 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, getLoadedExtensionPaths:
 	// Captured per factory invocation: the resource loader runs this during
 	// session load, inside the daemon's client-env window, so these reflect the
 	// session's own Herdr pane rather than the daemon's startup environment.
-	const socketPath = process.env.HERDR_SOCKET_PATH;
+	const socketEndpoint = getHerdrSocketEndpoint(process.env.HERDR_SOCKET_PATH);
 	const paneId = process.env.HERDR_PANE_ID;
-	const enabled = process.env.HERDR_ENV === "1" && !!socketPath && !!paneId;
+	const enabled = process.env.HERDR_ENV === "1" && !!socketEndpoint && !!paneId;
 	if (!enabled || hasFileBasedHerdrIntegration(getLoadedExtensionPaths())) {
 		return;
 	}
@@ -171,7 +190,7 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, getLoadedExtensionPaths:
 				resolve();
 			};
 
-			const socket = createConnection(socketPath!);
+			const socket = createConnection(socketEndpoint!);
 			socket.on("error", finish);
 			socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
 			socket.on("data", finish);
@@ -191,7 +210,10 @@ function herdrAgentStateExtensionImpl(pi: ExtensionAPI, getLoadedExtensionPaths:
 	function updateSessionRef(ctx: any): void {
 		try {
 			const file = ctx?.sessionManager?.getSessionFile?.();
-			currentAgentSessionPath = typeof file === "string" && file.startsWith("/") ? file : undefined;
+			const absolute =
+				typeof file === "string" &&
+				(isAbsolute(file) || file.startsWith("/") || /^[A-Za-z]:[\\/]/.test(file) || file.startsWith("\\\\"));
+			currentAgentSessionPath = absolute ? file : undefined;
 		} catch {
 			currentAgentSessionPath = undefined;
 		}

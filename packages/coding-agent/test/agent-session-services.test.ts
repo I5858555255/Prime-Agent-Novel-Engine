@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFauxProvider } from "@earendil-works/pi-ai";
@@ -9,6 +9,7 @@ import { createAgentSessionFromServices, createAgentSessionServices } from "../s
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("createAgentSessionFromServices", () => {
 	const cleanupPaths: string[] = [];
@@ -21,7 +22,7 @@ describe("createAgentSessionFromServices", () => {
 		while (cleanupPaths.length > 0) {
 			const path = cleanupPaths.pop();
 			if (path && existsSync(path)) {
-				rmSync(path, { recursive: true, force: true });
+				removeTempDirSync(path);
 			}
 		}
 	});

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,7 @@ import {
 	shouldAutonomouslyContinue,
 } from "../../src/core/autonomous.js";
 import type { AgentCronJob } from "../../src/core/cron-jobs.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
 
 function isProcessRunning(pid: number): boolean {
@@ -366,7 +367,7 @@ describe("AgentSession autonomous mode", () => {
 			expect(readFileSync(counter, "utf8").trim().split(/\n/)).toHaveLength(1);
 			expect(state.gateAttempts[gate]).toBe(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -406,7 +407,7 @@ describe("AgentSession autonomous mode", () => {
 			expect(state.lastGateFailure).toBeUndefined();
 			expect(state.gateAttempts[gate]).toBe(0);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -460,7 +461,7 @@ describe("AgentSession autonomous mode", () => {
 			if (descendantPid && isProcessRunning(descendantPid)) {
 				process.kill(descendantPid, "SIGKILL");
 			}
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -546,7 +547,7 @@ describe("AgentSession autonomous mode", () => {
 			expect(getMessageText(second)).toContain("workspace has not changed");
 			expect(readFileSync(generated, "utf8").trim().split(/\n/)).toHaveLength(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 

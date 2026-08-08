@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import {
 	resolveSessionRlmDepth,
 	SessionManager,
 } from "../../src/core/session-manager.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;
@@ -20,7 +21,7 @@ describe("loadEntriesFromFile", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	it("returns empty array for non-existent file", () => {
@@ -166,7 +167,7 @@ describe("session tree metadata", () => {
 			expect(() => SessionManager.create(tempDir, tempDir)).toThrow("RLM_DEPTH must be a non-negative integer");
 		} finally {
 			vi.unstubAllEnvs();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -185,7 +186,7 @@ describe("session tree metadata", () => {
 
 			expect(child.getHeader()?.rlmDepth).toBeUndefined();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -212,7 +213,7 @@ describe("session tree metadata", () => {
 				rlmDepth: 3,
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -234,7 +235,7 @@ describe("session tree metadata", () => {
 			branched.createBranchedSession(leafId);
 			expect(branched.getHeader()?.rlmDepth).toBe(depth);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -254,7 +255,7 @@ describe("session tree metadata", () => {
 			branched.createBranchedSession(leafId);
 			expect(branched.getHeader()?.rlmDepth).toBe(0);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -272,7 +273,7 @@ describe("session tree metadata", () => {
 			expect(child.getHeader()).toMatchObject({ parentSession: parentFile });
 			expect(child.getHeader()?.rlmDepth).toBeUndefined();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -289,7 +290,7 @@ describe("session tree metadata", () => {
 			expect(header).toMatchObject({ parentSession: parentFile });
 			expect(header.rlmDepth).toBe(0);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -316,7 +317,7 @@ describe("session tree metadata", () => {
 			expect(SessionManager.open(childFile).getHeader()?.rlmDepth).toBe(2);
 			expect(JSON.parse(readFileSync(childFile, "utf8").split("\n")[0] ?? "{}").rlmDepth).toBe(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -357,7 +358,7 @@ describe("session tree metadata", () => {
 			expect(SessionManager.open(forkFile).getHeader()?.rlmDepth).toBe(2);
 			expect(JSON.parse(readFileSync(forkFile, "utf8").split("\n")[0] ?? "{}").rlmDepth).toBe(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -379,7 +380,7 @@ describe("session tree metadata", () => {
 			expect((await readSessionInfo(forkFile))?.rlmDepth).toBe(0);
 			expect(SessionManager.open(forkFile).getHeader()?.rlmDepth).toBe(0);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -408,7 +409,7 @@ describe("session tree metadata", () => {
 
 			expect(resolveSessionRlmDepth({ parentSession: parentFile }, childFile)).toBe(5);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -445,7 +446,7 @@ describe("session tree metadata", () => {
 
 			expect(resolveSessionRlmDepth({ parentSession: "../parent.jsonl" }, childFile)).toBe(5);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -464,7 +465,7 @@ describe("findMostRecentSession", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	it("returns null for empty directory", () => {
@@ -525,7 +526,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	it("truncates and rewrites empty file with valid header", () => {

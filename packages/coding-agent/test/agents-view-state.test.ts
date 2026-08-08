@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
@@ -48,6 +48,7 @@ import {
 import { formatAgentDepthLabel } from "../src/modes/interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../src/modes/interactive/interactive-mode-services.js";
 import type { Theme } from "../src/modes/interactive/theme/theme.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 function heartbeat(id: string, nextRunAt?: string, activeSessionId = "child") {
 	return {
@@ -776,7 +777,7 @@ describe("agents view state", () => {
 		try {
 			expect(resolveAgentsViewOpenCwd(makeSummary({ cwd: dir }), "/tmp/launch")).toEqual({});
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -965,7 +966,7 @@ describe("agents view state", () => {
 			expect(reconcileUnifiedSessions([daemon], [saved])).toHaveLength(1);
 			expect(resolveAgentsViewActiveSummaryForPath(real, [daemon])).toBe(daemon);
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 
@@ -996,7 +997,7 @@ describe("agents view state", () => {
 				Array.from({ length: 3 }, () => ({ activeCount: 1 })),
 			);
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 

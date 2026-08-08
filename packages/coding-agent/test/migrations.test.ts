@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.js";
 import { migrateLegacySessionDirsToSessionRoot, migrateSessionsFromAgentRoot } from "../src/migrations.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("session migrations", () => {
 	const tempDirs: string[] = [];
@@ -16,7 +17,7 @@ describe("session migrations", () => {
 			process.env[ENV_AGENT_DIR] = previousAgentDir;
 		}
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 

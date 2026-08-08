@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
 	readActiveOrphanProcesses,
 	recordOrphanProcessState,
 } from "../src/core/orphan-process-journal.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const tempDirs: string[] = [];
 const originalJournalPath = process.env[ORPHAN_PROCESS_JOURNAL_ENV];
@@ -20,7 +21,7 @@ afterEach(() => {
 		process.env[ORPHAN_PROCESS_JOURNAL_ENV] = originalJournalPath;
 	}
 	for (const directory of tempDirs.splice(0)) {
-		rmSync(directory, { recursive: true, force: true });
+		removeTempDirSync(directory);
 	}
 });
 

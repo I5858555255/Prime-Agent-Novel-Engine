@@ -8,12 +8,13 @@
  * - Edge cases and integration between parsing and substitution
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, describe, expect, test } from "vitest";
 import { getAgentDir } from "../src/config.js";
 import { loadPromptTemplates, parseCommandArgs, substituteArgs } from "../src/core/prompt-templates.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 // ============================================================================
 // substituteArgs
@@ -547,7 +548,7 @@ Analyze GitHub issue(s): $ARGUMENTS`,
 
 	afterAll(() => {
 		try {
-			rmSync(testDir, { recursive: true, force: true });
+			removeTempDirSync(testDir);
 		} catch {}
 	});
 });

@@ -16,7 +16,6 @@ import {
 	openSync,
 	readFileSync,
 	renameSync,
-	rmSync,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
@@ -117,6 +116,7 @@ import {
 import { resolveSessionPath } from "../../core/session-resolver.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
+import { removePathSync } from "../../utils/durable-fs.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import {
 	createAgentConnectionCommands,
@@ -182,6 +182,7 @@ import { DaemonSessionSummarizer } from "./daemon-session-summarizer.js";
 import {
 	cleanupDaemonSocketPath,
 	type DaemonSocketIdentity,
+	daemonSocketEndpoint,
 	defaultDaemonSocketPath,
 	getDaemonSocketIdentity,
 	prepareDaemonSocketPath,
@@ -200,6 +201,7 @@ import {
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 } from "./daemon-worker-protocol.js";
+
 import { MutationDrainLatch } from "./mutation-drain-latch.js";
 import { serializeSavedSessionInfo } from "./saved-session-info.js";
 import {
@@ -608,7 +610,7 @@ export class AgentDaemon {
 				};
 				this.server?.once("error", onError);
 				this.server?.once("listening", onListening);
-				this.server?.listen(this.socketPath);
+				this.server?.listen(daemonSocketEndpoint(this.socketPath));
 			});
 		} catch (error) {
 			this.cleanupSocketPath();
@@ -732,7 +734,7 @@ export class AgentDaemon {
 
 	private canConnectToSupervisor(socketPath: string): Promise<boolean> {
 		return new Promise((resolveConnect) => {
-			const socket = createConnection(socketPath);
+			const socket = createConnection(daemonSocketEndpoint(socketPath));
 			let settled = false;
 			const finish = (connected: boolean) => {
 				if (settled) {
@@ -771,7 +773,7 @@ export class AgentDaemon {
 					ownsLock = true;
 					break;
 				} catch (error) {
-					rmSync(candidateDirectory, { recursive: true, force: true });
+					removePathSync(candidateDirectory);
 					const code = (error as NodeJS.ErrnoException).code;
 					if (code !== "EEXIST" && code !== "ENOTEMPTY") {
 						throw error;
@@ -788,7 +790,7 @@ export class AgentDaemon {
 					const staleDirectory = `${lockDirectory}.stale-${process.pid}-${token}`;
 					try {
 						renameSync(lockDirectory, staleDirectory);
-						rmSync(staleDirectory, { recursive: true, force: true });
+						removePathSync(staleDirectory);
 					} catch (reclaimError) {
 						if ((reclaimError as NodeJS.ErrnoException).code !== "ENOENT") {
 							throw reclaimError;
@@ -820,6 +822,7 @@ export class AgentDaemon {
 				detached: true,
 				env: environment,
 				stdio: "ignore",
+				windowsHide: true,
 			});
 			child.unref();
 			const deadline = Date.now() + 10_000;
@@ -834,7 +837,7 @@ export class AgentDaemon {
 			this.log(`failed to launch replacement supervisor: ${String(error)}`);
 		} finally {
 			if (ownsLock) {
-				rmSync(lockDirectory, { recursive: true, force: true });
+				removePathSync(lockDirectory);
 			}
 			this.supervisorLaunchInProgress = false;
 		}
@@ -862,17 +865,26 @@ export class AgentDaemon {
 	/**
 	 * Adopt env for a session that has none, propagating to subagents spawned
 	 * before adoption (their exec-env providers read state.clientEnv live).
-	 * Never overwrites an existing identity.
+	 * Never overwrites an existing identity. If a Herdr client adopts an
+	 * env-less session, reload its extensions so the reporter can bind to the
+	 * pane instead of requiring the user to open a new session.
 	 */
-	private adoptClientEnv(state: ActiveSessionState, env?: Record<string, string>): void {
+	private async adoptClientEnv(state: ActiveSessionState, env?: Record<string, string>): Promise<void> {
 		if (!env || state.clientEnv) {
 			return;
 		}
 		state.clientEnv = env;
+		if (env.HERDR_ENV === "1") {
+			try {
+				await withClientEnv(env, () => state.runtime.session.reload());
+			} catch (error) {
+				this.log(`failed to reload extensions after Herdr env adoption: ${String(error)}`);
+			}
+		}
 		for (const child of this.sessions.values()) {
 			const metadata = child.runtime.metadata;
 			if (metadata.kind === "subagent" && metadata.parentActiveSessionId === state.activeSessionId) {
-				this.adoptClientEnv(child, env);
+				await this.adoptClientEnv(child, env);
 			}
 		}
 	}
@@ -1349,7 +1361,7 @@ export class AgentDaemon {
 			if (command.name) {
 				await this.setStateSessionName(state, command.name);
 			}
-			this.adoptClientEnv(state, clientEnv);
+			await this.adoptClientEnv(state, clientEnv);
 			this.rebindCronJobsToState(state);
 			return state;
 		}
@@ -1383,8 +1395,8 @@ export class AgentDaemon {
 			if (command.name) {
 				await this.setStateSessionName(state, command.name);
 			}
-			if (passiveSubagent.rootParentState) this.adoptClientEnv(passiveSubagent.rootParentState, clientEnv);
-			this.adoptClientEnv(state, clientEnv);
+			if (passiveSubagent.rootParentState) await this.adoptClientEnv(passiveSubagent.rootParentState, clientEnv);
+			await this.adoptClientEnv(state, clientEnv);
 			return state;
 		}
 
@@ -1427,7 +1439,7 @@ export class AgentDaemon {
 			if (command.name) {
 				await this.setStateSessionName(existing, command.name);
 			}
-			this.adoptClientEnv(existing, clientEnv);
+			await this.adoptClientEnv(existing, clientEnv);
 			this.rebindCronJobsToState(existing);
 			return existing;
 		}
@@ -1466,7 +1478,7 @@ export class AgentDaemon {
 				if (command.name) {
 					await this.setStateSessionName(existing, command.name);
 				}
-				this.adoptClientEnv(existing, clientEnv);
+				await this.adoptClientEnv(existing, clientEnv);
 				this.rebindCronJobsToState(existing);
 				return existing;
 			}
@@ -3559,7 +3571,7 @@ export class AgentDaemon {
 				// defer it until rollback so the checkpoint never omits a live identity.
 				const clientEnv = filterClientEnv(command.env);
 				const deferClientEnv = this.updateRestart && this.updateRestart.phase !== "preparing";
-				if (!deferClientEnv) this.adoptClientEnv(state, clientEnv);
+				if (!deferClientEnv) await this.adoptClientEnv(state, clientEnv);
 				const snapshotSignal = streamsSnapshot
 					? markClientSnapshotStreaming(client, state.activeSessionId)
 					: undefined;
@@ -5834,7 +5846,7 @@ export class AgentDaemon {
 				deferred.state.clients.has(deferred.client) &&
 				deferred.client.attachedActiveSessionIds.has(deferred.state.activeSessionId)
 			) {
-				this.adoptClientEnv(deferred.state, deferred.env);
+				void this.adoptClientEnv(deferred.state, deferred.env);
 			}
 		}
 		transaction.deferredClientEnv.length = 0;

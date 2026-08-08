@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 
 const DAEMON_SOCKET_MODE = 0o600;
@@ -38,6 +39,30 @@ export function defaultDaemonSocketPath(): string {
 		return "\\\\.\\pipe\\prime-agent-daemon";
 	}
 	return join(defaultDaemonSocketDir(), "daemon.sock");
+}
+
+export function isWindowsPipePath(socketPath: string): boolean {
+	return /^\\\\[.?]\\pipe\\/i.test(socketPath);
+}
+
+/**
+ * Translate a daemon socket path into the endpoint `net.listen`/`net.connect`
+ * accept on this platform.
+ *
+ * Unix domain sockets bind to a filesystem path; Windows has no equivalent and
+ * rejects such a path with EACCES. Everything else in the daemon — descriptors,
+ * discovery, logs, ownership records — keys off the socket *path* as an
+ * identity, so the path stays authoritative and only the transport endpoint is
+ * rewritten here, deterministically, to a named pipe.
+ */
+export function daemonSocketEndpoint(socketPath: string): string {
+	if (process.platform !== "win32" || isWindowsPipePath(socketPath)) {
+		return socketPath;
+	}
+	// Windows paths are case-insensitive, so the pipe name must be too, or the
+	// same daemon reached through differently-cased paths would bind twice.
+	const key = createHash("sha256").update(resolve(socketPath).toLowerCase()).digest("hex").slice(0, 32);
+	return `\\\\.\\pipe\\prime-agent-${key}`;
 }
 
 export async function acquireDaemonSocketPathLease(socketPath: string): Promise<DaemonSocketPathLease | undefined> {
@@ -239,7 +264,7 @@ function ensureDefaultDaemonSocketDir(socketPath: string): void {
 
 function canConnectToUnixSocket(socketPath: string): Promise<boolean> {
 	return new Promise((resolveConnect) => {
-		const socket = createConnection(socketPath);
+		const socket = createConnection(daemonSocketEndpoint(socketPath));
 		let settled = false;
 		let timeoutId: ReturnType<typeof setTimeout> | undefined;
 

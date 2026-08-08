@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
@@ -23,6 +23,7 @@ import { PRIME_AGENT_META_NAMESPACE } from "../src/modes/acp/acp-meta.js";
 import { runAcpModeWithConnection } from "../src/modes/acp/index.js";
 import { InProcessAgentConnection } from "../src/modes/agent-connection/in-process-agent-connection.js";
 import { createTestResourceLoader } from "./utilities.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -93,7 +94,7 @@ describe("ACP mode surfaces RLM subagents", () => {
 	afterEach(() => {
 		session?.dispose();
 		session = undefined;
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	it("streams subagent lifecycle to an ACP client as namespaced metadata", async () => {

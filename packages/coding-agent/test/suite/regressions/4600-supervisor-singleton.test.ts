@@ -1,15 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import {
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,6 +13,7 @@ import {
 	persistDaemonStartupFenceFromOwner,
 	waitForDaemonStartupFence,
 } from "../../../src/modes/daemon/daemon-supervisor-ownership.js";
+import { removeTempDirSync, symlinkDirSync } from "../../utils/temp-fs.js";
 import { createHarness, type Harness } from "../harness.js";
 
 type FixtureMessage =
@@ -981,7 +972,7 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 			);
 			expect(readdirSync(join(paths.registryDir, "startup-fences"))).toHaveLength(1);
 		} finally {
-			rmSync(join(paths.registryDir, "startup-fences"), { recursive: true, force: true });
+			removeTempDirSync(join(paths.registryDir, "startup-fences"));
 			writeOwnerRecord(paths.registryDir, originalCorruptOwner);
 			await corruptOwner.release();
 			await targetOwner.release();
@@ -1075,7 +1066,7 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 		const physicalRoot = join(paths.agentDir, "physical-root");
 		const aliasRoot = join(paths.agentDir, "physical-root-alias");
 		mkdirSync(physicalRoot, { recursive: true });
-		symlinkSync(physicalRoot, aliasRoot, process.platform === "win32" ? "junction" : "dir");
+		symlinkDirSync(physicalRoot, aliasRoot);
 		const physicalPaths = { ...paths, descriptorDir: join(physicalRoot, "future", "workers") };
 		const first = spawnFixture("owner", physicalPaths, { generation: "physical-owner" });
 		await waitForType(first, "booted");
@@ -1145,7 +1136,7 @@ describe("ENG-4600 daemon supervisor ownership", () => {
 		await ownership.release();
 
 		expect(readOwnerRecord(paths.registryDir, ownership.record.generation)?.token).toBe("replacement-token");
-		rmSync(join(paths.registryDir, `${ownership.record.generation}.owner`), { recursive: true, force: true });
+		removeTempDirSync(join(paths.registryDir, `${ownership.record.generation}.owner`));
 	});
 
 	it("unwinds real pre-bind and post-bind startup failures before retry", async () => {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -20,6 +20,7 @@ import {
 	SessionAlreadyActiveError,
 } from "../../../src/core/session-lease.js";
 import { SessionManager } from "../../../src/core/session-manager.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 async function waitFor(condition: () => boolean): Promise<void> {
 	const deadline = Date.now() + 1000;
@@ -125,7 +126,7 @@ describe("ENG-3885 subagent runtime host", () => {
 			await runtime.dispose();
 			faux.unregister();
 			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true, force: true });
+				removeTempDirSync(tempDir);
 			}
 		});
 
@@ -230,7 +231,7 @@ describe("ENG-3885 subagent runtime host", () => {
 			session.dispose();
 			faux.unregister();
 			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true, force: true });
+				removeTempDirSync(tempDir);
 			}
 		});
 

@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { captureGitContext, gitContextsEqual } from "../src/utils/git.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -30,7 +31,7 @@ describe("captureGitContext", () => {
 	});
 
 	afterEach(() => {
-		rmSync(dir, { recursive: true, force: true });
+		removeTempDirSync(dir);
 	});
 
 	it("reads branch, commit, and normalized repo url", () => {

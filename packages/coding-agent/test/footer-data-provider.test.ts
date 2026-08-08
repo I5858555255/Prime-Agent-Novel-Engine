@@ -1,5 +1,5 @@
 import { execFile, spawnSync } from "child_process";
-import { existsSync, type FSWatcher, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, type FSWatcher, mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -38,6 +38,7 @@ vi.mock("child_process", () => ({
 }));
 
 import { FooterDataProvider } from "../src/core/footer-data-provider.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 type WorktreeFixture = {
 	worktreeDir: string;
@@ -102,7 +103,7 @@ describe("FooterDataProvider reftable branch detection", () => {
 	afterEach(() => {
 		process.chdir(originalCwd);
 		if (tempDir && existsSync(tempDir)) {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 

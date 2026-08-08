@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai";
@@ -10,6 +10,7 @@ import { createAgentSession } from "../../../src/core/sdk.js";
 import { SessionManager } from "../../../src/core/session-manager.js";
 import { SettingsManager } from "../../../src/core/settings-manager.js";
 import { allToolNames, createAllToolDefinitions } from "../../../src/core/tools/index.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 	let tempDir: string;
@@ -23,7 +24,7 @@ describe("regression #4428: remove legacy pi-mono built-in tools", () => {
 
 	afterEach(() => {
 		if (tempDir && existsSync(tempDir)) {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 

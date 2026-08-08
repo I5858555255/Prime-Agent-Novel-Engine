@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.js";
 import { createBashTool, createLocalBashOperations } from "../src/core/tools/bash.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 function toBashSingleQuotedArg(value: string): string {
 	return `'${value.replace(/\\/g, "/").replace(/'/g, `'"'"'`)}'`;
@@ -78,7 +79,7 @@ describe.skipIf(process.platform !== "win32")("Windows child-process close handl
 	});
 
 	afterEach(() => {
-		rmSync(testDir, { recursive: true, force: true });
+		removeTempDirSync(testDir);
 	});
 
 	it("executeBash resolves after the shell exits even if inherited stdio handles stay open", async () => {

@@ -44,6 +44,7 @@ import { canonicalSessionPath, getProcessStartId, SessionAlreadyActiveError } fr
 import { readSessionInfo, type SessionInfo } from "../../core/session-manager.js";
 import { SettingsManager } from "../../core/settings-manager.js";
 import { signalProcessGroupOrProcess } from "../../utils/child-process.js";
+import { removePathSync } from "../../utils/durable-fs.js";
 import type { AgentConnectionHeartbeat } from "../agent-connection/types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
 import type { PrivateFrame } from "../session-worker/private-framing.js";
@@ -90,6 +91,7 @@ import {
 	cleanupDaemonSocketPath,
 	type DaemonSocketIdentity,
 	type DaemonSocketPathLease,
+	daemonSocketEndpoint,
 	defaultDaemonSocketDir,
 	defaultDaemonSocketPath,
 	getDaemonSocketIdentity,
@@ -653,7 +655,7 @@ export class DaemonSupervisor {
 			mkdirSync(this.descriptorDir, { recursive: true, mode: 0o700 });
 			chmodSync(this.descriptorDir, 0o700);
 			this.persistSupervisorConfig();
-			rmSync(this.snapshotCacheRoot, { recursive: true, force: true });
+			removePathSync(this.snapshotCacheRoot);
 			mkdirSync(this.snapshotCacheRoot, { recursive: true, mode: 0o700 });
 			this.commandJournal = new CommandRecoveryJournal(join(this.descriptorDir, "command-journal.jsonl"));
 			this.loadWorkerDescriptors();
@@ -728,7 +730,7 @@ export class DaemonSupervisor {
 			};
 			this.server?.once("error", onError);
 			this.server?.once("listening", onListening);
-			this.server?.listen(this.socketPath);
+			this.server?.listen(daemonSocketEndpoint(this.socketPath));
 		});
 	}
 
@@ -2115,6 +2117,7 @@ export class DaemonSupervisor {
 		const child: ChildProcess = spawn(launch.command, launch.args, {
 			cwd: createCommand.config?.cwd ?? process.cwd(),
 			detached: true,
+			windowsHide: true,
 			env: createCliSubprocessEnv({
 				...process.env,
 				...launchEnv,
@@ -2831,15 +2834,7 @@ export class DaemonSupervisor {
 						continue;
 					}
 					const { pid } = orphan;
-					try {
-						process.kill(-pid, "SIGKILL");
-					} catch {
-						try {
-							process.kill(pid, "SIGKILL");
-						} catch {
-							// The detached resource may already have exited.
-						}
-					}
+					signalProcessGroupOrProcess(pid, "SIGKILL");
 				}
 				clearOrphanProcessJournal(orphanProcessJournalPath);
 			} catch (error) {
@@ -4617,7 +4612,7 @@ export class DaemonSupervisor {
 		if (!context) {
 			return;
 		}
-		rmSync(join(context.artifactDir, `${SESSION_SCHEDULED_JOBS_FILENAME}.lock`), { recursive: true, force: true });
+		removePathSync(join(context.artifactDir, `${SESSION_SCHEDULED_JOBS_FILENAME}.lock`));
 	}
 
 	private workerSessionArtifactContext(
@@ -4757,7 +4752,7 @@ export class DaemonSupervisor {
 		await this.runCleanupStep("daemon server", () => serverClosed);
 		await this.runCleanupStep("daemon socket", () => this.cleanupSocket());
 		await this.runCleanupStep("supervisor cache", () => {
-			rmSync(this.snapshotCacheRoot, { recursive: true, force: true });
+			removePathSync(this.snapshotCacheRoot);
 		});
 		const lease = this.socketLease;
 		this.socketLease = undefined;
@@ -4827,7 +4822,7 @@ export class DaemonSupervisor {
 		await new Promise<void>((resolveClose) => this.server?.close(() => resolveClose()) ?? resolveClose());
 		await this.runCleanupStep("daemon socket", () => this.cleanupSocket());
 		await this.runCleanupStep("supervisor cache", () => {
-			rmSync(this.snapshotCacheRoot, { recursive: true, force: true });
+			removePathSync(this.snapshotCacheRoot);
 		});
 		const lease = this.socketLease;
 		this.socketLease = undefined;
@@ -4852,6 +4847,7 @@ export class DaemonSupervisor {
 				detached: true,
 				env: environment,
 				stdio: "ignore",
+				windowsHide: true,
 			});
 			replacement.unref();
 		}

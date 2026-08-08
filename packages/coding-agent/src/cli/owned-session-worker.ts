@@ -13,6 +13,7 @@ import {
 } from "../core/orphan-process-journal.js";
 import { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.js";
+import { signalProcessGroupOrProcess } from "../utils/child-process.js";
 import { isHelpCommandRequest, PUBLIC_COMMAND_NAMES, REMOVED_COMMAND_NAMES } from "./command-registry.js";
 import { type CliSubprocessLaunchSpec, createCliSubprocessLaunchSpec } from "./subprocess-launch.js";
 
@@ -289,27 +290,14 @@ export async function runOwnedSessionWorkerFrontend(
 		if (!workerPid) {
 			return;
 		}
-		if (process.platform !== "win32") {
-			try {
-				process.kill(-workerPid, "SIGKILL");
-			} catch {
-				// The worker process group may already be fully reaped.
-			}
-		}
+		// Windows has no process groups; taskkill /T is what reaps the worker's
+		// descendants there, so both platforms go through the same helper.
+		signalProcessGroupOrProcess(workerPid, "SIGKILL");
 		for (const orphan of readActiveOrphanProcesses(orphanProcessJournalPath, workerPid)) {
 			if (!isOrphanProcessIdentityCurrent(orphan)) {
 				continue;
 			}
-			const { pid } = orphan;
-			try {
-				process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
-			} catch {
-				try {
-					process.kill(pid, "SIGKILL");
-				} catch {
-					// The detached resource may already have exited.
-				}
-			}
+			signalProcessGroupOrProcess(orphan.pid, "SIGKILL");
 		}
 		clearOrphanProcessJournal(orphanProcessJournalPath);
 	};
@@ -356,6 +344,7 @@ export async function runOwnedSessionWorkerFrontend(
 				[SESSION_LEASE_OWNER_ID_ENV]: `owned-${randomUUID()}`,
 			},
 			stdio,
+			windowsHide: true,
 		});
 		currentChild = child;
 		if (!interactive) {
@@ -507,13 +496,13 @@ export function installOwnedSessionWorkerOwnerWatch(): void {
 		ownerGone = true;
 		closeOwnerWatch = undefined;
 		const forceTimer = setTimeout(() => {
-			if (process.platform !== "win32") {
-				try {
-					process.kill(-process.pid, "SIGKILL");
-					return;
-				} catch {
-					// Fall through to terminating only this process.
-				}
+			try {
+				// Takes down this process and its descendants on both platforms
+				// (process group on Unix, taskkill /F /T on Windows).
+				signalProcessGroupOrProcess(process.pid, "SIGKILL");
+				return;
+			} catch {
+				// Fall through to terminating only this process.
 			}
 			process.exit(143);
 		}, 5000);

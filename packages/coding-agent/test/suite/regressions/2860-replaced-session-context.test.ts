@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
@@ -13,6 +13,7 @@ import {
 import { AuthStorage } from "../../../src/core/auth-storage.js";
 import { SessionManager } from "../../../src/core/session-manager.js";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionFactory } from "../../../src/index.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 function getText(message: AgentSession["messages"][number]): string {
 	if (!("content" in message)) {
@@ -132,7 +133,7 @@ describe("regression #2860: replaced session callbacks", () => {
 			await runtime.dispose();
 			faux.unregister();
 			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true, force: true });
+				removeTempDirSync(tempDir);
 			}
 		});
 

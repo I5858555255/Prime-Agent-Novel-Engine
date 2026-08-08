@@ -2,7 +2,7 @@ import assert from "node:assert";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, it, test } from "node:test";
 import { CombinedAutocompleteProvider } from "../src/autocomplete.js";
 import { getSlashCommandContext } from "../src/slash-command-context.js";
@@ -37,8 +37,35 @@ const setupFolder = (baseDir: string, structure: FolderStructure = {}): void => 
 	});
 };
 
+/**
+ * Directory symlinks need SeCreateSymbolicLinkPrivilege on Windows, but junctions
+ * do not, and `fd` treats both the same. Junction targets must be absolute.
+ */
+const symlinkDirSync = (target: string, linkPath: string): void => {
+	if (process.platform === "win32") {
+		symlinkSync(resolve(dirname(linkPath), target), linkPath, "junction");
+		return;
+	}
+	symlinkSync(target, linkPath);
+};
+
+/** File symlinks have no junction equivalent, so they stay privileged on Windows. */
+const canCreateFileSymlinks = (): boolean => {
+	const probeDir = mkdtempSync(join(tmpdir(), "pi-symlink-probe-"));
+	try {
+		writeFileSync(join(probeDir, "target.txt"), "probe");
+		symlinkSync("target.txt", join(probeDir, "link.txt"));
+		return true;
+	} catch {
+		return false;
+	} finally {
+		rmSync(probeDir, { recursive: true, force: true });
+	}
+};
+
 const fdPath = resolveFdPath();
 const isFdInstalled = Boolean(fdPath);
+const supportsFileSymlinks = canCreateFileSymlinks();
 
 const requireFdPath = (): string => {
 	if (!fdPath) {
@@ -467,7 +494,7 @@ describe("CombinedAutocompleteProvider", () => {
 					"some_file.txt": "symlinked",
 				},
 			});
-			symlinkSync("../outside", join(baseDir, "symlinked_dir"));
+			symlinkDirSync("../outside", join(baseDir, "symlinked_dir"));
 
 			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
 			const line = "@some";
@@ -484,7 +511,7 @@ describe("CombinedAutocompleteProvider", () => {
 					"nested/file.txt": "symlinked",
 				},
 			});
-			symlinkSync("../outside", join(baseDir, "symlinked_dir"));
+			symlinkDirSync("../outside", join(baseDir, "symlinked_dir"));
 
 			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
 			const line = "@symlinked";
@@ -494,22 +521,26 @@ describe("CombinedAutocompleteProvider", () => {
 			assert.ok(values.includes("@symlinked_dir/"));
 		});
 
-		test("returns symlinked files without requiring type l", async () => {
-			setupFolder(baseDir, {
-				files: {
-					"original.txt": "content",
-				},
-			});
-			const linkPath = join(baseDir, "link.txt");
-			symlinkSync("original.txt", linkPath);
+		test(
+			"returns symlinked files without requiring type l",
+			{ skip: supportsFileSymlinks ? false : "file symlinks are not permitted on this host" },
+			async () => {
+				setupFolder(baseDir, {
+					files: {
+						"original.txt": "content",
+					},
+				});
+				const linkPath = join(baseDir, "link.txt");
+				symlinkSync("original.txt", linkPath);
 
-			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
-			const line = "@link";
-			const result = await getSuggestions(provider, [line], 0, line.length);
+				const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
+				const line = "@link";
+				const result = await getSuggestions(provider, [line], 0, line.length);
 
-			const values = result?.items.map((item) => item.value) ?? [];
-			assert.ok(values.includes("@link.txt"));
-		});
+				const values = result?.items.map((item) => item.value) ?? [];
+				assert.ok(values.includes("@link.txt"));
+			},
+		);
 
 		test("returns the same @ suggestions when the cwd path contains the query", async () => {
 			const normalBaseDir = join(rootDir, "cwd-normal");

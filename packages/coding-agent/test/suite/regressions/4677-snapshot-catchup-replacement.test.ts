@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import { DaemonSupervisor } from "../../../src/modes/daemon/daemon-supervisor.js
 import type { DaemonWorkerFrameHeader } from "../../../src/modes/daemon/daemon-worker-protocol.js";
 import { SnapshotTranscriptCache } from "../../../src/modes/daemon/snapshot-transcript-cache.js";
 import type { PrivateFrame } from "../../../src/modes/session-worker/private-framing.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 const activeSessionId = "active-4677";
 const directories: string[] = [];
@@ -47,7 +48,7 @@ interface WorkerHarness {
 
 afterEach(() => {
 	for (const directory of directories.splice(0)) {
-		rmSync(directory, { recursive: true, force: true });
+		removeTempDirSync(directory);
 	}
 });
 

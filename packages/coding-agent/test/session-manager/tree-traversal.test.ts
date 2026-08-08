@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
 import { type CustomEntry, SessionManager } from "../../src/core/session-manager.js";
 import { assistantMsg, userMsg } from "../utilities.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 describe("SessionManager append and tree traversal", () => {
 	describe("append operations", () => {
@@ -516,7 +517,7 @@ describe("createBranchedSession", () => {
 				.filter((id): id is string => typeof id === "string");
 			expect(new Set(entryIds).size).toBe(entryIds.length);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -542,7 +543,7 @@ describe("createBranchedSession", () => {
 			const records = lines.map((line) => JSON.parse(line));
 			expect(records.filter((r) => r.type === "session")).toHaveLength(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 });

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
@@ -7,6 +7,7 @@ import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtim
 import { PRIME_AGENT_META_NAMESPACE } from "../../../src/modes/acp/acp-meta.js";
 import { runAcpModeWithConnection } from "../../../src/modes/acp/index.js";
 import { InProcessAgentConnection } from "../../../src/modes/agent-connection/in-process-agent-connection.js";
+import { removeTempDirSync, symlinkDirSync } from "../../utils/temp-fs.js";
 import { createHarness, type Harness } from "../harness.js";
 
 function runtimeHostFor(session: unknown): AgentSessionRuntime {
@@ -64,7 +65,7 @@ const directories: string[] = [];
 
 afterEach(() => {
 	for (const directory of directories.splice(0)) {
-		rmSync(directory, { recursive: true, force: true });
+		removeTempDirSync(directory);
 	}
 	for (const harness of harnesses.splice(0)) {
 		harness.cleanup();
@@ -78,7 +79,7 @@ describe("#623 ACP canonical cwd comparison", () => {
 		const aliasRoot = mkdtempSync(join(tmpdir(), "prime-agent-acp-cwd-"));
 		directories.push(aliasRoot);
 		const alias = join(aliasRoot, "alias");
-		symlinkSync(process.cwd(), alias, process.platform === "win32" ? "junction" : "dir");
+		symlinkDirSync(process.cwd(), alias);
 
 		// macOS exposes /var as /private/var; a portable symlink exercises the
 		// same distinction between a displayed path and its canonical path.

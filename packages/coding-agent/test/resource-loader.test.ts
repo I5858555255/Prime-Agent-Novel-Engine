@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import type { Skill } from "../src/core/skills.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
+import { removeTempDirSync, symlinkDirSync } from "./utils/temp-fs.js";
 
 describe("DefaultResourceLoader", () => {
 	let tempDir: string;
@@ -33,7 +34,7 @@ describe("DefaultResourceLoader", () => {
 		} else {
 			process.env.SERPER_API_KEY = previousSerperApiKey;
 		}
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	describe("reload", () => {
@@ -179,8 +180,8 @@ Project skill`,
 
 			mkdirSync(agentDir, { recursive: true });
 			mkdirSync(join(cwd, ".prime", "agent"), { recursive: true });
-			symlinkSync(sharedExtDir, join(agentDir, "extensions"), "dir");
-			symlinkSync(sharedExtDir, join(cwd, ".prime", "agent", "extensions"), "dir");
+			symlinkDirSync(sharedExtDir, join(agentDir, "extensions"));
+			symlinkDirSync(sharedExtDir, join(cwd, ".prime", "agent", "extensions"));
 
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();

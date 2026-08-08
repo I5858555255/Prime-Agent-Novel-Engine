@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed flashing console windows on Windows by hiding every spawned child process (`windowsHide: true`).
+- Fixed the Python kernel bootstrap failing on Windows by resolving the venv interpreter at `Scripts\python.exe` instead of the POSIX `bin/python` path.
+- Fixed Windows shell detection accepting an unusable WSL `bash.exe` launcher as the Bash executable, while allowing slower WSL startup probes.
+- Fixed Herdr agent reporting on Windows by connecting through Herdr's named-pipe endpoint.
+- Fixed Windows daemon force-stop operations leaving descendant processes alive by terminating process trees through `taskkill`.
+- Fixed Windows daemon status, doctor, and shutdown discovery missing a live default named-pipe supervisor without worker descriptors.
+- Fixed existing daemon sessions adopting Herdr environment without reloading their lifecycle reporter.
 
 ## [0.7.0] - 2026-08-05
 

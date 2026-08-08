@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KernelManager } from "../src/core/kernel/index.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 /** Find a python that can launch an ipykernel and has dill, or null to skip. */
 function resolveKernelPython(): string | null {
@@ -34,7 +35,7 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", { tags: ["ker
 	});
 
 	afterAll(() => {
-		if (dir) rmSync(dir, { recursive: true, force: true });
+		if (dir) removeTempDirSync(dir);
 	});
 
 	function newManager(): KernelManager {
@@ -88,7 +89,7 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", { tags: ["ker
 			expect(restore).toEqual({ restored: [], failed: [], path: join(freshDir, "missing.dill") });
 		} finally {
 			await manager.dispose();
-			rmSync(freshDir, { recursive: true, force: true });
+			removeTempDirSync(freshDir);
 		}
 	}, 60_000);
 
@@ -114,7 +115,7 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", { tags: ["ker
 			expect(restore?.restored).toEqual(expect.arrayContaining(["list", "print", "id"]));
 		} finally {
 			await reader.dispose();
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	}, 60_000);
 
@@ -136,7 +137,7 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", { tags: ["ker
 			expect(echo.stdout.trim()).toBe("alive");
 		} finally {
 			await manager.dispose();
-			rmSync(badDir, { recursive: true, force: true });
+			removeTempDirSync(badDir);
 		}
 	}, 60_000);
 
@@ -154,7 +155,7 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", { tags: ["ker
 			expect(names).not.toContain("rlm");
 		} finally {
 			await manager.dispose();
-			rmSync(listDir, { recursive: true, force: true });
+			removeTempDirSync(listDir);
 		}
 	}, 60_000);
 
@@ -171,7 +172,7 @@ describeIfKernel("kernel state snapshot round-trip (real kernel)", { tags: ["ker
 			await expect.poll(() => existsSync(autoPath), { timeout: 10_000 }).toBe(true);
 		} finally {
 			await manager.dispose();
-			rmSync(autoDir, { recursive: true, force: true });
+			removeTempDirSync(autoDir);
 		}
 	}, 60_000);
 });

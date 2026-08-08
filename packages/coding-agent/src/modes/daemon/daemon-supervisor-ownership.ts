@@ -12,6 +12,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { getProcessStartId } from "../../core/session-lease.js";
+import { removePathSync } from "../../utils/durable-fs.js";
 import { defaultDaemonSocketDir } from "./daemon-socket.js";
 
 const DAEMON_SUPERVISOR_REGISTRY_DIR_ENV = "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR";
@@ -173,7 +174,7 @@ class DaemonSupervisorOwnership {
 			this.released = true;
 		} finally {
 			if (releasedDirectory) {
-				rmSync(releasedDirectory, { recursive: true, force: true });
+				removePathSync(releasedDirectory);
 			}
 		}
 	}
@@ -352,11 +353,11 @@ export async function acquireDaemonSupervisorOwnership(
 			renameSync(candidateDirectory, ownerDirectory);
 		});
 	} catch (error) {
-		rmSync(candidateDirectory, { recursive: true, force: true });
+		removePathSync(candidateDirectory);
 		throw error;
 	} finally {
 		for (const directory of staleDirectories) {
-			rmSync(directory, { recursive: true, force: true });
+			removePathSync(directory);
 		}
 	}
 	return new DaemonSupervisorOwnership(record, registryDir, ownerDirectory);
@@ -627,7 +628,7 @@ function readOwnerRecordForScope(
 	if (!scope && !entries.includes("owner.json") && !entries.includes("scope.json")) {
 		const abandonedDirectory = `${directory}.abandoned-${randomUUID()}`;
 		renameSync(directory, abandonedDirectory);
-		rmSync(abandonedDirectory, { recursive: true, force: true });
+		removePathSync(abandonedDirectory);
 		return undefined;
 	}
 	if (!scope || isRelevant(scope)) {

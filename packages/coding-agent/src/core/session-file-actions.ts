@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { rm, unlink } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { removePath } from "../utils/durable-fs.js";
 
 export type DeleteSessionFileResult = { ok: true; method: "trash" | "unlink" } | { ok: false; error: string };
 
@@ -19,13 +20,13 @@ async function deleteSessionArtifacts(sessionPath: string): Promise<void> {
 	const sessionId = basename(sessionPath).replace(/\.jsonl$/, "");
 	if (!sessionId) return;
 	const artifactDir = join(dirname(dirname(sessionPath)), "session-artifacts", sessionId);
-	await rm(artifactDir, { recursive: true, force: true });
+	await removePath(artifactDir);
 }
 
 /** Remove the session `.jsonl`, trying the `trash` CLI first, then falling back to unlink. */
 async function removeSessionFile(sessionPath: string): Promise<DeleteSessionFileResult> {
 	const trashArgs = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
-	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8" });
+	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8", windowsHide: true });
 
 	const getTrashErrorHint = (): string | null => {
 		const parts: string[] = [];

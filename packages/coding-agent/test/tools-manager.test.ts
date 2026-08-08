@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,6 +29,7 @@ import {
 	getToolPath,
 	type ToolUnavailableResult,
 } from "../src/utils/tools-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const originalPath = process.env.PATH;
 const originalOffline = process.env.PI_OFFLINE;
@@ -48,7 +49,7 @@ function unavailable(
 
 describe("tools manager", () => {
 	beforeEach(() => {
-		rmSync(toolState.toolsDir, { recursive: true, force: true });
+		removeTempDirSync(toolState.toolsDir);
 		mkdirSync(pathDir, { recursive: true });
 		process.env.PATH = pathDir;
 		delete process.env.PI_OFFLINE;
@@ -63,7 +64,7 @@ describe("tools manager", () => {
 		else process.env.PATH = originalPath;
 		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
 		else process.env.PI_OFFLINE = originalOffline;
-		rmSync(toolState.toolsDir, { recursive: true, force: true });
+		removeTempDirSync(toolState.toolsDir);
 	});
 
 	it("accepts managed and PATH tools only when their version check succeeds", () => {

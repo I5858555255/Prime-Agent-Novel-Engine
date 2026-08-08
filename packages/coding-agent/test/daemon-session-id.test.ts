@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import type { ActiveSessionState } from "../src/modes/daemon/active-session-stat
 import { createActiveSessionId, resolveActiveSessionState } from "../src/modes/daemon/active-session-state.js";
 import { resolveDaemonSessionPath } from "../src/modes/daemon/daemon-mode.js";
 import { formatSessionDisplayId, matchesSessionIdSuffix } from "../src/modes/daemon/daemon-session-id.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("formatSessionDisplayId", () => {
 	it("compacts uuid-like session ids to the last 12 hex characters", () => {
@@ -75,7 +76,7 @@ describe("resolveDaemonSessionPath", () => {
 				/Ambiguous saved session "abc"/,
 			);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -89,7 +90,7 @@ describe("resolveDaemonSessionPath", () => {
 
 			await expect(resolveDaemonSessionPath("AAAAAA-AAAAAA", cwd, sessionDir)).resolves.toBe(sessionPath);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -105,7 +106,7 @@ describe("resolveDaemonSessionPath", () => {
 				/Ambiguous saved session "aaaaaaaaaaaa"/,
 			);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -120,7 +121,7 @@ describe("resolveDaemonSessionPath", () => {
 
 			await expect(resolveDaemonSessionPath("AB-CD", cwd, sessionDir)).resolves.toBe(exactPath);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 });

@@ -1,15 +1,16 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { SnapshotTranscriptCache } from "../src/modes/daemon/snapshot-transcript-cache.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
 	for (const directory of tempDirs.splice(0)) {
-		rmSync(directory, { recursive: true, force: true });
+		removeTempDirSync(directory);
 	}
 });
 

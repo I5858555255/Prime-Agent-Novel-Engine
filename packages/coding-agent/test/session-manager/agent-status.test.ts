@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildSessionContext, loadEntriesFromFile, SessionManager } from "../../src/core/session-manager.js";
 import { assistantMsg, userMsg } from "../utilities.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 describe("SessionManager agent status", () => {
 	it("persists the latest agent status append-only and reads it back", () => {
@@ -31,7 +32,7 @@ describe("SessionManager agent status", () => {
 			expect(entries.filter((entry) => entry.type === "agent_status")).toHaveLength(2);
 			expect(entries.filter((entry) => entry.type === "message")).toHaveLength(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -54,7 +55,7 @@ describe("SessionManager agent status", () => {
 			session.branch(branchAStatus);
 			expect(session.getLatestAgentStatus()?.summary).toBe("branch A");
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -75,7 +76,7 @@ describe("SessionManager agent status", () => {
 				true,
 			);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 });

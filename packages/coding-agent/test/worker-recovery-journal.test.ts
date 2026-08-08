@@ -1,15 +1,16 @@
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WorkerRecoveryJournal } from "../src/modes/daemon/worker-recovery-journal.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("WorkerRecoveryJournal", () => {
 	const roots: string[] = [];
 
 	afterEach(() => {
 		for (const root of roots.splice(0)) {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 

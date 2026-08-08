@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { KernelManager } from "../src/core/kernel/index.js";
 import { buildRlmBootstrapCode } from "../src/core/tools/ipython.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("IPython RLM bootstrap", () => {
 	it("pre-imports asyncio so the prompt's subagent patterns work without a manual import", () => {
@@ -61,7 +62,7 @@ describeIfKernel("IPython RLM bootstrap (real kernel)", () => {
 	const dir = mkdtempSync(join(tmpdir(), "prime-agent-bootstrap-"));
 
 	afterAll(() => {
-		rmSync(dir, { recursive: true, force: true });
+		removeTempDirSync(dir);
 	});
 
 	it("binds asyncio in the user namespace", async () => {

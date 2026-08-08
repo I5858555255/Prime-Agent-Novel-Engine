@@ -1,9 +1,10 @@
-import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { processFileArguments } from "../src/cli/file-processor.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 // 1x1 red PNG image as base64 (smallest valid PNG)
 const TINY_PNG_BASE64 =
@@ -50,7 +51,7 @@ describe("blockImages setting", () => {
 		});
 
 		afterEach(() => {
-			rmSync(testDir, { recursive: true, force: true });
+			removeTempDirSync(testDir);
 		});
 
 		it("should always process images (filtering happens at convertToLlm layer)", async () => {

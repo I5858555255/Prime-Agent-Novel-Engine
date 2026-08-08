@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import {
 	type SkillPythonMetadata,
 } from "../src/core/skills.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const fixturesDir = resolve(__dirname, "fixtures/skills");
 const collisionFixturesDir = resolve(__dirname, "fixtures/skills-collision");
@@ -520,7 +521,7 @@ describe("skills", () => {
 					),
 				).toBe(true);
 			} finally {
-				rmSync(tempDir, { recursive: true, force: true });
+				removeTempDirSync(tempDir);
 			}
 		});
 	});

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import { type BashOperations, createBashTool, createLocalBashOperations } from "
 import { computeEditsDiff } from "../src/core/tools/edit-diff.js";
 import { createEditTool } from "../src/index.js";
 import * as shellModule from "../src/utils/shell.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const editTool = createEditTool(process.cwd());
 const bashTool = createBashTool(process.cwd());
@@ -32,7 +33,7 @@ describe("Coding Agent Tools", () => {
 
 	afterEach(() => {
 		// Clean up test directory
-		rmSync(testDir, { recursive: true, force: true });
+		removeTempDirSync(testDir);
 	});
 
 	describe("edit tool", () => {
@@ -480,7 +481,7 @@ describe("edit tool fuzzy matching", () => {
 	});
 
 	afterEach(() => {
-		rmSync(testDir, { recursive: true, force: true });
+		removeTempDirSync(testDir);
 	});
 
 	it("should match text with trailing whitespace stripped", async () => {
@@ -656,7 +657,7 @@ describe("edit tool CRLF handling", () => {
 	});
 
 	afterEach(() => {
-		rmSync(testDir, { recursive: true, force: true });
+		removeTempDirSync(testDir);
 	});
 
 	it("should match LF oldText against CRLF file content", async () => {

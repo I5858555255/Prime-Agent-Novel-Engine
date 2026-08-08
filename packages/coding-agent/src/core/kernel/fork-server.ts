@@ -7,11 +7,12 @@
 // or a spawn request fails/times out, callers catch ForkServerUnavailable and fall
 // back to the existing path, so correctness never depends on fork.
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
+import { removePathSync } from "../../utils/durable-fs.js";
 import { FORK_SERVER_SCRIPT } from "./fork-server-script.js";
 
 const READY_TIMEOUT_MS = 30_000;
@@ -175,6 +176,7 @@ class ForkServer {
 				const proc = spawn(this.params.python, ["-c", FORK_SERVER_SCRIPT, socketPath], {
 					env: this.launchEnv,
 					stdio: ["ignore", "ignore", "pipe"],
+					windowsHide: true,
 				});
 				this.proc = proc;
 				proc.stderr?.on("data", (buf: Buffer) => {
@@ -291,7 +293,7 @@ class ForkServer {
 		}
 		if (this.socketDir) {
 			try {
-				rmSync(this.socketDir, { recursive: true, force: true });
+				removePathSync(this.socketDir);
 			} catch {
 				// Leave the socket dir for OS tmp cleanup.
 			}

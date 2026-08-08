@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { APP_NAME } from "../src/config.js";
 import { formatResumeHint } from "../src/modes/interactive/resume-hint.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const SESSION_ID = "0196c2e4-7f01-7abc-8def-0123456789ab";
 
@@ -12,7 +13,7 @@ const existingSessionFile = join(sessionDir, `${SESSION_ID}.jsonl`);
 writeFileSync(existingSessionFile, `{"type":"session","id":"${SESSION_ID}"}\n`);
 
 afterAll(() => {
-	rmSync(sessionDir, { recursive: true, force: true });
+	removeTempDirSync(sessionDir);
 });
 
 describe("formatResumeHint", () => {

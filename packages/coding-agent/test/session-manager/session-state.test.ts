@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { loadEntriesFromFile, SessionManager, type SessionStateEntry } from "../../src/core/session-manager.js";
 import { inactiveLifecycleForSession } from "../../src/modes/daemon/daemon-session-list.js";
 import { assistantMsg, userMsg } from "../utilities.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 describe("SessionManager session state", () => {
 	it("persists lifecycle state and exposes it through list", async () => {
@@ -36,7 +37,7 @@ describe("SessionManager session state", () => {
 				state: { status: "crash" },
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -63,7 +64,7 @@ describe("SessionManager session state", () => {
 				state: { status: "archived" },
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -83,7 +84,7 @@ describe("SessionManager session state", () => {
 				expect.objectContaining({ id: session.getSessionId(), name: "Renamed draft" }),
 			]);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -108,7 +109,7 @@ describe("SessionManager session state", () => {
 			expect(sessions[0]!.state).toEqual({ status: "archived" });
 			expect(inactiveLifecycleForSession(sessions[0]!)).toBe("archived");
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -137,7 +138,7 @@ describe("SessionManager session state", () => {
 			}
 			expect(existsSync(sessionFile)).toBe(false);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -166,7 +167,7 @@ describe("SessionManager session state", () => {
 				state: { status: "archived" },
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -188,7 +189,7 @@ describe("SessionManager session state", () => {
 			const sessions = await SessionManager.list(cwd, sessionDir);
 			expect(sessions[0]).toMatchObject({ id: session.getSessionId(), state: { status: "active" } });
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -210,7 +211,7 @@ describe("SessionManager session state", () => {
 			expect(entries.filter((entry) => entry.type === "session_state")).toHaveLength(1);
 			expect(entries.filter((entry) => entry.type === "message")).toHaveLength(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -223,7 +224,7 @@ describe("SessionManager session state", () => {
 			const sessionFile = session.getSessionFile();
 			expect(sessionFile).toBeDefined();
 
-			rmSync(sessionDir, { recursive: true, force: true });
+			removeTempDirSync(sessionDir);
 			session.appendSessionState({ status: "archived" });
 
 			expect(existsSync(sessionFile!)).toBe(true);
@@ -231,7 +232,7 @@ describe("SessionManager session state", () => {
 			expect(entries[0]).toMatchObject({ type: "session", id: session.getSessionId() });
 			expect(entries.filter((entry) => entry.type === "session_state")).toHaveLength(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -256,7 +257,7 @@ describe("SessionManager session state", () => {
 			expect(entries.filter((entry) => entry.type === "message")).toHaveLength(2);
 			expect(entries.filter((entry) => entry.type === "session_state")).toHaveLength(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 });

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, unlinkSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -11,6 +11,7 @@ import {
 	getDaemonSocketIdentity,
 	prepareDaemonSocketPath,
 } from "../src/modes/daemon/daemon-socket.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("defaultDaemonSocketPath", () => {
 	it("uses a fixed Windows named pipe path", () => {
@@ -57,7 +58,7 @@ describe("defaultDaemonSocketPath", () => {
 			if (server.listening) {
 				await new Promise<void>((resolve) => server.close(() => resolve()));
 			}
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -79,7 +80,7 @@ describe("defaultDaemonSocketPath", () => {
 			]);
 			expect(prepared).toBe(true);
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -129,7 +130,7 @@ describe("defaultDaemonSocketPath", () => {
 						}),
 				),
 			);
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -168,7 +169,7 @@ describe("defaultDaemonSocketPath", () => {
 		} finally {
 			await releaseLock?.();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 
@@ -242,7 +243,7 @@ describe("defaultDaemonSocketPath", () => {
 			if (replacementServer.listening) {
 				await new Promise<void>((resolve) => replacementServer.close(() => resolve()));
 			}
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDirSync(dir);
 		}
 	});
 });

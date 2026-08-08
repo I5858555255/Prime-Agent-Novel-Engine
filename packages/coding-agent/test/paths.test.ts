@@ -1,14 +1,19 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalizePath, getCwdRelativePath, isLocalPath } from "../src/utils/paths.js";
+import { canCreateFileSymlinks, removeTempDirSync, symlinkDirSync } from "./utils/temp-fs.js";
+
+// File symlinks need SeCreateSymbolicLinkPrivilege on Windows and have no
+// junction equivalent, so the cases that need one only run where they can.
+const itWithFileSymlinks = canCreateFileSymlinks() ? it : it.skip;
 
 let tempDir: string;
 
 afterEach(() => {
 	if (tempDir) {
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 		tempDir = "";
 	}
 });
@@ -26,7 +31,7 @@ describe("canonicalizePath", () => {
 		expect(canonicalizePath(file)).toBe(realpathSync(file));
 	});
 
-	it("resolves symlinks to their targets", () => {
+	itWithFileSymlinks("resolves symlinks to their targets", () => {
 		const dir = createTempDir();
 		const target = join(dir, "target.txt");
 		const link = join(dir, "link.txt");
@@ -40,7 +45,7 @@ describe("canonicalizePath", () => {
 		const targetDir = join(dir, "target-dir");
 		const linkDir = join(dir, "link-dir");
 		mkdirSync(targetDir);
-		symlinkSync(targetDir, linkDir, "dir");
+		symlinkDirSync(targetDir, linkDir);
 		expect(canonicalizePath(linkDir)).toBe(realpathSync(targetDir));
 	});
 
@@ -50,7 +55,7 @@ describe("canonicalizePath", () => {
 		expect(canonicalizePath(nonexistent)).toBe(nonexistent);
 	});
 
-	it("falls back to the raw path for a dangling symlink", () => {
+	itWithFileSymlinks("falls back to the raw path for a dangling symlink", () => {
 		const dir = createTempDir();
 		const target = join(dir, "target.txt");
 		const link = join(dir, "link.txt");

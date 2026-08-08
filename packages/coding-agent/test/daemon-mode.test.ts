@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -44,6 +44,7 @@ import {
 } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DAEMON_WORKER_SUPERVISOR_SOCKET_ENV } from "../src/modes/daemon/daemon-worker-protocol.js";
+import { removeTempDirSync, symlinkDirSync } from "./utils/temp-fs.js";
 
 describe("daemon mode helpers", () => {
 	it("preserves envelope client identity while registering prompt admission", () => {
@@ -437,7 +438,7 @@ describe("daemon mode helpers", () => {
 				"an agent of that name already exists at depth 1 under this parent",
 			);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -491,7 +492,7 @@ describe("daemon mode helpers", () => {
 			const realDir = join(tempDir, "real");
 			const aliasDir = join(tempDir, "alias");
 			mkdirSync(realDir);
-			symlinkSync(realDir, aliasDir, "dir");
+			symlinkDirSync(realDir, aliasDir);
 			const parentPath = join(realDir, "parent.jsonl");
 			writeFileSync(parentPath, "");
 			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
@@ -556,7 +557,7 @@ describe("daemon mode helpers", () => {
 				listAll.mockRestore();
 			}
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -816,7 +817,7 @@ describe("daemon mode helpers", () => {
 				expect.objectContaining({ sessionFile: childState.runtime.session.sessionFile, rlmChildId: "child-1" }),
 			);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -844,7 +845,7 @@ describe("daemon mode helpers", () => {
 				entries: [expect.objectContaining({ relationship: "child", name: "renamed-worker" })],
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -896,7 +897,7 @@ describe("daemon mode helpers", () => {
 			expect(child.session.sessionManager.getHeader()).toMatchObject({ rlmDepth: 1 });
 			expect(child.session.sessionManager.getHeader()?.parentSession).toBeUndefined();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -1025,7 +1026,7 @@ describe("daemon mode helpers", () => {
 			});
 		} finally {
 			releaseChildBinding?.();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -1137,7 +1138,7 @@ describe("daemon mode helpers", () => {
 			expect(internals.cronStore.list().find((candidate) => candidate.id === job.id)?.status).toBe("cancelled");
 		} finally {
 			releaseDispose();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -1192,7 +1193,7 @@ describe("daemon mode helpers", () => {
 			expect(closeSession).not.toHaveBeenCalled();
 			expect(internals.sessions.get(childState.activeSessionId)).toBe(childState);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -1547,7 +1548,7 @@ describe("daemon mode helpers", () => {
 				process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = previousSupervisorSocket;
 			}
 			await new Promise<void>((resolve) => server.close(() => resolve()));
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -1628,7 +1629,7 @@ describe("daemon mode helpers", () => {
 			if (previousSocketPath === undefined) delete process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
 			else process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = previousSocketPath;
 			await new Promise<void>((resolve) => server.close(() => resolve()));
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -1686,7 +1687,7 @@ describe("daemon mode helpers", () => {
 			if (previousSocketPath === undefined) delete process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
 			else process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = previousSocketPath;
 			await new Promise<void>((resolve) => server.close(() => resolve()));
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -2471,7 +2472,7 @@ describe("daemon mode helpers", () => {
 			const realDir = join(tempDir, "real");
 			const aliasDir = join(tempDir, "alias");
 			mkdirSync(realDir);
-			symlinkSync(realDir, aliasDir, "dir");
+			symlinkDirSync(realDir, aliasDir);
 			const daemon = new AgentDaemon("/tmp/prime-agent-family-paths.sock", {
 				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir },
 				createRuntime: vi.fn(),
@@ -2498,7 +2499,7 @@ describe("daemon mode helpers", () => {
 
 			expect(() => internals.assertAgentFamilyReachable(parent, child)).not.toThrow();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -2547,7 +2548,7 @@ describe("daemon mode helpers", () => {
 			expect(() => internals.assertAgentFamilyReachable(child, parent)).not.toThrow();
 			expect(() => internals.assertAgentFamilyReachable(child, otherRoot)).toThrow(AGENT_FAMILY_REACH_ERROR);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -4450,7 +4451,7 @@ describe("daemon mode helpers", () => {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			expect(streamWorkerSnapshot).toHaveBeenCalledOnce();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -4519,7 +4520,7 @@ describe("daemon mode helpers", () => {
 			expect(frames).toContain('"snapshotFollows":true');
 			expect(frames).toContain('"type":"session_snapshot_begin"');
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 
@@ -4712,7 +4713,7 @@ describe("daemon mode helpers", () => {
 			expect(firstState.runtime.session.sessionFile).toBe(sessionPath);
 			expect(createRuntime).toHaveBeenCalledTimes(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -4743,23 +4744,34 @@ describe("daemon mode helpers", () => {
 			).createRuntime.bind(daemon);
 
 			// Created env-less (e.g. by a cron job), then opened by an env-carrying
-			// client: the session adopts the client's allowlisted identity.
+			// client: the session adopts the client's allowlisted identity and
+			// reloads extensions so the Herdr reporter can bind to the pane.
 			const state = await create({ type: "create", sessionPath });
 			expect(state.clientEnv).toBeUndefined();
 			const adopted = await create({
 				type: "create",
 				sessionPath,
-				env: { HERDR_PANE_ID: "w1:p1", PATH: "/evil" },
+				env: { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: "C:\\herdr.sock", PATH: "/evil" },
 			});
 			expect(adopted).toBe(state);
-			expect(state.clientEnv).toEqual({ HERDR_PANE_ID: "w1:p1" });
+			expect(state.clientEnv).toEqual({
+				HERDR_ENV: "1",
+				HERDR_PANE_ID: "w1:p1",
+				HERDR_SOCKET_PATH: "C:\\herdr.sock",
+			});
+			expect(state.runtime.session.reload).toHaveBeenCalledTimes(1);
 
 			// A later client with a different env must not rebind the identity
 			// that extensions already captured.
-			await create({ type: "create", sessionPath, env: { HERDR_PANE_ID: "w2:p9" } });
-			expect(state.clientEnv).toEqual({ HERDR_PANE_ID: "w1:p1" });
+			await create({ type: "create", sessionPath, env: { HERDR_ENV: "1", HERDR_PANE_ID: "w2:p9" } });
+			expect(state.clientEnv).toEqual({
+				HERDR_ENV: "1",
+				HERDR_PANE_ID: "w1:p1",
+				HERDR_SOCKET_PATH: "C:\\herdr.sock",
+			});
+			expect(state.runtime.session.reload).toHaveBeenCalledTimes(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -4804,7 +4816,7 @@ describe("daemon mode helpers", () => {
 
 			expect(listedAgentsDuringBind).toBe(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -4891,7 +4903,7 @@ describe("daemon mode helpers", () => {
 				sessionId: childManager.getSessionId(),
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -4940,7 +4952,7 @@ describe("daemon mode helpers", () => {
 				activeSessionId: childState?.activeSessionId,
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5006,7 +5018,7 @@ describe("daemon mode helpers", () => {
 			expect(createRuntime).toHaveBeenCalledTimes(2);
 			expect(createRuntime.mock.calls[1]?.[0].sessionManager.getSessionFile()).toBe(parentSessionFile);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5082,7 +5094,7 @@ describe("daemon mode helpers", () => {
 		} finally {
 			releasePassiveList();
 			releaseBinding();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5136,7 +5148,7 @@ describe("daemon mode helpers", () => {
 				status: "cancelled",
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5288,7 +5300,7 @@ describe("daemon mode helpers", () => {
 				]),
 			);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5332,7 +5344,7 @@ describe("daemon mode helpers", () => {
 			expect(grandchild?.parentActiveSessionId).toBeUndefined();
 			expect(fixture.createRuntime).not.toHaveBeenCalled();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5366,7 +5378,7 @@ describe("daemon mode helpers", () => {
 			const sessions = await internals.buildSessionListWithPassiveRlmSubagents([], [parentInfo], []);
 			expect(sessions.find((session) => session.sessionFile === fixture.childSessionFile)?.rlmDepth).toBe(5);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5417,7 +5429,7 @@ describe("daemon mode helpers", () => {
 			]);
 			expect(fixture.createRuntime).toHaveBeenCalledOnce();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5453,7 +5465,7 @@ describe("daemon mode helpers", () => {
 			expect(snapshot.children).toEqual([expect.objectContaining({ id: "new-child" })]);
 			expect(snapshot.messages).toBe(replacementSession.messages);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5490,7 +5502,7 @@ describe("daemon mode helpers", () => {
 			});
 			expect(internals.buildRlmChildSnapshotsWithPassiveRlmSubagents).toHaveBeenCalledTimes(4);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5532,7 +5544,7 @@ describe("daemon mode helpers", () => {
 			expect(fixture.createRuntime).toHaveBeenCalledOnce();
 			expect([...internals.sessions.values()]).toEqual([parentState]);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5569,7 +5581,7 @@ describe("daemon mode helpers", () => {
 				[...internals.sessions.values()].filter((state) => state.runtime.metadata.kind === "subagent"),
 			).toHaveLength(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5596,7 +5608,7 @@ describe("daemon mode helpers", () => {
 
 			expect(fixture.createRuntime.mock.calls[1]?.[0].sessionOptions?.rlmDepth).toBe(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5650,7 +5662,7 @@ describe("daemon mode helpers", () => {
 			expect(fixture.createRuntime).toHaveBeenCalledTimes(2);
 			expect(fixture.createRuntime.mock.calls[1]?.[0].sessionManager.getSessionFile()).toBe(siblingSessionFile);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5679,7 +5691,7 @@ describe("daemon mode helpers", () => {
 			expect(internals.recordRlmSubagentRegistryEntry).not.toHaveBeenCalled();
 			expect(readFileSync(registryPath, "utf8")).toBe(before);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5715,7 +5727,7 @@ describe("daemon mode helpers", () => {
 
 			expect(fixture.createRuntime.mock.calls[1]?.[0].sessionOptions?.rlmDepth).toBe(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5753,7 +5765,7 @@ describe("daemon mode helpers", () => {
 			// woken child does not come up shallower than persisted.
 			expect(fixture.createRuntime.mock.calls[1]?.[0].sessionOptions?.rlmDepth).toBe(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5790,7 +5802,7 @@ describe("daemon mode helpers", () => {
 			expect([...internals.sessions.values()]).toEqual([parentState]);
 			expect(fixture.createRuntime).toHaveBeenCalledOnce();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5817,7 +5829,7 @@ describe("daemon mode helpers", () => {
 			});
 			expect(fixture.createRuntime).toHaveBeenCalledTimes(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5888,7 +5900,7 @@ describe("daemon mode helpers", () => {
 		} finally {
 			releaseOpen();
 			openAsyncSpy?.mockRestore();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5923,7 +5935,7 @@ describe("daemon mode helpers", () => {
 		} finally {
 			if (inheritedPaneId === undefined) delete process.env.HERDR_PANE_ID;
 			else process.env.HERDR_PANE_ID = inheritedPaneId;
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -5968,7 +5980,7 @@ describe("daemon mode helpers", () => {
 			expect(parentState.clientEnv).toEqual({ HERDR_PANE_ID: "successful-pane" });
 			expect(childState.clientEnv).toEqual({ HERDR_PANE_ID: "successful-pane" });
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6027,7 +6039,7 @@ describe("daemon mode helpers", () => {
 		} finally {
 			releasePassiveList();
 			releaseBinding();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6055,7 +6067,7 @@ describe("daemon mode helpers", () => {
 			);
 			expect(fixture.createRuntime).toHaveBeenCalledOnce();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6128,7 +6140,7 @@ describe("daemon mode helpers", () => {
 			);
 		} finally {
 			releaseHydration();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6219,7 +6231,7 @@ describe("daemon mode helpers", () => {
 			);
 		} finally {
 			releaseHydration();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6252,7 +6264,7 @@ describe("daemon mode helpers", () => {
 			expect(childState.runtime.metadata).toMatchObject({ kind: "subagent", rlmChildId: fixture.childId });
 			expect(internals.sessions.has(wrongState.activeSessionId)).toBe(false);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6273,7 +6285,7 @@ describe("daemon mode helpers", () => {
 			);
 			expect(fixture.createRuntime).toHaveBeenCalledOnce();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6322,7 +6334,7 @@ describe("daemon mode helpers", () => {
 			expect(fixture.acceptAgentMessagePrompt).toHaveBeenCalledTimes(2);
 		} finally {
 			releaseHydration();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6379,7 +6391,7 @@ describe("daemon mode helpers", () => {
 			).toHaveBeenCalledWith(fixture.grandchildId, grandchildState.runtime.session);
 		} finally {
 			releaseHydration();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6436,7 +6448,7 @@ describe("daemon mode helpers", () => {
 
 			await expect(internals.hydratePassiveRlmSubagent(passive)).resolves.toBe(residentGrandchild);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6511,7 +6523,7 @@ describe("daemon mode helpers", () => {
 				undefined,
 			);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6577,7 +6589,7 @@ describe("daemon mode helpers", () => {
 			expect(hydrationAttempts).toBe(2);
 		} finally {
 			releasePassivation();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6628,7 +6640,7 @@ describe("daemon mode helpers", () => {
 			expect(grandchildState.runtime.metadata.rlmChildId).toBe(fixture.grandchildId);
 		} finally {
 			releaseParentDispose();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6675,7 +6687,7 @@ describe("daemon mode helpers", () => {
 			expect(client.attachedActiveSessionIds).toContain(childState.activeSessionId);
 		} finally {
 			releaseSnapshot();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6710,7 +6722,7 @@ describe("daemon mode helpers", () => {
 			expect(childSession.abort).not.toHaveBeenCalled();
 			expect(parentState.runtime.session.releaseRlmChildSession).not.toHaveBeenCalled();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6803,7 +6815,7 @@ describe("daemon mode helpers", () => {
 			expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
 		} finally {
 			releaseAbort();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6915,7 +6927,7 @@ describe("daemon mode helpers", () => {
 				expect.any(Object),
 			);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -6959,7 +6971,7 @@ describe("daemon mode helpers", () => {
 			await expect(delivery).resolves.toMatchObject({ deliveryStatus: "delivered" });
 		} finally {
 			releaseAdmission();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7020,7 +7032,7 @@ describe("daemon mode helpers", () => {
 			);
 		} finally {
 			releaseDispose();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7045,7 +7057,7 @@ describe("daemon mode helpers", () => {
 			expect(childState.clientEnv).toEqual({ HERDR_PANE_ID: "pane-42" });
 			expect(fixture.createRuntime).toHaveBeenCalledTimes(2);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7082,7 +7094,7 @@ describe("daemon mode helpers", () => {
 			expect(internals.sessions.get(passiveRow.id)?.activeSessionId).toBe(passiveRow.id);
 			expect(client.attachedActiveSessionIds).toContain(passiveRow.id);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7112,7 +7124,7 @@ describe("daemon mode helpers", () => {
 			}
 			expect(parentSession.deleteRlmSubagent).not.toHaveBeenCalled();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7165,7 +7177,7 @@ describe("daemon mode helpers", () => {
 			expect(idle.data).toEqual({ deleted: true });
 			expect(internals.sessions.has(childState.activeSessionId)).toBe(false);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7207,7 +7219,7 @@ describe("daemon mode helpers", () => {
 			expect(deleteSpy).not.toHaveBeenCalled();
 			expect(internals.sessions.get(nestedState.activeSessionId)).toBe(nestedState);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7257,7 +7269,7 @@ describe("daemon mode helpers", () => {
 				.map((line) => JSON.parse(line) as { childId: string; status: string });
 			expect(persisted.at(-1)).toMatchObject({ childId: fixture.childId, status: "deleted" });
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 	it("gives RLM subagents messaging controllers for their own nested children", async () => {
@@ -7381,7 +7393,7 @@ describe("daemon mode helpers", () => {
 			expect(parentState.runtime.session.getRlmChildRunStatus).toHaveBeenCalledWith("cancelled-child");
 			expect(internals.sessions.size).toBe(sessionsBeforeCancelledStartup);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7411,7 +7423,7 @@ describe("daemon mode helpers", () => {
 				: undefined;
 			expect(failedSession?.disposeAsync).toHaveBeenCalledOnce();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7479,7 +7491,7 @@ describe("daemon mode helpers", () => {
 			expect(failingChildSession?.disposeAsync).toHaveBeenCalledOnce();
 			expect(internals.sessions.size).toBe(1);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7592,7 +7604,7 @@ describe("daemon mode helpers", () => {
 				(await internals.createAgentMessageListResult(fromState)).agents.map((agent) => agent.activeSessionId),
 			).toEqual(expect.arrayContaining([fromState.activeSessionId, bindingId]));
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7630,7 +7642,7 @@ describe("daemon mode helpers", () => {
 
 			expect(response.data.jobs).toEqual([expect.objectContaining({ id: heartbeat.id, status: "paused" })]);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7721,7 +7733,7 @@ describe("daemon mode helpers", () => {
 			expect(dispose).toHaveBeenCalledOnce();
 			expect(appendSessionState).toHaveBeenCalledWith({ status: "archived" });
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7799,7 +7811,7 @@ describe("daemon mode helpers", () => {
 			expect(appendSessionState).toHaveBeenCalledWith({ status: "archived" });
 		} finally {
 			releaseDispose();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7855,7 +7867,7 @@ describe("daemon mode helpers", () => {
 			expect(appendSessionState).toHaveBeenCalledWith({ status: "archived" });
 			expect(existingClose.reason).toBe("killed");
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7924,7 +7936,7 @@ describe("daemon mode helpers", () => {
 			expect(parentArchive).toHaveBeenCalledOnce();
 			expect(childArchive).toHaveBeenCalledOnce();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -7977,7 +7989,7 @@ describe("daemon mode helpers", () => {
 			expect(SessionManager.open(fixture.childSessionFile).getSessionState()).toEqual({ status: "archived" });
 		} finally {
 			releaseParentDispose();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -8047,7 +8059,7 @@ describe("daemon mode helpers", () => {
 			expect(appendSessionState).toHaveBeenCalledWith({ status: "archived" });
 		} finally {
 			releaseDispose();
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -8109,7 +8121,7 @@ describe("daemon mode helpers", () => {
 			});
 			expect(internals.cronStore.list().find((job) => job.id === unrelated.id)).toMatchObject({ status: "active" });
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -8194,7 +8206,7 @@ describe("daemon mode helpers", () => {
 			);
 			expect(updates.every((update) => update.activeSessionId === undefined)).toBe(true);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -8252,7 +8264,7 @@ describe("daemon mode helpers", () => {
 				status: "active",
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -9089,7 +9101,7 @@ describe("daemon mode helpers", () => {
 			).rejects.toThrow('Heartbeat delivery mode must be "steer" or "follow_up"');
 			expect(internals.cronStore.getHeartbeat(state.activeSessionId)).toBeUndefined();
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -9153,7 +9165,7 @@ describe("daemon mode helpers", () => {
 				deliveryMode: "follow_up",
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -9201,7 +9213,7 @@ describe("daemon mode helpers", () => {
 			expect(updated).toMatchObject({ id: rlmHeartbeat.id, deliveryMode: "steer" });
 			expect(removeQueuedFollowUp).toHaveBeenCalledWith(`heartbeat:${rlmHeartbeat.id}`);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -9248,7 +9260,7 @@ describe("daemon mode helpers", () => {
 
 			expect(removeQueuedFollowUp).toHaveBeenCalledWith(`heartbeat:${heartbeat.id}`);
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -9287,7 +9299,7 @@ describe("daemon mode helpers", () => {
 				data: { heartbeat: { id: heartbeat.id, status: "cancelled" } },
 			});
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			removeTempDirSync(tempDir);
 		}
 	});
 
@@ -9822,6 +9834,7 @@ function makeRuntimeSession(
 		releaseRlmChildSession: vi.fn(() => vi.fn()),
 		subscribe: vi.fn(() => vi.fn()),
 		bindExtensions: vi.fn(async () => {}),
+		reload: vi.fn(async () => {}),
 		setExecEnvProvider: vi.fn(),
 		getAvailableThinkingLevels: vi.fn(() => []),
 		scopedModels: [],

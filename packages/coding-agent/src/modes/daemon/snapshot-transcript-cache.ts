@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { removePathSync } from "../../utils/durable-fs.js";
 
 export const SNAPSHOT_TARGET_CHUNK_BYTES = 512 * 1024;
 export const SNAPSHOT_MEMORY_CACHE_BYTES = 4 * 1024 * 1024;
@@ -218,7 +219,7 @@ export class SnapshotTranscriptCache {
 		this.disposed = true;
 		this.markFailed(new Error(`Snapshot transcript ${this.snapshotId} was disposed`));
 		if (this.cacheDirectory) {
-			rmSync(this.cacheDirectory, { recursive: true, force: true });
+			removePathSync(this.cacheDirectory);
 			this.cacheDirectory = undefined;
 		}
 		this.chunks.length = 0;

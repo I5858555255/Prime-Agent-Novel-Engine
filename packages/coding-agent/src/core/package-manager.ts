@@ -1,6 +1,6 @@
 import { type ChildProcess, type ChildProcessByStdio, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 
 function getEnv(): NodeJS.ProcessEnv {
@@ -29,6 +29,7 @@ import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { CONFIG_DIR_NAME, getBundledSkillsDir } from "../config.js";
 import { shouldUseWindowsShell } from "../utils/child-process.js";
+import { removePathSync } from "../utils/durable-fs.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
@@ -212,6 +213,11 @@ function toPosixPath(p: string): string {
 }
 
 function getHomeDir(): string {
+	// Git Bash/MSYS export a POSIX-style HOME (`/c/Users/...`) that Windows APIs
+	// cannot resolve, so the OS home always wins there.
+	if (process.platform === "win32") {
+		return homedir();
+	}
 	return process.env.HOME || homedir();
 }
 
@@ -430,15 +436,27 @@ function findGitRepoRoot(startDir: string): string | null {
 	}
 }
 
+function isSamePath(left: string, right: string): boolean {
+	return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
 function collectAncestorAgentsSkillDirs(startDir: string): string[] {
 	const skillDirs: string[] = [];
 	const resolvedStartDir = resolve(startDir);
 	const gitRepoRoot = findGitRepoRoot(resolvedStartDir);
+	const homeDir = resolve(getHomeDir());
 
 	let dir = resolvedStartDir;
 	while (true) {
 		skillDirs.push(join(dir, ".agents", "skills"));
 		if (gitRepoRoot && dir === gitRepoRoot) {
+			break;
+		}
+		// Nothing above the home directory is a project. Windows makes the
+		// distinction load-bearing: both the temp directory and most user code
+		// live under the profile, so an unbounded walk reaches the user's own
+		// ~/.agents/skills and re-scopes it from "user" to "project".
+		if (isSamePath(dir, homeDir)) {
 			break;
 		}
 		const parent = dirname(dir);
@@ -1795,7 +1813,7 @@ export class DefaultPackageManager implements PackageManager {
 	private async removeGit(source: GitSource, scope: SourceScope): Promise<void> {
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (!existsSync(targetDir)) return;
-		rmSync(targetDir, { recursive: true, force: true });
+		removePathSync(targetDir);
 		this.pruneEmptyGitParents(targetDir, this.getGitInstallRoot(scope));
 	}
 
@@ -1813,7 +1831,7 @@ export class DefaultPackageManager implements PackageManager {
 				break;
 			}
 			try {
-				rmSync(current, { recursive: true, force: true });
+				removePathSync(current);
 			} catch {
 				break;
 			}
@@ -2383,6 +2401,7 @@ export class DefaultPackageManager implements PackageManager {
 			stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
 			shell: shouldUseWindowsShell(command),
 			env: getEnv(),
+			windowsHide: true,
 		});
 	}
 
@@ -2397,6 +2416,7 @@ export class DefaultPackageManager implements PackageManager {
 			stdio: ["ignore", "pipe", "pipe"],
 			shell: shouldUseWindowsShell(command),
 			env: options?.env ? { ...baseEnv, ...options.env } : baseEnv,
+			windowsHide: true,
 		});
 	}
 
@@ -2464,6 +2484,7 @@ export class DefaultPackageManager implements PackageManager {
 			encoding: "utf-8",
 			shell: shouldUseWindowsShell(command),
 			env: getEnv(),
+			windowsHide: true,
 		});
 		if (result.error || result.status !== 0) {
 			throw new Error(

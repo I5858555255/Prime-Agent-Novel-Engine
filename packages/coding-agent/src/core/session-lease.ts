@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { lockSync } from "proper-lockfile";
+import { removePathSync } from "../utils/durable-fs.js";
 
 export const SESSION_LEASES_ENABLED_ENV = "PRIME_AGENT_INTERNAL_SESSION_LEASES";
 export const SESSION_LEASE_OWNER_ID_ENV = "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID";
@@ -51,7 +52,7 @@ export class SessionLease {
 			withLeaseGuard(this.directory, () => {
 				const owner = readLeaseOwner(this.directory);
 				if (owner?.token === this.token) {
-					rmSync(this.directory, { recursive: true, force: true });
+					removePathSync(this.directory);
 				}
 			});
 		} catch {
@@ -116,6 +117,7 @@ function runProcessQuery(command: string, args: string[]): string {
 	return execFileSync(command, args, {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
+		windowsHide: true,
 	});
 }
 
@@ -225,7 +227,7 @@ function reclaimStaleLease(directory: string): boolean {
 		}
 		return false;
 	}
-	rmSync(stalePath, { recursive: true, force: true });
+	removePathSync(stalePath);
 	return true;
 }
 
@@ -263,7 +265,7 @@ export function acquireSessionLease(
 				renameSync(candidateDirectory, directory);
 				return new SessionLease(canonicalPath, directory, token);
 			} catch (error) {
-				rmSync(candidateDirectory, { recursive: true, force: true });
+				removePathSync(candidateDirectory);
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "EEXIST" && code !== "ENOTEMPTY") {
 					throw error;

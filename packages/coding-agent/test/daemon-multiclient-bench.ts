@@ -26,6 +26,7 @@ import { createCompactAssistantDelta } from "../src/modes/daemon/compact-session
 import type { DaemonOutbound } from "../src/modes/daemon/daemon-protocol.js";
 import { SnapshotTranscriptCache } from "../src/modes/daemon/snapshot-transcript-cache.js";
 import { serializeJsonLine } from "../src/modes/rpc/jsonl.js";
+import { removeTempDir } from "./utils/temp-fs.js";
 
 const CLIENT_COUNTS = [1, 10, 50, 100, 250] as const;
 const SESSION_CLIENT_COUNTS = [1, 2, 5, 10] as const;
@@ -533,7 +534,7 @@ async function runAttachV2(
 		});
 	} finally {
 		transcript.dispose();
-		await rm(cacheRoot, { recursive: true, force: true });
+		await removeTempDir(cacheRoot);
 	}
 }
 
@@ -610,7 +611,7 @@ async function loadSessionFixture(sessionFile: string): Promise<{
 			cleanup: () => rm(tempDir, { recursive: true, force: true }),
 		};
 	} catch (error) {
-		await rm(tempDir, { recursive: true, force: true });
+		await removeTempDir(tempDir);
 		throw error;
 	}
 }
@@ -751,7 +752,7 @@ async function generateSessionFixture(sizeMiB: number): Promise<GeneratedSession
 		return { file, directory, bytes, messageCount };
 	} catch (error) {
 		stream.destroy();
-		await rm(directory, { recursive: true, force: true });
+		await removeTempDir(directory);
 		throw error;
 	}
 }
@@ -792,7 +793,7 @@ async function main(): Promise<void> {
 			);
 			await runRealSessionBenchmark(fixture.file);
 		} finally {
-			await rm(fixture.directory, { recursive: true, force: true });
+			await removeTempDir(fixture.directory);
 		}
 		return;
 	}

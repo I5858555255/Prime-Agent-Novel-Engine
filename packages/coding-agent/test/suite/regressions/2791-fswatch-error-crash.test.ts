@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../../../src/config.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 
 /**
  * Regression test for https://github.com/earendil-works/pi-mono/issues/2791
@@ -36,7 +37,7 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tempRoot, { recursive: true, force: true });
+		removeTempDirSync(tempRoot);
 	});
 
 	it("process should survive an error event on the theme FSWatcher", () => {

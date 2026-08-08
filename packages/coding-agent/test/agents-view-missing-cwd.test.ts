@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { createAgentsViewResumeConfig, resolveAgentsViewOpenCwd } from "../src/modes/agents-view/agents-view-mode.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { assistantMsg, userMsg } from "./utilities.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("agents view open with a missing session cwd", () => {
 	it("repros the failure and proves the override opens the session", async () => {
@@ -24,7 +25,7 @@ describe("agents view open with a missing session cwd", () => {
 			session.appendMessage(assistantMsg("done"));
 			const sessionFile = session.getSessionFile()!;
 
-			rmSync(worktree, { recursive: true, force: true });
+			removeTempDirSync(worktree);
 
 			const factory = async () => {
 				throw new Error("runtime factory should not be reached when the cwd is missing");
@@ -81,7 +82,7 @@ describe("agents view open with a missing session cwd", () => {
 			).rejects.toThrow("stop after the cwd guard");
 			expect(factoryCwd).toBe(launchCwd);
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			removeTempDirSync(root);
 		}
 	});
 });

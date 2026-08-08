@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor, idleEvictionSweepIntervalMs } from "../src/modes/daemon/daemon-supervisor.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 interface WorkerFixture {
 	descriptor: {
@@ -44,7 +45,7 @@ interface SupervisorInternals {
 const tempDirs: string[] = [];
 
 afterEach(() => {
-	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
+	for (const directory of tempDirs.splice(0)) removeTempDirSync(directory);
 });
 
 function makeSummary(id: string, now: number, overrides: Partial<SessionSummary> = {}): SessionSummary {

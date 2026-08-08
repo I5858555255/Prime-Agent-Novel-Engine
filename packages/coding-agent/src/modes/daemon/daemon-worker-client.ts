@@ -2,6 +2,7 @@ import { createConnection, type Socket } from "node:net";
 import { serializeJsonLine } from "../rpc/jsonl.js";
 import { type PrivateFrame, PrivateFramedChannel } from "../session-worker/private-framing.js";
 import type { DaemonCommand, DaemonOutbound, DaemonResponse } from "./daemon-protocol.js";
+import { daemonSocketEndpoint } from "./daemon-socket.js";
 import {
 	type DaemonWorkerCommand,
 	type DaemonWorkerCommandBody,
@@ -46,7 +47,7 @@ export class DaemonWorkerClient {
 		if (this.socket) {
 			throw new Error("Daemon worker client is already connected");
 		}
-		const socket = createConnection(this.socketPath);
+		const socket = createConnection(daemonSocketEndpoint(this.socketPath));
 		this.socket = socket;
 		this.channel = new PrivateFramedChannel(socket, isDaemonWorkerFrameHeader);
 		this.channel.onFrame((frame) => this.handleFrame(frame));

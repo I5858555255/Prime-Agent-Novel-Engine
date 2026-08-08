@@ -9,7 +9,6 @@ import {
 	readdirSync,
 	readFileSync,
 	type renameSync,
-	rmSync,
 	statSync,
 	symlinkSync,
 	type writeFileSync,
@@ -47,13 +46,14 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { SessionManager } from "../src/core/session-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
 	while (tempDirs.length > 0) {
 		const dir = tempDirs.pop()!;
-		rmSync(dir, { recursive: true, force: true });
+		removeTempDirSync(dir);
 	}
 });
 

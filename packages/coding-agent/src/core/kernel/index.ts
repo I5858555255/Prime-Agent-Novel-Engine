@@ -1,13 +1,14 @@
 // TODO: reconsider persistent kernel vs stateless `python -c` once RLM-1 weights land.
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
+import { removePathSync } from "../../utils/durable-fs.js";
 import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.js";
 import { ForkServerUnavailable, forkKernel, isForkServerEnabled } from "./fork-server.js";
 import {
@@ -634,7 +635,7 @@ export class KernelManager {
 				// fresh connection for the direct spawn so a possible orphan can never
 				// collide with it (write the same file / re-bind the same ports).
 				try {
-					rmSync(connection.tempDir, { recursive: true, force: true });
+					removePathSync(connection.tempDir);
 				} catch {
 					// Leave the temp dir for OS tmp cleanup.
 				}
@@ -648,6 +649,7 @@ export class KernelManager {
 				cwd: this.options.cwd,
 				env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
 				stdio: ["ignore", "pipe", "pipe"],
+				windowsHide: true,
 			});
 			this.kernel = kernel;
 
@@ -1316,7 +1318,7 @@ export class KernelManager {
 		this.connection = undefined;
 		if (this.tempDir) {
 			try {
-				rmSync(this.tempDir, { recursive: true, force: true });
+				removePathSync(this.tempDir);
 			} catch {
 				// Leave the temp dir for OS tmp cleanup.
 			}

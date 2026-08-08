@@ -19,6 +19,7 @@ import {
 	getDaemonCommandCompatibilities,
 	isDaemonMutatingCommand,
 } from "./daemon-protocol.js";
+import { daemonSocketEndpoint } from "./daemon-socket.js";
 import type { DaemonWorkerCommand, DaemonWorkerCommandBody } from "./daemon-worker-protocol.js";
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -172,7 +173,7 @@ export class DaemonClient {
 		}
 		this.helloMessage = undefined;
 		this.daemonClosingReason = undefined;
-		const socket = createConnection(this.socketPath);
+		const socket = createConnection(daemonSocketEndpoint(this.socketPath));
 		this.socket = socket;
 		this.detachReader = attachJsonlLineReader(socket, (line) => this.handleLine(line));
 

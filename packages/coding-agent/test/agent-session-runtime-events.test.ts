@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
@@ -13,6 +13,7 @@ import { AuthStorage } from "../src/core/auth-storage.js";
 import { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../src/core/session-lease.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { ExtensionFactory } from "../src/index.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("AgentSessionRuntime session lifecycle events", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
@@ -72,7 +73,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			await runtimeHost.dispose();
 			faux.unregister();
 			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true, force: true });
+				removeTempDirSync(tempDir);
 			}
 		});
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import { readSessionInfo, SessionManager } from "../src/core/session-manager.js"
 import { success } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import { DaemonSupervisor } from "../src/modes/daemon/daemon-supervisor.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 interface SupervisorInternals {
 	workers: Map<string, WorkerFixture>;
@@ -53,7 +54,7 @@ interface WorkerFixture {
 const tempDirs: string[] = [];
 
 afterEach(() => {
-	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
+	for (const directory of tempDirs.splice(0)) removeTempDirSync(directory);
 });
 
 function summary(overrides: Partial<SessionSummary> & Pick<SessionSummary, "id" | "sessionId">): SessionSummary {

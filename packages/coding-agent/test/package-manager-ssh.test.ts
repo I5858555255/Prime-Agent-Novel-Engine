@@ -1,9 +1,10 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultPackageManager } from "../src/core/package-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("Package Manager git source parsing", () => {
 	let tempDir: string;
@@ -26,7 +27,7 @@ describe("Package Manager git source parsing", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	describe("protocol URLs without git: prefix", () => {

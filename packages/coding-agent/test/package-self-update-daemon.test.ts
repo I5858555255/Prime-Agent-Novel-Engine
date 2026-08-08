@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +26,7 @@ import {
 	prepareDaemonUpdateRestart,
 	runDaemonUpdateRestartCoordinator,
 } from "../src/package-manager-cli.js";
+import { removeTempDirSync } from "./utils/temp-fs.js";
 
 interface MockSessionSummary {
 	id: string;
@@ -542,7 +543,7 @@ describe("self-update daemon restart", () => {
 		}
 		delete process.env[SELF_UPDATE_INTERACTIVE_CHILD_ENV];
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
-		rmSync(tempDir, { recursive: true, force: true });
+		removeTempDirSync(tempDir);
 	});
 
 	it("scopes prepared restart manifests to the exact daemon socket", () => {
