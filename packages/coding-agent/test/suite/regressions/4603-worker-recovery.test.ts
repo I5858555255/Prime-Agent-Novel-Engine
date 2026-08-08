@@ -8,7 +8,6 @@ import {
 	readdirSync,
 	readFileSync,
 	renameSync,
-	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { createConnection, type Socket } from "node:net";
@@ -120,7 +119,7 @@ afterEach(async () => {
 		harnesses.pop()?.cleanup();
 	}
 	for (const path of socketTempDirs) {
-		rmSync(path, { recursive: true, force: true, maxRetries: 50, retryDelay: 50 });
+		removeTempDirSync(path);
 	}
 	socketTempDirs.clear();
 }, 60_000);

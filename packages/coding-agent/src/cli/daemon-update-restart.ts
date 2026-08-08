@@ -6,7 +6,7 @@ import lockfile from "proper-lockfile";
 import { ENV_AGENT_DIR, SELF_UPDATE_INTERACTIVE_CHILD_ENV } from "../config.js";
 import { ORPHAN_PROCESS_JOURNAL_ENV } from "../core/orphan-process-journal.js";
 import { getProcessStartId, SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
-import { defaultDaemonSocketDir, defaultDaemonSocketPath } from "../modes/daemon/daemon-socket.js";
+import { defaultDaemonSocketDir, defaultDaemonSocketPath, isWindowsPipePath } from "../modes/daemon/daemon-socket.js";
 import {
 	DAEMON_WORKER_ACTIVE_SESSION_ID_ENV,
 	DAEMON_WORKER_RECOVERY_JOURNAL_ENV,
@@ -96,7 +96,13 @@ export interface AcquireDaemonUpdateRestartCoordinatorOptions {
 
 export function resolveDaemonUpdateRestartSocketPath(socketPath?: string): string {
 	const selectedSocketPath = socketPath ?? defaultDaemonSocketPath();
-	return process.platform === "win32" ? selectedSocketPath : resolve(selectedSocketPath);
+	// A `\.\pipe\...` endpoint is not a filesystem path and resolve() would
+	// mangle it, but a relative filesystem socket still has to be pinned here:
+	// the coordinator changes cwd before it is used again.
+	if (isWindowsPipePath(selectedSocketPath)) {
+		return selectedSocketPath;
+	}
+	return resolve(selectedSocketPath);
 }
 
 const TERMINAL_PHASES: ReadonlySet<DaemonUpdateRestartPhase> = new Set(["complete", "skipped", "failed"]);
@@ -153,7 +159,8 @@ function statusLivenessId(status: DaemonUpdateRestartStatus): string {
 }
 
 function socketKey(socketPath: string): string {
-	const normalized = process.platform === "win32" ? socketPath.toLowerCase() : resolve(socketPath);
+	const canonical = isWindowsPipePath(socketPath) ? socketPath : resolve(socketPath);
+	const normalized = process.platform === "win32" ? canonical.toLowerCase() : canonical;
 	return createHash("sha256").update(normalized).digest("hex");
 }
 

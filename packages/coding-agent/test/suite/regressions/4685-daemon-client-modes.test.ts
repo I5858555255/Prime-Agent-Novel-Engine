@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
@@ -13,6 +13,7 @@ import { DaemonSupervisor } from "../../../src/modes/daemon/daemon-supervisor.js
 import { waitForHeadlessCompletion } from "../../../src/modes/headless-completion.js";
 import { RpcClient } from "../../../src/modes/rpc/rpc-client.js";
 import { createRpcExtensionUiBridge } from "../../../src/modes/rpc/rpc-extension-ui-context.js";
+import { removeTempDirSync } from "../../utils/temp-fs.js";
 import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "../harness.js";
 
 const fixturePath = resolve(__dirname, "../../fixtures/rpc-connection-mode-fixture.ts");
@@ -52,7 +53,7 @@ afterEach(async () => {
 	}
 	daemonSockets.clear();
 	for (const root of tempRoots) {
-		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+		removeTempDirSync(root);
 	}
 	tempRoots.clear();
 });

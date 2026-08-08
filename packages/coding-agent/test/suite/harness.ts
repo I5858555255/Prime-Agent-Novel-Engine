@@ -2,7 +2,7 @@
  * Local test harness for the new coding-agent test suite.
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
@@ -27,6 +27,7 @@ import {
 	createTestExtensionsResult,
 	createTestResourceLoader,
 } from "../utilities.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 type MessageTextPart = { type: "text"; text: string };
 
@@ -232,7 +233,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 			if (existsSync(tempDir)) {
 				// Spawned fixture processes may still be flushing their final registry
 				// writes; retry briefly instead of failing the suite on ENOTEMPTY.
-				rmSync(tempDir, { recursive: true, force: true, maxRetries: 40, retryDelay: 50 });
+				removeTempDirSync(tempDir);
 			}
 		},
 	};

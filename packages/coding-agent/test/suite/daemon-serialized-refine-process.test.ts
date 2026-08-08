@@ -26,7 +26,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,6 +41,7 @@ import {
 	DAEMON_WORKER_SUPERVISOR_SOCKET_ENV,
 	DAEMON_WORKER_TOKEN_ENV,
 } from "../../src/modes/daemon/daemon-worker-protocol.js";
+import { removeTempDirSync } from "../utils/temp-fs.js";
 
 const cliPath = resolve(__dirname, "../../src/cli.ts");
 const tsxPath = resolve(__dirname, "../../../../node_modules/tsx/dist/cli.mjs");
@@ -74,7 +75,7 @@ afterEach(async () => {
 	}
 	daemonSockets.clear();
 	for (const root of tempRoots) {
-		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+		removeTempDirSync(root);
 	}
 	tempRoots.clear();
 });
