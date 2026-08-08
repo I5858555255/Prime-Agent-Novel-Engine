@@ -13,6 +13,7 @@ import { McpManager } from "./mcp/mcp-manager.js";
 import { convertToLlm } from "./messages.js";
 import { ModelRegistry } from "./model-registry.js";
 import { findInitialModel } from "./model-resolver.js";
+import { withOpenAIServerCompaction } from "./openai-server-compaction.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import { DefaultResourceLoader } from "./resource-loader.js";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.js";
@@ -318,12 +319,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				headers: auth.headers || options?.headers ? { ...auth.headers, ...options?.headers } : undefined,
 			});
 		},
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload, requestModel) => {
+			const compactionSettings = settingsManager.getCompactionSettings();
+			const nextPayload = withOpenAIServerCompaction(payload, requestModel, compactionSettings);
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("before_provider_request")) {
-				return payload;
+				return nextPayload;
 			}
-			return runner.emitBeforeProviderRequest(payload);
+			return runner.emitBeforeProviderRequest(nextPayload);
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;

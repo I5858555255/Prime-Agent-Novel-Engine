@@ -181,10 +181,19 @@ export interface ContextUsageEstimate {
 	lastUsageIndex: number | null;
 }
 
-function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; index: number } | undefined {
+function getLastAssistantUsageInfo(
+	messages: AgentMessage[],
+): { usage: Usage; index: number; compactedTokens?: number } | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const usage = getAssistantUsage(messages[i]);
-		if (usage) return { usage, index: i };
+		const message = messages[i];
+		const usage = getAssistantUsage(message);
+		if (usage) {
+			const assistant = message as AssistantMessage;
+			const compactedTokens = assistant.openaiCompaction
+				? estimateTokens(message) + Math.ceil(assistant.openaiCompaction.encrypted_content.length / 4)
+				: undefined;
+			return { usage, index: i, compactedTokens };
+		}
 	}
 	return undefined;
 }
@@ -209,7 +218,7 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 		};
 	}
 
-	const usageTokens = calculateContextTokens(usageInfo.usage);
+	const usageTokens = usageInfo.compactedTokens ?? calculateContextTokens(usageInfo.usage);
 	let trailingTokens = 0;
 	for (let i = usageInfo.index + 1; i < messages.length; i++) {
 		trailingTokens += estimateTokens(messages[i]);

@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import type {
 	Tool as OpenAITool,
+	ResponseCompactionItem,
 	ResponseCreateParamsStreaming,
 	ResponseFunctionCallOutputItemList,
 	ResponseFunctionToolCall,
@@ -122,6 +123,21 @@ export function convertResponsesMessages<TApi extends Api>(
 	};
 
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	let replayStart = 0;
+	for (let i = transformedMessages.length - 1; i >= 0; i--) {
+		const message = transformedMessages[i];
+		if (
+			message.role === "assistant" &&
+			message.provider === model.provider &&
+			message.api === model.api &&
+			message.model === model.id &&
+			message.openaiCompaction
+		) {
+			replayStart = i;
+			break;
+		}
+	}
+	const replayMessages = transformedMessages.slice(replayStart);
 
 	const includeSystemPrompt = options?.includeSystemPrompt ?? true;
 	if (includeSystemPrompt && context.systemPrompt) {
@@ -133,7 +149,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	}
 
 	let msgIndex = 0;
-	for (const msg of transformedMessages) {
+	for (const msg of replayMessages) {
 		if (msg.role === "user") {
 			if (typeof msg.content === "string") {
 				messages.push({
@@ -163,6 +179,14 @@ export function convertResponsesMessages<TApi extends Api>(
 		} else if (msg.role === "assistant") {
 			const output: ResponseInput = [];
 			const assistantMsg = msg as AssistantMessage;
+			if (
+				assistantMsg.provider === model.provider &&
+				assistantMsg.api === model.api &&
+				assistantMsg.model === model.id &&
+				assistantMsg.openaiCompaction
+			) {
+				output.push(assistantMsg.openaiCompaction);
+			}
 			const isDifferentModel =
 				assistantMsg.model !== model.id &&
 				assistantMsg.provider === model.provider &&
@@ -439,7 +463,14 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.output_item.done") {
 			const item = event.item;
 
-			if (item.type === "reasoning" && currentBlock?.type === "thinking") {
+			if (item.type === "compaction") {
+				const compaction = item as ResponseCompactionItem;
+				output.openaiCompaction = {
+					type: "compaction",
+					id: compaction.id,
+					encrypted_content: compaction.encrypted_content,
+				};
+			} else if (item.type === "reasoning" && currentBlock?.type === "thinking") {
 				const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";
 				const contentText = item.content?.map((c) => c.text).join("\n\n") || "";
 				currentBlock.thinking = summaryText || contentText || currentBlock.thinking;

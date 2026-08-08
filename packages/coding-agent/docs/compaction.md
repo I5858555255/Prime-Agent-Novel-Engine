@@ -13,14 +13,15 @@ For TypeScript definitions in your project, inspect `node_modules/@earendil-work
 
 ## Overview
 
-Prime Agent has two summarization mechanisms:
+Prime Agent has three context-management mechanisms:
 
 | Mechanism | Trigger | Purpose |
 |-----------|---------|---------|
-| Compaction | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |
+| OpenAI server compaction | OpenAI context exceeds threshold | Replace old OpenAI input with an opaque encrypted checkpoint |
+| Local compaction | Non-OpenAI context exceeds threshold, overflow fallback, or `/compact` | Summarize old messages to free up context |
 | Branch summarization | `/tree` navigation | Preserve context when switching branches |
 
-Both use the same structured summary format and track file operations cumulatively.
+Local compaction and branch summarization use the same structured summary format and track file operations cumulatively.
 
 ## Compaction
 
@@ -36,7 +37,27 @@ By default, `reserveTokens` is 16384 tokens (configurable in `~/.prime/agent/set
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary — for example `/compact focus on the auth refactor, remember the exact migration command`. The instructions are passed to the summarization prompt with high priority, persisted on the `CompactionEntry`, and shown on the `[compaction]` message in the TUI.
 
+### OpenAI Server Compaction
+
+For the built-in `openai` Responses API and `openai-codex` subscription providers, auto-compaction uses OpenAI's server-side compaction. Prime Agent adds this request configuration:
+
+```json
+{
+  "context_management": [
+    { "type": "compaction", "compact_threshold": "contextWindow - reserveTokens" }
+  ]
+}
+```
+
+When OpenAI returns a compaction item, Prime Agent stores its opaque `encrypted_content` on the assistant message. The next request to the same provider and model starts with that item and omits earlier input. Prime Agent keeps the complete local session history, so switching models still has the original messages available instead of replaying an OpenAI checkpoint that another model cannot read.
+
+Setting `compaction.enabled` to `false` disables this request configuration. Manual `/compact` remains the readable local summarizer. Local compaction also remains the recovery path if an OpenAI request reaches a context overflow without producing a usable compaction item.
+
+The implementation follows OpenAI's [compaction guide](https://developers.openai.com/api/docs/guides/compaction).
+
 ### How It Works
+
+The following steps describe local compaction:
 
 1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.prime/agent/settings.json` or `<project-dir>/.prime/agent/settings.json`) is reached
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point

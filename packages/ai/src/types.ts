@@ -213,6 +213,13 @@ export interface Usage {
 	};
 }
 
+/** Opaque context checkpoint returned by OpenAI server-side compaction. */
+export interface OpenAICompactionItem {
+	type: "compaction";
+	id?: string;
+	encrypted_content: string;
+}
+
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
 export interface UserMessage {
@@ -229,6 +236,8 @@ export interface AssistantMessage {
 	model: string;
 	responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
+	/** Replayed only to the same OpenAI provider and model that created it. */
+	openaiCompaction?: OpenAICompactionItem;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
