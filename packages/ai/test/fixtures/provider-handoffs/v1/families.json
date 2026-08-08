@@ -1,0 +1,1109 @@
+{
+	"schemaVersion": 1,
+	"families": [
+		{
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"model": "amazon.nova-2-lite-v1:0",
+			"synthetic": false
+		},
+		{
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"model": "amazon.nova-micro-v1:0",
+			"synthetic": false
+		},
+		{
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"model": "anthropic.claude-fable-5",
+			"synthetic": false
+		},
+		{
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"model": "anthropic.claude-haiku-4-5-20251001-v1:0",
+			"synthetic": false
+		},
+		{
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"model": "anthropic.claude-opus-4-6-v1",
+			"synthetic": false
+		},
+		{
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"model": "anthropic.claude-opus-4-7",
+			"synthetic": false
+		},
+		{
+			"api": "bedrock-converse-stream",
+			"provider": "amazon-bedrock",
+			"model": "anthropic.claude-opus-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "anthropic",
+			"model": "claude-fable-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "anthropic",
+			"model": "claude-haiku-4-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "anthropic",
+			"model": "claude-opus-4-6",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "anthropic",
+			"model": "claude-opus-4-7",
+			"synthetic": false
+		},
+		{
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"model": "gpt-4",
+			"synthetic": false
+		},
+		{
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"model": "gpt-4-turbo",
+			"synthetic": false
+		},
+		{
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"model": "gpt-5",
+			"synthetic": false
+		},
+		{
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"model": "gpt-5.2",
+			"synthetic": false
+		},
+		{
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"model": "gpt-5.6",
+			"synthetic": false
+		},
+		{
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"model": "gpt-realtime-2.1",
+			"synthetic": false
+		},
+		{
+			"api": "azure-openai-responses",
+			"provider": "azure-openai-responses",
+			"model": "o3-mini",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "cerebras",
+			"model": "gemma-4-31b",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "cerebras",
+			"model": "gpt-oss-120b",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "cloudflare-ai-gateway",
+			"model": "claude-3-5-haiku",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "cloudflare-ai-gateway",
+			"model": "claude-3-haiku",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "cloudflare-ai-gateway",
+			"model": "claude-fable-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "cloudflare-ai-gateway",
+			"model": "claude-haiku-4-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "cloudflare-ai-gateway",
+			"model": "claude-opus-4-6",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "cloudflare-ai-gateway",
+			"model": "claude-opus-4-7",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "cloudflare-ai-gateway",
+			"model": "gpt-4",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "cloudflare-ai-gateway",
+			"model": "gpt-4-turbo",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "cloudflare-ai-gateway",
+			"model": "gpt-5.1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "cloudflare-ai-gateway",
+			"model": "gpt-5.2",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "cloudflare-ai-gateway",
+			"model": "gpt-5.6-luna",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "cloudflare-ai-gateway",
+			"model": "o1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "cloudflare-ai-gateway",
+			"model": "o3-mini",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "cloudflare-ai-gateway",
+			"model": "workers-ai/@cf/moonshotai/kimi-k2.5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "cloudflare-ai-gateway",
+			"model": "workers-ai/@cf/nvidia/nemotron-3-120b-a12b",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "cloudflare-workers-ai",
+			"model": "@cf/google/gemma-4-26b-a4b-it",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "cloudflare-workers-ai",
+			"model": "@cf/ibm-granite/granite-4.0-h-micro",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "cloudflare-workers-ai",
+			"model": "@cf/meta/llama-4-scout-17b-16e-instruct",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "cloudflare-workers-ai",
+			"model": "@cf/nvidia/nemotron-3-120b-a12b",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "deepseek",
+			"model": "deepseek-v4-flash",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "fireworks",
+			"model": "accounts/fireworks/models/deepseek-v4-flash",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "fireworks",
+			"model": "accounts/fireworks/models/kimi-k2p6",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "github-copilot",
+			"model": "claude-fable-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "github-copilot",
+			"model": "claude-haiku-4.5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "github-copilot",
+			"model": "claude-opus-4.5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "github-copilot",
+			"model": "claude-opus-4.6",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "github-copilot",
+			"model": "claude-opus-4.7",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "github-copilot",
+			"model": "claude-sonnet-4",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "github-copilot",
+			"model": "gemini-2.5-pro",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "github-copilot",
+			"model": "gpt-5-mini",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "github-copilot",
+			"model": "gpt-5.2",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "github-copilot",
+			"model": "gpt-5.6-luna",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "github-copilot",
+			"model": "mai-code-1-flash-picker",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "google",
+			"model": "gemini-2.0-flash",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "google",
+			"model": "gemini-2.5-flash",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "google",
+			"model": "gemini-2.5-flash-lite",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "google",
+			"model": "gemini-2.5-pro",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "google",
+			"model": "gemini-3-flash-preview",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "google",
+			"model": "gemini-3-pro-preview",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "google",
+			"model": "gemini-flash-latest",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "google",
+			"model": "gemma-4-26b-a4b-it",
+			"synthetic": false
+		},
+		{
+			"api": "google-vertex",
+			"provider": "google-vertex",
+			"model": "gemini-1.5-flash",
+			"synthetic": false
+		},
+		{
+			"api": "google-vertex",
+			"provider": "google-vertex",
+			"model": "gemini-2.0-flash-lite",
+			"synthetic": false
+		},
+		{
+			"api": "google-vertex",
+			"provider": "google-vertex",
+			"model": "gemini-2.5-flash",
+			"synthetic": false
+		},
+		{
+			"api": "google-vertex",
+			"provider": "google-vertex",
+			"model": "gemini-2.5-flash-lite",
+			"synthetic": false
+		},
+		{
+			"api": "google-vertex",
+			"provider": "google-vertex",
+			"model": "gemini-2.5-pro",
+			"synthetic": false
+		},
+		{
+			"api": "google-vertex",
+			"provider": "google-vertex",
+			"model": "gemini-3-flash-preview",
+			"synthetic": false
+		},
+		{
+			"api": "google-vertex",
+			"provider": "google-vertex",
+			"model": "gemini-3-pro-preview",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "groq",
+			"model": "llama-3.1-8b-instant",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "groq",
+			"model": "meta-llama/llama-4-scout-17b-16e-instruct",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "groq",
+			"model": "openai/gpt-oss-120b",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "groq",
+			"model": "qwen/qwen3-32b",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "huggingface",
+			"model": "MiniMaxAI/MiniMax-M2",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "huggingface",
+			"model": "MiniMaxAI/MiniMax-M3",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "huggingface",
+			"model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "huggingface",
+			"model": "moonshotai/Kimi-K3",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "kimi-coding",
+			"model": "k3",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "minimax",
+			"model": "MiniMax-M2.7",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "minimax-cn",
+			"model": "MiniMax-M2.7",
+			"synthetic": false
+		},
+		{
+			"api": "mistral-conversations",
+			"provider": "mistral",
+			"model": "codestral-latest",
+			"synthetic": false
+		},
+		{
+			"api": "mistral-conversations",
+			"provider": "mistral",
+			"model": "labs-devstral-small-2512",
+			"synthetic": false
+		},
+		{
+			"api": "mistral-conversations",
+			"provider": "mistral",
+			"model": "magistral-medium-latest",
+			"synthetic": false
+		},
+		{
+			"api": "mistral-conversations",
+			"provider": "mistral",
+			"model": "mistral-medium-2604",
+			"synthetic": false
+		},
+		{
+			"api": "mistral-conversations",
+			"provider": "mistral",
+			"model": "mistral-medium-3.5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "moonshotai",
+			"model": "kimi-k2-0711-preview",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "moonshotai",
+			"model": "kimi-k2.5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "moonshotai-cn",
+			"model": "kimi-k2-0711-preview",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "moonshotai-cn",
+			"model": "kimi-k2.5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "openai",
+			"model": "gpt-4",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "openai",
+			"model": "gpt-4-turbo",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "openai",
+			"model": "gpt-5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "openai",
+			"model": "gpt-5.1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "openai",
+			"model": "gpt-5.2",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "openai",
+			"model": "gpt-5.2-chat-latest",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "openai",
+			"model": "gpt-5.6",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "openai",
+			"model": "o3-mini",
+			"synthetic": false
+		},
+		{
+			"api": "openai-codex-responses",
+			"provider": "openai-codex",
+			"model": "gpt-5.1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-codex-responses",
+			"provider": "openai-codex",
+			"model": "gpt-5.1-codex-mini",
+			"synthetic": false
+		},
+		{
+			"api": "openai-codex-responses",
+			"provider": "openai-codex",
+			"model": "gpt-5.2",
+			"synthetic": false
+		},
+		{
+			"api": "openai-codex-responses",
+			"provider": "openai-codex",
+			"model": "gpt-5.3-codex-spark",
+			"synthetic": false
+		},
+		{
+			"api": "openai-codex-responses",
+			"provider": "openai-codex",
+			"model": "gpt-5.6-luna",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode",
+			"model": "big-pickle",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "opencode",
+			"model": "claude-fable-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "opencode",
+			"model": "claude-haiku-4-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "opencode",
+			"model": "claude-opus-4-6",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "opencode",
+			"model": "claude-opus-4-7",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode",
+			"model": "deepseek-v4-flash",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "opencode",
+			"model": "gemini-3-flash",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "opencode",
+			"model": "gemini-3.1-pro",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "opencode",
+			"model": "gpt-5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "opencode",
+			"model": "gpt-5.2",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "opencode",
+			"model": "gpt-5.6-luna",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "opencode",
+			"model": "grok-4.5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode",
+			"model": "grok-build-0.1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode",
+			"model": "kimi-k3",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode-go",
+			"model": "deepseek-v4-flash",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode-go",
+			"model": "glm-5.1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "opencode-go",
+			"model": "gpt-5.6-luna",
+			"synthetic": false
+		},
+		{
+			"api": "openai-responses",
+			"provider": "opencode-go",
+			"model": "grok-4.5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode-go",
+			"model": "kimi-k2.6",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode-go",
+			"model": "kimi-k3",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "opencode-go",
+			"model": "minimax-m3",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "opencode-go",
+			"model": "qwen3.6-plus",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "opencode-go",
+			"model": "qwen3.7-max",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "ai21/jamba-large-1.7",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "aion-labs/aion-2.0",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "amazon/nova-2-lite-v1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "amazon/nova-lite-v1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "anthropic/claude-3-haiku",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "anthropic/claude-fable-5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "anthropic/claude-haiku-4.5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "anthropic/claude-opus-4.6",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "anthropic/claude-opus-4.7",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "deepseek/deepseek-v4-flash",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "moonshotai/kimi-k3",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "openai/gpt-5.2",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "openrouter",
+			"model": "openai/gpt-5.6-luna",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "anthropic/claude-fable-5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "anthropic/claude-haiku-4.5",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "anthropic/claude-opus-4.6",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "deepseek/deepseek-chat",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "deepseek/deepseek-chat-v3.1",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "deepseek/deepseek-v4-flash",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "google/gemini-2.5-flash",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "google/gemma-3-27b-it",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "moonshotai/kimi-k3",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "openai/gpt-5.2",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "openai/gpt-5.6",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "openai/gpt-5.6-luna",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "prime-inference",
+			"model": "z-ai/glm-4.5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "alibaba/qwen-3-14b",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "alibaba/qwen-3-32b",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "alibaba/qwen-3.6-max-preview",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "alibaba/qwen3-235b-a22b-thinking",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "alibaba/qwen3-coder",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "alibaba/qwen3-coder-30b-a3b",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "alibaba/qwen3-vl-235b-a22b-instruct",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "amazon/nova-lite",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "anthropic/claude-3-haiku",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "anthropic/claude-fable-5",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "anthropic/claude-opus-4",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "anthropic/claude-opus-4.6",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "anthropic/claude-opus-4.7",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "cohere/command-a",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "deepseek/deepseek-v3.2-thinking",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "inception/mercury-coder-small",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "mistral/codestral",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "mistral/ministral-3b",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "openai/gpt-3.5-turbo",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "openai/gpt-4o",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "vercel-ai-gateway",
+			"model": "zai/glm-4.5v",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "xai",
+			"model": "grok-4.20-0309-non-reasoning",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "xai",
+			"model": "grok-code-fast-1",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "xiaomi",
+			"model": "mimo-v2-flash",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "xiaomi",
+			"model": "mimo-v2-omni",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "xiaomi-token-plan-ams",
+			"model": "mimo-v2-flash",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "xiaomi-token-plan-ams",
+			"model": "mimo-v2-omni",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "xiaomi-token-plan-cn",
+			"model": "mimo-v2-flash",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "xiaomi-token-plan-cn",
+			"model": "mimo-v2-omni",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "xiaomi-token-plan-sgp",
+			"model": "mimo-v2-flash",
+			"synthetic": false
+		},
+		{
+			"api": "anthropic-messages",
+			"provider": "xiaomi-token-plan-sgp",
+			"model": "mimo-v2-omni",
+			"synthetic": false
+		},
+		{
+			"api": "openai-completions",
+			"provider": "zai",
+			"model": "glm-4.7",
+			"synthetic": false
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "opencode",
+			"model": "claude-sonnet-4-5",
+			"synthetic": true
+		},
+		{
+			"api": "google-generative-ai",
+			"provider": "opencode",
+			"model": "gpt-oss-120b",
+			"synthetic": true
+		}
+	]
+}
