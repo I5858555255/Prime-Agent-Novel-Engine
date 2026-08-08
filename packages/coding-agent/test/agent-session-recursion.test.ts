@@ -2168,6 +2168,29 @@ describe("AgentSession rlm recursion", () => {
 		);
 	});
 
+	it("starts a child in a requested cwd and rejects a missing one", async () => {
+		const projectDir = join(tempDir, "project-worktree");
+		mkdirSync(projectDir, { recursive: true });
+		const root = createSession();
+
+		const spawned = await root.runRlmChild("work in the project", { cwd: projectDir });
+		await waitFor(() => root.getRlmChildSession(spawned.rlm_child_id) !== undefined);
+		const child = root.getRlmChildSession(spawned.rlm_child_id);
+		if (!child) throw new Error("Missing retained child session");
+		expect(child.sessionManager.getCwd()).toBe(projectDir);
+		await waitFor(() => (root as unknown as InspectableRlmSession)._activeRlmChildRuns.size === 0);
+
+		const unchanged = await root.runRlmChild("work in the parent cwd");
+		await waitFor(() => root.getRlmChildSession(unchanged.rlm_child_id) !== undefined);
+		expect(root.getRlmChildSession(unchanged.rlm_child_id)?.sessionManager.getCwd()).toBe(tempDir);
+		await waitFor(() => (root as unknown as InspectableRlmSession)._activeRlmChildRuns.size === 0);
+
+		await expect(root.runRlmChild("bad cwd", { cwd: join(tempDir, "missing-dir") })).rejects.toThrow(
+			"rlm.run cwd is not an existing directory",
+		);
+		await expect(root.runRlmChild("empty cwd", { cwd: "   " })).rejects.toThrow("rlm.run cwd must not be empty");
+	});
+
 	it("cancels active rlm children when the parent session is disposed", async () => {
 		let releaseChild: () => void = () => {};
 		const release = new Promise<void>((resolve) => {
