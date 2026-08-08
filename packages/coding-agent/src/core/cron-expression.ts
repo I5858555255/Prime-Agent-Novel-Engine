@@ -26,7 +26,7 @@ const WEEKDAY_NAMES = new Map([
 interface CronField {
 	values: readonly number[];
 	valueSet: ReadonlySet<number>;
-	unrestricted: boolean;
+	starred: boolean;
 }
 
 interface CronFields {
@@ -131,9 +131,6 @@ function parseCronField(field: string, min: number, max: number, names?: Readonl
 		} else {
 			const rangeParts = rangeText.split("-");
 			if (rangeParts.length === 1) {
-				if (stepParts[1] !== undefined) {
-					throw new Error(`Cron steps require a range or wildcard: ${part}`);
-				}
 				start = parseCronValue(rangeParts[0], min, max, names);
 				end = start;
 			} else if (rangeParts.length === 2) {
@@ -151,7 +148,7 @@ function parseCronField(field: string, min: number, max: number, names?: Readonl
 		}
 	}
 	const sortedValues = [...values].sort((left, right) => left - right);
-	return { values: sortedValues, valueSet: new Set(sortedValues), unrestricted: field === "*" };
+	return { values: sortedValues, valueSet: new Set(sortedValues), starred: field.startsWith("*") };
 }
 
 function parseCronValue(
@@ -187,7 +184,7 @@ function normalizeWeekdays(field: CronField): CronField {
 function matchesCronDay(wall: Date, fields: CronFields): boolean {
 	const dayOfMonthMatches = fields.dayOfMonth.valueSet.has(wall.getUTCDate());
 	const dayOfWeekMatches = fields.dayOfWeek.valueSet.has(wall.getUTCDay());
-	if (!fields.dayOfMonth.unrestricted && !fields.dayOfWeek.unrestricted) {
+	if (!fields.dayOfMonth.starred && !fields.dayOfWeek.starred) {
 		return dayOfMonthMatches || dayOfWeekMatches;
 	}
 	return dayOfMonthMatches && dayOfWeekMatches;

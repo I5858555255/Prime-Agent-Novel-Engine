@@ -178,7 +178,7 @@ Recurring schedules use Vixie/POSIX-style five-field expressions in the order `m
 - month names `JAN`-`DEC` and weekday names `SUN`-`SAT` are case-insensitive and work anywhere a number does; and
 - `@yearly`/`@annually`, `@monthly`, `@weekly`, `@daily`/`@midnight`, and `@hourly` are supported. `@reboot` is not a time-based schedule and is rejected.
 
-The day fields follow conventional cron matching. If both day of month and day of week are restricted, either field may match; otherwise both fields must match. Only a bare `*` is unrestricted, so a stepped wildcard such as `*/2` is a restriction for this rule.
+The day fields follow Vixie cron matching. A field whose raw text starts with `*` is starred, including a stepped wildcard such as `*/2`. If neither day of month nor day of week is starred, either field may match; if either is starred, both fields must match.
 
 Cron fields are evaluated in the worker process's local timezone. There is no per-job timezone override. During a daylight-saving gap, nonexistent local times are skipped. During a fold, a repeated wall-clock time runs once at its earlier occurrence and is not repeated after the clock moves back. Missed runs are not replayed.
 

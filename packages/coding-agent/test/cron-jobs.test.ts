@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -63,7 +63,7 @@ describe("five-field cron semantics", () => {
 		).toEqual(["2026-03-31T00:00:00.000Z", "2026-05-31T00:00:00.000Z"]);
 	});
 
-	it("uses OR semantics when both day fields are restricted", () => {
+	it("uses Vixie day-field combination rules", () => {
 		expect(
 			parseCronCasesInTimeZone("UTC", [
 				{ expression: "0 0 1 * 1", after: "2026-01-01T00:00:00.000Z" },
@@ -75,7 +75,7 @@ describe("five-field cron semantics", () => {
 			"2026-01-05T00:00:00.000Z",
 			"2026-02-01T00:00:00.000Z",
 			"2026-01-05T00:00:00.000Z",
-			"2026-01-07T00:00:00.000Z",
+			"2026-01-19T00:00:00.000Z",
 		]);
 	});
 
@@ -118,7 +118,6 @@ describe("five-field cron semantics", () => {
 			"0 0 * *",
 			"0 0 * * MONDAY",
 			"0 0 * * 1-5/0",
-			"0 0 * * 1/2",
 			"0 0 * * 1//2",
 			"0 0 * * 1,",
 			"0 0 * 13 *",
@@ -500,6 +499,90 @@ describe("AgentCronJobStore", () => {
 			id: heartbeat.id,
 			status: "paused",
 			updatedAt: "2026-01-01T12:35:00.000Z",
+		});
+	});
+
+	it("normalizes legacy active cron schedules once before scheduler startup", () => {
+		const storePath = makeStorePath(tempDirs);
+		const normalizationNow = new Date(2026, 0, 1, 0, 0);
+		const legacyNextRunAt = new Date(2026, 5, 1, 0, 0).toISOString();
+		const activeCron = makePersistedScheduleJob("active-cron", {
+			nextRunAt: legacyNextRunAt,
+			schedule: { kind: "cron", expression: "0 0 1 * 1" },
+		});
+		const pausedCron = makePersistedScheduleJob("paused-cron", {
+			status: "paused",
+			nextRunAt: legacyNextRunAt,
+			schedule: { kind: "cron", expression: "0 0 1 * 1" },
+		});
+		const activeOnce = makePersistedScheduleJob("active-once", {
+			nextRunAt: legacyNextRunAt,
+			schedule: { kind: "once", expression: "at 2026-06-01T00:00:00.000Z" },
+		});
+		writeFileSync(
+			storePath,
+			`${JSON.stringify({ jobs: [activeCron, pausedCron, activeOnce], dispatches: [] }, null, 2)}\n`,
+		);
+		const staleWriter = new AgentCronJobStore(storePath);
+		const staleSnapshot = staleWriter.list();
+		const store = new AgentCronJobStore(storePath);
+		const scheduler = new AgentCronScheduler(store, {
+			now: () => normalizationNow,
+			runJob: async () => undefined,
+		});
+
+		scheduler.start();
+		scheduler.stop();
+
+		const expectedNextRunAt = new Date(2026, 0, 5, 0, 0).toISOString();
+		expect(store.list().find((job) => job.id === activeCron.id)).toMatchObject({
+			nextRunAt: expectedNextRunAt,
+			updatedAt: normalizationNow.toISOString(),
+		});
+		expect(store.list().find((job) => job.id === pausedCron.id)).toEqual(pausedCron);
+		expect(store.list().find((job) => job.id === activeOnce.id)).toEqual(activeOnce);
+		expect(JSON.parse(readFileSync(storePath, "utf8"))).toMatchObject({ scheduleSemanticsRevision: 1 });
+		writeJobsForTest(staleWriter, staleSnapshot);
+		expect(store.list().find((job) => job.id === activeCron.id)).toMatchObject({
+			nextRunAt: expectedNextRunAt,
+			updatedAt: normalizationNow.toISOString(),
+		});
+		expect(JSON.parse(readFileSync(storePath, "utf8"))).toMatchObject({ scheduleSemanticsRevision: 1 });
+
+		const secondScheduler = new AgentCronScheduler(store, {
+			now: () => new Date(2026, 0, 2, 0, 0),
+			runJob: async () => undefined,
+		});
+		secondScheduler.start();
+		secondScheduler.stop();
+		expect(store.list().find((job) => job.id === activeCron.id)).toMatchObject({
+			nextRunAt: expectedNextRunAt,
+			updatedAt: normalizationNow.toISOString(),
+		});
+	});
+
+	it("preserves one overdue legacy cron occurrence for normal claiming", async () => {
+		const storePath = makeStorePath(tempDirs);
+		const now = new Date(2026, 0, 6, 0, 0);
+		const overdue = makePersistedScheduleJob("overdue-cron", {
+			nextRunAt: new Date(2026, 0, 5, 0, 0).toISOString(),
+			schedule: { kind: "cron", expression: "0 0 1 * 1" },
+		});
+		writeFileSync(storePath, `${JSON.stringify({ jobs: [overdue], dispatches: [] }, null, 2)}\n`);
+		const store = new AgentCronJobStore(storePath);
+		const startup = new AgentCronScheduler(store, { now: () => now, runJob: async () => undefined });
+		startup.start();
+		startup.stop();
+		expect(store.list()[0]?.nextRunAt).toBe(overdue.nextRunAt);
+
+		const runJob = vi.fn(async () => undefined);
+		const runner = new AgentCronScheduler(store, { now: () => now, runJob });
+		expect(await runner.runDue(now)).toBe(1);
+		expect(await runner.runDue(now)).toBe(0);
+		expect(runJob).toHaveBeenCalledOnce();
+		expect(store.list()[0]).toMatchObject({
+			nextRunAt: new Date(2026, 0, 12, 0, 0).toISOString(),
+			runCount: 1,
 		});
 	});
 
@@ -1603,6 +1686,23 @@ function makeTempDir(tempDirs: string[]): string {
 	const dir = mkdtempSync(join(tmpdir(), "prime-agent-cron-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function makePersistedScheduleJob(id: string, overrides: Partial<AgentCronJob> = {}): AgentCronJob {
+	return {
+		id,
+		status: "active",
+		activeSessionId: "active-1",
+		sessionId: "session-1",
+		sessionFile: "/tmp/session.jsonl",
+		cwd: "/tmp/project",
+		prompt: `run ${id}`,
+		schedule: { kind: "cron", expression: "0 0 * * *" },
+		createdAt: "2025-01-01T00:00:00.000Z",
+		updatedAt: "2025-01-01T00:00:00.000Z",
+		runCount: 0,
+		...overrides,
+	};
 }
 
 function parseCronCasesInTimeZone(

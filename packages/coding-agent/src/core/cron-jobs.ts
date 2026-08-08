@@ -95,6 +95,7 @@ export interface HeartbeatCronSessionActivity {
 interface CronJobsFile {
 	jobs?: unknown;
 	dispatches?: unknown;
+	scheduleSemanticsRevision?: unknown;
 }
 
 interface AgentCronDispatchRecord {
@@ -107,6 +108,7 @@ interface AgentCronDispatchRecord {
 interface CronJobsState {
 	jobs: AgentCronJob[];
 	dispatches: AgentCronDispatchRecord[];
+	scheduleSemanticsRevision: number;
 }
 
 export const SESSION_SCHEDULED_JOBS_FILENAME = "scheduled-jobs.json";
@@ -114,6 +116,7 @@ export const SESSION_SCHEDULED_JOBS_FILENAME = "scheduled-jobs.json";
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const ONE_SECOND_MS = 1000;
 const ONE_MINUTE_MS = 60_000;
+const CRON_SCHEDULE_SEMANTICS_REVISION = 1;
 export const DEFAULT_HEARTBEAT_SCHEDULE = "every 5m";
 export const DEFAULT_HEARTBEAT_DELIVERY_MODE: AgentHeartbeatDeliveryMode = "steer";
 
@@ -764,6 +767,16 @@ export class AgentCronJobStore {
 		return recovered;
 	}
 
+	prepareForScheduling(now = new Date()): AgentCronJob[] {
+		const recovered: AgentCronJob[] = [];
+		this.mutateStates((state) => {
+			recoverInterruptedInState(state, now, recovered);
+			upgradeCronScheduleSemanticsInState(state, now);
+			return [];
+		});
+		return recovered;
+	}
+
 	recoverInterruptedDispatchesById(dispatchIds: readonly string[], now = new Date()): AgentCronJob[] {
 		const recovered: AgentCronJob[] = [];
 		const interruptedDispatchIds = new Set(dispatchIds);
@@ -834,6 +847,18 @@ export class AgentCronJobStore {
 				const currentBySessionId = new Map(
 					[...this.sessionArtifactFiles].map(([sessionId, path]) => [sessionId, readJobsState(path)]),
 				);
+				const scheduleRevisionByJobId = new Map<string, number>();
+				for (const state of currentBySessionId.values()) {
+					for (const job of state.jobs) {
+						const revision = scheduleRevisionByJobId.get(job.id);
+						scheduleRevisionByJobId.set(
+							job.id,
+							revision === undefined
+								? state.scheduleSemanticsRevision
+								: Math.min(revision, state.scheduleSemanticsRevision),
+						);
+					}
+				}
 				const incomingById = new Map(jobs.map((job) => [job.id, job]));
 				const mergedJobsBySessionId = new Map<string, AgentCronJob[]>();
 				for (const [sessionId, current] of currentBySessionId) {
@@ -856,10 +881,20 @@ export class AgentCronJobStore {
 				);
 				const dispatches = [...currentBySessionId.values()].flatMap((state) => state.dispatches);
 				for (const [sessionId, path] of this.sessionArtifactFiles) {
-					const current = currentBySessionId.get(sessionId) ?? { jobs: [], dispatches: [] };
+					const current = currentBySessionId.get(sessionId) ?? {
+						jobs: [],
+						dispatches: [],
+						scheduleSemanticsRevision: CRON_SCHEDULE_SEMANTICS_REVISION,
+					};
+					const nextJobs = mergedJobsBySessionId.get(sessionId) ?? [];
+					const scheduleSemanticsRevision = nextJobs.reduce(
+						(revision, job) => Math.min(revision, scheduleRevisionByJobId.get(job.id) ?? revision),
+						current.scheduleSemanticsRevision,
+					);
 					const nextState = {
-						jobs: mergedJobsBySessionId.get(sessionId) ?? [],
+						jobs: nextJobs,
 						dispatches: dispatches.filter((dispatch) => sessionIdByJobId.get(dispatch.jobId) === sessionId),
+						scheduleSemanticsRevision,
 					};
 					if (JSON.stringify(current) !== JSON.stringify(nextState)) {
 						writeJobsState(path, nextState);
@@ -899,6 +934,7 @@ export function migrateLegacyCronJobsToSessionArtifacts(
 	const now = options.now ?? new Date();
 	const legacyState = readJobsState(filePath);
 	recoverInterruptedInState(legacyState, now, []);
+	upgradeCronScheduleSemanticsInState(legacyState, now);
 	const jobs = legacyState.jobs.map((job) => {
 		if (
 			!options.isSessionOwned ||
@@ -947,7 +983,7 @@ export class AgentCronScheduler {
 		this.stopped = false;
 		if (!this.hasStarted) {
 			this.hasStarted = true;
-			this.store.recoverInterruptedDispatches(this.now());
+			this.store.prepareForScheduling(this.now());
 		}
 		this.scheduleNext();
 	}
@@ -1422,12 +1458,18 @@ function withCronJobsStateLocks<T>(paths: readonly string[], action: () => T): T
 
 function readJobsState(path: string): CronJobsState {
 	if (!existsSync(path)) {
-		return { jobs: [], dispatches: [] };
+		return { jobs: [], dispatches: [], scheduleSemanticsRevision: CRON_SCHEDULE_SEMANTICS_REVISION };
 	}
 	const parsed = JSON.parse(readFileSync(path, "utf-8")) as CronJobsFile;
 	return {
 		jobs: Array.isArray(parsed.jobs) ? parsed.jobs.filter(isAgentCronJob) : [],
 		dispatches: Array.isArray(parsed.dispatches) ? parsed.dispatches.filter(isAgentCronDispatchRecord) : [],
+		scheduleSemanticsRevision:
+			typeof parsed.scheduleSemanticsRevision === "number" &&
+			Number.isInteger(parsed.scheduleSemanticsRevision) &&
+			parsed.scheduleSemanticsRevision >= 0
+				? parsed.scheduleSemanticsRevision
+				: 0,
 	};
 }
 
@@ -1436,6 +1478,7 @@ function writeJobsFile(path: string, jobs: readonly AgentCronJob[], mergeCurrent
 	writeJobsState(path, {
 		jobs: mergeCurrent ? mergeFreshJobs(current.jobs, jobs) : [...jobs],
 		dispatches: current.dispatches,
+		scheduleSemanticsRevision: current.scheduleSemanticsRevision,
 	});
 }
 
@@ -1461,6 +1504,29 @@ function writeJobsState(path: string, state: CronJobsState): void {
 	} catch {
 		// Directory fsync is unavailable on some platforms; the atomic rename still protects readers.
 	}
+}
+
+function upgradeCronScheduleSemanticsInState(state: CronJobsState, now: Date): void {
+	if (state.scheduleSemanticsRevision >= CRON_SCHEDULE_SEMANTICS_REVISION) {
+		return;
+	}
+	state.jobs = state.jobs.map((job) => {
+		if (job.status !== "active" || job.schedule.kind !== "cron") {
+			return job;
+		}
+		const persistedNextRunAt = job.nextRunAt === undefined ? Number.NaN : Date.parse(job.nextRunAt);
+		// Keep one already-due occurrence eligible for normal claiming; recalculating
+		// from startup time would silently discard it.
+		if (Number.isFinite(persistedNextRunAt) && persistedNextRunAt <= now.getTime()) {
+			return job;
+		}
+		const nextRunAt = nextCronRunAfter(job.schedule.expression, now).toISOString();
+		if (nextRunAt === job.nextRunAt) {
+			return job;
+		}
+		return { ...job, nextRunAt, updatedAt: now.toISOString() };
+	});
+	state.scheduleSemanticsRevision = CRON_SCHEDULE_SEMANTICS_REVISION;
 }
 
 function claimDueInState(state: CronJobsState, dueAt: Date, claimedAt: Date): AgentCronDispatch[] {
