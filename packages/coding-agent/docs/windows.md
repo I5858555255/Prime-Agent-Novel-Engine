@@ -61,6 +61,40 @@ falls back to slower search paths. Installing them yourself
 (`winget install BurntSushi.ripgrep.MSVC`, `winget install sharkdp.fd`) makes
 Prime Agent use the copies on `PATH` instead.
 
+**asyncio subprocesses need their own event loop.** ipykernel runs on a
+Windows *selector* event loop (pyzmq needs `add_reader`), and a selector loop
+cannot spawn subprocesses. Prime Agent restores the proactor event loop
+*policy* at kernel startup while leaving the kernel's own running loop alone,
+so any loop created afterwards can spawn processes. Because the kernel's main
+thread is already driving a loop, async libraries that start helper binaries —
+playwright is the common one — have to run on a loop of their own:
+
+```python
+import asyncio, threading
+
+def run_async(factory):
+    box = {}
+    def worker():
+        loop = asyncio.new_event_loop()   # proactor loop: subprocesses work
+        asyncio.set_event_loop(loop)
+        try:
+            box["value"] = loop.run_until_complete(factory())
+        except BaseException as exc:
+            box["error"] = exc
+        finally:
+            loop.close()
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+```
+
+Use the async API rather than the sync one (`playwright.async_api`, not
+`sync_playwright`): the sync API drives its own loop and conflicts with the
+kernel's.
+
 **Subprocesses are spawned with `windowsHide`.** The daemon and its session
 workers are detached and therefore have no console of their own, so any console
 tool they run (git, uv, python) would otherwise allocate — and flash — a console
