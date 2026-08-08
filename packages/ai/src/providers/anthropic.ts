@@ -8,7 +8,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages.js";
 import { getAnthropicCacheWriteCost, hasStandardAnthropicCachePricing } from "../cache-pricing.js";
 import { getEnvApiKey } from "../env-api-keys.js";
-import { calculateCost, clampThinkingLevel } from "../models.js";
+import { calculateCost, clampThinkingLevel, supportsAnthropicFastMode } from "../models.js";
 import type {
 	AnthropicMessagesCompat,
 	Api,
@@ -515,7 +515,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					shouldUseFineGrainedToolStreamingBeta(model, context),
 					options?.headers,
 					copilotDynamicHeaders,
-					options?.speed === "fast",
+					options?.speed === "fast" && supportsAnthropicFastMode(model),
 				);
 				client = created.client;
 				isOAuth = created.isOAuthToken;
@@ -538,7 +538,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			};
 			// beta.messages.create accepts a superset of params; cast to match the non-beta overload signature
 			const createFn =
-				options?.speed === "fast"
+				options?.speed === "fast" && supportsAnthropicFastMode(model)
 					? (client.beta.messages.create.bind(client.beta.messages) as typeof client.messages.create)
 					: client.messages.create.bind(client.messages);
 			const response = await createFn({ ...params, stream: true }, requestOptions).asResponse();
@@ -1073,7 +1073,7 @@ function buildParams(
 		}
 	}
 
-	if (options?.speed === "fast") {
+	if (options?.speed === "fast" && supportsAnthropicFastMode(model)) {
 		// speed is in the beta MessageCreateParamsStreaming but not yet in the base type
 		(params as MessageCreateParamsStreaming & { speed?: "fast" }).speed = "fast";
 	}
