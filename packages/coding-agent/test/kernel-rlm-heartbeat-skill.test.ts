@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getBundledSkillsDir } from "../src/config.js";
 import type { PythonSkillRuntimeInfo } from "../src/core/skills.js";
 import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
-import { removeTempDirSync } from "./utils/temp-fs.js";
+import { removeTempDir } from "./utils/temp-fs.js";
 
 function bundledRlmHeartbeatSkill(): PythonSkillRuntimeInfo {
 	const packagePath = join(getBundledSkillsDir(), "rlm-heartbeat");
@@ -29,7 +29,7 @@ describe("RLM heartbeat skill over the kernel host bridge", () => {
 	afterEach(async () => {
 		await provisioner?.dispose();
 		provisioner = undefined;
-		removeTempDirSync(tempDir);
+		await removeTempDir(tempDir);
 	});
 
 	it("round-trips create, list, update, and delete through a live kernel", async () => {

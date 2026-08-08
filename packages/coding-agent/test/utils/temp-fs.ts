@@ -24,7 +24,18 @@ export function removeTempDirSync(path: string): void {
 }
 
 export async function removeTempDir(path: string): Promise<void> {
-	await removePath(path);
+	// Preferred in async teardown: unlike the sync form it yields between
+	// attempts instead of blocking the thread, which is what lets pending handle
+	// closes actually complete.
+	const attempts = process.platform === "win32" ? 10 : 1;
+	for (let attempt = 1; ; attempt++) {
+		try {
+			await removePath(path);
+			return;
+		} catch (error) {
+			if (attempt >= attempts) throw error;
+		}
+	}
 }
 
 /**

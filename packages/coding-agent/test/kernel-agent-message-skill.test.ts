@@ -6,7 +6,7 @@ import { getBundledSkillsDir } from "../src/config.js";
 import { KernelManager, type KernelSentAgentMessage } from "../src/core/kernel/index.js";
 import type { PythonSkillRuntimeInfo } from "../src/core/skills.js";
 import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
-import { removeTempDirSync } from "./utils/temp-fs.js";
+import { removeTempDir } from "./utils/temp-fs.js";
 
 function bundledAgentMessageSkill(): PythonSkillRuntimeInfo {
 	const packagePath = join(getBundledSkillsDir(), "agent-message");
@@ -38,7 +38,7 @@ describe("agent-message skill over the kernel host bridge", () => {
 	afterEach(async () => {
 		await provisioner?.dispose();
 		provisioner = undefined;
-		removeTempDirSync(tempDir);
+		await removeTempDir(tempDir);
 	});
 
 	it("lists agents and sends without exposing a spoofable sender", async () => {

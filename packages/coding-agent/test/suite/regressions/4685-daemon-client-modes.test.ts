@@ -99,10 +99,13 @@ async function runCli(
 	});
 	child.stdin?.end(options.stdin ?? "");
 	const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
+		// A cold CLI start pays for a daemon spawn plus a worker spawn, which does
+		// not fit in 20s on Windows under a fully parallel suite run.
+		const cliTimeoutMs = process.platform === "win32" ? 60_000 : 20_000;
 		const timeout = setTimeout(() => {
 			child.kill("SIGKILL");
 			reject(new Error(`CLI timed out\n${stderr}`));
-		}, 20_000);
+		}, cliTimeoutMs);
 		child.once("exit", (code, signal) => {
 			clearTimeout(timeout);
 			resolveExit({ code, signal: signal as NodeJS.Signals | null });

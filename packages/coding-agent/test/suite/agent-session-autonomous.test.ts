@@ -26,7 +26,9 @@ function isProcessRunning(pid: number): boolean {
 	}
 }
 
-async function waitForProcessExit(pid: number, timeoutMs = 2000): Promise<boolean> {
+const PROCESS_WAIT_TIMEOUT_MS = process.platform === "win32" ? 20_000 : 2000;
+
+async function waitForProcessExit(pid: number, timeoutMs = PROCESS_WAIT_TIMEOUT_MS): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (isProcessRunning(pid) && Date.now() < deadline) {
 		await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -34,7 +36,7 @@ async function waitForProcessExit(pid: number, timeoutMs = 2000): Promise<boolea
 	return !isProcessRunning(pid);
 }
 
-async function waitForPidFile(path: string, timeoutMs = 2000): Promise<number> {
+async function waitForPidFile(path: string, timeoutMs = PROCESS_WAIT_TIMEOUT_MS): Promise<number> {
 	const deadline = Date.now() + timeoutMs;
 	while (!existsSync(path) && Date.now() < deadline) {
 		await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -449,7 +451,7 @@ describe("AgentSession autonomous mode", () => {
 		try {
 			// The gate and its descendant both have to finish a Node cold start
 			// before the timeout fires, and that takes noticeably longer on Windows.
-			const timeoutMs = process.platform === "win32" ? 2000 : 250;
+			const timeoutMs = process.platform === "win32" ? 8000 : 250;
 			const state = createAutonomousRuntimeState({
 				enabled: true,
 				maxContinuations: 1,
@@ -460,7 +462,7 @@ describe("AgentSession autonomous mode", () => {
 			await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: tempDir });
 			descendantPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
 
-			expect(Date.now() - startedAt).toBeLessThan(timeoutMs + 2750);
+			expect(Date.now() - startedAt).toBeLessThan(timeoutMs + 10_000);
 			expect(state.lastGateFailure?.exitText).toBe("timed out");
 			expect(await waitForProcessExit(descendantPid)).toBe(true);
 		} finally {

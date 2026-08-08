@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getBundledSkillsDir } from "../src/config.js";
 import type { PythonSkillRuntimeInfo } from "../src/core/skills.js";
 import { IpythonKernelProvisioner, imageBlocksFromAttachments } from "../src/core/tools/ipython.js";
-import { removeTempDirSync } from "./utils/temp-fs.js";
+import { removeTempDir } from "./utils/temp-fs.js";
 
 // 1x1 transparent PNG.
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -32,7 +32,7 @@ describe("attach-image skill over the kernel host bridge", () => {
 	afterEach(async () => {
 		await provisioner?.dispose();
 		provisioner = undefined;
-		removeTempDirSync(tempDir);
+		await removeTempDir(tempDir);
 	});
 
 	it("loads an on-disk image into the tool result as an ImageContent block", async () => {

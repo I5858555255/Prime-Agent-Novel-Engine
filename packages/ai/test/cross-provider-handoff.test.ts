@@ -22,6 +22,8 @@
  * Fixtures are generated fresh on each run.
  */
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { writeFileSync } from "fs";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -184,7 +186,7 @@ function hasAnyApiKey(): boolean {
 }
 
 function dumpFailurePayload(params: { label: string; error: string; payload?: unknown; messages: Message[] }): void {
-	const filename = `/tmp/pi-handoff-${params.label}-${Date.now()}.json`;
+	const filename = join(tmpdir(), `pi-handoff-${params.label}-${Date.now()}.json`);
 	const body = {
 		label: params.label,
 		error: params.error,

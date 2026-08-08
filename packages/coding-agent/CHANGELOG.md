@@ -10,6 +10,18 @@
 - Fixed Windows daemon force-stop operations leaving descendant processes alive by terminating process trees through `taskkill`.
 - Fixed Windows daemon status, doctor, and shutdown discovery missing a live default named-pipe supervisor without worker descriptors.
 - Fixed existing daemon sessions adopting Herdr environment without reloading their lifecycle reporter.
+- Added `install.ps1`, a Windows installer matching `install.sh`: the same preflight, release-channel resolution, SHA-256 verification, and global npm install.
+- Added a Windows CI leg so the build, checks, and test suite run on `windows-latest`.
+- Fixed `%%bash` cells silently executing inside WSL on Windows, where the working directory arrived as `/mnt/c/...` and the kernel's environment did not cross the boundary; they now use the same shell the Bash tool resolves.
+- Fixed a configured `shellPath` reaching IPython's `%%script` magic with its quotes attached on Windows, which failed as `Couldn't find program`.
+- Fixed autonomous gates running under `cmd.exe` on Windows while every other shell surface used bash.
+- Fixed daemon socket paths passed with `--daemon-socket` failing to bind or connect on Windows; filesystem paths now map onto a named pipe, and a relative path is resolved before the update coordinator changes directory.
+- Fixed session leases and the supervisor launch lock never detecting a conflict on Windows, where a directory-onto-directory rename reports EPERM instead of EEXIST, so two agents could believe they owned the same session.
+- Fixed the owned session worker skipping its graceful shutdown on Windows, where `process.kill(process.pid, "SIGTERM")` terminates immediately without running SIGTERM handlers, and failing to notice a killed frontend.
+- Fixed the IPython kernel's `dispose()` returning before the kernel exited, which left its working directory locked on Windows.
+- Fixed the command recovery journal throwing on Windows by skipping the POSIX-only directory fsync after an atomic rename.
+- Fixed `uv` discovery ignoring `PATHEXT`, so a `uv.cmd` shim installed by scoop or pipx was never found.
+- Fixed `~/.agents/skills` being re-scoped from user to project when the working directory sits under the home directory, which is the normal case on Windows.
 
 ## [0.7.0] - 2026-08-05
 
