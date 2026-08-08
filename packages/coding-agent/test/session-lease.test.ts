@@ -12,6 +12,7 @@ import {
 	SESSION_LEASES_ENABLED_ENV,
 	SessionAlreadyActiveError,
 } from "../src/core/session-lease.js";
+import { SYMLINKS_SUPPORTED } from "./platform-support.js";
 
 const tempDirs: string[] = [];
 
@@ -144,7 +145,7 @@ describe("session leases", () => {
 		}
 	});
 
-	it("treats symlink aliases as the same persisted session", () => {
+	it.skipIf(!SYMLINKS_SUPPORTED)("treats symlink aliases as the same persisted session", () => {
 		const agentDir = createTempDir();
 		const sessionPath = join(agentDir, "session.jsonl");
 		const aliasPath = join(agentDir, "session-alias.jsonl");

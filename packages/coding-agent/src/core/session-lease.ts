@@ -116,6 +116,7 @@ function runProcessQuery(command: string, args: string[]): string {
 	return execFileSync(command, args, {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
+		windowsHide: true,
 	});
 }
 
@@ -215,6 +216,26 @@ function withLeaseGuard<T>(directory: string, action: () => T): T {
 	}
 }
 
+/**
+ * A lease is claimed by renaming a candidate directory onto the lease path.
+ * POSIX reports an already-claimed lease as EEXIST/ENOTEMPTY, which is the
+ * signal this module is built around. Windows rejects a directory-over-
+ * directory rename with EPERM (sometimes EACCES) instead, so without this the
+ * "lease is taken" branch never runs there: a stale lease is never reclaimed
+ * and a live one surfaces as a raw EPERM instead of SessionAlreadyActiveError.
+ * The existence check keeps a genuine permission failure fatal.
+ */
+function renameFailedBecauseLeaseIsTaken(directory: string, error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (code === "EEXIST" || code === "ENOTEMPTY") {
+		return true;
+	}
+	if (process.platform !== "win32") {
+		return false;
+	}
+	return (code === "EPERM" || code === "EACCES") && existsSync(directory);
+}
+
 function reclaimStaleLease(directory: string): boolean {
 	const stalePath = `${directory}.stale-${process.pid}-${randomUUID()}`;
 	try {
@@ -264,8 +285,7 @@ export function acquireSessionLease(
 				return new SessionLease(canonicalPath, directory, token);
 			} catch (error) {
 				rmSync(candidateDirectory, { recursive: true, force: true });
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+				if (!renameFailedBecauseLeaseIsTaken(directory, error)) {
 					throw error;
 				}
 				const existingOwner = readLeaseOwner(directory);

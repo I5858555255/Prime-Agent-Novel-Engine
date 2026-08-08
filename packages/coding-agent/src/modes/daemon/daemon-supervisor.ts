@@ -2131,6 +2131,10 @@ export class DaemonSupervisor {
 				[SESSION_LEASE_OWNER_ID_ENV]: rootActiveSessionId,
 			}),
 			stdio: ["ignore", "ignore", "pipe", "pipe"],
+			// A detached child gets no console on Windows, so every console tool the
+			// worker later runs would pop its own window. An invisible console keeps
+			// the whole subtree windowless.
+			windowsHide: true,
 		});
 		const detachWorkerStderr = child.stderr
 			? attachJsonlLineReader(child.stderr, (line) => this.log(`Session worker ${workerId} stderr: ${line}`), {
@@ -4864,6 +4868,7 @@ export class DaemonSupervisor {
 				detached: true,
 				env: environment,
 				stdio: "ignore",
+				windowsHide: true,
 			});
 			replacement.unref();
 		}

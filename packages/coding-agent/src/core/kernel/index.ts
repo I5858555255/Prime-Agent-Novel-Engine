@@ -648,6 +648,9 @@ export class KernelManager {
 				cwd: this.options.cwd,
 				env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
 				stdio: ["ignore", "pipe", "pipe"],
+				// The kernel talks over ZMQ and its stdio is piped; on Windows it
+				// would otherwise get a console window of its own per session.
+				windowsHide: true,
 			});
 			this.kernel = kernel;
 

@@ -53,6 +53,14 @@ curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 
 The installer downloads a versioned release, verifies its SHA-256 checksum, installs the `prime-agent` command, and can prepare the IPython runtime used by the agent.
 
+On Windows, install from npm and run it from PowerShell, Command Prompt, or Windows Terminal — no WSL or Git Bash session required:
+
+```powershell
+npm install -g prime-agent
+```
+
+Windows needs Node.js 22.8+ and [Git for Windows](https://git-scm.com/download/win), whose bundled Bash backs the agent's shell tool. See [Windows support](packages/coding-agent/docs/windows.md) for the full requirements and known limitations.
+
 Start Prime Agent from the repository or directory you want it to work in:
 
 ```bash
@@ -98,6 +106,7 @@ Prime Agent is built for long-running work, especially for evaluations in resear
 - [Provider setup](packages/coding-agent/docs/providers.md) — subscription and API-key providers
 - [Architecture overview](packages/coding-agent/docs/architecture.md) — daemon, worker, kernel, and persistence boundaries
 - [Development](packages/coding-agent/docs/development.md) — build and run from source
+- [Windows support](packages/coding-agent/docs/windows.md) — requirements, what differs from macOS and Linux, and troubleshooting
 
 ## Acknowledgements
 

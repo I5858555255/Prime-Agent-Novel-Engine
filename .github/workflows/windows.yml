@@ -1,0 +1,117 @@
+name: Windows
+
+# Windows is the one supported platform the Linux CI cannot speak for: the
+# things that break there are path layout (Scripts\python.exe), archive format
+# (zip instead of tar.gz), console allocation, and Win32 error codes for
+# filesystem races. None of those have a Linux equivalent that would catch a
+# regression, so they get their own job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-check:
+    name: Build and typecheck (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint and format
+        run: npx biome check --error-on-warnings .
+
+  test:
+    name: Platform tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Scoped to the suites whose behaviour is platform-dependent. The rest of
+      # the suite still carries POSIX-only fixtures (shell-scripted stubs, chmod
+      # permission bits, symlinks) and is covered by the Linux jobs.
+      - name: Test
+        working-directory: packages/coding-agent
+        run: >-
+          npx vitest --run
+          test/kernel-venv-python-path.test.ts
+          test/expand-tilde-path.test.ts
+          test/session-lease.test.ts
+          test/command-recovery-journal.test.ts
+          test/worker-recovery-journal.test.ts
+          test/orphan-process-journal.test.ts
+          test/child-process.test.ts
+          test/bash-close-hang-windows.test.ts
+          test/daemon-socket.test.ts
+          test/paths.test.ts
+          test/path-utils.test.ts
+          test/args.test.ts
+
+  kernel-smoke:
+    name: IPython kernel smoke (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install uv
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # The regression this guards: the venv interpreter used to be looked up at
+      # <venv>/bin/python, which does not exist on Windows. Every readiness probe
+      # failed, so the venv was rebuilt on each launch and the IPython tool never
+      # came up. Bootstrapping twice proves the second run is a cache hit.
+      - name: Bootstrap kernel venv and execute a cell
+        working-directory: packages/coding-agent
+        run: node scripts/windows-kernel-smoke.mjs
