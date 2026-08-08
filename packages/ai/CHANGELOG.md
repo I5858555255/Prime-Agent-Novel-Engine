@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed Anthropic cost reporting using a stale cache-write rate when the final stream usage carries updated cache-creation numbers ([#997](https://github.com/PrimeIntellect-ai/prime-agent/issues/997))
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

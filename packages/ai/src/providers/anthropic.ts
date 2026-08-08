@@ -6,7 +6,11 @@ import type {
 	MessageParam,
 	RawMessageStreamEvent,
 } from "@anthropic-ai/sdk/resources/messages.js";
-import { getAnthropicCacheWriteCost, hasStandardAnthropicCachePricing } from "../cache-pricing.js";
+import {
+	type AnthropicCacheCreationUsage,
+	getAnthropicCacheWriteCost,
+	hasStandardAnthropicCachePricing,
+} from "../cache-pricing.js";
 import { getEnvApiKey } from "../env-api-keys.js";
 import { calculateCost, clampThinkingLevel } from "../models.js";
 import type {
@@ -703,6 +707,20 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					// Anthropic doesn't provide total_tokens, compute from components
 					output.usage.totalTokens =
 						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+					// Proxies may re-aggregate cache_creation in message_delta; reprice from the
+					// latest breakdown when present, otherwise keep the message_start rate.
+					const deltaCacheCreation = (
+						event.usage as typeof event.usage & {
+							cache_creation?: AnthropicCacheCreationUsage | null;
+						}
+					).cache_creation;
+					if (cacheControl && usesAnthropicCachePricing && deltaCacheCreation !== undefined) {
+						cacheWriteCost = getAnthropicCacheWriteCost(
+							model.cost.input,
+							cacheControl.ttl === "1h" ? "1h" : "5m",
+							deltaCacheCreation,
+						);
+					}
 					calculateCost(
 						model,
 						output.usage,
