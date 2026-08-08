@@ -92,6 +92,7 @@ export function promoteChannel(artifactsDir, channel, store, options = {}) {
 	const pointer = readFileSync(pointerPath);
 	const manifest = readFileSync(manifestPath);
 
+	options.beforeWrite?.("promotion");
 	store.putMutable(pointerKey, pointerPath, { cacheControl: "no-cache", contentType: "text/plain" });
 	requireRemoteMatch(store, pointerKey, pointer);
 	store.putMutable(manifestKey, manifestPath, { cacheControl: "no-cache", contentType: "application/json" });
@@ -99,7 +100,8 @@ export function promoteChannel(artifactsDir, channel, store, options = {}) {
 	return { manifestKey, pointerKey };
 }
 
-export function publishInstallers(installers, store) {
+export function publishInstallers(installers, store, options = {}) {
+	options.beforeWrite?.("installers");
 	for (const installer of installers) {
 		const local = readFileSync(installer.path);
 		store.putMutable(installer.key, installer.path, {
@@ -115,11 +117,10 @@ export function publishChannel(options) {
 	options.beforeMutable?.("mirror");
 	options.mirror?.();
 	verifyRemoteRelease(options.artifactsDir, options.version, options.store);
-	options.beforeMutable?.("installers");
-	publishInstallers(options.installers ?? [], options.store);
-	options.beforeMutable?.("promotion");
+	publishInstallers(options.installers ?? [], options.store, { beforeWrite: options.beforeMutable });
 	const promotion = promoteChannel(options.artifactsDir, options.channel, options.store, {
 		allowRegression: options.allowRegression,
+		beforeWrite: options.beforeMutable,
 	});
 	return { ...immutable, ...promotion };
 }

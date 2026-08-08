@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { assertLockstepVersions, resolveReleaseContext } from "./resolve-release-context.mjs";
+import { createPublicationContext, validatePublicationContext } from "./release-publication-context.mjs";
 import { verifyCiResults } from "./verify-ci-results.mjs";
 import { verifyReleaseGate } from "./verify-release-gate.mjs";
 import { verifyReleaseArtifacts } from "./verify-release-artifacts.mjs";
@@ -21,6 +22,7 @@ const packageVersions = {
 };
 const releaseWorkflow = readFileSync(new URL("../.github/workflows/build-binaries.yml", import.meta.url), "utf8");
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const publicationWorkflow = readFileSync(new URL("../.github/workflows/publish-release.yml", import.meta.url), "utf8");
 
 describe("workflow contract", () => {
 	it("publishes main only from completed CI and reuses full CI only for protected retry", () => {
@@ -39,7 +41,11 @@ describe("workflow contract", () => {
 		assert.match(releaseWorkflow, /Verify release source commit[\s\S]*git rev-parse HEAD/);
 		assert.match(releaseWorkflow, /name: prime-agent-production-\$\{\{ env\.BUILD_SHA \}\}/);
 		assert.match(releaseWorkflow, /name: prime-agent-beta-\$\{\{ env\.BUILD_SHA \}\}/);
-		assert.match(releaseWorkflow, /publish:[\s\S]*needs: release-gate/);
+		assert.match(releaseWorkflow, /Capture exact release source baseline[\s\S]*- name: Build/);
+		assert.match(releaseWorkflow, /Verify build and validation did not mutate release source/);
+		assert.match(releaseWorkflow, /publication-context:[\s\S]*needs: release-gate/);
+		assert.match(releaseWorkflow, /name: prime-agent-publication-context/);
+		assert.match(publicationWorkflow, /workflow_run:\n\s+workflows: \[Release Prime Agent\]/);
 	});
 
 	it("validates source provenance before every split publication phase", () => {
@@ -55,7 +61,7 @@ describe("workflow contract", () => {
 			"beta-r2-installers",
 			"beta-r2-promote",
 		]) {
-			assert.match(releaseWorkflow, new RegExp(`publish-release\\.mjs ${phase}`));
+			assert.match(publicationWorkflow, new RegExp(`publish-release\\.mjs ${phase}`));
 		}
 	});
 });
@@ -202,6 +208,73 @@ describe("aggregate CI gate", () => {
 		assert.throws(
 			() => verifyReleaseGate({ build: "success", fullCi: "success", releaseContext: "success", trigger: "main" }),
 			/reuse completed upstream CI/,
+		);
+	});
+});
+
+function validPublicationContext(overrides = {}) {
+	return createPublicationContext({
+		betaVersion: "0.7.1-beta.123.2.aaaaaaa",
+		buildSha,
+		defaultBranch: "main",
+		productionVersion: "0.7.1",
+		publishBeta: true,
+		publishProduction: true,
+		releaseRunId: "321",
+		toolingSha: buildSha,
+		...overrides,
+	});
+}
+
+function validPublicationUpstream(overrides = {}) {
+	return {
+		conclusion: "success",
+		defaultBranch: "main",
+		displayTitle: `Prime Agent release candidate ${buildSha}`,
+		event: "workflow_run",
+		headBranch: "main",
+		headRepository: "PrimeIntellect-ai/prime-agent",
+		headSha: buildSha,
+		path: ".github/workflows/build-binaries.yml",
+		repository: "PrimeIntellect-ai/prime-agent",
+		runId: "321",
+		...overrides,
+	};
+}
+
+describe("publication context gate", () => {
+	it("accepts only an exact successful release-run artifact", () => {
+		assert.deepEqual(validatePublicationContext(validPublicationContext(), validPublicationUpstream()),
+			validPublicationContext());
+	});
+
+	it("rejects noncanonical upstream workflow metadata", () => {
+		for (const invalid of [
+			{ conclusion: "failure" },
+			{ displayTitle: "Rejected Prime Agent release event 321" },
+			{ event: "push" },
+			{ headBranch: "feature" },
+			{ headRepository: "attacker/prime-agent" },
+			{ path: ".github/workflows/other.yml" },
+			{ runId: "999" },
+			{ headSha: otherSha },
+		]) {
+			assert.throws(() => validatePublicationContext(validPublicationContext(), validPublicationUpstream(invalid)));
+		}
+	});
+
+	it("rejects malformed, mismatched, or disabled publication artifacts", () => {
+		assert.throws(() => validatePublicationContext({ ...validPublicationContext(), unexpected: true }, validPublicationUpstream()));
+		assert.throws(() => validatePublicationContext({ ...validPublicationContext(), releaseRunId: "999" }, validPublicationUpstream()));
+		assert.throws(() => validatePublicationContext({ ...validPublicationContext(), toolingSha: otherSha }, validPublicationUpstream()));
+		assert.throws(() =>
+			createPublicationContext({
+				...validPublicationContext(),
+				betaVersion: "",
+				productionVersion: "",
+				publishBeta: false,
+				publishProduction: false,
+			}),
 		);
 	});
 });

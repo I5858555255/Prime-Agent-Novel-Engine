@@ -32,7 +32,7 @@
 		"release:pack": "node scripts/pack-prime-agent-release.mjs",
 		"release:prepare": "node scripts/prepare-release.mjs",
 		"release:dry-run": "node scripts/release-dry-run.mjs",
-		"release:test": "node --test scripts/release-lifecycle.test.mjs scripts/release-publication.test.mjs scripts/release-workflow-contract.test.mjs scripts/release-workflow.test.mjs",
+		"release:test": "node --test scripts/release-command.test.mjs scripts/release-lifecycle.test.mjs scripts/release-publication.test.mjs scripts/release-workflow-contract.test.mjs scripts/release-workflow.test.mjs",
 		"release:patch": "node scripts/release.mjs",
 		"release:minor": "node scripts/release.mjs",
 		"release:major": "node scripts/release.mjs",

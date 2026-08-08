@@ -53,7 +53,9 @@ Open and review the release-preparation pull request. Merging the exact version-
 
 ## CI Publication
 
-The Release Prime Agent workflow starts only after the canonical `CI` workflow completes successfully for a same-repository push to the protected default branch. It binds every checkout, workflow artifact, manifest, checksum, and publication phase to that CI run's complete source SHA. Each successful default-branch commit builds a beta; production is additionally published only when the root version changed to a strictly newer validated version.
+The Release Prime Agent workflow starts only after the canonical `CI` workflow completes successfully for a same-repository push to the protected default branch. It binds every checkout, workflow artifact, manifest, and checksum to that CI run's complete source SHA. After its aggregate gate succeeds, it uploads one run-scoped publication context containing the exact source SHA, protected tooling SHA, versions, channel flags, and release run ID.
+
+The separate Publish Prime Agent release workflow is loaded only from the protected default branch and starts only after a Release Prime Agent run completes. Only successful runs whose event metadata already matches the exact workflow path, repository, and default branch enter the shared publication lock; rejected runs use isolated groups. Before any protected mutation job, the workflow verifies the conclusion, event, run ID, tooling SHA, and complete context schema, then downloads artifacts only from that validated run. Each successful default-branch commit builds a beta; production is additionally published only when the root version changed to a strictly newer validated version.
 
 The upstream CI result already covers the complete Node and locked Python suites. A protected production retry invokes the same reusable CI workflow against the immutable tag SHA before rebuilding or publishing. Failed, cancelled, skipped, fork-originated, wrong-branch, wrong-workflow, and wrong-SHA results cannot reach publication.
 
@@ -69,7 +71,7 @@ The production transaction is ordered as follows:
 8. Write and verify `/stable`.
 9. Write and verify `/latest.json` last.
 
-The workflow serializes publication and refuses to move either stable surface backward: the effective monotonic floor is the higher version named by `/stable` or `/latest.json`. Only the protected rollback workflow may lower both surfaces. GitHub and R2 mutation steps never receive each other's credentials. Beta freshness is rechecked against the default-branch head before each mutable GitHub, installer, and pointer phase.
+The workflow serializes publication and refuses to move either stable surface backward: the effective monotonic floor is the higher version named by `/stable` or `/latest.json`. Only the protected rollback workflow may lower both surfaces. GitHub mutations run in dedicated write-token jobs, while R2 jobs have only a read token and receive R2 credentials at the individual mutation step. Beta freshness is rechecked inside each mutable GitHub, installer, and pointer phase immediately before its first write.
 
 ## Retry
 
@@ -103,7 +105,7 @@ Prefer a forward fix. If stable must be restored immediately, a maintainer with 
 ROLLBACK vX.Y.Z
 ```
 
-The default-branch workflow and an API-derived maintainer permission are the repository-enforced authorization boundary. Authorization, exact command parsing, tag resolution, and default-branch ancestry checks complete in an ungated preflight job before the workflow can acquire the shared release lock or enter the `production` environment, so an unauthorized comment cannot block publication. The mutation job targets the `production` environment, so configured environment reviewers provide an additional gate but are not assumed to exist. A GitHub-read-only phase downloads and validates the immutable Release assets; a separate R2-only phase verifies the matching remote objects before writing `/stable` and then `/latest.json`. It does not create or move tags, rewrite immutable objects, or change GitHub Releases.
+The default-branch workflow and an API-derived maintainer permission are the repository-enforced authorization boundary. Authorization, exact command parsing, tag resolution, and default-branch ancestry checks complete in an ungated preflight job before the workflow can acquire the shared release lock or enter the `production` environment, so an unauthorized comment cannot block publication. The authorized tag commit is carried across the protected wait and must still match before any asset is accepted. The mutation job targets the `production` environment, so configured environment reviewers provide an additional gate but are not assumed to exist. A GitHub-read-only phase downloads and validates the immutable Release assets; a separate R2-only phase verifies the matching remote objects before writing `/stable` and then `/latest.json`. It does not create or move tags, rewrite immutable objects, or change GitHub Releases.
 
 Rollback changes what fresh installations and future update checks select. It does not force already-installed newer clients to downgrade.
 

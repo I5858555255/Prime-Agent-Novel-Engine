@@ -8,9 +8,19 @@ const expectedPermissionsByWorkflow = {
 	"build-binaries.yml": {
 		build: { contents: "read" },
 		"full-ci": { contents: "read" },
-		publish: { contents: "write" },
+		"publication-context": { contents: "read" },
 		"release-gate": { contents: "read" },
 		"release-context": { contents: "read" },
+	},
+	"publish-release.yml": {
+		"authorize-publication": { actions: "read", contents: "read" },
+		"beta-github": { actions: "read", contents: "write" },
+		"beta-r2-finalize": { actions: "read", contents: "read" },
+		"beta-r2-immutable": { actions: "read", contents: "read" },
+		"production-github-assets": { actions: "read", contents: "write" },
+		"production-github-prepare": { actions: "read", contents: "write" },
+		"production-r2-finalize": { actions: "read", contents: "read" },
+		"production-r2-immutable": { actions: "read", contents: "read" },
 	},
 	"ci.yml": {
 		"build-check": { contents: "read" },
@@ -131,7 +141,7 @@ test("workflows default to no token permissions and grant only allowlisted job p
 
 test("R2 credentials are scoped to R2-only mutation steps", async () => {
 	const allowedByWorkflow = {
-		"build-binaries.yml": new Set([
+		"publish-release.yml": new Set([
 			"Publish production immutable objects to R2",
 			"Publish production installers to R2",
 			"Promote production channel in R2",
@@ -155,6 +165,17 @@ test("R2 credentials are scoped to R2-only mutation steps", async () => {
 			assert.match(step, /publish-release\.mjs [a-z0-9-]*r2[a-z0-9-]*/, `${name} must invoke an R2 phase`);
 			assert.doesNotMatch(step, /secrets\.GITHUB_TOKEN|\bGH_TOKEN\b|\bgh (?:api|release)\b/);
 		}
+		const document = parse(source);
+		for (const job of getJobBlocks(source)) {
+			if (!job.source.includes("secrets.R2_")) continue;
+			const expectedPermissions =
+				workflowName === "publish-release.yml" ? { actions: "read", contents: "read" } : { contents: "read" };
+			assert.deepEqual(
+				document.jobs[job.name].permissions,
+				expectedPermissions,
+				`${workflowName}/${job.name} must not receive a write-capable GitHub token with R2 credentials`,
+			);
+		}
 		for (const name of allowedSecretSteps) {
 			const step = allSteps.get(name);
 			assert.ok(step, `${workflowName} must define ${name}`);
@@ -165,27 +186,104 @@ test("R2 credentials are scoped to R2-only mutation steps", async () => {
 	}
 });
 
-test("every mutable beta phase has a fresh main guard without R2 credentials", async () => {
-	const releaseWorkflow = await readFile(new URL("build-binaries.yml", workflowsDirectory), "utf8");
-	const publishJob = getJobBlocks(releaseWorkflow).find((job) => job.name === "publish");
-	assert.ok(publishJob, "release workflow must define the publish job");
-	const steps = getNamedSteps(publishJob.source);
-	const phases = [
-		["Check beta freshness before GitHub mirror", "beta_github", "Advance beta GitHub release"],
-		["Check beta freshness before installers", "beta_installers", "Advance beta installers in R2"],
-		["Check beta freshness before channel promotion", "beta_promotion", "Advance beta channel in R2"],
-	];
-	for (const [guardName, outputId, mutationName] of phases) {
-		const guard = steps.get(guardName);
-		assert.ok(guard, `beta publication must define ${guardName}`);
-		assert.match(guard, new RegExp(`id: ${outputId}`));
-		assert.match(guard, /commits\/\$\{DEFAULT_BRANCH\}/);
-		assert.match(guard, /test "\$latest_main_sha" = "\$BUILD_SHA"/);
-		assert.doesNotMatch(guard, /secrets\.R2_/);
-		assert.match(
-			steps.get(mutationName) ?? "",
-			new RegExp(`steps\\.${outputId}\\.outputs\\.current == 'true'`),
+test("write-token publication jobs contain only controlled GitHub mutation steps", async () => {
+	const source = await readFile(new URL("publish-release.yml", workflowsDirectory), "utf8");
+	const document = parse(source);
+	for (const job of getJobBlocks(source)) {
+		if (document.jobs[job.name].permissions?.contents !== "write") continue;
+		assert.doesNotMatch(job.source, /^\s*uses:/m, `${job.name} must not run third-party actions with a write token`);
+		assert.doesNotMatch(job.source, /secrets\.R2_/, `${job.name} must not receive R2 credentials`);
+		const steps = getNamedSteps(job.source);
+		assert.equal(steps.size, 1, `${job.name} must contain exactly one controlled GitHub mutation step`);
+		const step = [...steps.values()][0];
+		assert.match(step, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+		assert.match(step, /publish-release\.mjs (?:production-github|beta-github)/);
+	}
+});
+
+test("publication accepts only a successful gated default-branch release run", async () => {
+	const caller = await readFile(new URL("build-binaries.yml", workflowsDirectory), "utf8");
+	const publication = await readFile(new URL("publish-release.yml", workflowsDirectory), "utf8");
+	const callerDocument = parse(caller);
+	const publicationDocument = parse(publication);
+	const authorization = publicationDocument.jobs["authorize-publication"];
+
+	assert.equal(callerDocument.jobs["publication-context"].needs, "release-gate");
+	assert.match(callerDocument.jobs["publication-context"].steps.at(-1).uses, /^actions\/upload-artifact@[0-9a-f]{40}$/);
+	assert.equal(
+		callerDocument.jobs["publication-context"].steps.at(-1).with.name,
+		"prime-agent-publication-context",
+	);
+	const releaseRunName = callerDocument["run-name"];
+	assert.equal(typeof releaseRunName, "string");
+	assert.match(releaseRunName, /workflow_run\.conclusion == 'success'/);
+	assert.match(releaseRunName, /workflow_run\.event == 'push'/);
+	assert.match(releaseRunName, /workflow_run\.head_branch == github\.event\.repository\.default_branch/);
+	assert.match(releaseRunName, /workflow_run\.head_repository\.full_name == github\.repository/);
+	assert.match(releaseRunName, /Prime Agent release candidate/);
+	assert.match(releaseRunName, /Rejected Prime Agent release event/);
+	assert.match(publication, /workflow_run:\n\s+workflows: \[Release Prime Agent\]\n\s+types: \[completed\]/);
+	assert.match(publicationDocument.concurrency.group, /release-prime-agent/);
+	assert.match(publicationDocument.concurrency.group, /workflow_run\.conclusion == 'success'/);
+	assert.match(publicationDocument.concurrency.group, /workflow_run\.path == '\.github\/workflows\/build-binaries\.yml'/);
+	assert.match(publicationDocument.concurrency.group, /workflow_run\.display_title/);
+	assert.deepEqual(authorization.permissions, { actions: "read", contents: "read" });
+	assert.equal(authorization.environment, undefined);
+	assert.equal(authorization.concurrency, undefined);
+	assert.doesNotMatch(JSON.stringify(authorization), /R2_/);
+	assert.match(authorization.if, /workflow_run\.conclusion == 'success'/);
+	assert.match(authorization.if, /workflow_run\.head_branch == github\.event\.repository\.default_branch/);
+	assert.match(authorization.if, /workflow_run\.head_repository\.full_name == github\.repository/);
+
+	const downloadStep = authorization.steps.find((step) => step.name === "Download gated publication context");
+	assert.ok(downloadStep);
+	assert.match(downloadStep.run, /actions\/runs\/\$\{SOURCE_RUN_ID\}\/artifacts/);
+	assert.match(downloadStep.run, /prime-agent-publication-context/);
+	const authorizationStep = authorization.steps.find((step) => step.name === "Authorize completed release gate");
+	assert.ok(authorizationStep);
+	assert.equal(authorizationStep.name, "Authorize completed release gate");
+	assert.match(authorizationStep.run, /release-publication-context\.mjs validate/);
+	for (const name of [
+		"UPSTREAM_CONCLUSION",
+		"UPSTREAM_DISPLAY_TITLE",
+		"UPSTREAM_EVENT",
+		"UPSTREAM_HEAD_BRANCH",
+		"UPSTREAM_HEAD_REPOSITORY",
+		"UPSTREAM_HEAD_SHA",
+		"UPSTREAM_RUN_ID",
+		"UPSTREAM_WORKFLOW_PATH",
+	]) {
+		assert.ok(Object.hasOwn(authorizationStep.env, name), `authorization must bind ${name}`);
+	}
+	for (const [jobName, job] of Object.entries(publicationDocument.jobs)) {
+		if (jobName === "authorize-publication") continue;
+		assert.equal(job.environment, "production", `${jobName} must receive protected publication secrets`);
+		assert.ok(
+			Array.isArray(job.needs) ? job.needs.includes("authorize-publication") : job.needs === "authorize-publication",
+			`${jobName} must depend on publication authorization`,
 		);
+	}
+});
+
+test("beta R2 freshness is checked inside read-token mutation jobs", async () => {
+	const workflow = await readFile(new URL("publish-release.yml", workflowsDirectory), "utf8");
+	const document = parse(workflow);
+	const steps = new Map();
+	for (const job of getJobBlocks(workflow)) {
+		for (const [name, step] of getNamedSteps(job.source)) steps.set(name, step);
+	}
+	for (const [name, phase] of [
+		["Advance beta installers in R2", "beta-r2-installers"],
+		["Advance beta channel in R2", "beta-r2-promote"],
+	]) {
+		const step = steps.get(name);
+		assert.ok(step, `beta publication must define ${name}`);
+		assert.match(step, new RegExp(`publish-release\\.mjs ${phase}`));
+		assert.match(step, /--default-branch "\$DEFAULT_BRANCH"/);
+		assert.doesNotMatch(step, /GH_TOKEN|secrets\.GITHUB_TOKEN/);
+	}
+	for (const jobName of ["beta-r2-finalize", "beta-r2-immutable"]) {
+		assert.deepEqual(document.jobs[jobName].permissions, { actions: "read", contents: "read" });
 	}
 });
 

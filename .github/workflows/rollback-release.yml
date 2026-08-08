@@ -76,7 +76,6 @@ jobs:
           node-version: '22'
 
       - name: Verify rollback GitHub release
-        id: rollback_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
@@ -84,6 +83,7 @@ jobs:
           node scripts/publish-release.mjs rollback-github-verify \
             --release-tag "${{ needs.authorize.outputs.release_tag }}" \
             --confirmation "${{ needs.authorize.outputs.confirmation }}" \
+            --source-sha "${{ needs.authorize.outputs.source_sha }}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
             --artifacts-dir rollback-artifacts
 
@@ -99,5 +99,5 @@ jobs:
           node scripts/publish-release.mjs rollback-r2-promote \
             --release-tag "${{ needs.authorize.outputs.release_tag }}" \
             --confirmation "${{ needs.authorize.outputs.confirmation }}" \
-            --source-sha "${{ steps.rollback_release.outputs.source_sha }}" \
+            --source-sha "${{ needs.authorize.outputs.source_sha }}" \
             --artifacts-dir rollback-artifacts

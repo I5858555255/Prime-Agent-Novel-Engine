@@ -1,5 +1,17 @@
 name: Release Prime Agent
 
+run-name: >-
+  ${{ (github.event_name == 'workflow_run' &&
+  github.event.workflow_run.conclusion == 'success' &&
+  github.event.workflow_run.event == 'push' &&
+  github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+  github.event.workflow_run.head_repository.full_name == github.repository &&
+  format('Prime Agent release candidate {0}', github.event.workflow_run.head_sha)) ||
+  (github.event_name == 'issue_comment' &&
+  startsWith(github.event.comment.body, '/prime-agent release retry ') &&
+  format('Prime Agent release candidate retry {0}', github.run_id)) ||
+  format('Rejected Prime Agent release event {0}', github.run_id) }}
+
 on:
   workflow_run:
     workflows: [CI]
@@ -120,6 +132,12 @@ jobs:
         working-directory: release-source
         run: test "$(git rev-parse HEAD)" = "$BUILD_SHA"
 
+      - name: Capture exact release source baseline
+        working-directory: release-source
+        run: |
+          git diff --binary --full-index > "$RUNNER_TEMP/release-source-worktree.diff"
+          git diff --cached --binary --full-index > "$RUNNER_TEMP/release-source-index.diff"
+
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -134,12 +152,6 @@ jobs:
         working-directory: release-source
         run: npm run build
 
-      - name: Capture post-build source baseline
-        working-directory: release-source
-        run: |
-          git diff --binary --full-index > "$RUNNER_TEMP/release-build-worktree.diff"
-          git diff --cached --binary --full-index > "$RUNNER_TEMP/release-build-index.diff"
-
       - name: Check
         working-directory: release-source
         run: npm run check
@@ -153,17 +165,17 @@ jobs:
           ../release-tooling/scripts/release-workflow-contract.test.mjs
           ../release-tooling/scripts/release-workflow.test.mjs
 
-      - name: Verify validation did not mutate release source
+      - name: Verify build and validation did not mutate release source
         working-directory: release-source
         run: |
-          git diff --binary --full-index > "$RUNNER_TEMP/release-check-worktree.diff"
-          git diff --cached --binary --full-index > "$RUNNER_TEMP/release-check-index.diff"
-          if ! cmp -s "$RUNNER_TEMP/release-build-worktree.diff" "$RUNNER_TEMP/release-check-worktree.diff"; then
-            diff -u "$RUNNER_TEMP/release-build-worktree.diff" "$RUNNER_TEMP/release-check-worktree.diff" || true
+          git diff --binary --full-index > "$RUNNER_TEMP/release-final-worktree.diff"
+          git diff --cached --binary --full-index > "$RUNNER_TEMP/release-final-index.diff"
+          if ! cmp -s "$RUNNER_TEMP/release-source-worktree.diff" "$RUNNER_TEMP/release-final-worktree.diff"; then
+            diff -u "$RUNNER_TEMP/release-source-worktree.diff" "$RUNNER_TEMP/release-final-worktree.diff" || true
             exit 1
           fi
-          if ! cmp -s "$RUNNER_TEMP/release-build-index.diff" "$RUNNER_TEMP/release-check-index.diff"; then
-            diff -u "$RUNNER_TEMP/release-build-index.diff" "$RUNNER_TEMP/release-check-index.diff" || true
+          if ! cmp -s "$RUNNER_TEMP/release-source-index.diff" "$RUNNER_TEMP/release-final-index.diff"; then
+            diff -u "$RUNNER_TEMP/release-source-index.diff" "$RUNNER_TEMP/release-final-index.diff" || true
             exit 1
           fi
 
@@ -267,261 +279,34 @@ jobs:
             "build=$BUILD_RESULT" \
             "trigger=$RELEASE_TRIGGER"
 
-  publish:
-    runs-on: ubuntu-latest
+  publication-context:
     needs: release-gate
-    environment: production
-    concurrency:
-      group: release-prime-agent
-      cancel-in-progress: false
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
-    env:
-      BETA_VERSION: ${{ needs.release-gate.outputs.beta_version }}
-      BUILD_SHA: ${{ needs.release-gate.outputs.build_sha }}
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
-      PRODUCTION_VERSION: ${{ needs.release-gate.outputs.production_version }}
-      PUBLISH_BETA: ${{ needs.release-gate.outputs.publish_beta }}
-      PUBLISH_PRODUCTION: ${{ needs.release-gate.outputs.publish_production }}
-      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      contents: read
     steps:
       - name: Checkout protected release tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
-          path: release-tooling
           persist-credentials: false
 
-      - name: Checkout validated release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Create gated publication context
+        env:
+          BETA_VERSION: ${{ needs.release-gate.outputs.beta_version }}
+          BUILD_SHA: ${{ needs.release-gate.outputs.build_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PRODUCTION_VERSION: ${{ needs.release-gate.outputs.production_version }}
+          PUBLISH_BETA: ${{ needs.release-gate.outputs.publish_beta }}
+          PUBLISH_PRODUCTION: ${{ needs.release-gate.outputs.publish_production }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          TOOLING_SHA: ${{ github.workflow_sha }}
+        run: node scripts/release-publication-context.mjs create publication-context.json
+
+      - name: Upload gated publication context
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          fetch-depth: 0
-          fetch-tags: true
-          ref: ${{ env.BUILD_SHA }}
-          path: release-source
-          persist-credentials: false
-
-      - name: Verify release source commit
-        working-directory: release-source
-        run: test "$(git rev-parse HEAD)" = "$BUILD_SHA"
-
-      - name: Download production artifacts
-        if: env.PUBLISH_PRODUCTION == 'true'
-        uses: actions/download-artifact@3e5f45b3455f8bb19e09b3fb854d966fb27682a2 # v8.0.1
-        with:
-          name: prime-agent-production-${{ env.BUILD_SHA }}
-          path: release-artifacts/production
-
-      - name: Download beta artifacts
-        if: env.PUBLISH_BETA == 'true'
-        uses: actions/download-artifact@3e5f45b3455f8bb19e09b3fb854d966fb27682a2 # v8.0.1
-        with:
-          name: prime-agent-beta-${{ env.BUILD_SHA }}
-          path: release-artifacts/beta
-
-      - name: Verify production artifact provenance
-        if: env.PUBLISH_PRODUCTION == 'true'
-        run: >-
-          node release-tooling/scripts/verify-release-artifacts.mjs
-          --channel stable
-          --directory release-artifacts/production
-          --source-sha "$BUILD_SHA"
-          --version "$PRODUCTION_VERSION"
-
-      - name: Verify beta artifact provenance
-        if: env.PUBLISH_BETA == 'true'
-        run: >-
-          node release-tooling/scripts/verify-release-artifacts.mjs
-          --channel beta
-          --directory release-artifacts/beta
-          --source-sha "$BUILD_SHA"
-          --version "$BETA_VERSION"
-
-      - name: Prepare installers
-        working-directory: release-source
-        run: |
-          INSTALL_BASE_URL="${R2_PUBLIC_BASE_URL%/}"
-          test -n "$INSTALL_BASE_URL"
-          node ../release-tooling/scripts/render-release-installers.mjs \
-            "$INSTALL_BASE_URL" \
-            /tmp/prime-agent-install.sh \
-            /tmp/prime-agent-install-beta.sh
-
-      - name: Extract production release notes
-        if: env.PUBLISH_PRODUCTION == 'true'
-        working-directory: release-source
-        run: |
-          awk "/^## \[${PRODUCTION_VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" packages/coding-agent/CHANGELOG.md > /tmp/release-notes.md
-          if [ ! -s /tmp/release-notes.md ]; then
-            echo "Release v${PRODUCTION_VERSION}" > /tmp/release-notes.md
-          fi
-
-      - name: Prepare production GitHub release
-        if: env.PUBLISH_PRODUCTION == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs production-github-prepare \
-            --artifacts-dir ../release-artifacts/production \
-            --version "$PRODUCTION_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA" \
-            --notes-file /tmp/release-notes.md
-
-      - name: Publish production immutable objects to R2
-        if: env.PUBLISH_PRODUCTION == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_DEFAULT_REGION: auto
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs production-r2-immutable \
-            --artifacts-dir ../release-artifacts/production \
-            --version "$PRODUCTION_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA"
-
-      - name: Publish production GitHub assets
-        if: env.PUBLISH_PRODUCTION == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs production-github-assets \
-            --artifacts-dir ../release-artifacts/production \
-            --version "$PRODUCTION_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA" \
-            --notes-file /tmp/release-notes.md
-
-      - name: Publish production installers to R2
-        if: env.PUBLISH_PRODUCTION == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_DEFAULT_REGION: auto
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs production-r2-installers \
-            --artifacts-dir ../release-artifacts/production \
-            --version "$PRODUCTION_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA" \
-            --stable-installer /tmp/prime-agent-install.sh \
-            --beta-installer /tmp/prime-agent-install-beta.sh
-
-      - name: Promote production channel in R2
-        if: env.PUBLISH_PRODUCTION == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_DEFAULT_REGION: auto
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs production-r2-promote \
-            --artifacts-dir ../release-artifacts/production \
-            --version "$PRODUCTION_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA"
-
-      - name: Publish beta immutable objects to R2
-        if: env.PUBLISH_BETA == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_DEFAULT_REGION: auto
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs beta-r2-immutable \
-            --artifacts-dir ../release-artifacts/beta \
-            --version "$BETA_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA"
-
-      - name: Check beta freshness before GitHub mirror
-        if: env.PUBLISH_BETA == 'true'
-        id: beta_github
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          latest_main_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${DEFAULT_BRANCH}" --jq .sha)
-          test "$latest_main_sha" = "$BUILD_SHA"
-          echo "current=true" >> "$GITHUB_OUTPUT"
-
-      - name: Advance beta GitHub release
-        if: env.PUBLISH_BETA == 'true' && steps.beta_github.outputs.current == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs beta-github \
-            --artifacts-dir ../release-artifacts/beta \
-            --version "$BETA_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA" \
-            --default-branch "$DEFAULT_BRANCH"
-
-      - name: Check beta freshness before installers
-        if: env.PUBLISH_BETA == 'true'
-        id: beta_installers
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          latest_main_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${DEFAULT_BRANCH}" --jq .sha)
-          test "$latest_main_sha" = "$BUILD_SHA"
-          echo "current=true" >> "$GITHUB_OUTPUT"
-
-      - name: Advance beta installers in R2
-        if: env.PUBLISH_BETA == 'true' && steps.beta_installers.outputs.current == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_DEFAULT_REGION: auto
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs beta-r2-installers \
-            --artifacts-dir ../release-artifacts/beta \
-            --version "$BETA_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA" \
-            --stable-installer /tmp/prime-agent-install.sh \
-            --beta-installer /tmp/prime-agent-install-beta.sh
-
-      - name: Check beta freshness before channel promotion
-        if: env.PUBLISH_BETA == 'true'
-        id: beta_promotion
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          latest_main_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${DEFAULT_BRANCH}" --jq .sha)
-          test "$latest_main_sha" = "$BUILD_SHA"
-          echo "current=true" >> "$GITHUB_OUTPUT"
-
-      - name: Advance beta channel in R2
-        if: env.PUBLISH_BETA == 'true' && steps.beta_promotion.outputs.current == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_DEFAULT_REGION: auto
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        working-directory: release-source
-        run: |
-          node ../release-tooling/scripts/publish-release.mjs beta-r2-promote \
-            --artifacts-dir ../release-artifacts/beta \
-            --version "$BETA_VERSION" \
-            --build-ref "$BUILD_SHA" \
-            --source-sha "$BUILD_SHA"
+          name: prime-agent-publication-context
+          path: publication-context.json
+          if-no-files-found: error
+          overwrite: false

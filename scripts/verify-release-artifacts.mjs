@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { RELEASE_ARTIFACTS } from "./lib/release-lifecycle.mjs";
+import { runCommand } from "./lib/release-command.mjs";
 
 const commitShaPattern = /^[0-9a-f]{40}$/;
 const releaseChannels = new Set(["stable", "beta"]);
@@ -156,6 +157,13 @@ function main() {
 	const args = parseArgs(process.argv.slice(2));
 	for (const required of ["channel", "directory", "source_sha", "version"]) {
 		if (!args[required]) throw new Error(`--${required.replaceAll("_", "-")} is required`);
+	}
+	if (process.env.PRIME_AGENT_RELEASE_SOURCE_ROOT) {
+		const sourceRoot = resolve(process.env.PRIME_AGENT_RELEASE_SOURCE_ROOT);
+		const checkedOutSha = runCommand("git", ["rev-parse", "HEAD"], { cwd: sourceRoot });
+		if (checkedOutSha !== args.source_sha) {
+			throw new Error(`Release source checkout is ${checkedOutSha}; expected ${args.source_sha}`);
+		}
 	}
 	verifyReleaseArtifacts({
 		channel: args.channel,

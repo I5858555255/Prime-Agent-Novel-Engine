@@ -8,6 +8,7 @@ import {
 	promoteChannel,
 	publishChannel,
 	publishImmutableArtifacts,
+	publishInstallers,
 	verifyRemoteRelease,
 } from "./lib/release-publication.mjs";
 
@@ -157,6 +158,40 @@ test("a beta that becomes stale during mutable work cannot advance channel point
 		assert.equal(store.objects.has("install-beta.sh"), false);
 		assert.equal(store.objects.has("beta"), false);
 		assert.equal(store.objects.has("beta.json"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("split beta mutation helpers run their freshness guard inside the write boundary", () => {
+	const { artifactsDir, root } = createPublicationFixture("0.7.2-beta.42.1.0123456", "beta");
+	const installerPath = join(root, "install-beta.sh");
+	writeFileSync(installerPath, "installer");
+	try {
+		const installerStore = new MemoryStore();
+		assert.throws(
+			() =>
+				publishInstallers([{ key: "install-beta.sh", path: installerPath }], installerStore, {
+					beforeWrite: () => {
+						throw new Error("newer main commit");
+					},
+				}),
+			/newer main commit/,
+		);
+		assert.equal(installerStore.objects.has("install-beta.sh"), false);
+
+		const promotionStore = new MemoryStore();
+		assert.throws(
+			() =>
+				promoteChannel(artifactsDir, "beta", promotionStore, {
+					beforeWrite: () => {
+						throw new Error("newer main commit");
+					},
+				}),
+			/newer main commit/,
+		);
+		assert.equal(promotionStore.objects.has("beta"), false);
+		assert.equal(promotionStore.objects.has("beta.json"), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

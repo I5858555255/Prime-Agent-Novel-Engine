@@ -366,6 +366,16 @@ export function validateRollbackRequest(releaseTag, confirmation) {
 	};
 }
 
+export function validateAuthorizedRollbackTarget(releaseTag, expectedSha, currentSha) {
+	if (!/^[0-9a-f]{40}$/.test(expectedSha) || !/^[0-9a-f]{40}$/.test(currentSha)) {
+		throw new Error(`Rollback tag ${releaseTag} must resolve to full commit SHAs`);
+	}
+	if (currentSha !== expectedSha) {
+		throw new Error(`Rollback tag ${releaseTag} moved from authorized commit ${expectedSha} to ${currentSha}`);
+	}
+	return currentSha;
+}
+
 export function parseReleaseComment(input) {
 	if (input.actorPermission !== "admin" && input.actorPermission !== "maintain") {
 		throw new Error("Release commands require repository admin or maintain permission");

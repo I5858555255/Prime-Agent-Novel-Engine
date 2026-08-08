@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { validateReleaseRepository, validateRollbackRequest, verifyReleaseArtifacts } from "./lib/release-lifecycle.mjs";
+import {
+	validateAuthorizedRollbackTarget,
+	validateReleaseRepository,
+	validateRollbackRequest,
+	verifyReleaseArtifacts,
+} from "./lib/release-lifecycle.mjs";
 import {
 	promoteChannel,
 	publishImmutableArtifacts,
@@ -13,6 +17,13 @@ import {
 	validatePromotion,
 	verifyRemoteRelease,
 } from "./lib/release-publication.mjs";
+import {
+	isGitHubNotFoundError,
+	isR2MissingObjectError,
+	isR2PreconditionFailure,
+	readPublicGitHubBranchSha,
+	runCommand,
+} from "./lib/release-command.mjs";
 
 const sourceRoot = resolve(process.env.PRIME_AGENT_RELEASE_SOURCE_ROOT || process.cwd());
 
@@ -46,20 +57,6 @@ function parseArgs(args) {
 	return options;
 }
 
-function run(command, args, options = {}) {
-	const result = spawnSync(command, args, {
-		cwd: options.cwd,
-		encoding: "utf8",
-		env: { ...process.env, AWS_PAGER: "" },
-		maxBuffer: 10 * 1024 * 1024,
-		stdio: "pipe",
-	});
-	if (result.status !== 0 && !options.allowFailure) {
-		throw new Error(result.stderr.trim() || result.stdout.trim() || `${command} ${args.join(" ")} failed`);
-	}
-	return result.status === 0 ? result.stdout.trim() : undefined;
-}
-
 class AwsR2Store {
 	constructor(bucket, endpoint) {
 		if (!bucket || !endpoint) throw new Error("R2_BUCKET and R2_ENDPOINT_URL are required");
@@ -75,7 +72,7 @@ class AwsR2Store {
 
 	read(key) {
 		const output = join(this.temporaryDir, `object-${this.temporaryIndex++}`);
-		const result = spawnSync(
+		const result = runCommand(
 			"aws",
 			[
 				"s3api",
@@ -88,18 +85,14 @@ class AwsR2Store {
 				this.endpoint,
 				output,
 			],
-			{ encoding: "utf8", env: { ...process.env, AWS_PAGER: "" }, stdio: "pipe" },
+			{ acceptFailure: isR2MissingObjectError },
 		);
-		if (result.status !== 0) {
-			const error = `${result.stderr}\n${result.stdout}`;
-			if (/NoSuchKey|Not Found|404/i.test(error)) return undefined;
-			throw new Error(error.trim() || `Unable to read R2 object ${key}`);
-		}
+		if (result === undefined) return undefined;
 		return readFileSync(output);
 	}
 
 	putImmutable(key, path, metadata) {
-		const result = spawnSync(
+		const result = runCommand(
 			"aws",
 			[
 				"s3api",
@@ -119,16 +112,13 @@ class AwsR2Store {
 				"--endpoint-url",
 				this.endpoint,
 			],
-			{ encoding: "utf8", env: { ...process.env, AWS_PAGER: "" }, stdio: "pipe" },
+			{ acceptFailure: isR2PreconditionFailure },
 		);
-		if (result.status === 0) return true;
-		const error = `${result.stderr}\n${result.stdout}`;
-		if (/PreconditionFailed|412/i.test(error)) return false;
-		throw new Error(error.trim() || `Unable to create immutable R2 object ${key}`);
+		return result !== undefined;
 	}
 
 	putMutable(key, path, metadata) {
-		run("aws", [
+		runCommand("aws", [
 			"s3api",
 			"put-object",
 			"--bucket",
@@ -154,23 +144,49 @@ class GitHubReleaseMirror {
 	}
 
 	gh(args, options = {}) {
-		return run("gh", [...args, "--repo", this.repository], options);
+		return runCommand("gh", [...args, "--repo", this.repository], options);
+	}
+
+	api(args, options = {}) {
+		return runCommand("gh", ["api", ...args], options);
 	}
 
 	viewRelease(tag) {
-		const output = this.gh(
-			["release", "view", tag, "--json", "assets,isDraft,isPrerelease,targetCommitish"],
-			{ allowFailure: true },
+		const output = this.api(
+			[
+				`repos/${this.repository}/releases/tags/${encodeURIComponent(tag)}`,
+				"--jq",
+				"{assets: .assets, isDraft: .draft, isPrerelease: .prerelease, targetCommitish: .target_commitish}",
+			],
+			{ acceptFailure: isGitHubNotFoundError },
 		);
 		return output ? JSON.parse(output) : undefined;
 	}
 
 	readTagTarget(tag) {
-		return run(
-			"gh",
-			["api", `repos/${this.repository}/git/ref/tags/${tag}`, "--jq", ".object.sha"],
-			{ allowFailure: true },
+		const output = this.api(
+			[
+				`repos/${this.repository}/git/ref/tags/${encodeURIComponent(tag)}`,
+				"--jq",
+				"{sha: .object.sha, type: .object.type}",
+			],
+			{ acceptFailure: isGitHubNotFoundError },
 		);
+		if (!output) return undefined;
+		let target = JSON.parse(output);
+		for (let depth = 0; target.type === "tag" && depth < 8; depth += 1) {
+			target = JSON.parse(
+				this.api([
+					`repos/${this.repository}/git/tags/${target.sha}`,
+					"--jq",
+					"{sha: .object.sha, type: .object.type}",
+				]),
+			);
+		}
+		if (target.type !== "commit" || !/^[0-9a-f]{40}$/.test(target.sha)) {
+			throw new Error(`Tag ${tag} does not resolve to a commit`);
+		}
+		return target.sha;
 	}
 
 	ensureTag(tag, buildRef) {
@@ -179,7 +195,7 @@ class GitHubReleaseMirror {
 			throw new Error(`Immutable tag ${tag} points to ${target}, not ${buildRef}`);
 		}
 		if (!target) {
-			run("gh", [
+			runCommand("gh", [
 				"api",
 				"--method",
 				"POST",
@@ -262,7 +278,7 @@ class GitHubReleaseMirror {
 		}
 	}
 
-	verifyExistingRelease(tag, artifactsDir) {
+	verifyExistingRelease(tag, artifactsDir, expectedTarget) {
 		const release = this.viewRelease(tag);
 		if (!release || release.isDraft || release.isPrerelease) {
 			throw new Error(`Stable GitHub Release ${tag} does not exist`);
@@ -271,6 +287,7 @@ class GitHubReleaseMirror {
 		if (!tagTarget || release.targetCommitish !== tagTarget) {
 			throw new Error(`Stable GitHub Release ${tag} does not match its immutable tag`);
 		}
+		validateAuthorizedRollbackTarget(tag, expectedTarget, tagTarget);
 		const names = release.assets.map((asset) => asset.name).sort();
 		this.downloadAssets(tag, artifactsDir, names);
 		return tagTarget;
@@ -279,7 +296,7 @@ class GitHubReleaseMirror {
 	replaceBetaRelease(buildRef, version, artifactsDir, defaultBranch) {
 		const betaTarget = this.readTagTarget("beta");
 		if (betaTarget) {
-			run("gh", [
+			runCommand("gh", [
 				"api",
 				"--method",
 				"PATCH",
@@ -290,7 +307,7 @@ class GitHubReleaseMirror {
 				"force=true",
 			]);
 		} else {
-			run("gh", [
+			runCommand("gh", [
 				"api",
 				"--method",
 				"POST",
@@ -308,14 +325,14 @@ class GitHubReleaseMirror {
 			writeFileSync(notesFile, `Automated beta build from \`${defaultBranch}\` (\`${buildRef}\`).\n`);
 			const release = this.viewRelease("beta");
 			if (release) {
-				const assetIds = run(
+				const assetIds = runCommand(
 					"gh",
 					["api", `repos/${this.repository}/releases/tags/beta`, "--jq", ".assets[].id"],
 				)
 					.split("\n")
 					.filter(Boolean);
 				for (const assetId of assetIds) {
-					run("gh", ["api", "--method", "DELETE", `repos/${this.repository}/releases/assets/${assetId}`]);
+					runCommand("gh", ["api", "--method", "DELETE", `repos/${this.repository}/releases/assets/${assetId}`]);
 				}
 				this.gh([
 					"release",
@@ -346,13 +363,26 @@ class GitHubReleaseMirror {
 			for (const name of readdirSync(artifactsDir).sort()) {
 				this.gh(["release", "upload", "beta", join(artifactsDir, name)]);
 			}
+			const finalRelease = this.viewRelease("beta");
+			if (!finalRelease || finalRelease.isDraft || !finalRelease.isPrerelease || finalRelease.targetCommitish !== buildRef) {
+				throw new Error(`Beta GitHub Release does not match commit ${buildRef}`);
+			}
+			const expectedNames = readdirSync(artifactsDir).sort();
+			const finalNames = finalRelease.assets.map((asset) => asset.name).sort();
+			const finalDir = mkdtempSync(join(tmpdir(), "prime-agent-beta-final-"));
+			try {
+				this.downloadAssets("beta", finalDir, finalNames);
+				this.verifyAssetDirectory(artifactsDir, finalDir, expectedNames);
+			} finally {
+				rmSync(finalDir, { force: true, recursive: true });
+			}
 		} finally {
 			rmSync(notesDir, { force: true, recursive: true });
 		}
 	}
 
 	latestDefaultBranchSha(defaultBranch) {
-		return run("gh", ["api", `repos/${this.repository}/commits/${defaultBranch}`, "--jq", ".sha"]);
+		return this.api([`repos/${this.repository}/commits/${encodeURIComponent(defaultBranch)}`, "--jq", ".sha"]);
 	}
 }
 
@@ -366,6 +396,16 @@ function installers(options) {
 		{ key: "install.sh", path: resolve(requireOption(options, "stableInstaller")) },
 		{ key: "install-beta.sh", path: resolve(requireOption(options, "betaInstaller")) },
 	];
+}
+
+function assertLatestDefaultBranch(options, buildRef) {
+	const repository = process.env.GITHUB_REPOSITORY;
+	if (!repository) throw new Error("GITHUB_REPOSITORY is required for beta mutation");
+	const defaultBranch = requireOption(options, "defaultBranch");
+	const latestSha = readPublicGitHubBranchSha(repository, defaultBranch);
+	if (latestSha !== buildRef) {
+		throw new Error(`A newer default-branch commit exists; refusing stale beta update (${latestSha})`);
+	}
 }
 
 function validatePhaseArtifacts(options, baseUrl, channel) {
@@ -429,31 +469,37 @@ function publishBetaGitHub(options, github, baseUrl) {
 }
 
 function publishR2Installers(options, store, baseUrl, channel) {
-	const { artifactsDir, version } = validatePhaseArtifacts(options, baseUrl, channel);
+	const { artifactsDir, buildRef, version } = validatePhaseArtifacts(options, baseUrl, channel);
 	verifyRemoteRelease(artifactsDir, version, store);
-	publishInstallers(installers(options), store);
+	publishInstallers(installers(options), store, {
+		beforeWrite: channel === "beta" ? () => assertLatestDefaultBranch(options, buildRef) : undefined,
+	});
 	console.log(`Published ${channel} installers for v${version}.`);
 }
 
 function promoteBetaR2(options, store, baseUrl) {
-	const { artifactsDir, version } = validatePhaseArtifacts(options, baseUrl, "beta");
+	const { artifactsDir, buildRef, version } = validatePhaseArtifacts(options, baseUrl, "beta");
 	verifyRemoteRelease(artifactsDir, version, store);
-	promoteChannel(artifactsDir, "beta", store);
+	promoteChannel(artifactsDir, "beta", store, {
+		beforeWrite: () => assertLatestDefaultBranch(options, buildRef),
+	});
 	console.log(`Promoted beta v${version}.`);
 }
 
 function verifyRollbackGitHub(options, github, baseUrl) {
 	const releaseTag = requireOption(options, "releaseTag");
 	validateRollbackRequest(releaseTag, requireOption(options, "confirmation"));
+	const sourceSha = requireOption(options, "sourceSha");
+	if (!/^[0-9a-f]{40}$/.test(sourceSha)) throw new Error("Rollback source SHA must be a full commit SHA");
 	const artifactsDir = resolve(requireOption(options, "artifactsDir"));
 	mkdirSync(artifactsDir, { recursive: true });
 	if (readdirSync(artifactsDir).length > 0) {
 		throw new Error(`Rollback artifact directory must be empty: ${artifactsDir}`);
 	}
-	const tagTarget = github.verifyExistingRelease(releaseTag, artifactsDir);
+	const tagTarget = github.verifyExistingRelease(releaseTag, artifactsDir, sourceSha);
 	const defaultBranch = requireOption(options, "defaultBranch");
 	if (
-		run("git", ["merge-base", "--is-ancestor", tagTarget, `origin/${defaultBranch}`], {
+		runCommand("git", ["merge-base", "--is-ancestor", tagTarget, `origin/${defaultBranch}`], {
 			allowFailure: true,
 			cwd: sourceRoot,
 		}) === undefined
@@ -467,7 +513,6 @@ function verifyRollbackGitHub(options, github, baseUrl) {
 		sourceSha: tagTarget,
 		version: releaseTag.slice(1),
 	});
-	if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `source_sha=${tagTarget}\n`);
 	console.log(`Verified rollback release ${releaseTag} at ${tagTarget}.`);
 }
 

@@ -15,6 +15,7 @@ import {
 	parseReleaseComment,
 	prepareRelease,
 	promotionKeys,
+	validateAuthorizedRollbackTarget,
 	validateReleaseRepository,
 	validateRollbackRequest,
 	verifyReleaseArtifacts,
@@ -383,6 +384,16 @@ test("rollback requires exact confirmation and remains pointer-only", () => {
 	});
 	assert.throws(() => validateRollbackRequest("v0.7.1", "v0.7.1"), /ROLLBACK v0\.7\.1/);
 	assert.throws(() => validateRollbackRequest("beta", "ROLLBACK beta"), /plain stable release tag/i);
+});
+
+test("rollback remains bound to the commit authorized before the protected wait", () => {
+	const authorizedSha = "a".repeat(40);
+	assert.equal(validateAuthorizedRollbackTarget("v0.7.1", authorizedSha, authorizedSha), authorizedSha);
+	assert.throws(
+		() => validateAuthorizedRollbackTarget("v0.7.1", authorizedSha, "b".repeat(40)),
+		/moved from authorized commit/,
+	);
+	assert.throws(() => validateAuthorizedRollbackTarget("v0.7.1", "short", authorizedSha), /full commit SHAs/);
 });
 
 test("artifact verification checks branded manifests, internal URLs, and every checksum", () => {
