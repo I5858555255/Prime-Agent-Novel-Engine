@@ -13,7 +13,7 @@
   Terminal UI primitives.
 </p>
 
-Release docs use the Prime Agent package name. The source workspace manifest still keeps an inherited package name until the namespace migration is complete.
+External releases use the branded `prime-agent-tui` package name. The inherited source workspace name is not a supported npm registry install target.
 
 Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications.
 
@@ -28,10 +28,20 @@ Minimal terminal UI framework with differential rendering and synchronized outpu
 - **Image Support**: Renders terminal graphics or compact image metadata
 - **Autocomplete Support**: File paths and slash commands
 
+## Installation
+
+```bash
+release_base=https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev
+release_version="$(curl -fsSL "$release_base/stable")"
+npm install "$release_base/releases/$release_version/prime-agent-tui-${release_version#v}.tgz"
+```
+
+This installs the immutable artifact for the current stable release. See [SDK and library artifacts](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/package-artifacts.md) for beta releases, PowerShell, integrity verification, pinning, and updates.
+
 ## Quick Start
 
 ```typescript
-import { TUI, Text, Editor, ProcessTerminal, matchesKey } from "prime-agent-tui";
+import { Key, ProcessTerminal, Text, TUI, matchesKey } from "prime-agent-tui";
 
 // Create terminal
 const terminal = new ProcessTerminal();
@@ -42,23 +52,13 @@ const tui = new TUI(terminal);
 // Add components
 tui.addChild(new Text("Welcome to my app!"));
 
-import { defaultEditorTheme as editorTheme } from './test/test-themes.ts';
-const editor = new Editor(tui, editorTheme);
-editor.onSubmit = (text) => {
-  console.log("Submitted:", text);
-  tui.addChild(new Text(`You said: ${text}`));
-};
-tui.addChild(editor);
-
-// Focus the editor so it receives keyboard input
-tui.setFocus(editor);
-
 // In raw mode Ctrl+C doesn't send SIGINT — intercept it here to allow exit
 tui.addInputListener((data) => {
-  if (matchesKey(data, 'ctrl+c')) {
+  if (matchesKey(data, Key.ctrl("c"))) {
     tui.stop();
-    process.exit(0);
+    return { consume: true };
   }
+  return undefined;
 });
 
 // Start

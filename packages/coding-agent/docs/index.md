@@ -47,6 +47,7 @@ Public releases are currently installed from versioned release artifacts. The in
 
 ## Programmatic Usage
 
+- [SDK and library artifacts](package-artifacts.md) - install branded, immutable SDK and library releases.
 - [SDK](sdk.md) - embed Prime Agent in Node.js applications.
 - [ACP mode](acp.md) - drive Prime Agent from any Agent Client Protocol client.
 - [RPC mode](rpc.md) - integrate over stdin/stdout JSONL.

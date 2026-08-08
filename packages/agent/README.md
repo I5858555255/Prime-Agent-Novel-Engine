@@ -13,13 +13,19 @@
   Stateful agent runtime.
 </p>
 
-Release docs use the Prime Agent package names. The source workspace manifests still keep inherited package names until the namespace migration is complete.
+External releases use the branded `prime-agent-core` and `prime-agent-ai` package names. The inherited source workspace names are not supported npm registry install targets.
 
-## Workspace Package
+## Installation
 
 ```bash
-npm install prime-agent-core
+release_base=https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev
+release_version="$(curl -fsSL "$release_base/stable")"
+npm install \
+  "$release_base/releases/$release_version/prime-agent-ai-${release_version#v}.tgz" \
+  "$release_base/releases/$release_version/prime-agent-core-${release_version#v}.tgz"
 ```
+
+This installs the immutable artifacts for the current stable release. See [SDK and library artifacts](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/package-artifacts.md) for beta releases, PowerShell, integrity verification, pinning, and updates.
 
 ## Quick Start
 
@@ -30,7 +36,7 @@ import { getModel } from "prime-agent-ai";
 const agent = new Agent({
   initialState: {
     systemPrompt: "You are a helpful assistant.",
-    model: getModel("anthropic", "claude-sonnet-4-20250514"),
+    model: getModel("anthropic", "claude-sonnet-4-6"),
   },
 });
 
