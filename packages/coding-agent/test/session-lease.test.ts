@@ -8,6 +8,7 @@ import {
 	acquireSessionLease,
 	canonicalSessionPath,
 	getWindowsProcessStartId,
+	isProcessAlive,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 	SessionAlreadyActiveError,
@@ -33,6 +34,76 @@ function enabledEnvironment(owner: string): NodeJS.ProcessEnv {
 		[SESSION_LEASE_OWNER_ID_ENV]: owner,
 	};
 }
+
+function errno(code: string): NodeJS.ErrnoException {
+	return Object.assign(new Error(code), { code });
+}
+
+describe("process liveness", () => {
+	it.each(["linux", "android"] as const)(
+		"treats EPERM with a missing proc entry as a stale or reused pid on %s",
+		(platform) => {
+			expect(
+				isProcessAlive(
+					42,
+					() => {
+						throw errno("EPERM");
+					},
+					() => {
+						throw errno("ENOENT");
+					},
+					platform,
+				),
+			).toBe(false);
+		},
+	);
+
+	it("keeps treating EPERM as alive when the proc entry is readable", () => {
+		expect(
+			isProcessAlive(
+				42,
+				() => {
+					throw errno("EPERM");
+				},
+				() => {},
+				"android",
+			),
+		).toBe(true);
+	});
+
+	it("stays conservative when procfs fails for a reason other than a missing entry", () => {
+		expect(
+			isProcessAlive(
+				42,
+				() => {
+					throw errno("EPERM");
+				},
+				() => {
+					throw errno("EACCES");
+				},
+				"android",
+			),
+		).toBe(true);
+	});
+
+	it("does not use procfs to reinterpret EPERM on non-procfs platforms", () => {
+		let procProbeCalls = 0;
+		expect(
+			isProcessAlive(
+				42,
+				() => {
+					throw errno("EPERM");
+				},
+				() => {
+					procProbeCalls++;
+					throw errno("ENOENT");
+				},
+				"darwin",
+			),
+		).toBe(true);
+		expect(procProbeCalls).toBe(0);
+	});
+});
 
 describe("session leases", () => {
 	it("reads an invariant process start identity on Windows", () => {
