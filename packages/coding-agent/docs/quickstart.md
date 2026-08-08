@@ -63,6 +63,31 @@ You can also run `/login` and select an API-key provider to store the key in `~/
 
 See [Providers](providers.md) for all supported providers, environment variables, and cloud-provider setup.
 
+### Option 3: Custom OpenAI-compatible endpoint
+
+Want to use your own endpoint (Ollama, vLLM, LM Studio, or a proxy)? Add it to `~/.prime/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "models": [{ "id": "llama3.1:8b" }]
+    }
+  }
+}
+```
+
+Then select it with `/model`, or from the CLI:
+
+```bash
+prime-agent --model ollama/llama3.1:8b
+```
+
+If the provider entry includes an `apiKey`, it also appears in `/login`. Full examples, `compat` flags, and troubleshooting are in [Custom Models](models.md). For custom APIs or OAuth flows, see [Custom Providers](custom-provider.md).
+
 ## First Session
 
 Once Prime Agent starts, type a request and press Enter:
@@ -160,6 +185,8 @@ Use `--mode json` for JSON event output or `--mode rpc` for process integration.
 
 - [Using Prime Agent](usage.md) - interactive mode, slash commands, sessions, context files, and CLI reference.
 - [Providers](providers.md) - authentication and model setup.
+- [Custom Models](models.md) - Ollama, vLLM, LM Studio, and other OpenAI-compatible endpoints.
+- [Custom Providers](custom-provider.md) - custom APIs and OAuth flows.
 - [Settings](settings.md) - global and project configuration.
 - [Keybindings](keybindings.md) - shortcuts and customization.
 - [Prime Agent Packages](packages.md) - install shared extensions, skills, prompts, and themes.
