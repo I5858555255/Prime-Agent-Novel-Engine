@@ -1,0 +1,58 @@
+name: Rollback Prime Agent stable channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing stable release tag to restore (for example v0.7.1)'
+        required: true
+        type: string
+      confirmation:
+        description: 'Type ROLLBACK vX.Y.Z using the exact target tag'
+        required: true
+        type: string
+
+concurrency:
+  group: release-prime-agent
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release tooling and tags
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Verify target and roll back stable pointers
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          node scripts/publish-release.mjs rollback \
+            --release-tag "$RELEASE_TAG" \
+            --confirmation "$CONFIRMATION" \
+            --default-branch "$DEFAULT_BRANCH"

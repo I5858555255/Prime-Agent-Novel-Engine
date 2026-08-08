@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-// TODO: Remove this R2 tarball packer once prime-agent and its internal workspace
-// dependencies are published through a real npm release flow.
+// This is the non-publishing packer for the CI-authoritative R2 release lifecycle.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";

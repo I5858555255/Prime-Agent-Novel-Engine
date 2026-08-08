@@ -1,0 +1,136 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import {
+	promoteChannel,
+	publishChannel,
+	publishImmutableArtifacts,
+	verifyRemoteRelease,
+} from "./lib/release-publication.mjs";
+
+class MemoryStore {
+	constructor(initial = {}) {
+		this.events = [];
+		this.objects = new Map(Object.entries(initial).map(([key, value]) => [key, Buffer.from(value)]));
+	}
+
+	read(key) {
+		this.events.push(`read:${key}`);
+		return this.objects.get(key);
+	}
+
+	putImmutable(key, path) {
+		this.events.push(`immutable:${key}`);
+		if (this.objects.has(key)) return false;
+		this.objects.set(key, readFileSync(path));
+		return true;
+	}
+
+	putMutable(key, path) {
+		this.events.push(`mutable:${key}`);
+		this.objects.set(key, readFileSync(path));
+	}
+}
+
+function createPublicationFixture(version = "0.7.2", channel = "stable") {
+	const root = mkdtempSync(join(tmpdir(), "prime-agent-publication-test-"));
+	const artifactsDir = join(root, "artifacts");
+	mkdirSync(artifactsDir);
+	writeFileSync(join(artifactsDir, `prime-agent-${version}.tgz`), "cli");
+	writeFileSync(join(artifactsDir, "SHA256SUMS"), "checksums");
+	writeFileSync(join(artifactsDir, channel), `v${version}\n`);
+	const manifestName = channel === "stable" ? "latest.json" : "beta.json";
+	writeFileSync(
+		join(artifactsDir, manifestName),
+		`${JSON.stringify({
+			version: `v${version}`,
+			package: "prime-agent",
+			tarball: `releases/v${version}/prime-agent-${version}.tgz`,
+			tarballs: [],
+		})}\n`,
+	);
+	return { artifactsDir, manifestName, root };
+}
+
+test("immutable publication creates missing objects, reuses identical objects, and rejects drift", () => {
+	const { artifactsDir, root } = createPublicationFixture();
+	const store = new MemoryStore();
+	try {
+		const first = publishImmutableArtifacts(artifactsDir, "0.7.2", store);
+		assert.equal(first.created, 4);
+		assert.equal(first.reused, 0);
+		const second = publishImmutableArtifacts(artifactsDir, "0.7.2", store);
+		assert.equal(second.created, 0);
+		assert.equal(second.reused, 4);
+		writeFileSync(join(artifactsDir, "prime-agent-0.7.2.tgz"), "different");
+		assert.throws(() => publishImmutableArtifacts(artifactsDir, "0.7.2", store), /immutable object differs/i);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("immutable publication rejects a conflicting object created by a concurrent publisher", () => {
+	const { artifactsDir, root } = createPublicationFixture();
+	const store = new MemoryStore();
+	store.putImmutable = (key) => {
+		store.events.push(`immutable-race:${key}`);
+		store.objects.set(key, Buffer.from("conflicting concurrent bytes"));
+		return false;
+	};
+	try {
+		assert.throws(() => publishImmutableArtifacts(artifactsDir, "0.7.2", store), /remote release object differs/i);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("channel transaction completes the mirror before pointer and manifest promotion", () => {
+	const { artifactsDir, root } = createPublicationFixture();
+	const store = new MemoryStore();
+	try {
+		publishChannel({
+			artifactsDir,
+			channel: "stable",
+			mirror: () => store.events.push("mirror"),
+			store,
+			version: "0.7.2",
+		});
+		assert.ok(store.events.indexOf("mirror") > store.events.findIndex((event) => event.startsWith("immutable:")));
+		assert.ok(store.events.indexOf("mirror") < store.events.indexOf("mutable:stable"));
+		assert.ok(store.events.indexOf("mutable:stable") < store.events.indexOf("mutable:latest.json"));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("stable promotion is monotonic unless an explicit rollback allows regression", () => {
+	const { artifactsDir, root } = createPublicationFixture();
+	const store = new MemoryStore({
+		"latest.json": `${JSON.stringify({ version: "v0.7.3" })}\n`,
+		stable: "v0.7.3\n",
+	});
+	try {
+		assert.throws(() => promoteChannel(artifactsDir, "stable", store), /would regress.*0\.7\.3/i);
+		promoteChannel(artifactsDir, "stable", store, { allowRegression: true });
+		assert.equal(store.objects.get("stable").toString(), "v0.7.2\n");
+		assert.match(store.objects.get("latest.json").toString(), /v0\.7\.2/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("remote verification proves every saved release object before rollback", () => {
+	const { artifactsDir, root } = createPublicationFixture();
+	const store = new MemoryStore();
+	try {
+		publishImmutableArtifacts(artifactsDir, "0.7.2", store);
+		assert.equal(verifyRemoteRelease(artifactsDir, "0.7.2", store).verified, 4);
+		store.objects.set("releases/v0.7.2/SHA256SUMS", Buffer.from("drift"));
+		assert.throws(() => verifyRemoteRelease(artifactsDir, "0.7.2", store), /remote release object differs/i);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
