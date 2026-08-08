@@ -34,6 +34,22 @@ Edit directly or use `/settings` for common options.
 }
 ```
 
+### Subagents
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `subagents.defaultModel` | string | Parent model | Exact `provider/model` selector used by `rlm()` when a child does not specify `model=`. |
+
+```json
+{
+  "subagents": {
+    "defaultModel": "tensorx/deepseek/deepseek-v4-flash-0731"
+  }
+}
+```
+
+An explicit `rlm(..., model="provider/model")` takes precedence. The selected model must be available with active credentials; an unavailable configured selector fails child admission rather than falling back to the parent. Project settings can override this value, so review checked-in `.prime/agent/settings.json` files before trusting them.
+
 ### UI & Display
 
 | Setting | Type | Default | Description |

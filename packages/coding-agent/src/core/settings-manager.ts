@@ -68,6 +68,12 @@ export interface BundledSkillsSettings {
 	websearch?: boolean; // default: true
 }
 
+/** Default routing policy for RLM child agents. */
+export interface SubagentSettings {
+	/** Exact `provider/model` selector used when an rlm.run call omits `model`. */
+	defaultModel?: string;
+}
+
 export interface WarningSettings {
 	anthropicExtraUsage?: boolean; // default: true
 }
@@ -153,6 +159,7 @@ export interface Settings {
 	enableSkillCommands?: boolean; // default: true - register skills as /skill:name commands
 	bundledSkills?: BundledSkillsSettings; // Configure built-in skills shipped with Prime Agent
 	enableBuiltinSkills?: boolean; // default: true - load built-in skills shipped with prime-agent
+	subagents?: SubagentSettings; // Default RLM child-agent routing policy
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
@@ -684,6 +691,10 @@ export class SettingsManager {
 
 	getDefaultModel(): string | undefined {
 		return this.settings.defaultModel;
+	}
+
+	getSubagentDefaultModel(): string | undefined {
+		return this.settings.subagents?.defaultModel;
 	}
 
 	setDefaultProvider(provider: string): void {

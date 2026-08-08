@@ -153,14 +153,14 @@ Supported `rlm.run` options are:
 - `name`: a unique readable child session name; and
 - `model`: an exact `provider/model` selector from `rlm.find_models()`.
 
-Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. If an exact selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
+Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. Model resolution is, in order: the explicit `model` option, `subagents.defaultModel` in settings, then the parent model. If an explicit or configured selector is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model.
 
 ## Child Execution
 
 `AgentSession.runRlmChild()` performs the following sequence:
 
 1. Check `RLM_DEPTH < RLM_MAX_DEPTH`.
-2. Resolve the requested model or inherit the parent model.
+2. Resolve the explicit model, the configured `subagents.defaultModel`, or the parent model.
 3. Create a `sub-xxxxxxxx` child directory under the parent artifact directory.
 4. Admit the task into the parent registry and return its `RLMSpawnHandle`.
 5. In detached work, create a child `SessionManager`, `Agent`, and `AgentSession`.

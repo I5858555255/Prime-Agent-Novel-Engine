@@ -24,6 +24,22 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	describe("subagent defaults", () => {
+		it("uses the project default model over the global default", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ subagents: { defaultModel: "global-provider/global-model" } }),
+			);
+			writeFileSync(
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({ subagents: { defaultModel: "project-provider/project-model" } }),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getSubagentDefaultModel()).toBe("project-provider/project-model");
+		});
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file
