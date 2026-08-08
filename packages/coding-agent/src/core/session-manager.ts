@@ -5,18 +5,24 @@ import {
 	appendFileSync,
 	chmodSync,
 	chownSync,
+	closeSync,
+	copyFileSync,
 	existsSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	readFileSync,
+	readSync,
 	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
+	truncateSync,
 	writeFileSync,
 } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
+import { TextDecoder } from "util";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import { readFirstLineSync, readLinesAsBuffers } from "../utils/file-lines.js";
@@ -69,6 +75,24 @@ function statMetadataIfPresent(path: string): { mode: number; uid: number; gid: 
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
+	}
+}
+
+function replaceFileAtomically(path: string, writeTemp: (targetPath: string, tempPath: string) => void): void {
+	const targetPath = realpathIfPresent(path);
+	const directory = dirname(targetPath);
+	mkdirSync(directory, { recursive: true });
+	const tempPath = join(directory, `.${basename(targetPath)}.${process.pid}.${randomUUID()}.tmp`);
+	try {
+		const metadata = statMetadataIfPresent(targetPath);
+		writeTemp(targetPath, tempPath);
+		if (metadata !== undefined) {
+			chownSync(tempPath, metadata.uid, metadata.gid);
+			chmodSync(tempPath, metadata.mode);
+		}
+		renameSync(tempPath, targetPath);
+	} finally {
+		rmSync(tempPath, { force: true });
 	}
 }
 
@@ -307,12 +331,20 @@ export interface SessionInfo {
 	agentStatus?: AgentStatus;
 }
 
+export interface SessionFileRecovery {
+	action: "appended_missing_newline" | "truncated_incomplete_tail";
+	originalSize: number;
+	repairedSize: number;
+	discardedBytes: number;
+}
+
 export type ReadonlySessionManager = Pick<
 	SessionManager,
 	| "getCwd"
 	| "getSessionDir"
 	| "getSessionId"
 	| "getSessionFile"
+	| "getFileRecovery"
 	| "getLeafId"
 	| "getLeafEntry"
 	| "getEntry"
@@ -629,6 +661,89 @@ function parseEntriesFromBuffer(buffer: Buffer): FileEntry[] {
 		start = end + 1;
 	}
 	return entries;
+}
+
+function readExactly(fd: number, length: number, position: number): Buffer {
+	const buffer = Buffer.allocUnsafe(length);
+	let offset = 0;
+	while (offset < length) {
+		const bytesRead = readSync(fd, buffer, offset, length - offset, position + offset);
+		if (bytesRead === 0) {
+			throw new Error("Session file changed while inspecting its final record");
+		}
+		offset += bytesRead;
+	}
+	return buffer;
+}
+
+function hasUnterminatedTail(filePath: string): boolean {
+	const fileSize = statSync(filePath).size;
+	if (fileSize === 0) return false;
+	const fd = openSync(filePath, "r");
+	try {
+		return readExactly(fd, 1, fileSize - 1)[0] !== 0x0a;
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function readUnterminatedTail(filePath: string): { start: number; bytes: Buffer; fileSize: number } | undefined {
+	const fileSize = statSync(filePath).size;
+	if (fileSize === 0) return undefined;
+
+	const fd = openSync(filePath, "r");
+	try {
+		if (readExactly(fd, 1, fileSize - 1)[0] === 0x0a) return undefined;
+
+		const chunkSize = 64 * 1024;
+		let position = fileSize;
+		let start = 0;
+		while (position > 0) {
+			const chunkStart = Math.max(0, position - chunkSize);
+			const chunk = readExactly(fd, position - chunkStart, chunkStart);
+			const newlineIndex = chunk.lastIndexOf(0x0a);
+			if (newlineIndex !== -1) {
+				start = chunkStart + newlineIndex + 1;
+				break;
+			}
+			position = chunkStart;
+		}
+		return { start, bytes: readExactly(fd, fileSize - start, start), fileSize };
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function isCompleteJsonRecord(bytes: Buffer): boolean {
+	try {
+		JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function repairUnterminatedSessionTail(filePath: string): SessionFileRecovery | undefined {
+	const tail = readUnterminatedTail(filePath);
+	if (!tail) return undefined;
+
+	const complete = isCompleteJsonRecord(tail.bytes);
+	const repairedSize = complete ? tail.fileSize + 1 : tail.start;
+	replaceFileAtomically(filePath, (targetPath, tempPath) => {
+		copyFileSync(targetPath, tempPath);
+		if (complete) {
+			appendFileSync(tempPath, "\n");
+		} else {
+			truncateSync(tempPath, repairedSize);
+		}
+	});
+
+	return {
+		action: complete ? "appended_missing_newline" : "truncated_incomplete_tail",
+		originalSize: tail.fileSize,
+		repairedSize,
+		discardedBytes: complete ? 0 : tail.bytes.length,
+	};
 }
 
 async function parseEntriesFromBufferAsync(buffer: Buffer): Promise<FileEntry[]> {
@@ -1200,6 +1315,8 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	private fileRecovery: SessionFileRecovery | undefined;
+	private needsTailRepair: boolean = false;
 	private persistListeners = new Set<SessionPersistListener>();
 
 	private constructor(
@@ -1230,7 +1347,10 @@ export class SessionManager {
 	 */
 	setSessionFile(sessionFile: string, preloadedEntries?: FileEntry[]): void {
 		this.sessionFile = resolve(sessionFile);
+		this.fileRecovery = undefined;
+		this.needsTailRepair = false;
 		if (existsSync(this.sessionFile)) {
+			this.needsTailRepair = hasUnterminatedTail(this.sessionFile);
 			this.fileEntries = preloadedEntries ?? loadEntriesFromFile(this.sessionFile);
 
 			// If file was empty or corrupted (no valid header), truncate and start fresh
@@ -1313,6 +1433,8 @@ export class SessionManager {
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
 		this.leafId = null;
+		this.fileRecovery = undefined;
+		this.needsTailRepair = false;
 		this.flushed = false;
 
 		if (this.persist) {
@@ -1344,23 +1466,22 @@ export class SessionManager {
 
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
+		this._repairPendingTail();
 		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-		const targetPath = realpathIfPresent(this.sessionFile);
-		const directory = dirname(targetPath);
-		mkdirSync(directory, { recursive: true });
-		const tempPath = join(directory, `.${basename(targetPath)}.${process.pid}.${randomUUID()}.tmp`);
-		try {
+		replaceFileAtomically(this.sessionFile, (targetPath, tempPath) => {
 			const metadata = statMetadataIfPresent(targetPath);
 			writeFileSync(tempPath, content, metadata === undefined ? undefined : { mode: metadata.mode });
-			if (metadata !== undefined) {
-				chownSync(tempPath, metadata.uid, metadata.gid);
-				chmodSync(tempPath, metadata.mode);
-			}
-			renameSync(tempPath, targetPath);
-		} finally {
-			rmSync(tempPath, { force: true });
-		}
+		});
 		this._notifyPersistListeners();
+	}
+
+	private _repairPendingTail(): void {
+		if (!this.persist || !this.sessionFile || !this.needsTailRepair) return;
+		const recovery = repairUnterminatedSessionTail(this.sessionFile);
+		this.needsTailRepair = false;
+		if (recovery) {
+			this.fileRecovery = recovery;
+		}
 	}
 
 	private _notifyPersistListeners(): void {
@@ -1401,6 +1522,10 @@ export class SessionManager {
 
 	getSessionFile(): string | undefined {
 		return this.sessionFile;
+	}
+
+	getFileRecovery(): SessionFileRecovery | undefined {
+		return this.fileRecovery ? { ...this.fileRecovery } : undefined;
 	}
 
 	materializeSessionFile(sessionDir?: string): string {
@@ -1448,6 +1573,7 @@ export class SessionManager {
 	 */
 	flushNow(): void {
 		if (!this.persist || !this.sessionFile) return;
+		this._repairPendingTail();
 		if (this.flushed && existsSync(this.sessionFile)) return;
 		this._rewriteFile();
 		this.flushed = true;
@@ -1468,6 +1594,7 @@ export class SessionManager {
 			this._rewriteFile();
 			this.flushed = true;
 		} else {
+			this._repairPendingTail();
 			mkdirSync(dirname(this.sessionFile), { recursive: true });
 			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
 			this._notifyPersistListeners();
