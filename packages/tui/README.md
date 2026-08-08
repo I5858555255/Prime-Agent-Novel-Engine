@@ -31,7 +31,7 @@ Minimal terminal UI framework with differential rendering and synchronized outpu
 ## Quick Start
 
 ```typescript
-import { TUI, Text, Editor, ProcessTerminal, matchesKey } from "prime-agent-tui";
+import { TUI, Text, Editor, ProcessTerminal, matchesKey, type EditorTheme } from "prime-agent-tui";
 
 // Create terminal
 const terminal = new ProcessTerminal();
@@ -42,7 +42,17 @@ const tui = new TUI(terminal);
 // Add components
 tui.addChild(new Text("Welcome to my app!"));
 
-import { defaultEditorTheme as editorTheme } from './test/test-themes.ts';
+const identity = (text: string) => text;
+const editorTheme: EditorTheme = {
+  borderColor: identity,
+  selectList: {
+    selectedPrefix: identity,
+    selectedText: identity,
+    description: identity,
+    scrollInfo: identity,
+    noMatch: identity,
+  },
+};
 const editor = new Editor(tui, editorTheme);
 editor.onSubmit = (text) => {
   console.log("Submitted:", text);
@@ -59,6 +69,7 @@ tui.addInputListener((data) => {
     tui.stop();
     process.exit(0);
   }
+  return undefined;
 });
 
 // Start
