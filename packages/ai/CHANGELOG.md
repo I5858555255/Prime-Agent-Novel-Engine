@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed the documented AI installation path and added the branded `prime-agent-ai` command alias ([#949](https://github.com/PrimeIntellect-ai/prime-agent/issues/949)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

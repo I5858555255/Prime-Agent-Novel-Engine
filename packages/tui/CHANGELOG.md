@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed the documented TUI installation path and made the published quick start self-contained ([#949](https://github.com/PrimeIntellect-ai/prime-agent/issues/949)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
