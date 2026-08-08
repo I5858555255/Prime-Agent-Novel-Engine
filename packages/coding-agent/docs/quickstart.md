@@ -71,7 +71,7 @@ Once Prime Agent starts, type a request and press Enter:
 Summarize this repository and tell me how to run its checks.
 ```
 
-Prime Agent gives the model one built-in tool, `ipython`. The long-lived kernel is a control environment for reading and editing files, running project commands, inspecting data, retaining Python state, and invoking installed skills. The kernel runtime is bootstrapped automatically on first use; set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`.
+Prime Agent gives the model one built-in tool, `ipython`. The long-lived kernel is a control environment for reading and editing files, running project commands, inspecting data, retaining Python state, and invoking installed skills. The kernel runtime is bootstrapped automatically on first use. To reuse an existing interpreter, set `PRIME_AGENT_KERNEL_PYTHON` to a Python that satisfies the full [kernel override contract](rlm-runtime.md#prime_agent_kernel_python-contract) (`ipykernel`, a current `prime-agent-runtime`, and the default Python packages)—`ipykernel` alone is not enough.
 
 Prime Agent runs in your current working directory and can modify files there. Use git or another checkpointing workflow if you want easy rollback.
 
