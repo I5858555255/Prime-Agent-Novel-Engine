@@ -147,6 +147,7 @@ const KIMI_STATIC_HEADERS = {
 const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
 const ZAI_TOOL_STREAM_UNSUPPORTED_MODELS = new Set(["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v"]);
+const MINIMAX_DIRECT_SUPPORTED_IDS = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
 const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 	"github-copilot:claude-haiku-4.5",
 	"github-copilot:claude-sonnet-4",
@@ -1729,6 +1730,7 @@ async function loadModelsDevData(context: GenerationContext): Promise<Model<any>
 				const m = model as ModelsDevModel & { status?: string };
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
+				if (modelId === "gpt-5.3-codex-spark") continue;
 
 				const npm = m.provider?.npm;
 				let api: Api;
@@ -1860,6 +1862,7 @@ async function loadModelsDevData(context: GenerationContext): Promise<Model<any>
 				for (const [modelId, model] of Object.entries(catalog[key].models)) {
 					const m = model as ModelsDevModel;
 					if (m.tool_call !== true) continue;
+					if (!MINIMAX_DIRECT_SUPPORTED_IDS.has(modelId)) continue;
 
 					models.push({
 						id: modelId,
@@ -1876,8 +1879,8 @@ async function loadModelsDevData(context: GenerationContext): Promise<Model<any>
 							cacheRead: m.cost?.cache_read || 0,
 							cacheWrite: m.cost?.cache_write || 0,
 						},
-						contextWindow: m.limit?.context || 4096,
-						maxTokens: m.limit?.output || 4096,
+						contextWindow: 204800,
+						maxTokens: 131072,
 					});
 				}
 			}
@@ -2117,10 +2120,7 @@ export async function refreshModels(options: RefreshModelsOptions = {}): Promise
 	const aiGatewayModels = await fetchAiGatewayModels(context);
 
 	// Combine models (models.dev has priority)
-	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
-		(model) =>
-			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
-	);
+	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels];
 
 	// Fix incorrect cache pricing for Claude Opus 4.5 from models.dev
 	// models.dev has 3x the correct pricing (1.5/18.75 instead of 0.5/6.25)
@@ -2456,28 +2456,6 @@ export async function refreshModels(options: RefreshModelsOptions = {}): Promise
 					: DEEPSEEK_V4_COMPAT),
 			};
 			mergeThinkingLevelMap(candidate, DEEPSEEK_V4_THINKING_LEVEL_MAP);
-		}
-	}
-
-	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
-
-	for (const candidate of allModels) {
-		if (
-			(candidate.provider === "minimax" || candidate.provider === "minimax-cn") &&
-			minimaxDirectSupportedIds.has(candidate.id)
-		) {
-			candidate.contextWindow = 204800;
-			candidate.maxTokens = 131072;
-		}
-	}
-
-	for (let i = allModels.length - 1; i >= 0; i--) {
-		const candidate = allModels[i];
-		if (
-			(candidate.provider === "minimax" || candidate.provider === "minimax-cn") &&
-			!minimaxDirectSupportedIds.has(candidate.id)
-		) {
-			allModels.splice(i, 1);
 		}
 	}
 

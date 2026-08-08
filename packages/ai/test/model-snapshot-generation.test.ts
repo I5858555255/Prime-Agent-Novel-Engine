@@ -240,6 +240,34 @@ describe("reviewed model snapshot generation", () => {
 		expect(readdirSync(directory)).toEqual(["models.generated.ts"]);
 	});
 
+	it("rejects a models.dev catalog whose only tool model is an unsupported MiniMax release", async () => {
+		const { directory, outputPath } = createReviewedSnapshot();
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+		const exitCode = await runRefreshModelsCli({
+			fetch: createCatalogFetch({
+				[MODELS_DEV_URL]: {
+					minimax: {
+						models: {
+							"MiniMax-M2.6": {
+								name: "MiniMax M2.6",
+								tool_call: true,
+								limit: { context: 204800, output: 131072 },
+							},
+						},
+					},
+				},
+			}),
+			outputPath,
+		});
+
+		expect(exitCode).toBe(1);
+		expect(readFileSync(outputPath, "utf8")).toBe("reviewed snapshot\n");
+		expect(readdirSync(directory)).toEqual(["models.generated.ts"]);
+		expect(consoleError).toHaveBeenCalledOnce();
+		expect(String(consoleError.mock.calls[0]?.[0])).toContain("models.dev produced zero usable models");
+	});
+
 	it("preserves the reviewed snapshot for malformed source JSON", async () => {
 		const { directory, outputPath } = createReviewedSnapshot();
 
