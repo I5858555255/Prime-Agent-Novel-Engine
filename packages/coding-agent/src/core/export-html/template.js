@@ -676,7 +676,7 @@
         const alt = escapeHtml(token.text || 'image');
         let out = `<span class="blocked-image" role="group"><span class="blocked-image-label">${remoteHref ? 'Remote image blocked' : 'Image blocked'}: ${alt}</span>`;
         if (remoteHref) {
-          out += ' <a class="remote-image-link" href="' + escapeHtml(remoteHref) + '" target="_blank" rel="noopener noreferrer nofollow" referrerpolicy="no-referrer">Open remote image</a>';
+          out += ' <button type="button" class="remote-image-link" data-remote-url="' + escapeHtml(remoteHref) + '">Open remote image</button>';
         }
         out += '</span>';
         return out;
@@ -1581,6 +1581,14 @@
             const entryId = btn.dataset.entryId;
             const shareUrl = buildShareUrl(entryId);
             copyToClipboard(shareUrl, btn);
+          });
+        });
+
+        // Remote URLs stay out of fetchable attributes until this explicit action.
+        messagesEl.querySelectorAll('.remote-image-link').forEach(button => {
+          button.addEventListener('click', () => {
+            const remoteHref = getRemoteImageHref(button.dataset.remoteUrl);
+            if (remoteHref) window.open(remoteHref, '_blank', 'noopener,noreferrer');
           });
         });
 

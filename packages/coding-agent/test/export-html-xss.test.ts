@@ -21,6 +21,13 @@ describe("export HTML markdown link sanitization", () => {
 		expect(templateJs).toMatch(/escapeHtml\(remoteHref\)/);
 	});
 
+	it("defers remote image navigation until an explicit button activation", () => {
+		expect(templateJs).toContain('class="remote-image-link" data-remote-url="');
+		expect(templateJs).not.toContain('class="remote-image-link" href="');
+		expect(templateJs).toMatch(/getRemoteImageHref\(button\.dataset\.remoteUrl\)/);
+		expect(templateJs).toContain("window.open(remoteHref, '_blank', 'noopener,noreferrer')");
+	});
+
 	it("allowlists embedded session image MIME types", () => {
 		expect(templateJs).not.toMatch(/\$\{img\.mimeType\}/);
 		expect(templateJs).toMatch(/\['image\/avif', 'image\/gif', 'image\/jpeg', 'image\/png', 'image\/webp'\]/);

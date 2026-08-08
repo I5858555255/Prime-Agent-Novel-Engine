@@ -51,13 +51,14 @@ function dumpDom(chromePath: string, url: string, userDataDir: string): Promise<
 			[
 				"--headless=new",
 				"--disable-gpu",
-				"--disable-background-networking",
 				"--disable-component-update",
 				"--disable-default-apps",
 				"--disable-dev-shm-usage",
 				"--disable-sync",
 				"--metrics-recording-only",
 				"--no-first-run",
+				"--host-resolver-rules=MAP network-isolation.test 127.0.0.1,EXCLUDE localhost",
+				"--no-proxy-server",
 				`--user-data-dir=${userDataDir}`,
 				"--dump-dom",
 				url,
@@ -137,6 +138,9 @@ describe("#937 network-isolated transcript exports", () => {
 			"utf8",
 		);
 		expect(templateHtml).toContain("default-src 'none'");
+		expect(templateHtml).toContain('<meta http-equiv="x-dns-prefetch-control" content="off">');
+		expect(templateHtml.indexOf('http-equiv="x-dns-prefetch-control"')).toBeLessThan(templateHtml.indexOf("<style>"));
+		expect(templateHtml).not.toMatch(/rel=["']dns-prefetch["']/i);
 		expect(templateHtml).toContain("img-src data: blob:");
 		expect(templateHtml).toContain("connect-src 'none'");
 		expect(templateHtml).toContain("media-src 'none'");
@@ -171,11 +175,11 @@ describe("#937 network-isolated transcript exports", () => {
 			servers.push(remoteServer);
 			const remotePort = await listen(remoteServer);
 
-			const httpUrl = `http://127.0.0.1:${remotePort}/http.png`;
-			const httpsUrl = `https://127.0.0.1:${remotePort}/https.png`;
-			const protocolRelativeUrl = `//127.0.0.1:${remotePort}/protocol-relative.png`;
-			const redirectUrl = `http://127.0.0.1:${remotePort}/redirect.png`;
-			const safeLinkUrl = `http://127.0.0.1:${remotePort}/docs`;
+			const httpUrl = `http://network-isolation.test:${remotePort}/http.png`;
+			const httpsUrl = `https://network-isolation.test:${remotePort}/https.png`;
+			const protocolRelativeUrl = `//network-isolation.test:${remotePort}/protocol-relative.png`;
+			const redirectUrl = `http://network-isolation.test:${remotePort}/redirect.png`;
+			const safeLinkUrl = `http://network-isolation.test:${remotePort}/docs`;
 			const blobUrl = "blob:null/00000000-0000-4000-8000-000000000937";
 			const markdown = [
 				`![http-image](${httpUrl})`,
@@ -199,17 +203,22 @@ describe("#937 network-isolated transcript exports", () => {
 
 			expect(remoteConnections).toBe(0);
 			expect(remoteRequests).toEqual([]);
-			expect(dom).toContain(`href="${httpUrl}"`);
-			expect(dom).toContain(`href="${httpsUrl}"`);
-			expect(dom).toContain(`href="https://127.0.0.1:${remotePort}/protocol-relative.png"`);
-			expect(dom).toContain(`href="${redirectUrl}"`);
+			expect(dom).toContain(`data-remote-url="${httpUrl}"`);
+			expect(dom).toContain(`data-remote-url="${httpsUrl}"`);
+			expect(dom).toContain(`data-remote-url="https://network-isolation.test:${remotePort}/protocol-relative.png"`);
+			expect(dom).toContain(`data-remote-url="${redirectUrl}"`);
+			expect(dom).toContain('<button type="button" class="remote-image-link" data-remote-url=');
 			expect(dom).toContain(
 				`<a href="${safeLinkUrl}" target="_blank" rel="noopener noreferrer nofollow" referrerpolicy="no-referrer">safe-link</a>`,
 			);
 			expect(dom).not.toContain(`src="${httpUrl}"`);
 			expect(dom).not.toContain(`src="${httpsUrl}"`);
-			expect(dom).not.toContain(`src="//127.0.0.1:${remotePort}/protocol-relative.png"`);
+			expect(dom).not.toContain(`src="//network-isolation.test:${remotePort}/protocol-relative.png"`);
 			expect(dom).not.toContain(`src="${redirectUrl}"`);
+			expect(dom).not.toContain(`href="${httpUrl}"`);
+			expect(dom).not.toContain(`href="${httpsUrl}"`);
+			expect(dom).not.toContain(`href="https://network-isolation.test:${remotePort}/protocol-relative.png"`);
+			expect(dom).not.toContain(`href="${redirectUrl}"`);
 			expect(dom).toContain("Remote image blocked: http-image");
 			expect(dom).toContain("Remote image blocked: https-image");
 			expect(dom).toContain("Remote image blocked: protocol-relative-image");

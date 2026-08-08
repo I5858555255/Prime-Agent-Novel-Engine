@@ -881,9 +881,15 @@
     }
 
     .remote-image-link {
+      padding: 0;
+      border: 0;
       color: var(--mdLink);
+      background: transparent;
+      font: inherit;
       font-weight: 600;
+      text-decoration: underline;
       white-space: nowrap;
+      cursor: pointer;
     }
 
     /* Markdown content */
