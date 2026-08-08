@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed OpenAI Responses incomplete events dropping final usage and response IDs.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
