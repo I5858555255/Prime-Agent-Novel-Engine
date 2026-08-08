@@ -620,6 +620,78 @@
         return div.innerHTML;
       }
 
+      const SAFE_DATA_IMAGE_URL = /^data:image\/(?:avif|gif|jpeg|png|webp);base64,[a-z0-9+/]*={0,2}$/i;
+      const SAFE_NAVIGATION_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
+      function getSafeNavigation(href) {
+        const value = typeof href === 'string' ? href.trim() : '';
+        if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null;
+        if (value.startsWith('#')) return { href: value, external: false };
+
+        if (value.startsWith('//')) {
+          try {
+            return { href: new URL(`https:${value}`).href, external: true };
+          } catch {
+            return null;
+          }
+        }
+
+        try {
+          const url = new URL(value, document.baseURI);
+          const hasExplicitProtocol = /^[a-z][a-z0-9+.-]*:/i.test(value);
+          if (hasExplicitProtocol && !SAFE_NAVIGATION_PROTOCOLS.has(url.protocol)) return null;
+          if (!hasExplicitProtocol && !['file:', 'http:', 'https:'].includes(url.protocol)) return null;
+          return {
+            href: value,
+            external: url.protocol === 'http:' || url.protocol === 'https:'
+          };
+        } catch {
+          return null;
+        }
+      }
+
+      function getEmbeddedImageHref(href) {
+        const value = typeof href === 'string' ? href.trim() : '';
+        if (SAFE_DATA_IMAGE_URL.test(value)) return value;
+        if (!value.toLowerCase().startsWith('blob:')) return null;
+        try {
+          return new URL(value).protocol === 'blob:' ? value : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function getRemoteImageHref(href) {
+        const value = typeof href === 'string' ? href.trim() : '';
+        if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null;
+        try {
+          const url = value.startsWith('//') ? new URL(`https:${value}`) : new URL(value, document.baseURI);
+          return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function renderBlockedImage(token, remoteHref) {
+        const alt = escapeHtml(token.text || 'image');
+        let out = `<span class="blocked-image" role="group"><span class="blocked-image-label">${remoteHref ? 'Remote image blocked' : 'Image blocked'}: ${alt}</span>`;
+        if (remoteHref) {
+          out += ' <a class="remote-image-link" href="' + escapeHtml(remoteHref) + '" target="_blank" rel="noopener noreferrer nofollow" referrerpolicy="no-referrer">Open remote image</a>';
+        }
+        out += '</span>';
+        return out;
+      }
+
+      function renderEmbeddedSessionImage(image, className) {
+        const mimeType = typeof image.mimeType === 'string' ? image.mimeType.toLowerCase() : '';
+        const data = typeof image.data === 'string' ? image.data : '';
+        if (!['image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp'].includes(mimeType) || !data) {
+          return '<span class="blocked-image"><span class="blocked-image-label">Unsupported embedded image blocked</span></span>';
+        }
+        const href = `data:${mimeType};base64,${data}`;
+        return `<img src="${escapeHtml(href)}" class="${className}" alt="Embedded session image" referrerpolicy="no-referrer" loading="lazy" decoding="async" />`;
+      }
+
       /**
        * Truncate string to maxLen chars, append "..." if truncated.
        */
@@ -918,7 +990,7 @@
           const images = getResultImages();
           if (images.length === 0) return '';
           return '<div class="tool-images">' +
-            images.map(img => `<img src="data:${escapeHtml(img.mimeType || 'image/png')};base64,${escapeHtml(img.data || '')}" class="tool-image" />`).join('') +
+            images.map(img => renderEmbeddedSessionImage(img, 'tool-image')).join('') +
             '</div>';
         };
 
@@ -1201,7 +1273,7 @@
                 if (images.length > 0) {
                   html += '<div class="message-images">';
                   for (const img of images) {
-                    html += `<img src="data:${escapeHtml(img.mimeType || 'image/png')};base64,${escapeHtml(img.data || '')}" class="message-image" />`;
+                    html += renderEmbeddedSessionImage(img, 'message-image');
                   }
                   html += '</div>';
                 }
@@ -1223,7 +1295,7 @@
               if (images.length > 0) {
                 html += '<div class="message-images">';
                 for (const img of images) {
-                  html += `<img src="data:${escapeHtml(img.mimeType || 'image/png')};base64,${escapeHtml(img.data || '')}" class="message-image" />`;
+                  html += renderEmbeddedSessionImage(img, 'message-image');
                 }
                 html += '</div>';
               }
@@ -1566,24 +1638,26 @@
         renderer: {
           // Sanitize link URLs to prevent javascript:/vbscript:/data: XSS
           link(token) {
-            const href = (token.href || '').trim();
-            if (/^\s*(javascript|vbscript|data):/i.test(href)) {
+            const navigation = getSafeNavigation(token.href);
+            if (!navigation) {
               return this.parser.parseInline(token.tokens);
             }
-            let out = '<a href="' + escapeHtml(href) + '"';
+            let out = '<a href="' + escapeHtml(navigation.href) + '"';
             if (token.title) {
               out += ' title="' + escapeHtml(token.title) + '"';
+            }
+            if (navigation.external) {
+              out += ' target="_blank" rel="noopener noreferrer nofollow" referrerpolicy="no-referrer"';
             }
             out += '>' + this.parser.parseInline(token.tokens) + '</a>';
             return out;
           },
-          // Sanitize image src URLs
+          // Keep the export network-isolated. Embedded raster data and existing
+          // blob URLs are safe to render; remote resources require a user click.
           image(token) {
-            const href = (token.href || '').trim();
-            if (/^\s*(javascript|vbscript|data):/i.test(href)) {
-              return escapeHtml(token.text || '');
-            }
-            let out = '<img src="' + escapeHtml(href) + '" alt="' + escapeHtml(token.text || '') + '"';
+            const embeddedHref = getEmbeddedImageHref(token.href);
+            if (!embeddedHref) return renderBlockedImage(token, getRemoteImageHref(token.href));
+            let out = '<img src="' + escapeHtml(embeddedHref) + '" alt="' + escapeHtml(token.text || '') + '" referrerpolicy="no-referrer" loading="lazy" decoding="async"';
             if (token.title) {
               out += ' title="' + escapeHtml(token.title) + '"';
             }
