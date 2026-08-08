@@ -36,13 +36,18 @@ test("release workflow publishes from main or an immutable retry tag, never a ta
 	assert.match(releaseWorkflow, /retry-production/);
 	assert.match(releaseWorkflow, /node scripts\/resolve-release-context\.mjs/);
 	assert.doesNotMatch(releaseWorkflow, /Production release tag to create or update/);
+	assert.match(releaseWorkflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
+	assert.match(releaseWorkflow, /path: release-tooling/);
+	assert.match(releaseWorkflow, /path: release-source/);
+	assert.match(releaseWorkflow, /PRIME_AGENT_RELEASE_SOURCE_ROOT:/);
+	assert.match(releaseWorkflow, /node \.\.\/release-tooling\/scripts\/publish-release\.mjs production/);
 });
 
 test("production publication compares immutable assets and commits latest.json last", () => {
-	assert.match(releaseWorkflow, /node scripts\/publish-release\.mjs production/);
+	assert.match(releaseWorkflow, /node \.\.\/release-tooling\/scripts\/publish-release\.mjs production/);
 	assert.doesNotMatch(releaseWorkflow, /gh release upload[^\n]*--clobber/);
-	const productionStep = releaseWorkflow.indexOf("node scripts/publish-release.mjs production");
-	const betaStep = releaseWorkflow.indexOf("node scripts/publish-release.mjs beta");
+	const productionStep = releaseWorkflow.indexOf("node ../release-tooling/scripts/publish-release.mjs production");
+	const betaStep = releaseWorkflow.indexOf("node ../release-tooling/scripts/publish-release.mjs beta");
 	assert.ok(productionStep > -1);
 	assert.ok(betaStep > productionStep);
 });

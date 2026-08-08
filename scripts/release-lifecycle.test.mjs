@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -185,6 +185,43 @@ test("release preparation updates only release metadata and preserves private wo
 	}
 });
 
+test("release preparation restores every file when a replacement fails mid-transaction", () => {
+	const root = createRepositoryFixture();
+	const releaseFiles = [
+		"package.json",
+		"package-lock.json",
+		...RELEASE_PACKAGE_DIRS.flatMap((packageDir) => [
+			`${packageDir}/package.json`,
+			`${packageDir}/CHANGELOG.md`,
+		]),
+	];
+	const before = new Map(releaseFiles.map((path) => [path, readFileSync(join(root, path))]));
+	let replacements = 0;
+	try {
+		assert.throws(
+			() =>
+				prepareRelease(root, "patch", {
+					date: "2026-08-08",
+					replaceFile(source, destination) {
+						replacements += 1;
+						if (replacements === 4) throw new Error("injected replacement failure");
+						renameSync(source, destination);
+					},
+				}),
+			/injected replacement failure/,
+		);
+		for (const [path, content] of before) {
+			assert.deepEqual(readFileSync(join(root, path)), content, path);
+		}
+		for (const directory of [root, ...RELEASE_PACKAGE_DIRS.map((packageDir) => join(root, packageDir))]) {
+			assert.equal(readdirSync(directory).some((name) => name.includes(".release-")), false, directory);
+		}
+		validateReleaseRepository(root, { version: "0.7.1", requireChangelogs: true });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("main pushes publish beta and only a strictly newer version publishes production", () => {
 	const changed = createReleasePlan({
 		eventName: "push",
@@ -361,10 +398,11 @@ test("artifact verification rejects a packed CLI missing required internal R2 de
 	}
 });
 
-test("dry-run CLI validates supplied artifacts without invoking publication tooling", () => {
-	const { artifactsDir, root } = createArtifactFixture("0.7.1", "stable");
-	try {
-		const result = spawnSync(
+test("current dry-run tooling validates a pre-migration source tree without release scripts", () => {
+	const sourceRoot = createRepositoryFixture("0.7.1");
+	const { artifactsDir, root: artifactRoot } = createArtifactFixture("0.7.1", "stable");
+	const runDryRun = () =>
+		spawnSync(
 			process.execPath,
 			[
 				fileURLToPath(new URL("release-dry-run.mjs", import.meta.url)),
@@ -384,13 +422,26 @@ test("dry-run CLI validates supplied artifacts without invoking publication tool
 					...process.env,
 					AWS_ACCESS_KEY_ID: "must-not-be-used",
 					GH_TOKEN: "must-not-be-used",
+					PRIME_AGENT_RELEASE_SOURCE_ROOT: sourceRoot,
 					R2_BUCKET: "must-not-be-used",
 				},
 			},
 		);
+	try {
+		assert.equal(JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf8")).scripts, undefined);
+		const result = runDryRun();
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(result.stdout, /Validated v0\.7\.1 stable artifacts without publishing/);
+
+		const agentPath = join(sourceRoot, "packages/agent/package.json");
+		const agent = JSON.parse(readFileSync(agentPath, "utf8"));
+		agent.version = "0.7.0";
+		writeJson(agentPath, agent);
+		const drift = runDryRun();
+		assert.equal(drift.status, 1);
+		assert.match(drift.stderr, /packages\/agent version is 0\.7\.0; expected 0\.7\.1/);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(artifactRoot, { recursive: true, force: true });
+		rmSync(sourceRoot, { recursive: true, force: true });
 	}
 });
