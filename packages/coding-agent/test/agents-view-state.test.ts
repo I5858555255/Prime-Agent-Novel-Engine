@@ -48,7 +48,11 @@ import {
 import { formatAgentDepthLabel } from "../src/modes/interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../src/modes/interactive/interactive-mode-services.js";
 import type { Theme } from "../src/modes/interactive/theme/theme.js";
-import { removeTempDirSync } from "./utils/temp-fs.js";
+import { canCreateFileSymlinks, removeTempDirSync } from "./utils/temp-fs.js";
+
+// File symlinks need SeCreateSymbolicLinkPrivilege on Windows and have no
+// junction equivalent, so the cases that need one only run where they can.
+const testWithFileSymlinks = canCreateFileSymlinks() ? test : test.skip;
 
 function heartbeat(id: string, nextRunAt?: string, activeSessionId = "child") {
 	return {
@@ -954,7 +958,7 @@ describe("agents view state", () => {
 		]);
 	});
 
-	test("deduplicates and protects sessions across symlink aliases", () => {
+	testWithFileSymlinks("deduplicates and protects sessions across symlink aliases", () => {
 		const root = mkdtempSync(join(tmpdir(), "session-view-alias-"));
 		try {
 			const real = join(root, "session.jsonl");
@@ -970,7 +974,7 @@ describe("agents view state", () => {
 		}
 	});
 
-	test("uses canonical path and fallback active-id keys for heartbeat ancestry", () => {
+	testWithFileSymlinks("uses canonical path and fallback active-id keys for heartbeat ancestry", () => {
 		const root = mkdtempSync(join(tmpdir(), "session-view-parent-alias-"));
 		try {
 			const path = join(root, "parent.jsonl");

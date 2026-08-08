@@ -46,7 +46,11 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { SessionManager } from "../src/core/session-manager.js";
-import { removeTempDirSync } from "./utils/temp-fs.js";
+import { canCreateFileSymlinks, removeTempDirSync } from "./utils/temp-fs.js";
+
+// File symlinks need SeCreateSymbolicLinkPrivilege on Windows and have no
+// junction equivalent, so the cases that need one only run where they can.
+const itWithFileSymlinks = canCreateFileSymlinks() ? it : it.skip;
 
 const tempDirs: string[] = [];
 
@@ -174,7 +178,7 @@ describe("SessionManager.flushNow", () => {
 		);
 	});
 
-	it("rewrites a cross-directory symlink target without replacing the alias", () => {
+	itWithFileSymlinks("rewrites a cross-directory symlink target without replacing the alias", () => {
 		const dir = createTempDir();
 		const targetDir = join(dir, "targets");
 		const aliasDir = join(dir, "aliases");

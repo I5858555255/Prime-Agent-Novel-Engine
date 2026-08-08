@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { lockSync } from "proper-lockfile";
-import { removePathSync } from "../utils/durable-fs.js";
+import { isDirectoryClaimConflict, removePathSync } from "../utils/durable-fs.js";
 
 export const SESSION_LEASES_ENABLED_ENV = "PRIME_AGENT_INTERNAL_SESSION_LEASES";
 export const SESSION_LEASE_OWNER_ID_ENV = "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID";
@@ -266,8 +266,7 @@ export function acquireSessionLease(
 				return new SessionLease(canonicalPath, directory, token);
 			} catch (error) {
 				removePathSync(candidateDirectory);
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+				if (!isDirectoryClaimConflict(error, directory)) {
 					throw error;
 				}
 				const existingOwner = readLeaseOwner(directory);

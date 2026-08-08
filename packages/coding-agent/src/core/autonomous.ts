@@ -5,7 +5,7 @@ import { lstat, readlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 import { waitForChildProcess } from "../utils/child-process.js";
-import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../utils/shell.js";
+import { getShellConfig, killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../utils/shell.js";
 
 export interface AgentAutonomousConfig {
 	enabled?: boolean;
@@ -309,9 +309,10 @@ async function runAutonomousQualityGates(
 			};
 			return attempt > state.gates.maxRetries ? "retry_exhausted" : "failed";
 		}
-		const result = await runChildProcess(command, [], {
+		const gate = resolveGateInvocation(command);
+		const result = await runChildProcess(gate.command, gate.args, {
 			cwd,
-			shell: true,
+			shell: gate.shell,
 			timeoutMs: state.gates.timeoutMs,
 			maxOutputChars: MAX_GATE_OUTPUT_CHARS,
 			signal,
@@ -476,6 +477,27 @@ interface ChildProcessResult {
 	error?: Error;
 	timedOut?: boolean;
 	outputTruncated: boolean;
+}
+
+/**
+ * How to run an autonomous gate command.
+ *
+ * `shell: true` resolves to cmd.exe on Windows, but every other shell surface in
+ * the agent — the Bash tool, `%%bash` cells, `shellPath` — is bash. A gate is
+ * written once and must behave the same everywhere, so Windows runs it through
+ * the same resolved bash instead. If no bash is available, fall back to the
+ * platform shell rather than failing the gate outright.
+ */
+function resolveGateInvocation(command: string): { command: string; args: string[]; shell: boolean } {
+	if (process.platform !== "win32") {
+		return { command, args: [], shell: true };
+	}
+	try {
+		const { shell, args } = getShellConfig();
+		return { command: shell, args: [...args, command], shell: false };
+	} catch {
+		return { command, args: [], shell: true };
+	}
 }
 
 function runChildProcess(

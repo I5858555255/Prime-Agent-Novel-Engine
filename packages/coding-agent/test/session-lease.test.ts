@@ -12,7 +12,11 @@ import {
 	SESSION_LEASES_ENABLED_ENV,
 	SessionAlreadyActiveError,
 } from "../src/core/session-lease.js";
-import { removeTempDirSync } from "./utils/temp-fs.js";
+import { canCreateFileSymlinks, removeTempDirSync } from "./utils/temp-fs.js";
+
+// File symlinks need SeCreateSymbolicLinkPrivilege on Windows and have no
+// junction equivalent, so the cases that need one only run where they can.
+const itWithFileSymlinks = canCreateFileSymlinks() ? it : it.skip;
 
 const tempDirs: string[] = [];
 
@@ -145,7 +149,7 @@ describe("session leases", () => {
 		}
 	});
 
-	it("treats symlink aliases as the same persisted session", () => {
+	itWithFileSymlinks("treats symlink aliases as the same persisted session", () => {
 		const agentDir = createTempDir();
 		const sessionPath = join(agentDir, "session.jsonl");
 		const aliasPath = join(agentDir, "session-alias.jsonl");

@@ -116,7 +116,7 @@ import {
 import { resolveSessionPath } from "../../core/session-resolver.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
-import { removePathSync } from "../../utils/durable-fs.js";
+import { isDirectoryClaimConflict, removePathSync } from "../../utils/durable-fs.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import {
 	createAgentConnectionCommands,
@@ -774,8 +774,7 @@ export class AgentDaemon {
 					break;
 				} catch (error) {
 					removePathSync(candidateDirectory);
-					const code = (error as NodeJS.ErrnoException).code;
-					if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+					if (!isDirectoryClaimConflict(error, lockDirectory)) {
 						throw error;
 					}
 					let ownerPid: number | undefined;

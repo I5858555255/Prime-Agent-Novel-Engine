@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, openSync, rmSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 
 /**
@@ -58,6 +58,23 @@ export async function removePath(path: string): Promise<void> {
 			await new Promise((resolve) => setTimeout(resolve, WINDOWS_REMOVE_DELAY_MS));
 		}
 	}
+}
+
+/**
+ * True when a failed `rename(candidateDir, targetDir)` means the target was
+ * already claimed rather than something being wrong with the rename.
+ *
+ * Directory-onto-directory rename is the portable way to claim a lock
+ * atomically. Unix reports the loser with EEXIST or ENOTEMPTY; Windows reports
+ * EPERM or EACCES, which is indistinguishable from a genuine permission failure
+ * except by checking whether the target now exists.
+ */
+export function isDirectoryClaimConflict(error: unknown, directory: string): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (code === "EEXIST" || code === "ENOTEMPTY") {
+		return true;
+	}
+	return (code === "EPERM" || code === "EACCES") && existsSync(directory);
 }
 
 /**

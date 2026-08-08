@@ -24,7 +24,11 @@ import {
 	shouldUseEphemeralSessionManagerForDaemonInteractive,
 } from "../src/main.js";
 import type { SessionSummary } from "../src/modes/index.js";
-import { removeTempDirSync } from "./utils/temp-fs.js";
+import { canCreateFileSymlinks, removeTempDirSync } from "./utils/temp-fs.js";
+
+// File symlinks need SeCreateSymbolicLinkPrivilege on Windows and have no
+// junction equivalent, so the cases that need one only run where they can.
+const testWithFileSymlinks = canCreateFileSymlinks() ? test : test.skip;
 
 describe("interactive startup routing", () => {
 	test.each(["interactive", "print", "json", "rpc"] as const)(
@@ -303,7 +307,7 @@ describe("daemon-backed interactive session manager routing", () => {
 		).toBe(activeSummary);
 	});
 
-	test("finds an active daemon session through a symlinked resume path", () => {
+	testWithFileSymlinks("finds an active daemon session through a symlinked resume path", () => {
 		const directory = mkdtempSync(join(tmpdir(), "prime-agent-resume-"));
 		try {
 			const sessionFile = join(directory, "session.jsonl");
