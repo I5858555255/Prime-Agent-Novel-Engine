@@ -1,10 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
+import { clearDefaultTerminalColors, setDefaultTerminalColors, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionFactory } from "../../../src/core/extensions/types.js";
+import { createHtmlExportTheme } from "../../../src/core/export-html/theme.js";
+import { createToolHtmlRenderer } from "../../../src/core/export-html/tool-renderer.js";
+import { defineTool, type ExtensionFactory } from "../../../src/core/extensions/types.js";
+import { createSyntheticSourceInfo } from "../../../src/core/source-info.js";
 import { createHarness, type Harness } from "../harness.js";
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
@@ -56,6 +60,7 @@ describe("regression #936: headless HTML export theme composition", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		clearDefaultTerminalColors();
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 		delete (globalThis as Record<symbol, unknown>)[THEME_KEY];
 	});
@@ -100,5 +105,50 @@ describe("regression #936: headless HTML export theme composition", () => {
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("custom result renderer failed"));
 		expect(sessionData.renderedTools).toBeUndefined();
 		expect(sessionData.entries.length).toBeGreaterThan(0);
+	});
+
+	it.each([
+		{ background: { r: 245, g: 245, b: 245 }, expectedTheme: "light" },
+		{ background: { r: 10, g: 10, b: 10 }, expectedTheme: "prime" },
+	])("resolves an unset theme for the current terminal background", ({ background, expectedTheme }) => {
+		delete (globalThis as Record<symbol, unknown>)[THEME_KEY];
+		setDefaultTerminalColors({ foreground: { r: 128, g: 128, b: 128 }, background });
+
+		const exportTheme = createHtmlExportTheme();
+
+		expect(exportTheme.name).toBe(expectedTheme);
+		expect((globalThis as Record<symbol, unknown>)[THEME_KEY]).toBeUndefined();
+	});
+
+	it("retains loaded theme source metadata for custom renderers", () => {
+		const sourcePath = fileURLToPath(new URL("../../../src/modes/interactive/theme/prime.json", import.meta.url));
+		const sourceInfo = createSyntheticSourceInfo(sourcePath, {
+			source: "theme-package",
+			scope: "project",
+			origin: "package",
+		});
+		const exportTheme = createHtmlExportTheme({
+			themeName: "prime",
+			resources: [{ name: "prime", sourcePath, sourceInfo }],
+		});
+		const parameters = Type.Object({ value: Type.String() });
+		const definition = defineTool({
+			name: "source_info_theme_tool",
+			label: "Source info theme tool",
+			description: "Displays theme source metadata",
+			parameters,
+			execute: async () => ({ content: [{ type: "text", text: "done" }], details: {} }),
+			renderCall: (_args, theme) => new Text(`source:${theme.sourceInfo?.source ?? "missing"}`, 0, 0),
+		});
+		const renderer = createToolHtmlRenderer({
+			getToolDefinition: (name) => (name === definition.name ? definition : undefined),
+			theme: exportTheme.toolTheme,
+			cwd: process.cwd(),
+		});
+
+		expect(exportTheme.toolTheme.sourceInfo).toEqual(sourceInfo);
+		expect(renderer.renderCall("source-info-call", definition.name, { value: "example" })).toContain(
+			"source:theme-package",
+		);
 	});
 });

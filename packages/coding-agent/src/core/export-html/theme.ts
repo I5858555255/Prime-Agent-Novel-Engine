@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getTerminalBackgroundKind } from "@earendil-works/pi-tui";
 import { getCustomThemesDir, getThemesDir } from "../../config.js";
 import type { SourceInfo } from "../source-info.js";
 import type { ThemeBg, ThemeColor, ToolRenderTheme } from "../theme-types.js";
@@ -30,7 +31,12 @@ export interface HtmlExportTheme {
 
 export interface HtmlExportThemeOptions {
 	themeName?: string;
-	resources?: ReadonlyArray<{ name?: string; sourcePath?: string }>;
+	resources?: ReadonlyArray<{ name?: string; sourcePath?: string; sourceInfo?: SourceInfo }>;
+}
+
+interface ResolvedThemeSource {
+	sourcePath: string;
+	sourceInfo?: SourceInfo;
 }
 
 const BUILTIN_THEME_NAMES = new Set(["prime", "dark", "light"]);
@@ -95,20 +101,20 @@ function readThemeDocument(themePath: string): ThemeDocument {
 	return { name: parsed.name, vars, colors, export: exportColors };
 }
 
-function resolveThemePath(name: string, resources: HtmlExportThemeOptions["resources"]): string {
+function resolveThemeSource(name: string, resources: HtmlExportThemeOptions["resources"]): ResolvedThemeSource {
 	const resource = resources?.find((candidate) => candidate.name === name);
 	if (resource) {
 		if (!resource.sourcePath) {
 			throw new Error(`Theme "${name}" has no source path for HTML export`);
 		}
-		return resource.sourcePath;
+		return { sourcePath: resource.sourcePath, sourceInfo: resource.sourceInfo };
 	}
 	if (BUILTIN_THEME_NAMES.has(name)) {
-		return join(getThemesDir(), `${name}.json`);
+		return { sourcePath: join(getThemesDir(), `${name}.json`) };
 	}
 	const customPath = join(getCustomThemesDir(), `${name}.json`);
 	if (existsSync(customPath)) {
-		return customPath;
+		return { sourcePath: customPath };
 	}
 	throw new Error(`Theme not found: ${name}`);
 }
@@ -172,7 +178,7 @@ function toAnsi(value: ColorValue, background: boolean): string {
 	if (typeof value === "number") {
 		return `\x1b[${background ? 48 : 38};5;${value}m`;
 	}
-	if (value === "") return "";
+	if (value === "") return `\x1b[${background ? 49 : 39}m`;
 	const match = value.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i);
 	if (!match) {
 		throw new Error(`Invalid theme color: ${value}`);
@@ -189,9 +195,10 @@ class HeadlessToolTheme implements ToolRenderTheme {
 	private readonly foregrounds: Map<ThemeColor, string>;
 	private readonly backgrounds: Map<ThemeBg, string>;
 
-	constructor(name: string, sourcePath: string, colors: Record<string, ColorValue>) {
+	constructor(name: string, sourcePath: string, colors: Record<string, ColorValue>, sourceInfo?: SourceInfo) {
 		this.name = name;
 		this.sourcePath = sourcePath;
+		this.sourceInfo = sourceInfo;
 		this.foregrounds = new Map();
 		this.backgrounds = new Map();
 		for (const [colorName, value] of Object.entries(colors)) {
@@ -283,8 +290,8 @@ class HeadlessToolTheme implements ToolRenderTheme {
 }
 
 export function createHtmlExportTheme(options: HtmlExportThemeOptions = {}): HtmlExportTheme {
-	const name = options.themeName ?? "prime";
-	const sourcePath = resolveThemePath(name, options.resources);
+	const name = options.themeName ?? (getTerminalBackgroundKind() === "light" ? "light" : "prime");
+	const { sourcePath, sourceInfo } = resolveThemeSource(name, options.resources);
 	const document = readThemeDocument(sourcePath);
 	const vars = document.vars ?? {};
 	const resolvedColors = Object.fromEntries(
@@ -294,12 +301,15 @@ export function createHtmlExportTheme(options: HtmlExportThemeOptions = {}): Htm
 	const cssColors = Object.fromEntries(
 		Object.entries(resolvedColors).map(([colorName, value]) => [colorName, toCssColor(value, defaultText)]),
 	);
-	const resolveExportColor = (value: ColorValue | undefined): string | undefined =>
-		value === undefined ? undefined : toCssColor(resolveColor(value, vars), defaultText);
+	const resolveExportColor = (value: ColorValue | undefined): string | undefined => {
+		if (value === undefined) return undefined;
+		const resolved = resolveColor(value, vars);
+		return resolved === "" ? undefined : toCssColor(resolved, defaultText);
+	};
 
 	return {
 		name,
-		toolTheme: new HeadlessToolTheme(name, sourcePath, resolvedColors),
+		toolTheme: new HeadlessToolTheme(name, sourcePath, resolvedColors, sourceInfo),
 		colors: cssColors,
 		exportColors: {
 			pageBg: resolveExportColor(document.export?.pageBg),
