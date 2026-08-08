@@ -5338,6 +5338,19 @@ export class AgentSession {
 			if (action.payload.kind === "turn" && action.wake === "immediate") this._sessionInputPumpSuspended = false;
 			this._scheduleSessionInputPump();
 		}
+		if (
+			!options.restore &&
+			options.wake !== false &&
+			action.payload.kind === "turn" &&
+			!this.isStreaming &&
+			this._sessionInputPumpSuspended
+		) {
+			// Programmatic admissions resume a pump suspended by an abort, matching _prompt():
+			// otherwise queued agent messages, heartbeats, and wake prompts starve at idle.
+			this._sessionInputPumpSuspended = false;
+			this._notifySessionInputCheckpointChange();
+			this._scheduleSessionInputPump();
+		}
 		return { accepted: true, disposition, ticket: controller.ticket };
 	}
 
