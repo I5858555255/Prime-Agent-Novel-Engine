@@ -37,7 +37,7 @@ vi.mock("../src/cli/daemon-ps.js", () => ({
 }));
 
 import { INTERNAL_RUNTIME_COMMAND_MARKER } from "../src/cli/args.js";
-import { formatTopLevelHelp } from "../src/cli/command-registry.js";
+import { formatCommandHelp, formatTopLevelHelp } from "../src/cli/command-registry.js";
 import { DAEMON_UPDATE_RESTART_COORDINATOR_FLAG } from "../src/cli/daemon-update-restart.js";
 import { handlePublicCommand } from "../src/cli/public-command.js";
 
@@ -274,6 +274,13 @@ describe("public command routing", () => {
 		await handlePublicCommand(["schedule", "cancell", "job-1"]);
 		expect(mocks.daemonCommands).toEqual([]);
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("schedule cancel"));
+	});
+
+	it("documents send as always-steering without removed delivery flags", () => {
+		const help = formatCommandHelp(["send"]);
+		expect(help).toContain("Messages always steer an active turn");
+		expect(help).not.toContain("--steer");
+		expect(help).not.toContain("--follow-up");
 	});
 
 	it("treats help-like message text after the separator literally", async () => {
