@@ -84,7 +84,7 @@ Beta publication keeps its stale-default-branch guard. After immutable uploads i
 
 ## Rollback
 
-Rollback is a separate exact two-line issue-comment command authorized by protected default-branch workflow code and an API-derived `admin` or `maintain` permission. The workflow also names the `production` environment as an optional additional gate. It requires an existing stable `vX.Y.Z` tag and matching confirmation text. Normal publication treats the higher version from `/stable` and `/latest.json` as the monotonic floor; only this rollback path may lower both.
+Rollback is a separate exact two-line issue-comment command authorized by protected default-branch workflow code and an API-derived `admin` or `maintain` permission. An ungated preflight job performs authorization and exact parsing before the downstream mutation job can acquire the shared release concurrency group or enter the `production` environment, so unauthorized comments cannot occupy either protected resource. The environment is an optional additional gate. Rollback requires an existing stable `vX.Y.Z` tag and matching confirmation text. Normal publication treats the higher version from `/stable` and `/latest.json` as the monotonic floor; only this rollback path may lower both.
 
 The rollback workflow verifies the tag target, GitHub Release, saved release manifest, checksums, and every referenced R2 artifact before changing channel state. It changes only `/stable` and `/latest.json`, in that order. It never creates or moves an immutable version tag and never deletes or overwrites a versioned object.
 
@@ -112,7 +112,7 @@ Deterministic tests cover:
 - private/example workspace preservation during preparation;
 - immutable object create, identical retry, and mismatch failure decisions;
 - stable and beta pointer ordering;
-- rollback confirmation, target verification, and pointer-only behavior;
+- rollback preflight isolation, confirmation, target verification, and pointer-only behavior;
 - dry-run cleanup and absence of publish, commit, tag, push, GitHub Release, and R2 commands;
 - packed manifest, checksum, and internal URL correctness.
 

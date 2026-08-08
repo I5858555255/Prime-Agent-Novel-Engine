@@ -63,9 +63,25 @@ test("rollback is a separately protected pointer-only workflow", () => {
 	assert.match(rollbackWorkflow, /issue_comment:/);
 	assert.match(rollbackWorkflow, /\/prime-agent release rollback/);
 	assert.match(rollbackWorkflow, /collaborators\/\$\{ACTOR\}\/permission/);
-	assert.match(rollbackWorkflow, /environment: production/);
 	assert.match(rollbackResolver, /confirmation/);
 	assert.match(rollbackWorkflow, /node scripts\/resolve-rollback-context\.mjs/);
 	assert.match(rollbackWorkflow, /node scripts\/publish-release\.mjs rollback/);
 	assert.doesNotMatch(rollbackWorkflow, /gh release (?:create|edit|upload)|git (?:tag|push)|npm publish/);
+
+	const authorizationJob = rollbackWorkflow.indexOf("  authorize:");
+	const rollbackJob = rollbackWorkflow.indexOf("  rollback:");
+	assert.ok(authorizationJob > -1);
+	assert.ok(rollbackJob > authorizationJob);
+
+	const authorization = rollbackWorkflow.slice(authorizationJob, rollbackJob);
+	assert.doesNotMatch(authorization, /environment: production/);
+	assert.doesNotMatch(authorization, /group: release-prime-agent/);
+	assert.doesNotMatch(authorization, /R2_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|BUCKET|ENDPOINT_URL)/);
+
+	const mutation = rollbackWorkflow.slice(rollbackJob);
+	assert.match(mutation, /needs: authorize/);
+	assert.match(mutation, /environment: production/);
+	assert.match(mutation, /group: release-prime-agent/);
+	assert.match(mutation, /CONFIRMATION: \$\{\{ needs\.authorize\.outputs\.confirmation \}\}/);
+	assert.match(mutation, /RELEASE_TAG: \$\{\{ needs\.authorize\.outputs\.release_tag \}\}/);
 });
