@@ -1,9 +1,9 @@
 // TODO: reconsider persistent kernel vs stateless `python -c` once RLM-1 weights land.
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
@@ -26,6 +26,8 @@ const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
 const PORTS_RESOLVE_TIMEOUT_MS = 5000;
 const READY_TIMEOUT_MS = 5000;
+// Startup code runs on an idle kernel that has just answered kernel_info_request.
+const KERNEL_PRELUDE_TIMEOUT_MS = 5000;
 // Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
 const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
@@ -448,6 +450,34 @@ function readConnectionInfo(path: string): ConnectionInfo | null {
 	}
 }
 
+/**
+ * Environment that marks the kernel's virtualenv as the active one, the way
+ * `activate` would. Without VIRTUAL_ENV and the script directory on PATH, a
+ * `uv pip install` or `pip install` run from inside the kernel resolves against
+ * whatever interpreter PATH happens to point at — typically a system Python —
+ * so packages the model installs land where the kernel cannot import them.
+ *
+ * Returns undefined when the interpreter is not in a venv (a
+ * PRIME_AGENT_KERNEL_PYTHON pointing at a system or conda interpreter), leaving
+ * that environment untouched.
+ */
+function venvActivationEnv(python: string, baseEnv: NodeJS.ProcessEnv): Record<string, string> | undefined {
+	const scriptDir = dirname(python);
+	const venvDir = dirname(scriptDir);
+	if (!venvDir || !existsSync(join(venvDir, "pyvenv.cfg"))) {
+		return undefined;
+	}
+	const pathKey = Object.keys(baseEnv).find((key) => key.toLowerCase() === "path") ?? "PATH";
+	const currentPath = baseEnv[pathKey] ?? "";
+	if (currentPath.split(delimiter)[0] === scriptDir) {
+		return { VIRTUAL_ENV: venvDir };
+	}
+	return {
+		VIRTUAL_ENV: venvDir,
+		[pathKey]: currentPath ? `${scriptDir}${delimiter}${currentPath}` : scriptDir,
+	};
+}
+
 function makeConnection(): { info: ConnectionInfo; path: string; tempDir: string } {
 	const info: ConnectionInfo = {
 		ip: "127.0.0.1",
@@ -610,6 +640,14 @@ export class KernelManager {
 		let connection = makeConnection();
 		this.tempDir = connection.tempDir;
 
+		// Per-kernel overrides win over the venv activation, which in turn wins
+		// over the host env, so an explicit VIRTUAL_ENV from the caller is kept.
+		const baseEnv: NodeJS.ProcessEnv = {
+			...process.env,
+			...venvActivationEnv(python, process.env),
+			...this.options.env,
+		};
+
 		// Fast path: fork a pre-imported kernel from the forkserver. Any failure
 		// (disabled, unavailable, fork error) degrades to the direct-spawn path so
 		// correctness never depends on fork.
@@ -622,7 +660,7 @@ export class KernelManager {
 					// Match the direct-spawn env exactly: merge the current host env with
 					// the per-kernel overrides, applied fresh in the child (the template's
 					// inherited env snapshot may be stale by fork time).
-					env: this.options.env ? { ...process.env, ...this.options.env } : { ...process.env },
+					env: baseEnv,
 				});
 				forked = true;
 			} catch (err) {
@@ -646,7 +684,7 @@ export class KernelManager {
 		if (!forked) {
 			const kernel = spawn(python, ["-m", "ipykernel_launcher", "-f", connection.path], {
 				cwd: this.options.cwd,
-				env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
+				env: baseEnv,
 				stdio: ["ignore", "pipe", "pipe"],
 				// The kernel talks over ZMQ and its stdio is piped; on Windows it
 				// would otherwise get a console window of its own per session.
@@ -710,6 +748,8 @@ export class KernelManager {
 			if (canRetryStartup) this.state = "idle";
 			throw e;
 		}
+
+		await this.enableWindowsSubprocessEventLoops();
 
 		this.state = "running";
 		this.startForkedLivenessMonitor();
@@ -801,6 +841,101 @@ export class KernelManager {
 		throw new Error(
 			`Kernel did not respond to kernel_info_request within ${READY_TIMEOUT_MS}ms. stderr tail:\n${tail || "(empty)"}`,
 		);
+	}
+
+	/**
+	 * ipykernel installs a Windows *selector* event loop policy because pyzmq
+	 * needs add_reader, and a selector loop cannot spawn subprocesses. Anything
+	 * in the kernel that shells out through asyncio — playwright,
+	 * asyncio.create_subprocess_exec, any async driver that starts a helper
+	 * binary — then dies with a bare NotImplementedError, and the usual
+	 * workaround of running it on a fresh loop in a worker thread fails too,
+	 * because asyncio.new_event_loop() inherits that same policy.
+	 *
+	 * Swapping the policy back to the proactor one fixes loops created from here
+	 * on. The kernel's own loop is already running and is left alone: it is
+	 * re-bound to the main thread so ipykernel keeps the selector loop it needs.
+	 *
+	 * Best-effort by design — a kernel that cannot apply this is still a working
+	 * kernel, just without asyncio subprocesses.
+	 */
+	private async enableWindowsSubprocessEventLoops(): Promise<void> {
+		if (process.platform !== "win32") return;
+
+		const code = [
+			"def _pi_enable_subprocess_event_loops():",
+			"    import asyncio, sys",
+			'    if sys.platform != "win32":',
+			"        return",
+			// Removed in Python 3.14, where the policy no longer forces a selector loop.
+			'    policy_cls = getattr(asyncio, "WindowsProactorEventLoopPolicy", None)',
+			"    if policy_cls is None or isinstance(asyncio.get_event_loop_policy(), policy_cls):",
+			"        return",
+			"    kernel_loop = asyncio.get_event_loop()",
+			"    asyncio.set_event_loop_policy(policy_cls())",
+			"    asyncio.set_event_loop(kernel_loop)",
+			"try:",
+			"    _pi_enable_subprocess_event_loops()",
+			"except Exception:",
+			"    pass",
+			"finally:",
+			"    del _pi_enable_subprocess_event_loops",
+			"",
+		].join("\n");
+
+		try {
+			await this.executeSilently(code, KERNEL_PRELUDE_TIMEOUT_MS);
+		} catch (error) {
+			this.appendKernelDiagnostic(
+				`could not enable asyncio subprocess support: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	/**
+	 * Run setup code without touching execution history, the iopub pump, or the
+	 * activeExecution machinery that user-visible cells go through.
+	 */
+	private async executeSilently(code: string, timeoutMs: number): Promise<void> {
+		const conn = this.connection;
+		const shell = this.shell;
+		if (!conn || !shell) return;
+
+		const msg = buildMessage(
+			"execute_request",
+			{
+				code,
+				silent: true,
+				store_history: false,
+				user_expressions: {},
+				allow_stdin: false,
+				stop_on_error: false,
+			},
+			this.session,
+			this.options.username,
+		);
+		const requestMsgId = msg.header.msg_id;
+		await shell.send(encode(msg, conn.key));
+
+		const startedAt = Date.now();
+		while (Date.now() - startedAt < timeoutMs) {
+			if ((this.state as string) === "shutdown") return;
+			const remaining = timeoutMs - (Date.now() - startedAt);
+			const winner = await Promise.race([
+				shell.receive().then((frames) => ({ kind: "frames" as const, frames })),
+				sleep(remaining).then(() => ({ kind: "timeout" as const })),
+			]);
+			if (winner.kind === "timeout") break;
+
+			const incoming = decode(winner.frames);
+			if (
+				incoming?.header.msg_type === "execute_reply" &&
+				(incoming.parent_header as { msg_id?: string }).msg_id === requestMsgId
+			) {
+				return;
+			}
+		}
+		throw new Error(`kernel did not acknowledge setup code within ${timeoutMs}ms`);
 	}
 
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
