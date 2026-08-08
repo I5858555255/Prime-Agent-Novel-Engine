@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { getModel } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -41,9 +41,9 @@ describe("createAgentSession session manager defaults", () => {
 		const sessionFile = session.sessionManager.getSessionFile();
 
 		expect(sessionDir).toBe(expectedSessionDir);
-		expect(sessionFile?.startsWith(`${expectedSessionDir}/`)).toBe(true);
+		expect(sessionFile?.startsWith(expectedSessionDir + sep)).toBe(true);
 
-		session.dispose();
+		await session.disposeAsync();
 	});
 
 	it("keeps an explicit sessionManager override", async () => {
@@ -61,7 +61,7 @@ describe("createAgentSession session manager defaults", () => {
 		expect(session.sessionManager).toBe(sessionManager);
 		expect(session.sessionManager.isPersisted()).toBe(false);
 
-		session.dispose();
+		await session.disposeAsync();
 	});
 
 	it("derives cwd from an explicit sessionManager when cwd is omitted", async () => {
@@ -79,11 +79,16 @@ describe("createAgentSession session manager defaults", () => {
 		});
 
 		expect(session.sessionManager).toBe(sessionManager);
-		expect(session.systemPrompt).toContain(`Working directory: ${sessionCwd}`);
+		// The prompt reports a POSIX-style path so the code the model writes works
+		// in both Python and bash on Windows.
+		expect(session.systemPrompt).toContain(`Working directory: ${sessionCwd.replaceAll("\\", "/")}`);
 
 		const ipythonTool = session.agent.state.tools.find((tool) => tool.name === "ipython");
 		expect(ipythonTool).toBeTruthy();
-		const result = await ipythonTool!.execute("test", { code: "%%bash\npwd" });
+		// Git Bash `pwd` prints an MSYS path (`/tmp/...`) resolved through its own
+		// mount table; `pwd -W` prints the Windows path the test can compare.
+		const pwdCode = process.platform === "win32" ? "%%bash\npwd -W" : "%%bash\npwd";
+		const result = await ipythonTool!.execute("test", { code: pwdCode });
 		const output = result.content
 			.filter((item): item is { type: "text"; text: string } => item.type === "text")
 			.map((item) => item.text)
@@ -91,6 +96,6 @@ describe("createAgentSession session manager defaults", () => {
 
 		expect(realpathSync(output.trim())).toBe(realpathSync(sessionCwd));
 
-		session.dispose();
+		await session.disposeAsync();
 	});
 });
