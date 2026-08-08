@@ -48,7 +48,6 @@ import {
 	resetApiProviders,
 	supportsFastMode,
 } from "@earendil-works/pi-ai";
-import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import {
@@ -125,6 +124,7 @@ import type { AgentCronJob, AgentRlmHeartbeatController, AgentRlmHeartbeatStatus
 import { normalizeHeartbeatDeliveryMode } from "./cron-jobs.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
+import { createHtmlExportTheme } from "./export-html/theme.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
 import {
 	type ContextUsage,
@@ -11073,17 +11073,22 @@ export class AgentSession {
 	 */
 	async exportToHtml(outputPath?: string): Promise<string> {
 		const themeName = this.settingsManager.getTheme();
+		const exportTheme = createHtmlExportTheme({
+			themeName,
+			resources: this._resourceLoader.getThemes().themes,
+		});
 
 		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
 		const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
 			getToolDefinition: (name) => this.getToolDefinition(name),
-			theme,
+			theme: exportTheme.toolTheme,
 			cwd: this.sessionManager.getCwd(),
 		});
 
 		return await exportSessionToHtml(this.sessionManager, this.state, {
 			outputPath,
 			themeName,
+			theme: exportTheme,
 			toolRenderer,
 		});
 	}

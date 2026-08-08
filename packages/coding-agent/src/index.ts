@@ -389,6 +389,7 @@ export {
 	initTheme,
 	Theme,
 	type ThemeColor,
+	type ToolRenderTheme,
 } from "./modes/interactive/theme/theme.js";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.js";

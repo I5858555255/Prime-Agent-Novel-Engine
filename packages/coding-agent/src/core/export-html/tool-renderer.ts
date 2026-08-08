@@ -7,19 +7,28 @@
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Component } from "@earendil-works/pi-tui";
-import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ToolDefinition, ToolRenderContext } from "../extensions/types.js";
+import type { ToolRenderTheme } from "../theme-types.js";
 import { ansiLinesToHtml } from "./ansi-to-html.js";
+
+export interface ToolHtmlRenderError {
+	phase: "call" | "result";
+	toolCallId: string;
+	toolName: string;
+	error: Error;
+}
 
 export interface ToolHtmlRendererDeps {
 	/** Function to look up tool definition by name */
 	getToolDefinition: (name: string) => ToolDefinition | undefined;
 	/** Theme for styling */
-	theme: Theme;
+	theme: ToolRenderTheme;
 	/** Working directory for render context */
 	cwd: string;
 	/** Terminal width for rendering (default: 100) */
 	width?: number;
+	/** Reports custom renderer failures before falling back to structured HTML. */
+	onRenderError?: (error: ToolHtmlRenderError) => void;
 }
 
 export interface ToolHtmlRenderer {
@@ -56,7 +65,32 @@ function trimRenderedResultLines(lines: string[]): string[] {
 }
 
 export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRenderer {
-	const { getToolDefinition, theme, cwd, width = 100 } = deps;
+	const {
+		getToolDefinition,
+		theme,
+		cwd,
+		width = 100,
+		onRenderError = ({ phase, toolCallId, toolName, error }) => {
+			console.warn(
+				`HTML export ${phase} renderer failed for ${toolName} (${toolCallId}); using structured fallback: ${error.message}`,
+			);
+		},
+	} = deps;
+
+	const reportRenderError = (
+		phase: ToolHtmlRenderError["phase"],
+		toolCallId: string,
+		toolName: string,
+		error: unknown,
+	): void => {
+		const normalized = error instanceof Error ? error : new Error(String(error));
+		try {
+			onRenderError({ phase, toolCallId, toolName, error: normalized });
+		} catch (reportError) {
+			const message = reportError instanceof Error ? reportError.message : String(reportError);
+			console.warn(`HTML export renderer error reporting failed: ${message}`);
+		}
+	};
 
 	const renderedCallComponents = new Map<string, Component>();
 	const renderedResultComponents = new Map<string, Component>();
@@ -113,7 +147,8 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 				renderedCallComponents.set(toolCallId, component);
 				const lines = component.render(width);
 				return ansiLinesToHtml(lines);
-			} catch {
+			} catch (error) {
+				reportRenderError("call", toolCallId, toolName, error);
 				// On error, return undefined so HTML export can fall back to structured result rendering
 				return undefined;
 			}
@@ -164,7 +199,8 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 					...(collapsed && collapsed !== expanded ? { collapsed } : {}),
 					expanded,
 				};
-			} catch {
+			} catch (error) {
+				reportRenderError("result", toolCallId, toolName, error);
 				// On error, return undefined so HTML export can fall back to structured result rendering
 				return undefined;
 			}

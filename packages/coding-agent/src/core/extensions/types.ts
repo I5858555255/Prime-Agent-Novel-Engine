@@ -59,6 +59,7 @@ import type {
 import type { SlashCommandInfo } from "../slash-commands.js";
 import type { SourceInfo } from "../source-info.js";
 import type { BuildSystemPromptOptions } from "../system-prompt.js";
+import type { ToolRenderTheme } from "../theme-types.js";
 import type { BashOperations } from "../tools/bash.js";
 import type { EditToolDetails } from "../tools/edit.js";
 import type {
@@ -419,6 +420,23 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 
 export type ReplayBuiltInToolName = "bash" | "edit";
 
+type ToolCallRenderer<TParams extends TSchema, TState> = {
+	bivarianceHack(
+		args: Static<TParams>,
+		theme: ToolRenderTheme,
+		context: ToolRenderContext<TState, Static<TParams>>,
+	): Component;
+}["bivarianceHack"];
+
+type ToolResultRenderer<TParams extends TSchema, TDetails, TState> = {
+	bivarianceHack(
+		result: AgentToolResult<TDetails>,
+		options: ToolRenderResultOptions,
+		theme: ToolRenderTheme,
+		context: ToolRenderContext<TState, Static<TParams>>,
+	): Component;
+}["bivarianceHack"];
+
 /**
  * Tool definition for registerTool().
  */
@@ -462,15 +480,10 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	): Promise<AgentToolResult<TDetails>>;
 
 	/** Custom rendering for tool call display */
-	renderCall?: (args: Static<TParams>, theme: Theme, context: ToolRenderContext<TState, Static<TParams>>) => Component;
+	renderCall?: ToolCallRenderer<TParams, TState>;
 
 	/** Custom rendering for tool result display */
-	renderResult?: (
-		result: AgentToolResult<TDetails>,
-		options: ToolRenderResultOptions,
-		theme: Theme,
-		context: ToolRenderContext<TState, Static<TParams>>,
-	) => Component;
+	renderResult?: ToolResultRenderer<TParams, TDetails, TState>;
 }
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
