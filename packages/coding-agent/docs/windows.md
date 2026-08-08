@@ -30,7 +30,9 @@ The Bash tool and IPython shell cells execute through Bash, so Prime Agent needs
 
 Each candidate must survive `bash -c "exit 0"`. [Git for Windows](https://git-scm.com/download/win) is the recommended option and is what CI uses.
 
-`C:\Windows\System32\bash.exe` is the WSL launcher. It passes the probe when WSL is installed but resolves paths inside the Linux filesystem, so it is only used as a last resort — install Git Bash or set `shellPath` if the agent picks it up.
+`C:\Windows\System32\bash.exe` is the WSL launcher. It passes the probe when WSL is installed, but it runs a Linux distribution: the working directory arrives as `/mnt/c/...`, Windows paths the agent computed are invalid, and environment variables do not cross the boundary. Prime Agent therefore ranks it last and only falls back to it when nothing else works.
+
+`%%bash` cells in the IPython tool are pinned to the same shell. Left to itself, IPython resolves `bash` from `PATH` and would silently run those cells inside WSL.
 
 ### Custom shell path
 

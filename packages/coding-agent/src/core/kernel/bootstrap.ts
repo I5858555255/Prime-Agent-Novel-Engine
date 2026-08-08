@@ -9,6 +9,7 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { getPackageDir } from "../../config.js";
+import { quoteWindowsShellArg, shouldUseWindowsShell } from "../../utils/child-process.js";
 import { removePath } from "../../utils/durable-fs.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 
@@ -392,11 +393,19 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 
 function run(command: string, args: string[], options: { stdio?: "ignore" | "inherit" } = {}): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, {
-			env: process.env,
-			stdio: options.stdio ?? "ignore",
-			windowsHide: true,
-		});
+		// `uv` can be a .cmd/.bat shim (scoop, pipx), which Windows only executes
+		// through a shell — and a shell spawn quotes nothing for us.
+		const useShell = shouldUseWindowsShell(command);
+		const child = spawn(
+			useShell ? quoteWindowsShellArg(command) : command,
+			useShell ? args.map(quoteWindowsShellArg) : args,
+			{
+				env: process.env,
+				stdio: options.stdio ?? "ignore",
+				shell: useShell,
+				windowsHide: true,
+			},
+		);
 		child.on("error", reject);
 		child.on("exit", (code, signal) => {
 			if (code === 0) {
@@ -517,10 +526,24 @@ async function acquireBootstrapLock(venv: string): Promise<() => Promise<void>> 
 	}
 }
 
+/**
+ * Names to try for `name` on Windows, in PATHEXT order.
+ *
+ * A bare `uv` is only correct when the file really is a PE image; installers
+ * more often drop `uv.exe`, or a `uv.cmd`/`uv.bat` shim (scoop, pipx, npm).
+ */
+export function windowsExecutableCandidates(name: string, pathExt = process.env.PATHEXT): string[] {
+	const extensions = (pathExt ?? ".COM;.EXE;.BAT;.CMD")
+		.split(";")
+		.map((extension) => extension.trim().toLowerCase())
+		.filter((extension) => extension.startsWith("."));
+	return [name, ...extensions.map((extension) => `${name}${extension}`)];
+}
+
 async function findExecutable(name: string): Promise<string | null> {
 	const pathValue = process.env.PATH;
 	if (!pathValue) return null;
-	const candidates = process.platform === "win32" ? [name, `${name}.exe`] : [name];
+	const candidates = process.platform === "win32" ? windowsExecutableCandidates(name) : [name];
 	for (const dir of pathValue.split(path.delimiter)) {
 		if (!dir) continue;
 		for (const candidate of candidates) {

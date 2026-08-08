@@ -4,6 +4,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
+import { getShellConfig } from "../../utils/shell.js";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.js";
 import { withKernelBootPermit } from "../kernel/boot-gate.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
@@ -296,16 +297,53 @@ export interface IpythonToolOptions {
 	provisioner?: IpythonKernelProvisioner;
 }
 
-function quoteScriptMagicArgument(value: string): string {
-	return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\"'\"'")}'`;
+/**
+ * Quote a `%%script` argument the way IPython will split it again.
+ *
+ * IPython splits magic arguments with `shlex` in POSIX mode everywhere except
+ * Windows, where it uses `posix=False`. That mode does not strip single quotes,
+ * so a single-quoted `C:\...\bash.exe` reaches the magic with its quotes still
+ * attached and fails as `Couldn't find program`. Windows paths cannot contain a
+ * double quote, so wrapping in one is unambiguous there.
+ */
+export function quoteScriptMagicArgument(value: string, platform: NodeJS.Platform = process.platform): string {
+	if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+	if (platform === "win32") return `"${value.replace(/"/g, "")}"`;
+	return `'${value.replace(/'/g, "'\"'\"'")}'`;
 }
 
-function applyShellSettingsToBashMagicCell(
+/**
+ * The shell a bare `%%bash` cell must be pinned to, or undefined to leave the
+ * magic alone.
+ *
+ * IPython resolves `bash` from PATH, and on Windows that is very often
+ * `C:\Windows\System32\bash.exe` — the WSL launcher. A cell would then run in a
+ * different operating system: Windows paths the agent computed are invalid
+ * there, and environment variables the kernel set are not forwarded. Pinning
+ * the same shell the Bash tool resolved keeps both surfaces on one shell.
+ */
+function resolveBashMagicShellPath(explicitShellPath: string | undefined): string | undefined {
+	const configured = explicitShellPath?.trim();
+	if (configured) return configured;
+	if (process.platform !== "win32") return undefined;
+	try {
+		return getShellConfig().shell;
+	} catch {
+		// No usable bash; leave %%bash to IPython so it reports the failure.
+		return undefined;
+	}
+}
+
+/**
+ * Rewrite a bare `%%bash` cell so it runs under the shell this platform
+ * resolved, and prepend the configured command prefix.
+ */
+export function applyShellSettingsToBashMagicCell(
 	code: string,
 	options: Pick<IpythonToolOptions, "commandPrefix" | "shellPath"> | undefined,
 ): string {
 	const commandPrefix = options?.commandPrefix;
-	const shellPath = options?.shellPath?.trim();
+	const shellPath = resolveBashMagicShellPath(options?.shellPath);
 	if (!commandPrefix && !shellPath) return code;
 
 	const bashCell = parseIpythonBashCell(code);

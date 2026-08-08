@@ -148,7 +148,12 @@ function installFakeUv(): string {
 	return logPath;
 }
 
-describe("kernel bootstrap", () => {
+// The bootstrap harness fakes `uv` and the venv interpreter with POSIX shell
+// scripts, which Windows cannot execute: a batch shim would still not satisfy
+// the `Scripts\python.exe` the product spawns directly. Windows coverage of
+// the platform-specific parts lives in kernel-platform.test.ts, and the
+// real-kernel suites exercise the bootstrapped venv end to end.
+describe.skipIf(process.platform === "win32")("kernel bootstrap", () => {
 	beforeEach(async () => {
 		runtimeIdentity = await resolveRuntimeIdentity();
 		originalEnv = { ...process.env };

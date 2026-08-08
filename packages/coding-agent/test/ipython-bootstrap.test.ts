@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { getKernelVenvDir, getKernelVenvPythonPath } from "../src/core/kernel/bootstrap.js";
 import { KernelManager } from "../src/core/kernel/index.js";
-import { buildRlmBootstrapCode } from "../src/core/tools/ipython.js";
+import { applyShellSettingsToBashMagicCell, buildRlmBootstrapCode } from "../src/core/tools/ipython.js";
 import { removeTempDirSync } from "./utils/temp-fs.js";
 
 describe("IPython RLM bootstrap", () => {
@@ -76,7 +76,13 @@ describeIfKernel("IPython RLM bootstrap (real kernel)", () => {
 			expect(result.status).toBe("ok");
 			expect(result.stdout).toContain("Task");
 
-			const bashResult = await manager.execute('%%bash\nprintf %s "$NO_COLOR"');
+			// Through the same transform the ipython tool applies, so the cell runs
+			// under the shell this platform resolved rather than whatever `bash`
+			// IPython finds on PATH — which on Windows is usually the WSL launcher,
+			// a different OS that receives neither the kernel's env nor its paths.
+			const bashResult = await manager.execute(
+				applyShellSettingsToBashMagicCell('%%bash\nprintf %s "$NO_COLOR"', {}),
+			);
 			expect(bashResult.status).toBe("ok");
 			expect(bashResult.stdout).toBe("1");
 		} finally {

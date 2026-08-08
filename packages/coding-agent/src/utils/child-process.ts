@@ -12,6 +12,25 @@ export function shouldUseWindowsShell(command: string): boolean {
 	return commandName.endsWith(".cmd") || commandName.endsWith(".bat") || WINDOWS_SHELL_COMMANDS.has(commandName);
 }
 
+/**
+ * Quote one argument for a `shell: true` spawn on Windows.
+ *
+ * Node builds that command line by joining the command and its arguments with
+ * spaces and handing the result to `cmd.exe /d /s /c` verbatim — it does not
+ * quote anything itself. Without this, any path containing a space (a user
+ * profile like `C:\Users\Ada Lovelace`, most obviously) is split into two
+ * arguments.
+ */
+export function quoteWindowsShellArg(value: string): string {
+	if (value.length > 0 && !/[\s"&|<>^()]/.test(value)) {
+		return value;
+	}
+	// Backslashes are only special immediately before a quote, where they must be
+	// doubled; the quote itself is then escaped for the callee's own parser.
+	const escaped = value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1");
+	return `"${escaped}"`;
+}
+
 export function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
 	if (process.platform === "win32") {
 		const args = ["/T", "/PID", String(pid)];

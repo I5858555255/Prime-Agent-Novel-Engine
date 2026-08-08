@@ -3,8 +3,31 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { signalProcessGroupOrProcess } from "../src/utils/child-process.js";
+import { quoteWindowsShellArg, signalProcessGroupOrProcess } from "../src/utils/child-process.js";
 import { removeTempDirSync } from "./utils/temp-fs.js";
+
+describe("quoteWindowsShellArg", () => {
+	it("leaves ordinary arguments untouched", () => {
+		expect(quoteWindowsShellArg("venv")).toBe("venv");
+		expect(quoteWindowsShellArg(String.raw`C:\Users\ada\.prime`)).toBe(String.raw`C:\Users\ada\.prime`);
+	});
+
+	it("quotes paths containing spaces so cmd.exe keeps them as one argument", () => {
+		expect(quoteWindowsShellArg(String.raw`C:\Users\Ada Lovelace\venv`)).toBe(
+			String.raw`"C:\Users\Ada Lovelace\venv"`,
+		);
+	});
+
+	it("quotes shell metacharacters and escapes embedded quotes", () => {
+		expect(quoteWindowsShellArg("a&b")).toBe('"a&b"');
+		expect(quoteWindowsShellArg('say "hi"')).toBe(String.raw`"say \"hi\""`);
+	});
+
+	it("doubles trailing backslashes so they cannot escape the closing quote", () => {
+		// A raw template cannot end in a lone backslash, so these stay escaped.
+		expect(quoteWindowsShellArg("C:Program Files\\")).toBe('"C:Program Files\\\\"');
+	});
+});
 
 function isAlive(pid: number): boolean {
 	try {

@@ -25,6 +25,20 @@ export function isBashUsable(shellPath: string): boolean {
 }
 
 /**
+ * True for `C:\Windows\System32\bash.exe`, the WSL launcher.
+ *
+ * It passes a `bash -c` probe whenever WSL is installed, but it runs a Linux
+ * distribution: the working directory arrives as `/mnt/c/...`, Windows paths the
+ * agent computed are invalid, and Windows environment variables are not
+ * forwarded. It is a last resort, never a preference.
+ */
+export function isWslBashLauncher(shellPath: string): boolean {
+	const systemRoot = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
+	const normalized = shellPath.toLowerCase().replace(/\//g, "\\");
+	return normalized.startsWith(`${systemRoot.toLowerCase().replace(/\//g, "\\")}\\system32\\`);
+}
+
+/**
  * Find bash executable on PATH (cross-platform)
  */
 function findBashOnPath(): string | null {
@@ -33,12 +47,14 @@ function findBashOnPath(): string | null {
 		try {
 			const result = spawnSync("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000, windowsHide: true });
 			if (result.status === 0 && result.stdout) {
+				const usable: string[] = [];
 				for (const match of result.stdout.trim().split(/\r?\n/)) {
 					const candidate = match.trim();
 					if (candidate && existsSync(candidate) && isBashUsable(candidate)) {
-						return candidate;
+						usable.push(candidate);
 					}
 				}
+				return usable.find((candidate) => !isWslBashLauncher(candidate)) ?? usable[0] ?? null;
 			}
 		} catch {
 			// Ignore errors
@@ -90,6 +106,11 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		const programFilesX86 = process.env["ProgramFiles(x86)"];
 		if (programFilesX86) {
 			paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
+		}
+		// Git for Windows installed for the current user only.
+		const localAppData = process.env.LOCALAPPDATA;
+		if (localAppData) {
+			paths.push(`${localAppData}\\Programs\\Git\\bin\\bash.exe`);
 		}
 
 		for (const path of paths) {

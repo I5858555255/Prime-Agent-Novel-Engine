@@ -24,6 +24,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager } from "../src/core/session-manager.js";
 import { createCompactAssistantDelta } from "../src/modes/daemon/compact-session-stream.js";
 import type { DaemonOutbound } from "../src/modes/daemon/daemon-protocol.js";
+import { daemonSocketEndpoint } from "../src/modes/daemon/daemon-socket.js";
 import { SnapshotTranscriptCache } from "../src/modes/daemon/snapshot-transcript-cache.js";
 import { serializeJsonLine } from "../src/modes/rpc/jsonl.js";
 import { removeTempDir } from "./utils/temp-fs.js";
@@ -173,7 +174,7 @@ async function createSocketHarness(clientCount: number): Promise<SocketHarness> 
 	});
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
-		server.listen(socketPath, () => {
+		server.listen(daemonSocketEndpoint(socketPath), () => {
 			server.off("error", reject);
 			resolve();
 		});

@@ -354,7 +354,7 @@ export function getPackageDir(): string {
 	const envDir = process.env.PI_PACKAGE_DIR;
 	if (envDir) {
 		if (envDir === "~") return homedir();
-		if (envDir.startsWith("~/")) return homedir() + envDir.slice(1);
+		if (envDir.startsWith("~/")) return join(homedir(), envDir.slice(2));
 		return envDir;
 	}
 
@@ -500,9 +500,11 @@ export const ENV_AGENT_DIR = `${envPrefix}_CODING_AGENT_DIR`;
 export const ENV_SESSION_DIR = `${envPrefix}_SESSION_DIR`;
 export const ENV_LEGACY_SESSION_DIR = `${envPrefix}_CODING_AGENT_SESSION_DIR`;
 
+// `join` rather than string concatenation so the result uses the platform
+// separator instead of leaving a stray "/" after the home directory.
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
-	if (path.startsWith("~/")) return homedir() + path.slice(1);
+	if (path.startsWith("~/")) return join(homedir(), path.slice(2));
 	return path;
 }
 

@@ -7,6 +7,7 @@ import lockfile from "proper-lockfile";
 import { describe, expect, it } from "vitest";
 import {
 	cleanupDaemonSocketPath,
+	daemonSocketEndpoint,
 	defaultDaemonSocketPath,
 	getDaemonSocketIdentity,
 	prepareDaemonSocketPath,
@@ -49,7 +50,7 @@ describe("defaultDaemonSocketPath", () => {
 		try {
 			await new Promise<void>((resolve, reject) => {
 				server.once("error", reject);
-				server.listen(socketPath, resolve);
+				server.listen(daemonSocketEndpoint(socketPath), resolve);
 			});
 
 			await expect(prepareDaemonSocketPath(socketPath)).rejects.toThrow(/socket already in use/i);
@@ -146,7 +147,7 @@ describe("defaultDaemonSocketPath", () => {
 		try {
 			await new Promise<void>((resolve, reject) => {
 				server.once("error", reject);
-				server.listen(socketPath, resolve);
+				server.listen(daemonSocketEndpoint(socketPath), resolve);
 			});
 			const identity = getDaemonSocketIdentity(socketPath);
 			if (!identity) {

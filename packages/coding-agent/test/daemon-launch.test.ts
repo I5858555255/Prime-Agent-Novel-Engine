@@ -13,6 +13,7 @@ import {
 } from "../src/cli/daemon-launch.js";
 import { ENV_AGENT_DIR, getDaemonLogPath, VERSION } from "../src/config.js";
 import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../src/modes/daemon/daemon-protocol.js";
+import { daemonSocketEndpoint } from "../src/modes/daemon/daemon-socket.js";
 import { removeTempDirSync } from "./utils/temp-fs.js";
 
 interface FakeDaemonOptions {
@@ -97,7 +98,7 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 			}
 		});
 	});
-	await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+	await new Promise<void>((resolve) => server.listen(daemonSocketEndpoint(socketPath), resolve));
 	return {
 		socketPath,
 		close: () =>
@@ -117,6 +118,8 @@ async function startCrashingDaemon(): Promise<FakeDaemon> {
 			"-e",
 			`const { createServer } = require("node:net");
 const socketPath = process.argv[1];
+// Resolved by the parent: the child has no access to the daemon's own helpers.
+const socketEndpoint = process.argv[2];
 const send = (socket, message) => socket.write(JSON.stringify(message) + "\\n");
 const server = createServer((socket) => {
 	send(socket, {
@@ -137,8 +140,9 @@ const server = createServer((socket) => {
 		socket.end(() => process.kill(process.pid, "SIGKILL"));
 	});
 });
-server.listen(socketPath, () => process.stdout.write("ready\\n"));`,
+server.listen(socketEndpoint, () => process.stdout.write("ready\\n"));`,
 			socketPath,
+			daemonSocketEndpoint(socketPath),
 		],
 		{ stdio: ["ignore", "pipe", "ignore"] },
 	);
@@ -367,7 +371,7 @@ describe("ensureInteractiveDaemonRunning", () => {
 			// Let the child exit first, then bring up the winning daemon inside
 			// the exit grace window.
 			await new Promise((resolve) => setTimeout(resolve, 300));
-			await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+			await new Promise<void>((resolve) => server.listen(daemonSocketEndpoint(socketPath), resolve));
 			await expect(ensurePromise).resolves.toBeUndefined();
 		} finally {
 			process.argv[1] = originalEntrypoint;

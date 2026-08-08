@@ -43,6 +43,7 @@ import {
 	failure,
 } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
+import { daemonSocketEndpoint } from "../src/modes/daemon/daemon-socket.js";
 import { DAEMON_WORKER_SUPERVISOR_SOCKET_ENV } from "../src/modes/daemon/daemon-worker-protocol.js";
 import { removeTempDirSync, symlinkDirSync } from "./utils/temp-fs.js";
 
@@ -1518,7 +1519,7 @@ describe("daemon mode helpers", () => {
 		});
 		const previousSupervisorSocket = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
 		try {
-			await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+			await new Promise<void>((resolve) => server.listen(daemonSocketEndpoint(socketPath), resolve));
 			process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = socketPath;
 			const daemon = new AgentDaemon("/tmp/prime-agent-worker-test.sock", {
 				defaultSessionConfig: { agentDir: "/tmp/prime-agent-test-agent", cwd: "/tmp" },
@@ -1594,7 +1595,7 @@ describe("daemon mode helpers", () => {
 		try {
 			await new Promise<void>((resolve, reject) => {
 				server.once("error", reject);
-				server.listen(socketPath, resolve);
+				server.listen(daemonSocketEndpoint(socketPath), resolve);
 			});
 			process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = socketPath;
 			const daemon = new AgentDaemon(join(tempDir, "worker.sock"), {
@@ -1663,7 +1664,7 @@ describe("daemon mode helpers", () => {
 		try {
 			await new Promise<void>((resolve, reject) => {
 				server.once("error", reject);
-				server.listen(socketPath, resolve);
+				server.listen(daemonSocketEndpoint(socketPath), resolve);
 			});
 			process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV] = socketPath;
 			const daemon = new AgentDaemon(join(tempDir, "worker.sock"), {
