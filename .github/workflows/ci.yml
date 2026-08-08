@@ -16,17 +16,18 @@ concurrency:
   group: ci-${{ inputs.source_sha || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   build-check:
     name: Build and check
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
@@ -37,7 +38,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -60,10 +61,16 @@ jobs:
       - name: Check release packages
         run: npm run check:release-packages
 
+      - name: Check workflow security contracts
+        working-directory: packages/coding-agent
+        run: node --test scripts/check-workflow-security.mjs
+
   test:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -102,7 +109,7 @@ jobs:
             install_uv: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
@@ -113,7 +120,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -144,9 +151,11 @@ jobs:
     name: Python runtime tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
@@ -177,9 +186,11 @@ jobs:
     if: always()
     needs: [build-check, test, python-runtime]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
