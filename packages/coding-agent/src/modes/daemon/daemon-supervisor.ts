@@ -134,6 +134,7 @@ const UPDATE_RESTART_WORKER_REQUEST_TIMEOUT_MS = 90_000;
 // an abandoned prepare leaves the daemon permanently fenced with workers stopped.
 const UPDATE_RESTART_PREPARE_DEADLINE_MS = 100_000;
 const WORKER_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
+const AGENT_PEER_SYNC_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
 const DEFERRED_RECOVERY_RECHECK_MS = 5000;
 const OWNED_WORKER_DISCONNECT_GRACE_MS = 30_000;
 const IDLE_EVICTION_MAX_SWEEP_INTERVAL_MS = 5 * 60_000;
@@ -618,6 +619,8 @@ export class DaemonSupervisor {
 	private readonly compactCatchupInProgress = new Set<string>();
 	private agentPeerSyncDirty = false;
 	private agentPeerSyncDrain?: Promise<void>;
+	private agentPeerSyncRetryTimer?: ReturnType<typeof setTimeout>;
+	private agentPeerSyncRetryAttempt = 0;
 	private readonly deliveredAgentPeerPayloads = new WeakMap<
 		DaemonWorkerClient,
 		{ revision: number; fingerprint: string }
@@ -761,6 +764,12 @@ export class DaemonSupervisor {
 		if (!this.idleEvictionTimer) return;
 		clearTimeout(this.idleEvictionTimer);
 		this.idleEvictionTimer = undefined;
+	}
+
+	private beginShutdown(): void {
+		this.shuttingDown = true;
+		this.agentPeerSyncDirty = false;
+		this.resetAgentPeerSyncRetry();
 	}
 
 	private scheduleIdleEvictionSweep(): void {
@@ -3071,7 +3080,11 @@ export class DaemonSupervisor {
 	}
 
 	private syncAgentPeers(): Promise<void> {
-		if (this.shuttingDown) return Promise.resolve();
+		if (this.shuttingDown) {
+			this.resetAgentPeerSyncRetry();
+			return Promise.resolve();
+		}
+		this.clearAgentPeerSyncRetryTimer();
 		this.agentPeerSyncDirty = true;
 		if (this.agentPeerSyncDrain) return this.agentPeerSyncDrain;
 		const drain = Promise.resolve().then(() => this.drainAgentPeerSync());
@@ -3095,8 +3108,44 @@ export class DaemonSupervisor {
 			}
 		}
 		if (failures.length > 0) {
+			if (this.shuttingDown) this.resetAgentPeerSyncRetry();
+			else this.scheduleAgentPeerSyncRetry();
 			throw new AggregateError(failures, `Could not synchronize agent peers with ${failures.length} worker(s)`);
 		}
+		this.resetAgentPeerSyncRetry();
+	}
+
+	private scheduleAgentPeerSyncRetry(): void {
+		if (this.shuttingDown || this.agentPeerSyncRetryTimer) return;
+		const delayMs =
+			AGENT_PEER_SYNC_RETRY_DELAYS_MS[
+				Math.min(this.agentPeerSyncRetryAttempt, AGENT_PEER_SYNC_RETRY_DELAYS_MS.length - 1)
+			]!;
+		this.agentPeerSyncRetryAttempt = Math.min(
+			this.agentPeerSyncRetryAttempt + 1,
+			AGENT_PEER_SYNC_RETRY_DELAYS_MS.length,
+		);
+		const timer = setTimeout(() => {
+			if (this.agentPeerSyncRetryTimer !== timer) return;
+			this.agentPeerSyncRetryTimer = undefined;
+			if (this.shuttingDown) return;
+			void this.syncAgentPeers().catch((error) => {
+				if (!this.shuttingDown) this.log(`Could not synchronize agent peers during retry: ${String(error)}`);
+			});
+		}, delayMs);
+		timer.unref();
+		this.agentPeerSyncRetryTimer = timer;
+	}
+
+	private clearAgentPeerSyncRetryTimer(): void {
+		if (!this.agentPeerSyncRetryTimer) return;
+		clearTimeout(this.agentPeerSyncRetryTimer);
+		this.agentPeerSyncRetryTimer = undefined;
+	}
+
+	private resetAgentPeerSyncRetry(): void {
+		this.clearAgentPeerSyncRetryTimer();
+		this.agentPeerSyncRetryAttempt = 0;
 	}
 
 	private createAgentPeerCatalogSnapshot(): AgentPeerCatalogSnapshot {
@@ -4785,7 +4834,7 @@ export class DaemonSupervisor {
 	}
 
 	private async cleanupSupervisorResourcesOnce(): Promise<void> {
-		this.shuttingDown = true;
+		this.beginShutdown();
 		this.clearIdleEvictionTimer();
 		await this.idleEvictionSweep?.catch(() => undefined);
 		for (const cleanup of this.signalCleanupHandlers.splice(0)) {
@@ -4884,7 +4933,7 @@ export class DaemonSupervisor {
 		if (this.shuttingDown) {
 			process.exit(exitCode);
 		}
-		this.shuttingDown = true;
+		this.beginShutdown();
 		this.clearIdleEvictionTimer();
 		await this.idleEvictionSweep?.catch(() => undefined);
 		if (closingReason) {

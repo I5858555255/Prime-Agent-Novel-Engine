@@ -36,12 +36,17 @@ interface SupervisorPeerSyncInternals {
 	workers: Map<string, PeerWorker>;
 	shuttingDown: boolean;
 	agentPeerSyncStats: PeerSyncStats;
+	agentPeerSyncRetryAttempt: number;
+	agentPeerSyncRetryTimer?: ReturnType<typeof setTimeout>;
+	log: ReturnType<typeof vi.fn>;
+	beginShutdown(): void;
 	syncAgentPeers(): Promise<void>;
 }
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
+	vi.useRealTimers();
 	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -98,6 +103,7 @@ function createSupervisor(workers: readonly PeerWorker[]): SupervisorPeerSyncInt
 		defaultSessionConfig: { agentDir: directory, cwd: directory },
 		descriptorDir: join(directory, "workers"),
 	}) as unknown as SupervisorPeerSyncInternals;
+	supervisor.log = vi.fn();
 	for (const resident of workers) supervisor.workers.set(resident.descriptor.workerId, resident);
 	return supervisor;
 }
@@ -227,6 +233,88 @@ describe("daemon supervisor peer synchronization", () => {
 		expect(first.client?.requestWorker).toHaveBeenCalledOnce();
 		expect(replacement).toHaveBeenCalledOnce();
 		expect(supervisor.agentPeerSyncStats).toMatchObject({ passes: 3, sends: 4, catalogRevision: 1 });
+	});
+
+	it("keeps one bounded backoff retry alive until the same connection recovers", async () => {
+		vi.useFakeTimers();
+		let attempts = 0;
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const resident = worker(
+			"worker",
+			vi.fn(async () => {
+				attempts++;
+				inFlight++;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				await Promise.resolve();
+				inFlight--;
+				if (attempts <= 4) throw new Error(`transient peer sync failure ${attempts}`);
+				return workerSyncSuccess();
+			}),
+		);
+		const healthy = worker("healthy");
+		const supervisor = createSupervisor([healthy, resident]);
+
+		await expect(supervisor.syncAgentPeers()).rejects.toThrow("Could not synchronize agent peers");
+		expect(attempts).toBe(2);
+		expect(supervisor.agentPeerSyncRetryTimer).toBeDefined();
+
+		await vi.advanceTimersByTimeAsync(250);
+		expect(attempts).toBe(4);
+		expect(supervisor.agentPeerSyncRetryTimer).toBeDefined();
+
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(attempts).toBe(5);
+		expect(healthy.client?.requestWorker).toHaveBeenCalledOnce();
+		expect(maxInFlight).toBe(1);
+		expect(supervisor.agentPeerSyncStats).toMatchObject({ passes: 5, sends: 6, catalogRevision: 1 });
+		expect(supervisor.agentPeerSyncRetryAttempt).toBe(0);
+		expect(supervisor.agentPeerSyncRetryTimer).toBeUndefined();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("cancels a failed connection's pending retry when its replacement synchronizes", async () => {
+		vi.useFakeTimers();
+		const failedRequest = vi.fn(async () => {
+			throw new Error("disconnected peer sync");
+		});
+		const resident = worker("worker", failedRequest);
+		const supervisor = createSupervisor([resident]);
+
+		await expect(supervisor.syncAgentPeers()).rejects.toThrow("Could not synchronize agent peers");
+		expect(failedRequest).toHaveBeenCalledTimes(2);
+		expect(supervisor.agentPeerSyncRetryTimer).toBeDefined();
+
+		const replacementRequest = vi.fn(async () => workerSyncSuccess());
+		resident.client = { requestWorker: replacementRequest };
+		await supervisor.syncAgentPeers();
+
+		expect(replacementRequest).toHaveBeenCalledOnce();
+		expect(supervisor.agentPeerSyncRetryTimer).toBeUndefined();
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(failedRequest).toHaveBeenCalledTimes(2);
+		expect(replacementRequest).toHaveBeenCalledOnce();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("cancels a pending peer retry when shutdown begins", async () => {
+		vi.useFakeTimers();
+		const requestWorker = vi.fn(async () => {
+			throw new Error("persistent peer sync failure");
+		});
+		const supervisor = createSupervisor([worker("worker", requestWorker)]);
+
+		await expect(supervisor.syncAgentPeers()).rejects.toThrow("Could not synchronize agent peers");
+		expect(requestWorker).toHaveBeenCalledTimes(2);
+		expect(supervisor.agentPeerSyncRetryTimer).toBeDefined();
+
+		supervisor.beginShutdown();
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		expect(requestWorker).toHaveBeenCalledTimes(2);
+		expect(supervisor.agentPeerSyncRetryAttempt).toBe(0);
+		expect(supervisor.agentPeerSyncRetryTimer).toBeUndefined();
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it("does not start or follow up peer synchronization after shutdown begins", async () => {
