@@ -84,7 +84,6 @@ receipt = await agent_message.send(
     "Recheck the endpoint after the latest edit",
     receiver_role="sibling",
     receiver_name="api-reviewer",
-    mode="auto",
 )
 print(receipt["deliveryStatus"])
 ```
@@ -101,13 +100,7 @@ await agent_message.send(
 )
 ```
 
-Delivery modes are:
-
-- `auto`: steer a busy target and deliver immediately to an idle target;
-- `steer`: intentionally inject the message into active work; and
-- `follow_up`: wait until the target's current work finishes.
-
-A receipt is `delivered` when it reached an idle target's context or `queued` when accepted for later delivery. `agent_message.send("all", message)` broadcasts only within the family roster. The daemon derives sender identity and enforces message-size, rate, and pending-queue limits.
+Agent messages always use steering semantics. An idle target receives the message immediately, while a busy target queues it for the next turn boundary after the current assistant turn finishes its tool calls. A receipt is `delivered` when the message reached an idle target's context or `queued` when it was accepted behind active work. `agent_message.send("all", message)` broadcasts only within the family roster. The daemon derives sender identity and enforces message-size, rate, and pending-queue limits.
 
 ## Heartbeats and Scheduled Prompts
 

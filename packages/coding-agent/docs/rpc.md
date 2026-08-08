@@ -222,7 +222,7 @@ RPC clients can use the same daemon-owned coordination features as the interacti
 
 | Command | Fields | Successful response data |
 |---------|--------|--------------------------|
-| `send_message` | `targetActiveSessionId`, `message`, optional `deliveryMode` (`auto`, `steer`, `follow_up`) | Agent-message delivery receipt |
+| `send_message` | `targetActiveSessionId`, `message` | Agent-message delivery receipt |
 | `agent_messages_status` | none | Messaging safety status |
 | `agent_messages_pause` | none | Updated messaging safety status |
 | `agent_messages_resume` | none | Updated messaging safety status |
@@ -235,6 +235,14 @@ RPC clients can use the same daemon-owned coordination features as the interacti
 | `set_heartbeat` | `schedule`, `prompt`, optional `deliveryMode` (`steer`, `follow_up`) | `{ "heartbeat": {...} }` |
 | `update_heartbeat` | `action` (`pause`, `resume`, `clear`) | `{ "heartbeat": {...} }` or `null` |
 | `manage_heartbeat` | `activeSessionId`, `jobId`, `action` (`pause`, `resume`, `stop`) | `{ "heartbeat": {...} }` |
+
+Send a message to another active session with:
+
+```json
+{"type":"send_message","targetActiveSessionId":"target-session-id","message":"Please verify the latest migration"}
+```
+
+Agent messages always use steering semantics. An idle target receives the message immediately, while a busy target queues it for the next turn boundary after the current assistant turn finishes its tool calls. The delivery receipt reports `delivered` when the message reached an idle target's context or `queued` when it was accepted behind active work.
 
 Adding a schedule or heartbeat promotes an invocation-local RPC session to a resident daemon session so the scheduled work remains available after RPC stdin closes.
 
