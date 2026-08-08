@@ -883,7 +883,12 @@ async function executePreparedToolCall(
 		}
 		return { result, isError: false };
 	} catch (error) {
-		updates.abandon();
+		if (signal?.aborted) {
+			updates.abandon();
+		} else {
+			updates.close();
+			await raceWithAbort(updates.drain(), signal).catch(() => undefined);
+		}
 		return {
 			result: createErrorToolResult(
 				signal?.aborted ? "Tool execution aborted" : error instanceof Error ? error.message : String(error),
