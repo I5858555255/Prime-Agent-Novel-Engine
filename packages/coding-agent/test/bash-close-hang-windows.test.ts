@@ -61,6 +61,11 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => 
 	});
 }
 
+// Generous on purpose: the assertion is "resolves instead of hanging on the
+// inherited stdio handles", and the command pays for a bash start plus two
+// Node cold starts, which under a fully parallel suite run can take seconds.
+const RESOLVE_TIMEOUT_MS = 20_000;
+
 function getTextOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (
 		result.content
@@ -92,7 +97,7 @@ describe.skipIf(process.platform !== "win32")("Windows child-process close handl
 				executeBashWithOperations(command, process.cwd(), createLocalBashOperations(), {
 					signal: controller.signal,
 				}),
-				3000,
+				RESOLVE_TIMEOUT_MS,
 				() => {
 					controller.abort();
 				},
@@ -114,9 +119,13 @@ describe.skipIf(process.platform !== "win32")("Windows child-process close handl
 		const bashTool = createBashTool(testDir);
 
 		try {
-			const result = await withTimeout(bashTool.execute("test-call", { command }, controller.signal), 3000, () => {
-				controller.abort();
-			});
+			const result = await withTimeout(
+				bashTool.execute("test-call", { command }, controller.signal),
+				RESOLVE_TIMEOUT_MS,
+				() => {
+					controller.abort();
+				},
+			);
 
 			expect(getTextOutput(result)).toContain("child-exiting");
 		} finally {

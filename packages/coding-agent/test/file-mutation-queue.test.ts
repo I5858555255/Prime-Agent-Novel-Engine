@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEditTool } from "../src/core/tools/edit.js";
 import { withFileMutationQueue } from "../src/core/tools/file-mutation-queue.js";
+import { canCreateFileSymlinks } from "./utils/temp-fs.js";
+
+// File symlinks need SeCreateSymbolicLinkPrivilege on Windows and have no
+// junction equivalent, so this case only runs where one can be created.
+const itWithFileSymlinks = canCreateFileSymlinks() ? it : it.skip;
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,7 +66,7 @@ describe("withFileMutationQueue", () => {
 		expect(order.indexOf("b:start")).toBeLessThan(order.indexOf("a:end"));
 	});
 
-	it("uses the same queue for symlink aliases", async () => {
+	itWithFileSymlinks("uses the same queue for symlink aliases", async () => {
 		const dir = await createTempDir();
 		const targetPath = join(dir, "target.txt");
 		const symlinkPath = join(dir, "alias.txt");

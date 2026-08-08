@@ -431,12 +431,14 @@ describe("formatContextTree", () => {
 		expect(output).toContain("31% (62k/200k)");
 		// Totals sum own usage across all agents: 66750 -> 67k, $1.18.
 		expect(output).toContain("Total: 67k tokens · $1.18 across 3 agents");
-		// Detail sections carry the precise numbers /usage used to show.
-		expect(output).toContain("Input: 60,100");
-		expect(output).toContain("Output: 6,650");
-		expect(output).toContain("Total: 66,750");
+		// Detail sections carry the precise numbers /usage used to show. They are
+		// grouped with toLocaleString(), so the separator follows the host locale.
+		const grouped = (value: number) => value.toLocaleString();
+		expect(output).toContain(`Input: ${grouped(60100)}`);
+		expect(output).toContain(`Output: ${grouped(6650)}`);
+		expect(output).toContain(`Total: ${grouped(66750)}`);
 		expect(output).toContain("Cost\nTotal: $1.1800");
-		expect(output).toContain("Context\nCurrent: 62,300 / 200,000 (31.2%)");
+		expect(output).toContain(`Context\nCurrent: ${grouped(62300)} / ${grouped(200000)} (31.2%)`);
 	});
 
 	it("reports unknown context after compaction in the detail section", () => {

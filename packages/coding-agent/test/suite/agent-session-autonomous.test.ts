@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,18 @@ import {
 import type { AgentCronJob } from "../../src/core/cron-jobs.js";
 import { removeTempDirSync } from "../utils/temp-fs.js";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
+
+/**
+ * Gate commands run through bash on every platform, so a native Windows path
+ * has to lose its backslashes (bash reads them as escapes) and gain quotes
+ * (`C:\Program Files\...` would otherwise split on the space). The same applies
+ * to paths embedded in the `-e` JavaScript these gates run.
+ */
+function toShellPath(nativePath: string): string {
+	return nativePath.replaceAll("\\", "/");
+}
+
+const nodeCommand = `"${toShellPath(process.execPath)}"`;
 
 function isProcessRunning(pid: number): boolean {
 	try {
@@ -207,7 +219,7 @@ describe("AgentSession autonomous mode", () => {
 		const state = createAutonomousRuntimeState({
 			enabled: true,
 			maxTurns: 1,
-			gates: { commands: [`${process.execPath} -e "process.exit(0)"`] },
+			gates: { commands: [`${nodeCommand} -e "process.exit(0)"`] },
 		});
 		state.turnsUsed = 1;
 		state.lastGateFailure = {
@@ -231,7 +243,7 @@ describe("AgentSession autonomous mode", () => {
 			autonomous: {
 				enabled: true,
 				maxContinuations: 1,
-				gates: { commands: [`${process.execPath} -e "process.exit(0)"`] },
+				gates: { commands: [`${nodeCommand} -e "process.exit(0)"`] },
 			},
 		});
 		harnesses.push(harness);
@@ -249,7 +261,7 @@ describe("AgentSession autonomous mode", () => {
 				enabled: true,
 				maxContinuations: 1,
 				gates: {
-					commands: [`${process.execPath} -e "console.error('gate failed'); process.exit(1)"`],
+					commands: [`${nodeCommand} -e "console.error('gate failed'); process.exit(1)"`],
 					maxRetries: 2,
 				},
 			},
@@ -271,7 +283,7 @@ describe("AgentSession autonomous mode", () => {
 				enabled: true,
 				maxContinuations: 2,
 				gates: {
-					commands: [`${process.execPath} -e "console.error('gate failed'); process.exit(1)"`],
+					commands: [`${nodeCommand} -e "console.error('gate failed'); process.exit(1)"`],
 					maxRetries: 2,
 				},
 			},
@@ -296,7 +308,7 @@ describe("AgentSession autonomous mode", () => {
 				enabled: true,
 				maxContinuations: 2,
 				gates: {
-					commands: [`${process.execPath} -e "console.error('gate failed'); process.exit(1)"`],
+					commands: [`${nodeCommand} -e "console.error('gate failed'); process.exit(1)"`],
 					maxRetries: 2,
 				},
 			},
@@ -338,7 +350,7 @@ describe("AgentSession autonomous mode", () => {
 
 	it("advances retry budget without rerunning a failed autonomous gate until the workspace changes", async () => {
 		const tempDir = join(process.cwd(), `.tmp-autonomous-gate-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		execFileSync("mkdir", ["-p", join(tempDir, "verification")]);
+		mkdirSync(join(tempDir, "verification"), { recursive: true });
 		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
 		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
 		execFileSync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
@@ -350,7 +362,7 @@ describe("AgentSession autonomous mode", () => {
 		});
 		try {
 			const counter = join(tempDir, "verification", "public_feedback_scores.jsonl");
-			const gate = `${process.execPath} -e "const fs=require('fs'); const p='${counter}'; const n=fs.existsSync(p)?fs.readFileSync(p,'utf8').trim().split(/\\n/).filter(Boolean).length:0; fs.appendFileSync(p,JSON.stringify({run:n+1,score:0})+'\\n'); process.exit(1);"`;
+			const gate = `${nodeCommand} -e "const fs=require('fs'); const p='${toShellPath(counter)}'; const n=fs.existsSync(p)?fs.readFileSync(p,'utf8').trim().split(/\\n/).filter(Boolean).length:0; fs.appendFileSync(p,JSON.stringify({run:n+1,score:0})+'\\n'); process.exit(1);"`;
 			const state = createAutonomousRuntimeState(
 				{ enabled: true, maxContinuations: 3, gates: { commands: [gate], maxRetries: 3 } },
 				{ cwd: tempDir },
@@ -376,7 +388,7 @@ describe("AgentSession autonomous mode", () => {
 			process.cwd(),
 			`.tmp-autonomous-untracked-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
-		execFileSync("mkdir", ["-p", tempDir]);
+		mkdirSync(tempDir, { recursive: true });
 		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
 		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
 		execFileSync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
@@ -389,7 +401,7 @@ describe("AgentSession autonomous mode", () => {
 		try {
 			const candidate = join(tempDir, "candidate.txt");
 			writeFileSync(candidate, "bad\n");
-			const gate = `${process.execPath} -e "const fs=require('fs'); process.exit(fs.readFileSync('candidate.txt','utf8').trim()==='good'?0:1)"`;
+			const gate = `${nodeCommand} -e "const fs=require('fs'); process.exit(fs.readFileSync('candidate.txt','utf8').trim()==='good'?0:1)"`;
 			const state = createAutonomousRuntimeState({
 				enabled: true,
 				maxContinuations: 3,
@@ -412,7 +424,7 @@ describe("AgentSession autonomous mode", () => {
 	});
 
 	it("bounds captured autonomous gate output", async () => {
-		const gate = `${process.execPath} -e "process.stdout.write('x'.repeat(20000)); process.exit(1)"`;
+		const gate = `${nodeCommand} -e "process.stdout.write('x'.repeat(20000)); process.exit(1)"`;
 		const state = createAutonomousRuntimeState({
 			enabled: true,
 			maxContinuations: 1,
@@ -430,7 +442,7 @@ describe("AgentSession autonomous mode", () => {
 			process.cwd(),
 			`.tmp-autonomous-process-tree-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
-		execFileSync("mkdir", ["-p", tempDir]);
+		mkdirSync(tempDir, { recursive: true });
 		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
 		const pidFile = join(tempDir, "descendant.pid");
 		const script = join(tempDir, "gate.cjs");
@@ -444,17 +456,20 @@ describe("AgentSession autonomous mode", () => {
 		);
 		let descendantPid: number | undefined;
 		try {
+			// The gate and its descendant both have to finish a Node cold start
+			// before the timeout fires, and that takes noticeably longer on Windows.
+			const timeoutMs = process.platform === "win32" ? 2000 : 250;
 			const state = createAutonomousRuntimeState({
 				enabled: true,
 				maxContinuations: 1,
-				gates: { commands: [`${process.execPath} gate.cjs`], maxRetries: 1, timeoutMs: 250 },
+				gates: { commands: [`${nodeCommand} gate.cjs`], maxRetries: 1, timeoutMs },
 			});
 			const startedAt = Date.now();
 
 			await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: tempDir });
 			descendantPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
 
-			expect(Date.now() - startedAt).toBeLessThan(3000);
+			expect(Date.now() - startedAt).toBeLessThan(timeoutMs + 2750);
 			expect(state.lastGateFailure?.exitText).toBe("timed out");
 			expect(await waitForProcessExit(descendantPid)).toBe(true);
 		} finally {
@@ -466,7 +481,7 @@ describe("AgentSession autonomous mode", () => {
 	});
 
 	it("terminates an autonomous gate without mutating retry state when the session is aborted", async () => {
-		const gate = `${process.execPath} -e "const fs=require('fs'); fs.writeFileSync('gate.pid', String(process.pid)); setTimeout(() => {}, 60000)"`;
+		const gate = `${nodeCommand} -e "const fs=require('fs'); fs.writeFileSync('gate.pid', String(process.pid)); setTimeout(() => {}, 60000)"`;
 		const harness = await createHarness({
 			autonomous: {
 				enabled: true,
@@ -503,7 +518,7 @@ describe("AgentSession autonomous mode", () => {
 		const state = createAutonomousRuntimeState({
 			enabled: true,
 			maxContinuations: 5,
-			gates: { commands: [`${process.execPath} -e "process.exit(1)"`], maxRetries: 1 },
+			gates: { commands: [`${nodeCommand} -e "process.exit(1)"`], maxRetries: 1 },
 		});
 
 		const first = await nextAutonomousContinuation(state, fauxAssistantMessage("Done."), { cwd: process.cwd() });
@@ -521,7 +536,7 @@ describe("AgentSession autonomous mode", () => {
 			process.cwd(),
 			`.tmp-autonomous-post-snapshot-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
-		execFileSync("mkdir", ["-p", tempDir]);
+		mkdirSync(tempDir, { recursive: true });
 		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
 		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
 		execFileSync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
@@ -533,7 +548,7 @@ describe("AgentSession autonomous mode", () => {
 		});
 		try {
 			const generated = join(tempDir, "generated.txt");
-			const gate = `${process.execPath} -e "const fs=require('fs'); fs.appendFileSync('${generated}', 'run\\n'); process.exit(1);"`;
+			const gate = `${nodeCommand} -e "const fs=require('fs'); fs.appendFileSync('${toShellPath(generated)}', 'run\\n'); process.exit(1);"`;
 			const state = createAutonomousRuntimeState(
 				{ enabled: true, maxContinuations: 3, gates: { commands: [gate], maxRetries: 3 } },
 				{ cwd: tempDir },

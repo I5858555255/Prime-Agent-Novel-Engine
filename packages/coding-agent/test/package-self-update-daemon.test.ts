@@ -905,7 +905,10 @@ describe("self-update daemon restart", () => {
 			expect(releaseAdmissionIndex).toBeGreaterThan(startupFenceIndex);
 			expect(ensureIndex).toBeGreaterThan(releaseAdmissionIndex);
 			expect(ensureIndex).toBeGreaterThan(shutdownIndex);
-			expect(statSync(join(agentDir, "update-restarts", "test-status.json")).mode & 0o777).toBe(0o600);
+			// Windows has no POSIX mode bits; chmod there only toggles read-only.
+			if (process.platform !== "win32") {
+				expect(statSync(join(agentDir, "update-restarts", "test-status.json")).mode & 0o777).toBe(0o600);
+			}
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();

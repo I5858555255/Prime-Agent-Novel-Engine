@@ -88,7 +88,9 @@ describe("edit summaries", () => {
 	});
 
 	test("coalesces home-relative and absolute paths", () => {
-		const absolutePath = `${homedir()}/same.ts`;
+		// join(), not string concatenation: the product expands "~/" with the
+		// platform separator, and the two spellings must coalesce.
+		const absolutePath = join(homedir(), "same.ts");
 		const message = assistant([
 			{ type: "toolCall", id: "one", name: "edit", arguments: { path: "~/same.ts" } },
 			{ type: "toolCall", id: "two", name: "ipython", arguments: {} },

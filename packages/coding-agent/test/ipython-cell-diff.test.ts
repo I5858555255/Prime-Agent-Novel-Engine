@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { renderRichDiff } from "../src/modes/interactive/components/diff.js";
@@ -119,7 +120,8 @@ describe("IPythonCellComponent diff rendering", () => {
 			argsComplete: true,
 			expanded: true,
 		});
-		expect(inside).toContain("src/app.ts");
+		// Rendered with the platform separator: srcpp.ts on Windows.
+		expect(inside).toContain(join("src", "app.ts"));
 		expect(inside).not.toContain(`${cwd}/src/app.ts`);
 
 		const outside = renderCell({
