@@ -164,6 +164,10 @@ function recoveryDeniedError(code: "supervisor_recovery_cancelled" | "supervisor
 	return Object.assign(new Error(code), { code });
 }
 
+// These budgets cover spawning a real fixture child. Windows process creation
+// is far slower than Unix, and slower still under a fully parallel suite run.
+const CHILD_WAIT_TIMEOUT_MS = process.platform === "win32" ? 20_000 : 1000;
+
 async function waitForCapturedChildClose(child: ChildProcess): Promise<void> {
 	if (child.exitCode !== null || child.signalCode !== null) {
 		return;
@@ -172,7 +176,7 @@ async function waitForCapturedChildClose(child: ChildProcess): Promise<void> {
 }
 
 async function waitForFile(path: string): Promise<void> {
-	const deadline = Date.now() + 1000;
+	const deadline = Date.now() + CHILD_WAIT_TIMEOUT_MS;
 	while (!existsSync(path) && Date.now() < deadline) {
 		await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
 	}
@@ -620,7 +624,7 @@ describe("daemon worker supervisor monitoring", () => {
 				.then(() => ({ value: "resolved" as const, error: undefined }))
 				.catch((error: unknown) => ({ value: "rejected" as const, error })),
 			new Promise<{ value: "timed-out"; error: Error }>((resolveTimeout) =>
-				setTimeout(() => resolveTimeout({ value: "timed-out", error: timeoutError }), 1000),
+				setTimeout(() => resolveTimeout({ value: "timed-out", error: timeoutError }), CHILD_WAIT_TIMEOUT_MS),
 			),
 		]);
 
