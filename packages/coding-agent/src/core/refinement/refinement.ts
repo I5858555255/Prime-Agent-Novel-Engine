@@ -853,6 +853,43 @@ export interface RefinementPlan {
 	baselineState?: HarnessState;
 }
 
+export interface SerializedRefinementPlanEdit {
+	action: RefinementAction;
+	kind: RefinementKind;
+	id: string | null;
+	title: string | null;
+	content: string | null;
+	reason: string | null;
+}
+
+export interface SerializedRefinementPlanPayload {
+	plan_id: string;
+	summary: string;
+	rationale: string;
+	expected_outcome: string;
+	scope: HarnessScope;
+	edits: SerializedRefinementPlanEdit[];
+}
+
+/** Format a planned (not yet applied) refinement for kernel/host consumers. */
+export function serializeRefinementPlan(plan: RefinementPlan, scope: HarnessScope): SerializedRefinementPlanPayload {
+	return {
+		plan_id: plan.id,
+		summary: plan.proposal.summary,
+		rationale: plan.proposal.rationale,
+		expected_outcome: plan.proposal.expectedOutcome,
+		scope,
+		edits: plan.proposal.edits.map((edit) => ({
+			action: edit.action,
+			kind: edit.kind,
+			id: edit.id ?? null,
+			title: edit.title ?? null,
+			content: edit.content ?? null,
+			reason: edit.reason ?? null,
+		})),
+	};
+}
+
 /**
  * Produce a refinement proposal (the LLM pass, or a rollback proposal) without
  * mutating any harness state. Separated from {@link applyRefinementProposal} so

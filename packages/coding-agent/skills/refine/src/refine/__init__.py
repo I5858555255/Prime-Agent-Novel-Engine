@@ -48,3 +48,31 @@ async def run(
     if global_:
         payload["global"] = True
     return await host_request("refine.run", payload)
+
+
+async def preview(
+    instructions: str | None = None,
+    global_: bool = False,
+) -> dict[str, Any]:
+    """Plan a refinement and return the proposed edits without applying them.
+
+    Runs the planning pass immediately and returns the proposal:
+    `plan_id`, `summary`, `rationale`, `expected_outcome`, `scope`, and
+    `edits` (each with `action`, `kind`, `id`, `title`, `content`,
+    `reason`). Nothing is scheduled or written. To apply exactly this
+    plan, pass the returned `plan_id` to `refine.run(plan_id=...)`;
+    calling `refine.run()` without it re-plans from scratch. An empty
+    `edits` list with a rationale means no useful edit was identified.
+    """
+    if instructions is not None and not isinstance(instructions, str):
+        raise TypeError(
+            f"instructions must be str or None, got {type(instructions).__name__}"
+        )
+    if not isinstance(global_, bool):
+        raise TypeError(f"global_ must be bool, got {type(global_).__name__}")
+    payload: dict[str, Any] = {}
+    if instructions is not None:
+        payload["instructions"] = instructions
+    if global_:
+        payload["global"] = True
+    return await host_request("refine.preview", payload)

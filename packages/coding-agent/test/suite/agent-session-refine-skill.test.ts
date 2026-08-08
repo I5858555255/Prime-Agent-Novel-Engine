@@ -10,6 +10,9 @@ type SessionInternals = {
 	_refineAbortController?: AbortController;
 	_createKernelHostHandlers: () => Record<string, unknown>;
 	refine: (options: { instructions?: string; global?: boolean }) => Promise<unknown>;
+	_planRefine: (options: { instructions?: string; global?: boolean }, signal: AbortSignal) => Promise<unknown>;
+	_previewedPlans: Map<string, { plan: unknown; options: unknown; branchVersion: number }>;
+	_autoRefineBranchVersion: number;
 };
 
 function setStreaming(harness: Harness, streaming: boolean) {
@@ -295,5 +298,165 @@ describe("AgentSession refine skill host requests", () => {
 		expect(() => harness.session.handleRefineHostRequest("refine.unknown")).toThrow(
 			'unknown refine request type "refine.unknown"',
 		);
+	});
+
+	function fakePlan(id: string) {
+		return {
+			id,
+			proposal: {
+				summary: `summary ${id}`,
+				rationale: "r",
+				expectedOutcome: "o",
+				edits: [{ action: "create", kind: "memory", title: "t", content: "c", reason: "why" }],
+			},
+		};
+	}
+
+	it("refine.preview returns the serialized plan without scheduling or applying", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		const internals = harness.session as unknown as SessionInternals;
+		const planSpy = vi.spyOn(internals, "_planRefine").mockResolvedValue(fakePlan("refine_a"));
+
+		const payload = await harness.session.handleRefinePreviewHostRequest({ instructions: "focus" });
+		expect(planSpy).toHaveBeenCalledWith({ instructions: "focus", global: undefined }, expect.any(AbortSignal));
+		expect(payload.plan_id).toBe("refine_a");
+		expect(payload.scope).toBe("local");
+		expect(payload.edits).toEqual([
+			{ action: "create", kind: "memory", id: null, title: "t", content: "c", reason: "why" },
+		]);
+		expect(harness.session.handleRefineHostRequest("refine.status").pending).toBe(false);
+		expect(internals._pendingRequestedRefine).toBeUndefined();
+	});
+
+	it("refine.preview caches the plan and reports it in refine.status", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		const internals = harness.session as unknown as SessionInternals;
+		vi.spyOn(internals, "_planRefine").mockResolvedValue(fakePlan("refine_b"));
+		await harness.session.handleRefinePreviewHostRequest({ global: true });
+
+		const status = harness.session.handleRefineHostRequest("refine.status");
+		expect(status.previewed_plans).toEqual(["refine_b"]);
+		expect(internals._previewedPlans.get("refine_b")?.options).toEqual({ instructions: undefined, global: true });
+	});
+
+	it("refine.preview keeps at most 5 cached plans, evicting the oldest", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		const internals = harness.session as unknown as SessionInternals;
+		const spy = vi.spyOn(internals, "_planRefine");
+		for (let i = 0; i < 6; i++) {
+			spy.mockResolvedValueOnce(fakePlan(`refine_${i}`));
+			await harness.session.handleRefinePreviewHostRequest();
+		}
+		expect([...internals._previewedPlans.keys()]).toEqual([
+			"refine_1",
+			"refine_2",
+			"refine_3",
+			"refine_4",
+			"refine_5",
+		]);
+	});
+
+	it("refine.preview validates argument types", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		await expect(
+			harness.session.handleRefinePreviewHostRequest({ instructions: 5 as unknown as string }),
+		).rejects.toThrow("instructions must be a string");
+		await expect(
+			harness.session.handleRefinePreviewHostRequest({ global: "yes" as unknown as boolean }),
+		).rejects.toThrow("global must be a boolean");
+	});
+
+	it("refine.status reports the pending request content", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+		await harness.session.prompt("two");
+
+		setStreaming(harness, true);
+		harness.session.handleRefineHostRequest("refine.run", { instructions: "test", global: true });
+		setStreaming(harness, false);
+
+		const status = harness.session.handleRefineHostRequest("refine.status");
+		expect(status.pending).toBe(true);
+		expect(status.pending_request).toEqual({ instructions: "test", global: true });
+	});
+
+	it("refine.status reports pending_request null when nothing is pending", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		const status = harness.session.handleRefineHostRequest("refine.status");
+		expect(status.pending_request).toBeNull();
+		expect(status.previewed_plans).toEqual([]);
+	});
+
+	it("registers refine.preview alongside refine.run and refine.status", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		const internals = harness.session as unknown as SessionInternals;
+		const handlerKeys = Object.keys(internals._createKernelHostHandlers());
+		expect(handlerKeys).toContain("refine.preview");
+	});
+
+	it("wires refine.preview's plan call into _refineAbortController so dispose cancels it", async () => {
+		const harness = await createHarness({ persistSession: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		const internals = harness.session as unknown as SessionInternals;
+		vi.spyOn(internals, "_planRefine").mockImplementation(
+			(_options, signal) =>
+				new Promise((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(new Error("aborted")));
+				}),
+		);
+
+		const previewPromise = harness.session.handleRefinePreviewHostRequest({ instructions: "focus" });
+		await vi.waitFor(() => expect(internals._refineAbortController).toBeInstanceOf(AbortController));
+
+		harness.session.dispose();
+
+		await expect(previewPromise).rejects.toThrow("aborted");
+		expect(internals._refineAbortController).toBeUndefined();
+	});
+
+	it("refine.preview waits for an in-flight serialized background plan before planning", async () => {
+		const harness = await createHarness({ persistSession: true, serializedRefine: true });
+		harnesses.push(harness);
+		await harness.session.prompt("one");
+
+		const internals = harness.session as unknown as SessionInternals;
+		let releaseBackgroundPlan: () => void = () => {};
+		internals._serializedPlanInFlight = new Promise<void>((resolve) => {
+			releaseBackgroundPlan = resolve;
+		});
+		const backgroundAbort = new AbortController();
+		internals._refineAbortController = backgroundAbort;
+		const planSpy = vi.spyOn(internals, "_planRefine").mockResolvedValue(fakePlan("refine_waits"));
+
+		const previewPromise = harness.session.handleRefinePreviewHostRequest({ instructions: "focus" });
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(planSpy).not.toHaveBeenCalled();
+		expect(internals._refineAbortController).toBe(backgroundAbort);
+
+		releaseBackgroundPlan();
+		const payload = await previewPromise;
+		expect(payload.plan_id).toBe("refine_waits");
+		expect(planSpy).toHaveBeenCalledTimes(1);
 	});
 });

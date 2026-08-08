@@ -211,6 +211,7 @@ import {
 	type RefinementResult,
 	reviewAutoRefine,
 	saveHarnessState,
+	serializeRefinementPlan,
 } from "./refinement/index.js";
 import { resolveConfigValue } from "./resolve-config-value.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
@@ -963,6 +964,8 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 
 /** Cap on the post-compaction kernel namespace probe so a wedged kernel can't stall recovery. */
 const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
+/** Cap on the number of previewed refinement plans retained for later application. */
+const PREVIEWED_PLAN_CAP = 5;
 const RLM_MAX_DEPTH_STATE_CUSTOM_TYPE = "rlm_max_depth_state";
 
 function noopRlmChildAbort(): void {}
@@ -1137,6 +1140,10 @@ export class AgentSession {
 	private _continueAfterThresholdCompaction = false;
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 	private _pendingRequestedRefine: { instructions?: string; global?: boolean } | undefined;
+	private _previewedPlans = new Map<
+		string,
+		{ plan: RefinementPlan; options: { instructions?: string; global?: boolean }; branchVersion: number }
+	>();
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -2908,6 +2915,13 @@ export class AgentSession {
 						this._refineInFlight !== undefined ||
 						this._refinePlanInFlight !== undefined ||
 						this._serializedPlanInFlight !== undefined,
+					pending_request: this._pendingRequestedRefine
+						? {
+								instructions: this._pendingRequestedRefine.instructions ?? null,
+								global: this._pendingRequestedRefine.global ?? null,
+							}
+						: null,
+					previewed_plans: [...this._previewedPlans.keys()],
 				};
 			}
 			case "refine.run": {
@@ -2957,6 +2971,80 @@ export class AgentSession {
 			default:
 				throw new Error(`unknown refine request type "${type}"`);
 		}
+	}
+
+	private _storePreviewedPlan(plan: RefinementPlan, options: { instructions?: string; global?: boolean }): void {
+		this._previewedPlans.set(plan.id, { plan, options, branchVersion: this._autoRefineBranchVersion });
+		while (this._previewedPlans.size > PREVIEWED_PLAN_CAP) {
+			const oldest = this._previewedPlans.keys().next().value;
+			if (oldest === undefined) break;
+			this._previewedPlans.delete(oldest);
+		}
+	}
+
+	/**
+	 * Handle refine.preview from the kernel host bridge: run the planning
+	 * phase now and return the proposed edits without scheduling or applying
+	 * anything. The plan is cached so refine.run can apply it verbatim.
+	 */
+	async handleRefinePreviewHostRequest(payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+		const instructions = payload.instructions;
+		if (instructions !== undefined && typeof instructions !== "string") {
+			throw new Error("refine.preview instructions must be a string when provided");
+		}
+		const globalFlag = payload.global;
+		if (globalFlag !== undefined && typeof globalFlag !== "boolean") {
+			throw new Error("refine.preview global must be a boolean when provided");
+		}
+		// Preview claims _refineAbortController for its own planning call, and a
+		// serialized background plan owns that same slot while its model request
+		// runs, so wait for planning quiescence too (_waitForRefineIdle only covers
+		// the apply phase). No agent.waitForIdle() here: preview is called from an
+		// active tool call. A settled background plan deliberately stays in
+		// _serializedPlanInFlight for its normal consumer, so remember the promise
+		// already awaited rather than spinning on it.
+		let awaitedSerializedPlan: Promise<SerializedBackgroundPlanResult | undefined> | undefined;
+		for (;;) {
+			await this._waitForRefineIdle();
+			if (this._refinePlanInFlight) {
+				await this._refinePlanInFlight;
+				continue;
+			}
+			const serializedPlan = this._serializedPlanInFlight;
+			if (serializedPlan && serializedPlan !== awaitedSerializedPlan) {
+				awaitedSerializedPlan = serializedPlan;
+				await serializedPlan.then(
+					() => undefined,
+					() => undefined,
+				);
+				continue;
+			}
+			break;
+		}
+		if (this._disposed) {
+			throw new Error("Cannot preview a refinement after the session was disposed");
+		}
+		const previewAbort = new AbortController();
+		this._refineAbortController = previewAbort;
+		const planRun = this._planRefine({ instructions, global: globalFlag }, previewAbort.signal);
+		const planSettled = planRun.then(
+			() => undefined,
+			() => undefined,
+		);
+		this._refinePlanInFlight = planSettled;
+		let plan: RefinementPlan;
+		try {
+			plan = await planRun;
+		} finally {
+			if (this._refinePlanInFlight === planSettled) {
+				this._refinePlanInFlight = undefined;
+			}
+			if (this._refineAbortController === previewAbort) {
+				this._refineAbortController = undefined;
+			}
+		}
+		this._storePreviewedPlan(plan, { instructions, global: globalFlag });
+		return { ...serializeRefinementPlan(plan, globalFlag ? "global" : "local") };
 	}
 
 	/**
@@ -8706,6 +8794,7 @@ export class AgentSession {
 			for (const type of ["refine.run", "refine.status"]) {
 				handlers[type] = async (payload) => this.handleRefineHostRequest(type, payload);
 			}
+			handlers["refine.preview"] = async (payload) => this.handleRefinePreviewHostRequest(payload);
 		}
 		if (this._rlmHeartbeatController) {
 			for (const type of [
