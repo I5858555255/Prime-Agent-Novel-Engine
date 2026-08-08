@@ -14,15 +14,15 @@ const usage: Usage = {
 };
 
 const model: Model<"openai-responses"> = {
-	id: "gpt-5.4",
-	name: "GPT-5.4",
+	id: "gpt-5.6-sol",
+	name: "GPT-5.6 Sol",
 	api: "openai-responses",
 	provider: "openai",
 	baseUrl: "https://api.openai.com/v1",
 	reasoning: true,
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 272000,
+	contextWindow: 1050000,
 	maxTokens: 128000,
 };
 
@@ -126,7 +126,7 @@ describe("OpenAI server compaction replay", () => {
 				}),
 			],
 		};
-		const nextModel = { ...model, id: "gpt-5.5" };
+		const nextModel = { ...model, id: "gpt-5.6-terra" };
 
 		const input = convertResponsesMessages(nextModel, context, new Set(["openai"]));
 		expect(input.some((item) => JSON.stringify(item).includes("old user input"))).toBe(true);

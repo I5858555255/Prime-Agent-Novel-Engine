@@ -4,15 +4,15 @@ import { estimateContextTokens } from "../src/core/compaction/index.js";
 import { withOpenAIServerCompaction } from "../src/core/openai-server-compaction.js";
 
 const openAIModel: Model<"openai-responses"> = {
-	id: "gpt-5.4",
-	name: "GPT-5.4",
+	id: "gpt-5.6-sol",
+	name: "GPT-5.6 Sol",
 	api: "openai-responses",
 	provider: "openai",
 	baseUrl: "https://api.openai.com/v1",
 	reasoning: true,
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 272000,
+	contextWindow: 1050000,
 	maxTokens: 128000,
 };
 
@@ -33,7 +33,7 @@ describe("withOpenAIServerCompaction", () => {
 		});
 
 		expect(payload).toMatchObject({
-			context_management: [{ type: "compaction", compact_threshold: 255616 }],
+			context_management: [{ type: "compaction", compact_threshold: 1033616 }],
 		});
 	});
 
@@ -44,6 +44,7 @@ describe("withOpenAIServerCompaction", () => {
 			api: "openai-codex-responses",
 			provider: "openai-codex",
 			baseUrl: "https://chatgpt.com/backend-api",
+			contextWindow: 272000,
 		};
 
 		const payload = withOpenAIServerCompaction({}, codexModel, { enabled: true, reserveTokens: 16384 });
