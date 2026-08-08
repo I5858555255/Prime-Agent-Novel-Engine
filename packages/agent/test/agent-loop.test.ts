@@ -773,6 +773,102 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
+	it("should keep the tool's own error message and not deliver queued updates after tool_execution_end when abort races the error-path flush", async () => {
+		const controller = new AbortController();
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, { index: number }> = {
+			name: "work",
+			label: "Work",
+			description: "Work",
+			parameters: toolSchema,
+			execute: async (_toolCallId, _params, _signal, onUpdate) => {
+				onUpdate?.({ content: [], details: { index: 0 } });
+				onUpdate?.({ content: [], details: { index: 1 } });
+				onUpdate?.({ content: [], details: { index: 2 } });
+				throw new Error("boom - the real tool failure");
+			},
+		};
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const events: AgentEvent[] = [];
+		// Tracks every index whose sink call was actually invoked, independent of whether that
+		// call ever pushes into `events` (index 0's never does, by construction below).
+		const invoked: number[] = [];
+		let resolveFirstUpdateGate: (() => void) | undefined;
+		const firstUpdateGate = new Promise<void>((resolve) => {
+			resolveFirstUpdateGate = resolve;
+		});
+		const sink = (event: AgentEvent): Promise<void> | void => {
+			if (event.type !== "tool_execution_update") {
+				events.push(event);
+				return;
+			}
+			const index = (event.partialResult as { details: { index: number } }).details.index;
+			invoked.push(index);
+			if (index === 0) {
+				// Held open until after the loop finishes: simulates the one sink call the
+				// emitter may still have in flight when abort races the error-path flush.
+				// Released below, once tool_execution_end/agent_end are already recorded.
+				return firstUpdateGate;
+			}
+			return new Promise<void>((resolve) => {
+				setTimeout(() => {
+					events.push(event);
+					resolve();
+				}, 30);
+			});
+		};
+		// Fires while the flush is waiting on index 0's (held-open) sink call, i.e. while
+		// indices 1 and 2 are still queued and un-invoked.
+		setTimeout(() => controller.abort(), 10);
+
+		const messages = await runAgentLoop(
+			[createUserMessage("Hello")],
+			context,
+			config,
+			sink,
+			controller.signal,
+			streamFn,
+		);
+		// Release the gate, then wait comfortably longer than the two chained 30ms sink delays
+		// before asserting. If the queue had not been cleared, releasing the gate lets the pump
+		// drain events 1 and 2 into `events` well after tool_execution_end/agent_end were
+		// already recorded.
+		resolveFirstUpdateGate?.();
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		expect(invoked.length).toBeGreaterThan(0);
+
+		const toolResult = messages.find((message) => message.role === "toolResult");
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") {
+			expect(toolResult.isError).toBe(true);
+			expect(toolResult.content).toEqual([{ type: "text", text: "boom - the real tool failure" }]);
+		}
+
+		const endIndex = events.findIndex((event) => event.type === "tool_execution_end");
+		const agentEndIndex = events.findIndex((event) => event.type === "agent_end");
+		expect(endIndex).toBeGreaterThanOrEqual(0);
+		expect(agentEndIndex).toBeGreaterThanOrEqual(0);
+		const updatePositions = events.flatMap((event, i) => (event.type === "tool_execution_update" ? [i] : []));
+		expect(updatePositions.every((i) => i < endIndex)).toBe(true);
+		expect(updatePositions.every((i) => i < agentEndIndex)).toBe(true);
+	});
+
 	it("should not produce an unhandled rejection when abort races a rejecting update sink", async () => {
 		const controller = new AbortController();
 		const toolSchema = Type.Object({});

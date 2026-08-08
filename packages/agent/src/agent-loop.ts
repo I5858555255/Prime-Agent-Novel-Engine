@@ -883,15 +883,18 @@ async function executePreparedToolCall(
 		}
 		return { result, isError: false };
 	} catch (error) {
-		if (signal?.aborted) {
+		const aborted = signal?.aborted === true;
+		if (aborted) {
 			updates.abandon();
 		} else {
 			updates.close();
-			await raceWithAbort(updates.drain(), signal).catch(() => undefined);
+			await raceWithAbort(updates.drain(), signal).catch(() => {
+				updates.abandon();
+			});
 		}
 		return {
 			result: createErrorToolResult(
-				signal?.aborted ? "Tool execution aborted" : error instanceof Error ? error.message : String(error),
+				aborted ? "Tool execution aborted" : error instanceof Error ? error.message : String(error),
 			),
 			isError: true,
 		};
