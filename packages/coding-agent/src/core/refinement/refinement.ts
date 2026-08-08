@@ -358,6 +358,44 @@ export function saveHarnessState(harnessStateDir: string, state: HarnessState): 
 	return statePath;
 }
 
+export function seedInheritedHarnessState(
+	parent: HarnessState,
+	childStateDir: string,
+	parentSessionId: string,
+	createdAt: string = new Date().toISOString(),
+): boolean {
+	if (existsSync(getHarnessStatePath(childStateDir))) {
+		return false;
+	}
+	const inherited = emptyHarnessState();
+	inherited.schema = parent.schema;
+	for (const kind of Object.keys(inherited.entries) as RefinementKind[]) {
+		for (const [id, entry] of Object.entries(parent.entries[kind])) {
+			const cloned = cloneEntry(entry)!;
+			const previousInheritance = objectRecord(cloned.metadata.inheritance);
+			const originSessionId =
+				typeof previousInheritance?.originSessionId === "string"
+					? previousInheritance.originSessionId
+					: parentSessionId;
+			inherited.entries[kind][id] = {
+				...cloned,
+				scope: "local",
+				metadata: {
+					...cloned.metadata,
+					inheritance: {
+						originSessionId,
+						immediateParentSessionId: parentSessionId,
+						inheritedAt: createdAt,
+						inheritedVersion: cloned.version,
+					},
+				},
+			};
+		}
+	}
+	saveHarnessState(childStateDir, inherited);
+	return true;
+}
+
 export function getRefinementHistoryPath(harnessStateDir: string = getGlobalHarnessStateDir()): string {
 	return join(harnessStateDir, REFINEMENT_HISTORY_FILE_NAME);
 }

@@ -11,7 +11,12 @@ import { flushAgentTraceUpload } from "./agent-traces.js";
 import { isNoModelsAvailableMessage } from "./auth-guidance.js";
 import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
-import type { CreateRlmSubagentRuntimeOptions, RlmSubagentRuntime, SubagentRuntimeHost } from "./rlm-runtime.js";
+import {
+	type CreateRlmSubagentRuntimeOptions,
+	type RlmSubagentRuntime,
+	type SubagentRuntimeHost,
+	seedRlmSubagentHarness,
+} from "./rlm-runtime.js";
 import type { CreateAgentSessionResult } from "./sdk.js";
 import { assertSessionCwdExists } from "./session-cwd.js";
 import { SessionImportFileNotFoundError } from "./session-import-errors.js";
@@ -340,6 +345,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 				rlmDepth: options.rlmDepth,
 			});
 		}
+		seedRlmSubagentHarness(options, sessionManager);
 		const runtime = await this.scopedBuild(() =>
 			createAgentSessionRuntime(this.createRuntime, {
 				cwd: sessionManager.getCwd(),

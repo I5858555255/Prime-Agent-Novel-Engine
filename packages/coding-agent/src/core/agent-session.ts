@@ -231,6 +231,7 @@ import {
 	type RlmSubagentRegistryEntry,
 	type RlmSubagentRuntime,
 	type SubagentRuntimeHost,
+	seedRlmSubagentHarness,
 } from "./rlm-runtime.js";
 import {
 	ActionStore,
@@ -8934,8 +8935,10 @@ export class AgentSession {
 		sessionDir: string;
 		model: Model<any>;
 	}): CreateRlmSubagentRuntimeOptions {
+		const parentHarnessStateDir = this._localHarnessStateDir();
 		return {
 			parentSession: this,
+			inheritedHarnessState: parentHarnessStateDir ? loadHarnessState(parentHarnessStateDir, "local") : undefined,
 			id: options.id,
 			prompt: options.prompt,
 			sessionName: options.sessionName,
@@ -8973,6 +8976,7 @@ export class AgentSession {
 				rlmDepth: options.rlmDepth,
 			});
 		}
+		seedRlmSubagentHarness(options, childSessionManager);
 		childSessionManager.appendModelChange(options.model.provider, options.model.id);
 		childSessionManager.appendThinkingLevelChange(options.thinkingLevel);
 		childSessionManager.appendServiceTierChange(options.serviceTier);
