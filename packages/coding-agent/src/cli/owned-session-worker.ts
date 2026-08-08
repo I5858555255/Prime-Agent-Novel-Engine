@@ -13,7 +13,7 @@ import {
 } from "../core/orphan-process-journal.js";
 import { SESSION_LEASE_OWNER_ID_ENV, SESSION_LEASES_ENABLED_ENV } from "../core/session-lease.js";
 import { attachJsonlLineReader, serializeJsonLine } from "../modes/rpc/jsonl.js";
-import { signalProcessGroupOrProcess } from "../utils/child-process.js";
+import { requestSelfShutdown, signalProcessGroupOrProcess } from "../utils/child-process.js";
 import { isHelpCommandRequest, PUBLIC_COMMAND_NAMES, REMOVED_COMMAND_NAMES } from "./command-registry.js";
 import { type CliSubprocessLaunchSpec, createCliSubprocessLaunchSpec } from "./subprocess-launch.js";
 
@@ -480,6 +480,21 @@ export async function maybeRunOwnedSessionWorkerFrontend(
 	return true;
 }
 
+const OWNER_LIVENESS_POLL_MS = 250;
+
+function isOwnerProcessAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) {
+		return false;
+	}
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		// EPERM means the process exists but belongs to someone else.
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
 export function installOwnedSessionWorkerOwnerWatch(): void {
 	if (!isOwnedSessionWorkerProcess()) {
 		return;
@@ -495,6 +510,7 @@ export function installOwnedSessionWorkerOwnerWatch(): void {
 		}
 		ownerGone = true;
 		closeOwnerWatch = undefined;
+		clearInterval(ownerPoll);
 		const forceTimer = setTimeout(() => {
 			try {
 				// Takes down this process and its descendants on both platforms
@@ -507,15 +523,34 @@ export function installOwnedSessionWorkerOwnerWatch(): void {
 			process.exit(143);
 		}, 5000);
 		forceTimer.unref();
-		process.kill(process.pid, "SIGTERM");
+		requestSelfShutdown();
 	};
 	process.once("disconnect", terminate);
 	process.channel.unref();
+
+	// Windows does not reliably surface a closed IPC channel when the frontend is
+	// killed outright, so the worker would outlive its owner. Polling the parent
+	// pid is the portable liveness check; the timer is unref'd so it never keeps
+	// an otherwise-idle worker alive.
+	const ownerPid = process.ppid;
+	const ownerPoll =
+		process.platform === "win32"
+			? setInterval(() => {
+					if (!isOwnerProcessAlive(ownerPid)) {
+						terminate();
+					}
+				}, OWNER_LIVENESS_POLL_MS)
+			: undefined;
+	ownerPoll?.unref();
+
 	closeOwnerWatch = () => {
 		if (ownerGone) {
 			return;
 		}
 		ownerGone = true;
+		if (ownerPoll) {
+			clearInterval(ownerPoll);
+		}
 		process.off("disconnect", terminate);
 		if (process.connected) {
 			process.disconnect();

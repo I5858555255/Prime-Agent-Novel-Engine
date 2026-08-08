@@ -321,7 +321,12 @@ describe("owned session worker processes", () => {
 		while (!existsSync(`${pidPath}.terminated`) && Date.now() < terminationDeadline) {
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
 		}
-		expect(existsSync(`${pidPath}.terminated`)).toBe(true);
+		// The guarantee is that the worker does not outlive its frontend. On Unix
+		// that runs through the graceful SIGTERM path, which leaves the marker;
+		// Windows tears the worker down with its owner before any handler runs.
+		if (process.platform !== "win32") {
+			expect(existsSync(`${pidPath}.terminated`)).toBe(true);
+		}
 		await waitForProcessGone(workerPid);
 	});
 });

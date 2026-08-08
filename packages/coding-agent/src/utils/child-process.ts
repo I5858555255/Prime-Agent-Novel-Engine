@@ -33,6 +33,26 @@ export function quoteWindowsShellArg(value: string): string {
 	return `"${escaped}"`;
 }
 
+/**
+ * Ask this process to shut down gracefully, running its own SIGTERM listeners.
+ *
+ * On Unix that is just a self-signal. Windows has no signal delivery:
+ * `process.kill(process.pid, "SIGTERM")` terminates immediately via
+ * TerminateProcess and never runs the listeners, so every graceful-shutdown
+ * path registered on SIGTERM would be skipped. Emitting the event reproduces
+ * what a delivered signal does; with no listener registered there is nothing to
+ * wait for, so the process exits directly.
+ */
+export function requestSelfShutdown(exitCode = 143): void {
+	if (process.platform !== "win32") {
+		process.kill(process.pid, "SIGTERM");
+		return;
+	}
+	if (!process.emit("SIGTERM" as never)) {
+		process.exit(exitCode);
+	}
+}
+
 export function signalProcessGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
 	if (process.platform === "win32") {
 		const args = ["/T", "/PID", String(pid)];
