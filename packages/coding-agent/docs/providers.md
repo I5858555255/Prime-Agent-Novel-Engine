@@ -70,6 +70,8 @@ prime-agent
 | Kimi For Coding | `KIMI_API_KEY` | `kimi-coding` |
 | MiniMax | `MINIMAX_API_KEY` | `minimax` |
 | MiniMax (China) | `MINIMAX_CN_API_KEY` | `minimax-cn` |
+| Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
+| Moonshot AI (China) | `MOONSHOT_API_KEY` | `moonshotai-cn` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
@@ -88,6 +90,8 @@ Store credentials in `~/.prime/agent/auth.json`:
   "prime-inference": { "type": "api_key", "key": "..." },
   "deepseek": { "type": "api_key", "key": "sk-..." },
   "google": { "type": "api_key", "key": "..." },
+  "moonshotai": { "type": "api_key", "key": "..." },
+  "moonshotai-cn": { "type": "api_key", "key": "..." },
   "opencode": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
   "xiaomi": { "type": "api_key", "key": "..." },
@@ -221,7 +225,17 @@ Prime Agent automatically sets `x-session-affinity` for [prefix caching](https:/
 
 ### Google Vertex AI
 
-Uses Application Default Credentials:
+Vertex AI supports two authentication routes: an API key or Application Default Credentials (ADC).
+
+**Option 1: API key**
+
+```bash
+export GOOGLE_CLOUD_API_KEY=...
+export GOOGLE_CLOUD_PROJECT=your-project
+export GOOGLE_CLOUD_LOCATION=us-central1
+```
+
+**Option 2: Application Default Credentials**
 
 ```bash
 gcloud auth application-default login
