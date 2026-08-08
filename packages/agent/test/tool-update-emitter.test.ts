@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AgentEvent } from "../src/types.js";
 import { MAX_PENDING_TOOL_UPDATES, ToolUpdateEmitter } from "../src/tool-update-emitter.js";
+import type { AgentEvent } from "../src/types.js";
 
 function createDeferred(): {
 	promise: Promise<void>;
@@ -217,5 +217,117 @@ describe("ToolUpdateEmitter", () => {
 		expect(() => new ToolUpdateEmitter(() => {}, 0)).toThrow();
 		expect(() => new ToolUpdateEmitter(() => {}, -1)).toThrow();
 		expect(() => new ToolUpdateEmitter(() => {}, 1.5)).toThrow();
+	});
+
+	it("should not produce an unhandled rejection when an in-flight sink rejects after abandon() (probe A)", async () => {
+		const unhandled: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+		try {
+			const gate = createDeferred();
+			const boom = new Error("A: sink rejected after abandon");
+			const emitter = new ToolUpdateEmitter(async () => {
+				await gate.promise;
+				throw boom;
+			});
+
+			emitter.push(makeEvent(0));
+			emitter.abandon();
+			await emitter.drain();
+
+			gate.resolve();
+			await new Promise((r) => setImmediate(r));
+			await new Promise((r) => setImmediate(r));
+
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.removeListener("unhandledRejection", onUnhandledRejection);
+		}
+	});
+
+	it("should not produce an unhandled rejection when the sink rejects and drain() is never called (probe B)", async () => {
+		const unhandled: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+		try {
+			const boom = new Error("B: sink rejected, drain never called");
+			const emitter = new ToolUpdateEmitter(async () => {
+				throw boom;
+			});
+
+			emitter.push(makeEvent(0));
+			await new Promise((r) => setImmediate(r));
+			await new Promise((r) => setImmediate(r));
+
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.removeListener("unhandledRejection", onUnhandledRejection);
+		}
+	});
+
+	it("should not produce an unhandled rejection when a later pump run rejects after an earlier drain() already resolved (probe C)", async () => {
+		const unhandled: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+		try {
+			const boom = new Error("C: second pump run rejected, only first tail awaited");
+			let calls = 0;
+			const emitter = new ToolUpdateEmitter(async () => {
+				calls += 1;
+				if (calls === 2) throw boom;
+			});
+
+			emitter.push(makeEvent(0));
+			await emitter.drain();
+
+			emitter.push(makeEvent(1));
+			// Deliberately do not await drain() again - this simulates a caller
+			// that already finished up after the first drain() resolved.
+			await new Promise((r) => setImmediate(r));
+			await new Promise((r) => setImmediate(r));
+
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.removeListener("unhandledRejection", onUnhandledRejection);
+		}
+	});
+
+	it("should not resolve drain() from a stale tail when a push races the pump run finishing", async () => {
+		const received: number[] = [];
+		const emitter = new ToolUpdateEmitter(async (event) => {
+			const n = (event as { partialResult: number }).partialResult;
+			// Event 1's delivery is delayed by a macrotask so it cannot land
+			// before a stale (already-settled) drain() promise would resolve -
+			// the assertion below only distinguishes the two implementations if
+			// event 1's delivery is unambiguously later than that.
+			if (n === 1) {
+				await new Promise((r) => setImmediate(r));
+			}
+			received.push(n);
+		});
+
+		emitter.push(makeEvent(0));
+		// Call drain() immediately, while pump run 1 is still in flight (pumping
+		// is still true here - pump() only reaches its first await after this
+		// line runs), exactly matching the reviewer's "push(a); const p =
+		// emitter.drain();" reproduction.
+		const drainPromise = emitter.drain();
+
+		// Yield exactly one microtask tick: enough for pump run 1 (a single
+		// queued event, no internal await) to finish and flip `pumping` back to
+		// false, but landing this push before drain()'s own pending
+		// continuation gets a chance to observe that and resolve.
+		await Promise.resolve();
+		emitter.push(makeEvent(1));
+
+		await drainPromise;
+
+		expect(received).toEqual([0, 1]);
 	});
 });

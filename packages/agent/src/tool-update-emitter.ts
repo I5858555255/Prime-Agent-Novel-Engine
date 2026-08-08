@@ -13,6 +13,7 @@ export class ToolUpdateEmitter {
 	private closed = false;
 	private abandoned = false;
 	private failed = false;
+	private failure: unknown;
 	private dropped = 0;
 
 	constructor(emit: AgentEventSink, maxPending: number = MAX_PENDING_TOOL_UPDATES) {
@@ -56,11 +57,16 @@ export class ToolUpdateEmitter {
 		this.queue.length = 0;
 	}
 
-	drain(): Promise<void> {
-		if (this.abandoned) {
-			return Promise.resolve();
+	async drain(): Promise<void> {
+		// Re-read `this.tail` on every iteration: a `push()` racing with this loop
+		// can start a new pump run, and a stale snapshot would let this resolve
+		// while that new run still has undelivered events.
+		while (!this.abandoned && this.pumping) {
+			await this.tail;
 		}
-		return this.tail;
+		if (!this.abandoned && this.failed) {
+			throw this.failure;
+		}
 	}
 
 	private async pump(): Promise<void> {
@@ -70,8 +76,9 @@ export class ToolUpdateEmitter {
 				await Promise.resolve(this.emit(event));
 			} catch (err) {
 				this.failed = true;
+				this.failure = err;
 				this.queue.length = 0;
-				throw err;
+				break;
 			}
 		}
 		this.pumping = false;
