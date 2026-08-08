@@ -210,7 +210,7 @@ On reload, the aggregate is reapplied to the parent message. Context-tree report
 
 Session-local state lives in the session artifact directory under `harness/harness_state.json`. Explicitly global entries live under `~/.prime/agent/harness/`. The Python store reloads after external modification so host-side `/refine` writes and kernel writes do not overwrite each other.
 
-`/refine` runs a dedicated review over the current trajectory and applies small create/update/delete edits. Rollback uses recorded before/after snapshots. The base system prompt remains immutable; refinements are supplemental state. `refine.preview()` runs the same planning pass and returns the proposed edits without applying them.
+`/refine` runs a dedicated review over the current trajectory and applies small create/update/delete edits. Rollback uses recorded before/after snapshots. The base system prompt remains immutable; refinements are supplemental state. `refine.preview()` runs the same planning pass and returns the proposed edits without applying them; `refine.run(plan_id=...)` applies a previewed plan exactly instead of re-planning.
 
 ## Goal Requests
 
