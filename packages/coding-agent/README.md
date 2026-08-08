@@ -331,7 +331,7 @@ Built-in integrations for Linear and Notion ship disabled. **Logging in enables 
 /mcp logout <name>   disconnect
 ```
 
-Credentials are stored once in `~/.prime/agent/auth.json` (under `mcp:<name>`); the kernel reads them directly and the host refreshes expired tokens. Enablement is derived from whether valid credentials exist, so there is no separate on/off switch.
+Credentials are stored once in `~/.prime/agent/auth.json` (under `mcp:<name>`); the kernel reads them directly and the host refreshes expired tokens. HTTP enablement is derived from valid credentials, while `enabled: false` explicitly disables a user server. Local stdio servers are enabled by configuration and do not use `auth.json`.
 
 **Add your own server.** Declare it under `mcpServers` in settings, then ship a tiny Python skill package that subclasses `McpIntegration`:
 
@@ -358,9 +358,17 @@ def __getattr__(name):     # so `import acme; await acme.<tool>(...)` works
     return getattr(acme, name)
 ```
 
-The base class connects with the official `mcp` SDK, injects the bearer token from `auth.json`, and binds the server's tools as async methods. Use `await acme.call_tool("name", {...})` for tools whose names aren't valid Python identifiers, or a static `bearerTokenEnvVar` instead of OAuth.
+The base class uses the configured HTTP transport through the official `mcp` SDK or dispatches host-managed stdio through the host bridge, then binds the server's tools as async methods. Use `await acme.call_tool("name", {...})` for tools whose names aren't valid Python identifiers, or a static `bearerTokenEnvVar` instead of OAuth for HTTP.
 
 See [docs/mcp-integrations.md](docs/mcp-integrations.md) for the full authoring guide (package layout, auth options, the `McpIntegration` API, and caveats).
+
+Optional bundled retrieval skills, `jcodemunch` and `context-mode`, connect to
+separately installed MCP sidecars over host-managed stdio or streamable HTTP
+for structured code retrieval and bounded large-output processing. They
+degrade cleanly when neither transport is configured; they never install,
+upgrade, purge, or otherwise manage sidecars. Configure the separately
+installed `jcodemunch-mcp` / `context-mode` commands or an HTTP endpoint as
+documented in [MCP integrations](docs/mcp-integrations.md#optional-local-sidecars).
 
 ### Extensions
 

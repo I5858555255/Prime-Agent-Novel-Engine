@@ -38,6 +38,7 @@ cp permission-gate.ts ~/.prime/agent/extensions/
 | `built-in-tool-renderer.ts` | Custom compact rendering for built-in tools (bash and edit) while keeping original behavior |
 | `minimal-mode.ts` | Override built-in tool rendering for minimal display (only tool calls, no output in collapsed mode) |
 | `truncated-tool.ts` | Wraps ripgrep with proper output truncation (50KB/2000 lines) |
+| `context-routing.ts` | Advisory/strict-large-read routing plus bounded, optional fast reindexing after IPython edits |
 | `ssh.ts` | Delegate bash and edit to a remote machine via SSH using pluggable operations |
 | `subagent/` | Delegate tasks to specialized subagents with isolated context windows |
 

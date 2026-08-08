@@ -99,6 +99,8 @@ export interface ExecuteOptions {
 	/** Aborting interrupts the kernel via the control channel. */
 	signal?: AbortSignal;
 	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
+	/** Receives the complete text/plain execute result before the bounded result is returned. */
+	onResult?: (result: string) => void;
 	onLateSentAgentMessage?: (message: KernelSentAgentMessage) => void;
 	/** Cap stdout / stderr / result at this many characters. Default 65536. */
 	maxOutputChars?: number;
@@ -563,6 +565,11 @@ export class KernelManager {
 		return this.options.sessionId;
 	}
 
+	registerHostHandlers(handlers: HostRequestHandlers): void {
+		this.options.hostHandlers ??= {};
+		Object.assign(this.options.hostHandlers, handlers);
+	}
+
 	private appendKernelDiagnostic(message: string): void {
 		this.kernelStderr += `[kernel] ${message.endsWith("\n") ? message : `${message}\n`}`;
 	}
@@ -1016,7 +1023,10 @@ export class KernelManager {
 			execution.opts.onStream?.(c.text, c.name);
 		} else if (t === "execute_result") {
 			const c = incoming.content as { data: Record<string, string> };
-			if (c.data["text/plain"]) execution.result = c.data["text/plain"];
+			if (c.data["text/plain"]) {
+				execution.result = c.data["text/plain"];
+				execution.opts.onResult?.(c.data["text/plain"]);
+			}
 		} else if (t === "display_data" || t === "update_display_data") {
 			const c = incoming.content as { data?: Record<string, unknown> };
 			const diff = parseDiffDisplay(c.data?.[DIFF_DISPLAY_MIME]);

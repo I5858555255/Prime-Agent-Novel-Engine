@@ -92,8 +92,8 @@ export type PackageSource =
 /**
  * Remote/local MCP server an integration connects to. Built-in integrations
  * (Linear/Notion) are defined in the ai/mcp catalog; this is for user-declared
- * servers. The kernel-side integration package reads creds from auth.json
- * (`mcp:<name>`); login/refresh run host-side.
+ * servers. HTTP integrations read creds from auth.json (`mcp:<name>`);
+ * stdio integrations stay host-side and are launched lazily.
  */
 export type McpServerConfig =
 	| {
@@ -113,6 +113,8 @@ export type McpServerConfig =
 			type: "stdio";
 			command: string;
 			args?: string[];
+			/** Working directory, resolved relative to the active workspace cwd. */
+			cwd?: string;
 			env?: Record<string, string>;
 			enabled?: boolean;
 			enabledTools?: string[];

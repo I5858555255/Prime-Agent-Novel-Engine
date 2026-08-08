@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { McpManager } from "../src/core/mcp/mcp-manager.js";
+import { StdioMcpClient } from "../src/core/mcp/stdio-mcp-client.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import type { McpServerConfig } from "../src/core/settings-manager.js";
 
@@ -75,7 +76,14 @@ describe("McpManager", () => {
 	it("exposes only mcp.refresh when no interactive login is wired", async () => {
 		const manager = new McpManager({ authStorage });
 		const handlers = manager.hostHandlers();
-		expect(Object.keys(handlers).sort()).toEqual(["mcp.config", "mcp.refresh"]);
+		expect(Object.keys(handlers).sort()).toEqual([
+			"mcp.call_tool",
+			"mcp.config",
+			"mcp.health",
+			"mcp.list_tools",
+			"mcp.refresh",
+			"mcp.restart",
+		]);
 
 		// refresh with no credentials fails (so the kernel reports a refresh error,
 		// not a false success), and a missing server arg is rejected.
@@ -92,7 +100,15 @@ describe("McpManager", () => {
 			},
 		});
 		const handlers = manager.hostHandlers();
-		expect(Object.keys(handlers).sort()).toEqual(["mcp.begin_login", "mcp.config", "mcp.refresh"]);
+		expect(Object.keys(handlers).sort()).toEqual([
+			"mcp.begin_login",
+			"mcp.call_tool",
+			"mcp.config",
+			"mcp.health",
+			"mcp.list_tools",
+			"mcp.refresh",
+			"mcp.restart",
+		]);
 		await handlers["mcp.begin_login"]({ server: "linear" });
 		expect(called).toBe("linear");
 	});
@@ -101,15 +117,34 @@ describe("McpManager", () => {
 		const manager = new McpManager({
 			authStorage,
 			getUserServers: () => ({
-				linear: { type: "http", url: "https://proxy.test/mcp", oauth: true, headers: { "X-Extra": "1" } },
+				linear: {
+					type: "http",
+					url: "https://proxy.test/mcp",
+					oauth: true,
+					headers: { "X-Extra": "1" },
+					enabledTools: ["allowed"],
+					disabledTools: ["blocked"],
+				},
 			}),
 		});
 		const handlers = manager.hostHandlers();
 		expect(await handlers["mcp.config"]({ server: "linear" })).toEqual({
 			url: "https://proxy.test/mcp",
 			headers: { "X-Extra": "1" },
+			enabledTools: ["allowed"],
+			disabledTools: ["blocked"],
 		});
 		expect(await handlers["mcp.config"]({ server: "notion" })).toEqual({ url: "https://mcp.notion.com/mcp" });
+	});
+
+	it("mcp.config denies an explicitly disabled user server", async () => {
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({
+				jcodemunch: { type: "http", url: "https://sidecar.test/mcp", enabled: false },
+			}),
+		});
+		expect(await manager.hostHandlers()["mcp.config"]({ server: "jcodemunch" })).toEqual({ enabled: false });
 	});
 
 	it("does not treat an oauth override of a catalog name as authed via the official stored cred", () => {
@@ -175,5 +210,102 @@ describe("McpManager", () => {
 		servers = {};
 		manager.refresh();
 		expect(getOAuthProvider("mcp:acme")).toBeUndefined();
+	});
+
+	it("lazily launches one durable stdio process, filters tools host-side, and restarts it", async () => {
+		const marker = join(tempDir, "stdio-marker");
+		const serverScript = join(tempDir, "stdio-server.mjs");
+		writeFileSync(
+			serverScript,
+			String.raw`
+import { appendFileSync } from "node:fs";
+const marker = process.env.MARKER;
+let input = "";
+let starts = 0;
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+  while (input.includes("\n")) {
+    const index = input.indexOf("\n");
+    const line = input.slice(0, index).trim();
+    input = input.slice(index + 1);
+    if (!line) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      starts += 1;
+      appendFileSync(marker, "start:" + starts + "\n");
+      reply(message.id, { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "test", version: "1" } });
+    } else if (message.method === "tools/list") {
+      reply(message.id, { tools: [
+        { name: "allowed", description: "allowed", inputSchema: { type: "object" } },
+        { name: "blocked", description: "blocked", inputSchema: { type: "object" } },
+      ] });
+    } else if (message.method === "tools/call") {
+      reply(message.id, { structuredContent: { tool: message.params.name, cwd: process.cwd(), arguments: message.params.arguments }, content: [] });
+    } else if (message.method === "ping") {
+      reply(message.id, {});
+    }
+  }
+});
+`,
+		);
+		const manager = new McpManager({
+			authStorage,
+			cwd: tempDir,
+			getUserServers: () => ({
+				local: {
+					type: "stdio",
+					command: process.execPath,
+					args: [serverScript],
+					cwd: ".",
+					env: { MARKER: marker },
+					enabledTools: ["allowed"],
+					disabledTools: ["blocked"],
+				},
+			}),
+		});
+		const handlers = manager.hostHandlers();
+		expect(await handlers["mcp.config"]({ server: "local" })).toEqual({ type: "stdio", bridge: "host" });
+		expect(() => readFileSync(marker, "utf8")).toThrow();
+
+		expect((await handlers["mcp.list_tools"]({ server: "local" })).tools).toEqual([
+			expect.objectContaining({ name: "allowed" }),
+		]);
+		expect(readFileSync(marker, "utf8")).toContain("start:1");
+		const callResult = await handlers["mcp.call_tool"]({ server: "local", tool: "allowed", arguments: { value: 1 } });
+		expect(callResult).toEqual({
+			result: {
+				structuredContent: { tool: "allowed", cwd: realpathSync(tempDir), arguments: { value: 1 } },
+				content: [],
+			},
+		});
+		await expect(handlers["mcp.call_tool"]({ server: "local", tool: "blocked" })).rejects.toThrow("not allowed");
+		await handlers["mcp.health"]({ server: "local" });
+		await handlers["mcp.restart"]({ server: "local" });
+		expect(readFileSync(marker, "utf8")).toContain("start:1\nstart:1");
+		await manager.dispose();
+	});
+
+	it("rejects malformed JSON-RPC responses instead of treating them as success", async () => {
+		const serverScript = join(tempDir, "malformed-stdio-server.mjs");
+		writeFileSync(
+			serverScript,
+			String.raw`
+process.stdin.on("data", () => process.stdout.write(JSON.stringify({ id: 1, result: { protocolVersion: "2024-11-05" } }) + "\n"));
+`,
+		);
+		const client = new StdioMcpClient({
+			server: "malformed",
+			command: process.execPath,
+			args: [serverScript],
+			cwd: tempDir,
+			env: process.env,
+		});
+		try {
+			await expect(client.listTools()).rejects.toThrow("invalid response");
+		} finally {
+			await client.dispose();
+		}
 	});
 });

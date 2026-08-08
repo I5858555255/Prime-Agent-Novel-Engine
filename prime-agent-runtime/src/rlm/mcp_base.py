@@ -26,7 +26,7 @@ from typing import Any
 
 from . import host_request
 
-__all__ = ["McpIntegration", "McpToolError", "NotEnabled"]
+__all__ = ["Disabled", "McpIntegration", "McpToolError", "NotEnabled"]
 
 # Stored access tokens are treated as expired this many seconds early so a token
 # never dies mid-request. Mirrors the host's refresh buffer.
@@ -46,6 +46,18 @@ class NotEnabled(RuntimeError):
             f"The '{server}' integration is not enabled: no credentials found. "
             f"Tell the user to run `/mcp login {server}` in Prime Agent to connect it. "
             f"Do not ask them to set environment variables."
+        )
+
+
+class Disabled(NotEnabled):
+    """Raised when the host has explicitly disabled an MCP integration."""
+
+    def __init__(self, server: str):
+        self.server = server
+        RuntimeError.__init__(
+            self,
+            f"The '{server}' integration is disabled in Prime Agent settings. "
+            "Enable its mcpServers entry before using it.",
         )
 
 
@@ -189,15 +201,43 @@ class McpIntegration:
 
     # -- connection ---------------------------------------------------------
 
-    async def _resolve_config(self) -> tuple[str | None, dict[str, str]]:
-        """Host-resolved (url, extra_headers), honoring a user's mcpServers override.
-        Falls back to the class ``url`` and no extra headers on host error."""
+    async def _resolve_host_config(self) -> dict[str, Any]:
+        """Read host transport metadata without importing or holding a live client."""
         try:
             cfg = await host_request("mcp.config", {"server": self.server})
         except RuntimeError:
-            cfg = {}
-        url = cfg.get("url") if isinstance(cfg, dict) else None
-        headers = cfg.get("headers") if isinstance(cfg, dict) else None
+            return {}
+        if isinstance(cfg, dict) and cfg.get("enabled") is False:
+            raise Disabled(self.server)
+        return cfg if isinstance(cfg, dict) else {}
+
+    @staticmethod
+    def _is_host_bridge_config(cfg: dict[str, Any]) -> bool:
+        return cfg.get("type") == "stdio" and cfg.get("bridge") == "host"
+
+    async def _uses_host_bridge(self) -> bool:
+        cfg = await self._resolve_host_config()
+        return self._is_host_bridge_config(cfg)
+
+    @staticmethod
+    def _tool_allowed_from_config(tool: str, cfg: dict[str, Any]) -> bool:
+        enabled = cfg.get("enabledTools")
+        if isinstance(enabled, list) and tool not in enabled:
+            return False
+        disabled = cfg.get("disabledTools")
+        return not isinstance(disabled, list) or tool not in disabled
+
+    async def _tool_allowed(self, tool: str, config: dict[str, Any] | None = None) -> bool:
+        """Apply host-configured tool allow/deny lists to an optional config snapshot."""
+        cfg = config if config is not None else await self._resolve_host_config()
+        return self._tool_allowed_from_config(tool, cfg)
+
+    async def _resolve_config(self) -> tuple[str | None, dict[str, str]]:
+        """Host-resolved (url, extra_headers), honoring a user's mcpServers override.
+        Falls back to the class ``url`` and no extra headers on host error."""
+        cfg = await self._resolve_host_config()
+        url = cfg.get("url")
+        headers = cfg.get("headers")
         if not (isinstance(url, str) and url):
             url = self.url
         extra = headers if isinstance(headers, dict) else {}
@@ -247,15 +287,30 @@ class McpIntegration:
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """Return the server's tools as ``[{name, description, inputSchema}]``."""
-        await self._ensure_tools()
-        return [dict(t) for t in (self._tools or {}).values()]
+        config = await self._ensure_tools()
+        tools = [dict(t) for t in (self._tools or {}).values()]
+        return [tool for tool in tools if self._tool_allowed_from_config(str(tool["name"]), config)]
 
-    async def _ensure_tools(self) -> None:
-        if self._tools is not None:
-            return
+    async def _ensure_tools(self) -> dict[str, Any]:
         async with self._lock:
+            config = await self._resolve_host_config()
             if self._tools is not None:
-                return
+                return config
+            if self._is_host_bridge_config(config):
+                payload = await host_request("mcp.list_tools", {"server": self.server})
+                tools = payload.get("tools") if isinstance(payload, dict) else None
+                if not isinstance(tools, list):
+                    raise RuntimeError("mcp.list_tools returned an invalid tools list")
+                self._tools = {
+                    tool["name"]: {
+                        "name": tool["name"],
+                        "description": tool.get("description", "") or "",
+                        "inputSchema": tool.get("inputSchema") or {},
+                    }
+                    for tool in tools
+                    if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+                }
+                return config
             async with AsyncExitStack() as stack:
                 session = await self._open_session(stack)
                 resp = await session.list_tools()
@@ -267,14 +322,27 @@ class McpIntegration:
                     }
                     for t in resp.tools
                 }
+            return config
 
     async def call_tool(self, tool: str, arguments: dict[str, Any] | None = None) -> Any:
         """Call ``tool`` on the server and return its parsed result.
 
-        Opens a fresh session per call: MCP sessions are not safe to hold across
-        the kernel's snapshot/restore, and per-call connect keeps this robust to
-        idle sessions and token rotation at modest latency cost.
+        Stdio integrations use the host bridge: the TypeScript host owns one
+        long-lived process per configured server, so snapshot/restore never
+        serializes a process, pipe, SDK session, or event-loop transport.
+        HTTP integrations retain the existing fresh-session behavior.
         """
+        config = await self._resolve_host_config()
+        if not self._tool_allowed_from_config(tool, config):
+            raise PermissionError(f"MCP tool '{tool}' is not allowed by settings")
+        if self._is_host_bridge_config(config):
+            payload = await host_request(
+                "mcp.call_tool",
+                {"server": self.server, "tool": tool, "arguments": arguments or {}},
+            )
+            if not isinstance(payload, dict) or "result" not in payload:
+                raise RuntimeError("mcp.call_tool returned an invalid result")
+            return _parse_result(payload["result"])
         async with AsyncExitStack() as stack:
             session = await self._open_session(stack)
             result = await session.call_tool(tool, arguments or {})
@@ -309,15 +377,23 @@ def _parse_result(result: Any) -> Any:
     Raises McpToolError when the server flags the result as an error, so a failed
     tool call doesn't look like a successful one to the caller.
     """
+    if isinstance(result, dict):
+        blocks = result.get("content") or []
+        is_error = bool(result.get("isError", False))
+        structured = result.get("structuredContent")
+    else:
+        blocks = getattr(result, "content", None) or []
+        is_error = bool(getattr(result, "isError", False))
+        structured = getattr(result, "structuredContent", None)
+
     texts: list[str] = []
-    for block in getattr(result, "content", None) or []:
-        text = getattr(block, "text", None)
+    for block in blocks:
+        text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
         if text is not None:
-            texts.append(text)
-    if getattr(result, "isError", False):
+            texts.append(str(text))
+    if is_error:
         raise McpToolError("\n".join(texts) or "MCP tool returned an error")
 
-    structured = getattr(result, "structuredContent", None)
     if structured is not None:  # falsy-but-valid payloads ({} / []) are real results
         return structured
     if texts:
@@ -325,7 +401,6 @@ def _parse_result(result: Any) -> Any:
 
     # Non-text content (images, embedded resources): return them as plain dicts
     # rather than the opaque SDK object so callers get usable data.
-    blocks = getattr(result, "content", None) or []
     if blocks:
         return [b.model_dump(mode="json") if hasattr(b, "model_dump") else b for b in blocks]
     return result

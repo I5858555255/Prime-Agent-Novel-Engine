@@ -477,6 +477,35 @@ describe("SettingsManager", () => {
 			expect(manager.getMcpServers()).toBeUndefined();
 		});
 
+		it("preserves stdio server command, cwd, env, and tool filters", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					mcpServers: {
+						local: {
+							type: "stdio",
+							command: "node",
+							args: ["server.mjs"],
+							cwd: "./tools",
+							env: { TOKEN: "secret" },
+							enabledTools: ["read"],
+							disabledTools: ["write"],
+						},
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getMcpServers()?.local).toEqual({
+				type: "stdio",
+				command: "node",
+				args: ["server.mjs"],
+				cwd: "./tools",
+				env: { TOKEN: "secret" },
+				enabledTools: ["read"],
+				disabledTools: ["write"],
+			});
+		});
+
 		it("merges global and project mcpServers, project winning per key", () => {
 			writeFileSync(
 				join(agentDir, "settings.json"),

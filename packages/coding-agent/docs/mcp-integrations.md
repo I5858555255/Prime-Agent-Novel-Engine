@@ -26,6 +26,7 @@ credentials in `auth.json`.
   - [Authentication](#authentication)
 - [The `McpIntegration` API](#the-mcpintegration-api)
 - [Enable-by-login lifecycle](#enable-by-login-lifecycle)
+- [Optional local sidecars](#optional-local-sidecars)
 - [Caveats](#caveats)
 
 ## Using a built-in integration
@@ -40,8 +41,9 @@ Built-in integrations (Linear, Notion) ship **disabled**. Logging in enables the
   disconnects.
 
 Credentials are stored once in `~/.prime/agent/auth.json` under `mcp:<name>`.
-Enablement is derived from whether valid credentials exist — there is no separate
-on/off switch.
+HTTP enablement is derived from valid credentials (or a configured bearer-token
+environment variable). Set `enabled: false` to explicitly disable any user
+server, including a local stdio server.
 
 ## How a call works
 
@@ -67,8 +69,10 @@ result = await linear.list_issues(team="Engineering")
   text, or a list of content blocks otherwise. No need to `json.loads` them.
 - A tool whose name isn't a valid Python identifier (e.g. Notion's `notion-search`)
   is called via the escape hatch: `await notion.call_tool("notion-search", {...})`.
-- A call against an integration with no credentials raises `NotEnabled` (telling
-  the user to `/mcp login`); a tool that returns an error raises `McpToolError`.
+- A call against an HTTP integration with no credentials raises `NotEnabled`
+  (telling the user to `/mcp login`); explicitly disabled integrations raise
+  `Disabled`; a tool that returns an error raises `McpToolError`. Local stdio
+  integrations do not use `auth.json` and are enabled by their settings entry.
 
 ## Authoring your own integration
 
@@ -94,8 +98,7 @@ Add it under `mcpServers` in `~/.prime/agent/settings.json` (or project
 }
 ```
 
-Currently only remote `"http"` servers are supported by `McpIntegration`. HTTP
-server fields:
+HTTP server fields:
 
 | Field | Meaning |
 |-------|---------|
@@ -105,9 +108,21 @@ server fields:
 | `bearerTokenEnvVar` | Name of an env var holding a static bearer token, instead of OAuth |
 | `headers` | Extra static HTTP headers sent on every request |
 | `enabled` | Set `false` to force-disable even when credentials exist |
+| `enabledTools` / `disabledTools` | Optional tool allow/deny lists |
 
-> `stdio` (local-subprocess) servers are not yet wired through to the kernel —
-> the host drops non-HTTP entries — so an integration must target an HTTP endpoint.
+Local `"stdio"` servers are launched lazily by the host, not by the Python
+kernel. Their command, arguments, environment, and working directory remain
+host-side; the kernel uses a host bridge for `list_tools` and `call_tool`.
+
+| Field | Meaning |
+|-------|---------|
+| `type` | Must be `"stdio"` |
+| `command` | Executable passed directly to the subprocess (no shell is used) |
+| `args` | Optional argv arguments |
+| `cwd` | Optional working directory, resolved relative to the active workspace |
+| `env` | Optional child-process environment additions |
+| `enabled` | Set `false` to prevent launch and tool calls |
+| `enabledTools` / `disabledTools` | Optional host-side tool allow/deny lists |
 
 ### 2. Ship the skill package
 
@@ -160,10 +175,12 @@ def __getattr__(name):
     return getattr(acme, name)
 ```
 
-The base class connects with the `mcp` SDK, resolves the URL/headers from the host
-(honoring the `mcpServers` config), injects the bearer token from `auth.json`
-(refreshing when expired), and binds the server's tools as async methods. Authoring
-is a few lines — the package above is the whole integration.
+The base class resolves the configured transport from the host. For HTTP it
+connects with the `mcp` SDK, resolves URL/headers, injects the bearer token from
+`auth.json` (refreshing when expired), and binds the server's tools as async
+methods. For host-managed stdio it keeps command, arguments, environment, and
+cwd in the host and dispatches `list_tools` / `call_tool` through the host
+bridge. Authoring is a few lines — the package above is the whole integration.
 
 ### Authentication
 
@@ -229,6 +246,84 @@ the auth mode you configured:
   do *not* point them at `/mcp login`, which has no provider for a bearer-only
   server and reports "Unknown MCP integration".
 
+## Optional local sidecars
+
+The bundled `jcodemunch` and `context-mode` skills target separately installed
+sidecars for structured code retrieval and bounded large-output processing.
+They are intentionally optional: importing either package never installs,
+launches, indexes, upgrades, or purges a sidecar. Each skill supports either a
+host-managed local stdio server or a streamable HTTP endpoint and reports a
+diagnostic from `available()` when neither is configured.
+
+### Host-managed stdio
+
+Install the sidecar separately and configure its documented stdio command in
+`mcpServers`. The command names for these two optional sidecars are known:
+
+```jsonc
+{
+  "mcpServers": {
+    "jcodemunch": {
+      "type": "stdio",
+      "command": "jcodemunch-mcp"
+    },
+    "context-mode": {
+      "type": "stdio",
+      "command": "context-mode"
+    }
+  }
+}
+```
+
+The host launches configured stdio servers lazily and keeps their command,
+arguments, environment, and working directory host-side; the Python skill
+uses the host bridge for `list_tools` and `call_tool`. Do not add undocumented
+arguments or put secret values in a skill or diagnostic. For another sidecar
+whose CLI syntax is not known, use a safe placeholder and confirm its docs
+before enabling it:
+
+```jsonc
+{
+  "mcpServers": {
+    "acme": {
+      "type": "stdio",
+      "command": "/path/to/separately-installed-mcp-server"
+    }
+  }
+}
+```
+
+### Streamable HTTP
+
+Configure an HTTP endpoint in `mcpServers` (or the documented skill-specific
+`*_MCP_URL` environment variable). The endpoint and token names below are
+examples rather than sidecar defaults:
+
+```jsonc
+{
+  "mcpServers": {
+    "jcodemunch": {
+      "type": "http",
+      "url": "https://localhost.example/jcodemunch/mcp",
+      "bearerTokenEnvVar": "JCODEMUNCH_MCP_TOKEN"
+    },
+    "context-mode": {
+      "type": "http",
+      "url": "https://localhost.example/context-mode/mcp",
+      "bearerTokenEnvVar": "CONTEXT_MODE_MCP_TOKEN"
+    }
+  }
+}
+```
+
+The Python adapters open an HTTP session only for an HTTP configuration; they
+do not launch or attach to stdio themselves. Context Mode exposes a deliberate
+allowlist for execution, file processing, batch processing, fetch-and-index,
+and search. It blocks `ctx_purge`, `ctx_upgrade`, and other maintenance tools.
+Review the separately installed jCodeMunch sidecar's license terms before use;
+the bundled skill does not include or copy that sidecar. Neither skill
+automatically installs, upgrades, reindexes, removes, or purges a sidecar.
+
 ## Caveats
 
 - **Discover before assuming.** Tool names and argument schemas come from the
@@ -246,5 +341,7 @@ the auth mode you configured:
 - **Multi-session daemon.** OAuth provider registration is process-global; a
   user-declared server unique to one daemon session is re-registered on that
   session's next reload.
+- **Stdio lifecycle.** Local sidecars are owned by the session's host manager,
+  started on first use, serialized per server, and stopped on reload/disposal.
 
 See also: [Skills](skills.md), [Settings](settings.md).

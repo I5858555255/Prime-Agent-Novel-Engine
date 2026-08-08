@@ -253,6 +253,73 @@ class McpIntegrationTest(unittest.TestCase):
         self._run_open_session_with_transport(transport)
         self.assertIsNotNone(captured["http_client"])
 
+    def test_resolve_config_denies_an_explicitly_disabled_server(self):
+        async def host_disabled(req_type, payload):
+            return {"enabled": False}
+
+        with mock.patch.object(mcp_base, "host_request", host_disabled):
+            with self.assertRaisesRegex(mcp_base.Disabled, "disabled"):
+                _run(_Integration()._resolve_config())
+
+    def test_stdio_bridge_uses_host_process_without_opening_python_sessions(self):
+        calls = []
+
+        async def host_request_bridge(req_type, payload):
+            calls.append((req_type, payload))
+            if req_type == "mcp.config":
+                return {"type": "stdio", "bridge": "host"}
+            if req_type == "mcp.list_tools":
+                return {"tools": [{"name": "echo", "description": "Echo", "inputSchema": {}}]}
+            if req_type == "mcp.call_tool":
+                return {"result": {"structuredContent": {"ok": payload["arguments"]}, "content": []}}
+            raise AssertionError(req_type)
+
+        with mock.patch.object(mcp_base, "host_request", host_request_bridge):
+            with mock.patch.object(_Integration, "_open_session", side_effect=AssertionError("HTTP session opened")):
+                integration = _Integration()
+                self.assertEqual(_run(integration.list_tools()), [{"name": "echo", "description": "Echo", "inputSchema": {}}])
+                self.assertEqual(_run(integration.call_tool("echo", {"value": 1})), {"ok": {"value": 1}})
+        self.assertEqual(
+            [call[0] for call in calls],
+            ["mcp.config", "mcp.list_tools", "mcp.config", "mcp.call_tool"],
+        )
+
+    def test_list_tools_resolves_filter_config_once_for_many_tools(self):
+        calls = []
+
+        async def host_request_many_tools(req_type, payload):
+            calls.append((req_type, payload))
+            if req_type == "mcp.config":
+                return {
+                    "type": "stdio",
+                    "bridge": "host",
+                    "enabledTools": ["tool-0", "tool-2"],
+                }
+            if req_type == "mcp.list_tools":
+                return {
+                    "tools": [
+                        {"name": f"tool-{index}", "description": "", "inputSchema": {}}
+                        for index in range(81)
+                    ]
+                }
+            raise AssertionError(req_type)
+
+        with mock.patch.object(mcp_base, "host_request", host_request_many_tools):
+            tools = _run(_Integration().list_tools())
+
+        self.assertEqual([tool["name"] for tool in tools], ["tool-0", "tool-2"])
+        self.assertEqual([call[0] for call in calls], ["mcp.config", "mcp.list_tools"])
+
+    def test_host_bridge_parses_error_result(self):
+        async def host_request_error(req_type, payload):
+            if req_type == "mcp.config":
+                return {"type": "stdio", "bridge": "host"}
+            return {"result": {"isError": True, "content": [{"text": "boom"}]}}
+
+        with mock.patch.object(mcp_base, "host_request", host_request_error):
+            with self.assertRaisesRegex(McpToolError, "boom"):
+                _run(_Integration().call_tool("echo"))
+
     def test_resolve_config_prefers_host_override_and_headers(self):
         async def host_with_override(req_type, payload):
             return {"url": "https://override.test/mcp", "headers": {"X-Extra": "1"}}
@@ -268,6 +335,23 @@ class McpIntegrationTest(unittest.TestCase):
             url, headers = _run(_Integration()._resolve_config())
             self.assertEqual(url, _Integration.url)
             self.assertEqual(headers, {})
+
+
+    def test_host_tool_allowlists_apply_to_http_integrations(self):
+        integration = _Integration()
+        integration._tools = {
+            "allowed": {"name": "allowed", "description": "", "inputSchema": {}},
+            "blocked": {"name": "blocked", "description": "", "inputSchema": {}},
+        }
+
+        async def host_config(req_type, payload):
+            self.assertEqual(req_type, "mcp.config")
+            return {"url": _Integration.url, "enabledTools": ["allowed"]}
+
+        with mock.patch.object(mcp_base, "host_request", host_config):
+            self.assertEqual([tool["name"] for tool in _run(integration.list_tools())], ["allowed"])
+            with self.assertRaisesRegex(PermissionError, "not allowed"):
+                _run(integration.call_tool("blocked"))
 
 
 if __name__ == "__main__":

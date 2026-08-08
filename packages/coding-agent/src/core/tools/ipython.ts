@@ -18,6 +18,13 @@ import {
 } from "../kernel/index.js";
 import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/state-snapshot.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
+import {
+	artifactRetrievalGuidance,
+	boundedArtifactPreview,
+	type ContextArtifactReference,
+	ContextArtifactStore,
+	type ContextArtifactStoreOptions,
+} from "./context-artifact-store.js";
 import { parseIpythonBashCell } from "./ipython-cell-code.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
@@ -258,6 +265,8 @@ export interface IpythonToolDetails {
 	attachments?: KernelAttachment[];
 	/** Agent messages sent from this cell. */
 	sentAgentMessages?: KernelSentAgentMessage[];
+	/** Opaque durable handles for output materialized outside the model transcript. */
+	artifacts?: ContextArtifactReference[];
 	/** True when this result came after killing and restarting a busy kernel. */
 	kernelRestarted?: boolean;
 	error?: {
@@ -281,6 +290,8 @@ export interface IpythonToolOptions {
 	pythonSkills?: readonly PythonSkillRuntimeInfo[];
 	/** Per-session artifact dir where the kernel namespace snapshot is stored. Omit to disable snapshots. */
 	snapshotDir?: string;
+	/** Narrow controls for oversized IPython output materialization. */
+	outputMaterialization?: ContextArtifactStoreOptions;
 	/** Resolves before this kernel starts — e.g. the previous provisioner's dispose, so a
 	 * /reload's old-kernel snapshot flush can't race the new kernel's restore. */
 	readyGate?: Promise<unknown>;
@@ -346,6 +357,17 @@ export class IpythonKernelProvisioner {
 	/** The kernel manager, once a startup has completed successfully. */
 	get manager(): KernelManager | undefined {
 		return this.startedManager;
+	}
+
+	/** Add host handlers after construction; shared tools can extend the provisioner safely. */
+	registerHostHandlers(handlers: HostRequestHandlers): void {
+		if (!this.options) return;
+		if (this.options.hostHandlers) {
+			Object.assign(this.options.hostHandlers, handlers);
+		} else {
+			this.options.hostHandlers = handlers;
+		}
+		this.startedManager?.registerHostHandlers(handlers);
 	}
 
 	/** Result of reviving a prior session's namespace on the last kernel start, if any. */
@@ -570,6 +592,7 @@ async function executeWithBusyKernelChoice(
 	code: string,
 	signal: AbortSignal | undefined,
 	onStream: (chunk: string, name: "stdout" | "stderr") => void,
+	onResult: (result: string) => void,
 	onWorkingMessage: (message?: string) => void,
 	onLateSentAgentMessage: ((toolCallId: string, message: KernelSentAgentMessage) => void) | undefined,
 	ctx: ExtensionContext | undefined,
@@ -582,6 +605,7 @@ async function executeWithBusyKernelChoice(
 				result: await m.execute(code, {
 					signal,
 					onStream,
+					onResult,
 					onLateSentAgentMessage: onLateSentAgentMessage
 						? (message) => onLateSentAgentMessage(toolCallId, message)
 						: undefined,
@@ -620,7 +644,21 @@ export function createIpythonToolDefinition(
 	cwd: string,
 	options?: IpythonToolOptions,
 ): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
-	const provisioner = options?.provisioner ?? new IpythonKernelProvisioner(cwd, options);
+	const artifactStore = new ContextArtifactStore(options?.snapshotDir, options?.outputMaterialization);
+	const artifactHandlers = artifactStore.createHostRequestHandlers();
+	const { provisioner: suppliedProvisioner, ...provisionerOptions } = options ?? {};
+	if (suppliedProvisioner && typeof suppliedProvisioner.registerHostHandlers === "function") {
+		suppliedProvisioner.registerHostHandlers(artifactHandlers);
+	}
+	const provisioner =
+		suppliedProvisioner ??
+		new IpythonKernelProvisioner(cwd, {
+			...provisionerOptions,
+			hostHandlers: {
+				...provisionerOptions.hostHandlers,
+				...artifactHandlers,
+			},
+		});
 
 	return {
 		name: "ipython",
@@ -647,28 +685,42 @@ export function createIpythonToolDefinition(
 
 			try {
 				const code = applyShellSettingsToBashMagicCell(params.code, options);
+				const stdoutCapture = artifactStore.createCapture("stdout");
+				const stderrCapture = artifactStore.createCapture("stderr");
+				const resultCapture = artifactStore.createCapture("result");
+				const tracebackCapture = artifactStore.createCapture("traceback");
 				const { result: r, kernelRestarted } = await executeWithBusyKernelChoice(
 					provisioner,
 					reportStartupProgress,
 					toolCallId,
 					code,
 					signal,
-					(chunk) => {
+					(chunk, name) => {
+						(name === "stdout" ? stdoutCapture : stderrCapture).append(chunk);
 						onUpdate?.({
 							content: [{ type: "text", text: chunk }],
 							details: { status: "ok" },
 						});
 					},
+					(result) => resultCapture.append(result),
 					setToolWorkingMessage,
 					options?.onLateSentAgentMessage,
 					ctx,
 				);
 
-				let text = r.stdout;
-				if (r.stderr) text += (text ? "\n" : "") + r.stderr;
-				if (r.result) text += (text ? "\n" : "") + r.result;
-				if (r.status === "error" && r.error) {
-					text += (text ? "\n" : "") + r.error.traceback.join("\n");
+				const traceback = r.error?.traceback.join("\n");
+				const output = artifactStore.materialize(
+					{ stdout: stdoutCapture, stderr: stderrCapture, result: resultCapture, traceback: tracebackCapture },
+					{ stdout: r.stdout, stderr: r.stderr, result: r.result, traceback },
+				);
+				let text = output.values.stdout ?? "";
+				if (output.values.stderr) text += (text ? "\n" : "") + output.values.stderr;
+				if (output.values.result) text += (text ? "\n" : "") + output.values.result;
+				if (output.values.traceback) text += (text ? "\n" : "") + output.values.traceback;
+				if (output.artifact) {
+					text += `${text ? "\n\n" : ""}${artifactRetrievalGuidance(output.artifact)}`;
+				} else if (output.oversized) {
+					text += `${text ? "\n\n" : ""}Oversized IPython output was bounded, but this transient session has no durable artifact directory for retrieval.`;
 				}
 				if (kernelRestarted) {
 					text = text ? `${KERNEL_RESTART_NOTICE}\n\n${text}` : KERNEL_RESTART_NOTICE;
@@ -676,6 +728,15 @@ export function createIpythonToolDefinition(
 
 				const imageBlocks = imageBlocksFromAttachments(r.attachments);
 				const content: (TextContent | ImageContent)[] = [{ type: "text", text: text || "" }, ...imageBlocks];
+				const safeError = r.error
+					? {
+							...r.error,
+							// Keep a pathological exception value from bypassing the output
+							// materialization bound when no traceback was emitted.
+							evalue: boundedArtifactPreview(r.error.evalue, artifactStore.previewChars),
+							traceback: (output.values.traceback ?? "").split("\n").filter((line) => line.length > 0),
+						}
+					: undefined;
 
 				return {
 					content,
@@ -683,14 +744,15 @@ export function createIpythonToolDefinition(
 						durationMs: r.durationMs,
 						status: r.status,
 						errorEname: r.error?.ename,
-						stdout: r.stdout,
-						stderr: r.stderr,
-						result: r.result,
+						stdout: output.values.stdout,
+						stderr: output.values.stderr,
+						result: output.values.result,
 						diffs: r.diffs,
 						attachments: r.attachments,
 						sentAgentMessages: r.sentAgentMessages,
+						artifacts: output.artifact ? [output.artifact] : undefined,
 						kernelRestarted,
-						error: r.error,
+						error: safeError,
 					},
 					isError: r.status === "error" || r.status === "aborted",
 				};
