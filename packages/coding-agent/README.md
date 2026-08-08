@@ -516,7 +516,7 @@ prime-agent schedule add <agent> <schedule> -- <message>
 prime-agent schedule cancel <job-id>
 ```
 
-Schedules run prompts later or repeatedly. A schedule can be a supported one-time expression such as `in 5m` or a cron expression.
+Schedules run prompts later or repeatedly. A schedule can be a supported one-time expression such as `in 5m` or a standard five-field cron expression. Cron schedules use the host process's local timezone; see [Cron schedule semantics](docs/long-running-agents.md#cron-schedule-semantics) for fields, aliases, day matching, and DST behavior.
 
 ### Package and Update Commands
 

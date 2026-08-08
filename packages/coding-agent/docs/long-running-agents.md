@@ -169,6 +169,21 @@ prime-agent schedule cancel <job-id>
 
 Scheduled jobs are persisted per session and continue while the UI is detached. Due ticks are claimed before delivery so a crash does not replay an uncertain prompt, and missed ticks are coalesced rather than accumulated into an unbounded backlog.
 
+#### Cron schedule semantics
+
+Recurring schedules use Vixie/POSIX-style five-field expressions in the order `minute hour day-of-month month day-of-week`:
+
+- minute is `0-59`, hour is `0-23`, day of month is `1-31`, month is `1-12`, and day of week is `0-7`, where both `0` and `7` mean Sunday;
+- fields accept comma-separated lists, inclusive ranges, and steps after a range or `*`;
+- month names `JAN`-`DEC` and weekday names `SUN`-`SAT` are case-insensitive and work anywhere a number does; and
+- `@yearly`/`@annually`, `@monthly`, `@weekly`, `@daily`/`@midnight`, and `@hourly` are supported. `@reboot` is not a time-based schedule and is rejected.
+
+The day fields follow conventional cron matching. If both day of month and day of week are restricted, either field may match; otherwise both fields must match. Only a bare `*` is unrestricted, so a stepped wildcard such as `*/2` is a restriction for this rule.
+
+Cron fields are evaluated in the worker process's local timezone. There is no per-job timezone override. During a daylight-saving gap, nonexistent local times are skipped. During a fold, a repeated wall-clock time runs once at its earlier occurrence and is not repeated after the clock moves back. Missed runs are not replayed.
+
+The scheduler jumps between matching calendar fields and checks a complete 400-year Gregorian cycle. Sparse valid schedules such as leap day can therefore be created from any year, while impossible combinations fail instead of scanning forever.
+
 ## Persistent Goals
 
 A goal is a durable objective that the harness continues to present across turns until it is complete, paused, budget-limited, errored, or cleared. Start one explicitly from the TUI:

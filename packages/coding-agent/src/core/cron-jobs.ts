@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { lockSync } from "proper-lockfile";
+import { nextCronRunAfter, normalizeCronAlias } from "./cron-expression.js";
 
 export type AgentCronJobStatus = "active" | "paused" | "completed" | "cancelled";
 export type AgentCronScheduleKind = "once" | "cron" | "interval";
@@ -1369,115 +1370,6 @@ export function shouldDeferHeartbeatCronJob(job: AgentCronJob, activity: Heartbe
 		return false;
 	}
 	return activity.isStreaming;
-}
-
-function nextCronRunAfter(expression: string, after: Date): Date {
-	const fields = parseCronExpression(expression);
-	const candidate = new Date(after.getTime());
-	candidate.setSeconds(0, 0);
-	candidate.setMinutes(candidate.getMinutes() + 1);
-
-	const deadline = candidate.getTime() + 366 * 24 * 60 * ONE_MINUTE_MS;
-	while (candidate.getTime() <= deadline) {
-		if (matchesCronFields(candidate, fields)) {
-			return candidate;
-		}
-		candidate.setMinutes(candidate.getMinutes() + 1);
-	}
-	throw new Error(`Cron schedule did not match within one year: ${expression}`);
-}
-
-function parseCronExpression(expression: string): CronFields {
-	const parts = expression.trim().split(/\s+/);
-	if (parts.length !== 5) {
-		throw new Error(
-			"Unsupported cron schedule. Use 'in 10m', 'at <ISO date>', @hourly, or five fields: minute hour day month weekday",
-		);
-	}
-	return {
-		minute: parseCronField(parts[0]!, 0, 59),
-		hour: parseCronField(parts[1]!, 0, 23),
-		dayOfMonth: parseCronField(parts[2]!, 1, 31),
-		month: parseCronField(parts[3]!, 1, 12),
-		dayOfWeek: parseCronField(parts[4]!, 0, 7),
-	};
-}
-
-interface CronFields {
-	minute: Set<number>;
-	hour: Set<number>;
-	dayOfMonth: Set<number>;
-	month: Set<number>;
-	dayOfWeek: Set<number>;
-}
-
-function parseCronField(field: string, min: number, max: number): Set<number> {
-	const values = new Set<number>();
-	for (const part of field.split(",")) {
-		if (!part) {
-			throw new Error(`Invalid cron field: ${field}`);
-		}
-		const [rangeText, stepText] = part.split("/");
-		const step = stepText === undefined ? 1 : parseCronNumber(stepText, 1, max);
-		let start: number;
-		let end: number;
-		if (rangeText === "*") {
-			start = min;
-			end = max;
-		} else if (rangeText?.includes("-")) {
-			const [startText, endText] = rangeText.split("-");
-			start = parseCronNumber(startText, min, max);
-			end = parseCronNumber(endText, min, max);
-			if (start > end) {
-				throw new Error(`Invalid cron range: ${rangeText}`);
-			}
-		} else {
-			start = parseCronNumber(rangeText, min, max);
-			end = start;
-		}
-		for (let value = start; value <= end; value += step) {
-			values.add(value);
-		}
-	}
-	return values;
-}
-
-function parseCronNumber(value: string | undefined, min: number, max: number): number {
-	if (!value || !/^\d+$/.test(value)) {
-		throw new Error(`Invalid cron number: ${value ?? ""}`);
-	}
-	const parsed = Number.parseInt(value, 10);
-	if (parsed < min || parsed > max) {
-		throw new Error(`Cron number out of range: ${value}`);
-	}
-	return parsed;
-}
-
-function matchesCronFields(date: Date, fields: CronFields): boolean {
-	const day = date.getDay();
-	const dayMatches = fields.dayOfWeek.has(day) || (day === 0 && fields.dayOfWeek.has(7));
-	return (
-		fields.minute.has(date.getMinutes()) &&
-		fields.hour.has(date.getHours()) &&
-		fields.dayOfMonth.has(date.getDate()) &&
-		fields.month.has(date.getMonth() + 1) &&
-		dayMatches
-	);
-}
-
-function normalizeCronAlias(text: string): string {
-	switch (text) {
-		case "@hourly":
-			return "0 * * * *";
-		case "@daily":
-			return "0 0 * * *";
-		case "@weekly":
-			return "0 0 * * 0";
-		case "@monthly":
-			return "0 0 1 * *";
-		default:
-			return text;
-	}
 }
 
 function stripMatchingQuotes(value: string): string {

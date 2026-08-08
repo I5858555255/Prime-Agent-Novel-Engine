@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,8 +38,115 @@ describe("parseAgentCronSchedule", () => {
 		expect(parsed.nextRunAt.toISOString()).toBe("2026-01-01T12:34:30.000Z");
 	});
 
-	it("rejects unsupported cron syntax", () => {
-		expect(() => parseAgentCronSchedule("0 9 * * MON", start)).toThrow("Invalid cron number");
+	it("rejects malformed cron syntax", () => {
+		expect(() => parseAgentCronSchedule("0 9 * * MONDAY", start)).toThrow("Invalid cron number or name");
+	});
+});
+
+describe("five-field cron semantics", () => {
+	it("finds leap-day schedules from multiple non-leap years", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "0 0 29 2 *", after: "2025-03-01T00:00:00.000Z" },
+				{ expression: "0 0 29 2 *", after: "2026-03-01T00:00:00.000Z" },
+				{ expression: "0 0 29 2 *", after: "2027-03-01T00:00:00.000Z" },
+			]),
+		).toEqual(["2028-02-29T00:00:00.000Z", "2028-02-29T00:00:00.000Z", "2028-02-29T00:00:00.000Z"]);
+	});
+
+	it("skips months that do not contain the requested day", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "0 0 31 * *", after: "2026-02-01T00:00:00.000Z" },
+				{ expression: "0 0 31 * *", after: "2026-04-01T00:00:00.000Z" },
+			]),
+		).toEqual(["2026-03-31T00:00:00.000Z", "2026-05-31T00:00:00.000Z"]);
+	});
+
+	it("uses OR semantics when both day fields are restricted", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "0 0 1 * 1", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "0 0 1 * 1", after: "2026-01-31T00:00:00.000Z" },
+				{ expression: "0 0 * * 1", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "0 0 */2 * 1", after: "2026-01-05T00:00:00.000Z" },
+			]),
+		).toEqual([
+			"2026-01-05T00:00:00.000Z",
+			"2026-02-01T00:00:00.000Z",
+			"2026-01-05T00:00:00.000Z",
+			"2026-01-07T00:00:00.000Z",
+		]);
+	});
+
+	it("accepts both Sunday numbers and case-insensitive weekday names", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "0 0 * * 0", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "0 0 * * 7", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "0 0 * * sun", after: "2026-01-01T00:00:00.000Z" },
+			]),
+		).toEqual(["2026-01-04T00:00:00.000Z", "2026-01-04T00:00:00.000Z", "2026-01-04T00:00:00.000Z"]);
+	});
+
+	it("supports lists, ranges, steps, month names, weekday names, and standard aliases", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "15 9-17/4 * JAN,MAR MON-FRI", after: "2026-01-05T09:15:00.000Z" },
+				{ expression: "@yearly", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@annually", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@monthly", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@weekly", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@daily", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@midnight", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@hourly", after: "2026-01-01T00:00:00.000Z" },
+			]),
+		).toEqual([
+			"2026-01-05T13:15:00.000Z",
+			"2027-01-01T00:00:00.000Z",
+			"2027-01-01T00:00:00.000Z",
+			"2026-02-01T00:00:00.000Z",
+			"2026-01-04T00:00:00.000Z",
+			"2026-01-02T00:00:00.000Z",
+			"2026-01-02T00:00:00.000Z",
+			"2026-01-01T01:00:00.000Z",
+		]);
+	});
+
+	it("rejects malformed fields and unsupported reboot aliases", () => {
+		for (const expression of [
+			"0 0 * *",
+			"0 0 * * MONDAY",
+			"0 0 * * 1-5/0",
+			"0 0 * * 1/2",
+			"0 0 * * 1//2",
+			"0 0 * * 1,",
+			"0 0 * 13 *",
+			"@reboot",
+		]) {
+			expect(() => parseAgentCronSchedule(expression, start), expression).toThrow();
+		}
+	});
+
+	it("terminates impossible schedules after a complete Gregorian cycle", () => {
+		expect(() => parseAgentCronSchedule("0 0 31 2 *", start)).toThrow("no future occurrence in a 400-year");
+	});
+
+	it("skips nonexistent DST wall times in the host timezone", () => {
+		expect(
+			parseCronCasesInTimeZone("America/New_York", [
+				{ expression: "30 2 * * *", after: "2026-03-07T08:00:00.000Z" },
+			]),
+		).toEqual(["2026-03-09T06:30:00.000Z"]);
+	});
+
+	it("runs repeated DST wall times once at the earlier occurrence", () => {
+		expect(
+			parseCronCasesInTimeZone("America/New_York", [
+				{ expression: "30 1 * * *", after: "2026-10-31T06:00:00.000Z" },
+				{ expression: "30 1 * * *", after: "2026-11-01T05:30:00.000Z" },
+			]),
+		).toEqual(["2026-11-01T05:30:00.000Z", "2026-11-02T06:30:00.000Z"]);
 	});
 });
 
@@ -1495,4 +1603,24 @@ function makeTempDir(tempDirs: string[]): string {
 	const dir = mkdtempSync(join(tmpdir(), "prime-agent-cron-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function parseCronCasesInTimeZone(
+	timeZone: string,
+	cases: ReadonlyArray<{ expression: string; after: string }>,
+): string[] {
+	const moduleUrl = new URL("../src/core/cron-jobs.ts", import.meta.url).href;
+	const script = `
+		import { parseAgentCronSchedule } from ${JSON.stringify(moduleUrl)};
+		const cases = ${JSON.stringify(cases)};
+		process.stdout.write(JSON.stringify(cases.map(({ expression, after }) =>
+			parseAgentCronSchedule(expression, new Date(after)).nextRunAt.toISOString()
+		)));
+	`;
+	const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+		cwd: new URL("..", import.meta.url),
+		env: { ...process.env, TZ: timeZone },
+		encoding: "utf8",
+	});
+	return JSON.parse(output) as string[];
 }
