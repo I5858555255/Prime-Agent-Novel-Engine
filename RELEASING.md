@@ -99,7 +99,7 @@ Prefer a forward fix. If stable must be restored immediately, a maintainer with 
 ROLLBACK vX.Y.Z
 ```
 
-The default-branch workflow and an API-derived maintainer permission are the repository-enforced authorization boundary. The job also targets the `production` environment, so configured environment reviewers provide an additional gate but are not assumed to exist. The job verifies the immutable tag, GitHub Release assets, manifest, checksums, and every referenced R2 tarball before writing `/stable` and then `/latest.json`. It does not create or move tags, rewrite immutable objects, or change GitHub Releases.
+The default-branch workflow and an API-derived maintainer permission are the repository-enforced authorization boundary. Authorization and exact command parsing complete in an ungated preflight job before the workflow can acquire the shared release lock or enter the `production` environment, so an unauthorized comment cannot block publication. The mutation job targets the `production` environment, so configured environment reviewers provide an additional gate but are not assumed to exist. It verifies the immutable tag, GitHub Release assets, manifest, checksums, and every referenced R2 tarball before writing `/stable` and then `/latest.json`. It does not create or move tags, rewrite immutable objects, or change GitHub Releases.
 
 Rollback changes what fresh installations and future update checks select. It does not force already-installed newer clients to downgrade.
 
