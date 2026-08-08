@@ -78,6 +78,17 @@ function statMetadataIfPresent(path: string): { mode: number; uid: number; gid: 
 	}
 }
 
+function restoreFileMetadata(path: string, metadata: { mode: number; uid: number; gid: number }): void {
+	if (process.platform !== "win32") {
+		try {
+			chownSync(path, metadata.uid, metadata.gid);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOSYS") throw error;
+		}
+	}
+	chmodSync(path, metadata.mode);
+}
+
 function replaceFileAtomically(path: string, writeTemp: (targetPath: string, tempPath: string) => void): void {
 	const targetPath = realpathIfPresent(path);
 	const directory = dirname(targetPath);
@@ -87,8 +98,7 @@ function replaceFileAtomically(path: string, writeTemp: (targetPath: string, tem
 		const metadata = statMetadataIfPresent(targetPath);
 		writeTemp(targetPath, tempPath);
 		if (metadata !== undefined) {
-			chownSync(tempPath, metadata.uid, metadata.gid);
-			chmodSync(tempPath, metadata.mode);
+			restoreFileMetadata(tempPath, metadata);
 		}
 		renameSync(tempPath, targetPath);
 	} finally {
@@ -1596,7 +1606,13 @@ export class SessionManager {
 		} else {
 			this._repairPendingTail();
 			mkdirSync(dirname(this.sessionFile), { recursive: true });
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			try {
+				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			} catch (error) {
+				this.needsTailRepair = true;
+				this.flushed = false;
+				throw error;
+			}
 			this._notifyPersistListeners();
 		}
 	}
@@ -2174,6 +2190,7 @@ export class SessionManager {
 		if (path.length === 0) {
 			throw new Error(`Entry ${leafId} not found`);
 		}
+		this._repairPendingTail();
 
 		// Filter out LabelEntry from path - we'll recreate them from the resolved map
 		const pathWithoutLabels = path.filter((e) => e.type !== "label");
@@ -2227,6 +2244,7 @@ export class SessionManager {
 			this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
 			this.sessionId = newSessionId;
 			this.sessionFile = newSessionFile;
+			this.needsTailRepair = false;
 			this._buildIndex();
 
 			// Only write the file now if it contains an assistant message.

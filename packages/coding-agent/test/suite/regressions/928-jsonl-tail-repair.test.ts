@@ -1,7 +1,36 @@
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, type chmodSync, type chownSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+type AppendFileSync = typeof appendFileSync;
+type ChmodSync = typeof chmodSync;
+type ChownSync = typeof chownSync;
+
+const fsMocks = vi.hoisted(() => ({
+	actualAppendFileSync: undefined as AppendFileSync | undefined,
+	actualChmodSync: undefined as ChmodSync | undefined,
+	actualChownSync: undefined as ChownSync | undefined,
+	appendFileSync: vi.fn<AppendFileSync>(),
+	chmodSync: vi.fn<ChmodSync>(),
+	chownSync: vi.fn<ChownSync>(),
+}));
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	fsMocks.actualAppendFileSync = actual.appendFileSync;
+	fsMocks.actualChmodSync = actual.chmodSync;
+	fsMocks.actualChownSync = actual.chownSync;
+	fsMocks.appendFileSync.mockImplementation(actual.appendFileSync);
+	fsMocks.chmodSync.mockImplementation(actual.chmodSync);
+	fsMocks.chownSync.mockImplementation(actual.chownSync);
+	return {
+		...actual,
+		appendFileSync: fsMocks.appendFileSync,
+		chmodSync: fsMocks.chmodSync,
+		chownSync: fsMocks.chownSync,
+	};
+});
+
 import { SessionManager } from "../../../src/core/session-manager.js";
 import { createHarness, type Harness } from "../harness.js";
 
@@ -12,6 +41,13 @@ describe("issue #928 incomplete JSONL tail repair", () => {
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
+		fsMocks.appendFileSync.mockReset();
+		fsMocks.appendFileSync.mockImplementation(fsMocks.actualAppendFileSync!);
+		fsMocks.chmodSync.mockReset();
+		fsMocks.chmodSync.mockImplementation(fsMocks.actualChmodSync!);
+		fsMocks.chownSync.mockReset();
+		fsMocks.chownSync.mockImplementation(fsMocks.actualChownSync!);
+		vi.restoreAllMocks();
 	});
 
 	async function createPersistedHarness(): Promise<{ harness: Harness; sessionFile: string }> {
@@ -138,6 +174,77 @@ describe("issue #928 incomplete JSONL tail repair", () => {
 			malformedMiddle,
 		);
 		expect(resumed.getEntry("after-malformed-middle")).toBeDefined();
+	});
+
+	it("preserves mode without attempting ownership restoration on Windows", async () => {
+		const { sessionFile } = await createPersistedHarness();
+		appendFileSync(sessionFile, '{"type":"custom","id":"windows-torn"');
+		const resumed = SessionManager.open(sessionFile);
+		fsMocks.chmodSync.mockClear();
+		fsMocks.chownSync.mockClear();
+		const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+		try {
+			resumed.appendCustomEntry("after_windows_recovery");
+		} finally {
+			platform.mockRestore();
+		}
+
+		expect(fsMocks.chownSync).not.toHaveBeenCalled();
+		expect(fsMocks.chmodSync).toHaveBeenCalled();
+		expect(SessionManager.open(sessionFile).getEntries().at(-1)).toMatchObject({
+			customType: "after_windows_recovery",
+		});
+	});
+
+	it("repairs the source before creating a branch from a resumed torn session", async () => {
+		const { harness, sessionFile } = await createPersistedHarness();
+		const validBytes = readFileSync(sessionFile);
+		const leafId = harness.sessionManager.getLeafId();
+		if (!leafId) throw new Error("Expected a persisted session leaf");
+		appendFileSync(sessionFile, '{"type":"custom","id":"branch-torn"');
+		const resumed = SessionManager.open(sessionFile);
+
+		const branchFile = resumed.createBranchedSession(leafId);
+
+		expect(branchFile).toBeDefined();
+		expect(branchFile).not.toBe(sessionFile);
+		expect(resumed.getFileRecovery()?.action).toBe("truncated_incomplete_tail");
+		expect(readFileSync(sessionFile)).toEqual(validBytes);
+		expect(SessionManager.open(branchFile!).getEntries()).toEqual(resumed.getEntries());
+	});
+
+	it("reinspects and rewrites after a partial append fails in a live process", async () => {
+		const { harness, sessionFile } = await createPersistedHarness();
+		const validEntryIds = harness.sessionManager.getEntries().map((entry) => entry.id);
+		const resumed = SessionManager.open(sessionFile);
+		fsMocks.appendFileSync.mockImplementationOnce((path, data, options) => {
+			const partial = Buffer.from(String(data)).subarray(0, 18);
+			fsMocks.actualAppendFileSync!(path, partial, options);
+			throw new Error("simulated partial append");
+		});
+
+		expect(() => resumed.appendCustomEntry("partial_append_attempt")).toThrow("simulated partial append");
+		const tornBytes = readFileSync(sessionFile);
+		expect(tornBytes.at(-1)).not.toBe(0x0a);
+
+		resumed.appendCustomEntry("retry_after_partial_append");
+
+		expect(resumed.getFileRecovery()?.action).toBe("truncated_incomplete_tail");
+		expectAllRowsValid(sessionFile);
+		const reopened = SessionManager.open(sessionFile);
+		expect(
+			reopened
+				.getEntries()
+				.slice(0, validEntryIds.length)
+				.map((entry) => entry.id),
+		).toEqual(validEntryIds);
+		expect(
+			reopened
+				.getEntries()
+				.slice(-2)
+				.map((entry) => (entry.type === "custom" ? entry.customType : undefined)),
+		).toEqual(["partial_append_attempt", "retry_after_partial_append"]);
 	});
 
 	it("keeps empty-file recovery behavior and permits a subsequent round trip", async () => {
