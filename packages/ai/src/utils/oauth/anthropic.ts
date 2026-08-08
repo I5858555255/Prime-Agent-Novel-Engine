@@ -172,7 +172,7 @@ async function startCallbackServer(
 				waiter?.fail(toOAuthLoginError(error, "callback_server_error", "server"));
 				return;
 			}
-			reject(error);
+			reject(toOAuthLoginError(error, "callback_server_error", "server"));
 		});
 
 		server.listen(CALLBACK_PORT, CALLBACK_HOST, () => {

@@ -1,6 +1,7 @@
+import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loginAnthropic, refreshAnthropicToken } from "../src/utils/oauth/anthropic.js";
-import type { OAuthLoginError } from "../src/utils/oauth/types.js";
+import { OAuthLoginError } from "../src/utils/oauth/types.js";
 
 const fetchFromNetwork = globalThis.fetch.bind(globalThis);
 
@@ -31,6 +32,20 @@ function getJsonBody(init?: RequestInit): Record<string, string> {
 		throw new Error(`Expected string request body, got ${typeof init?.body}`);
 	}
 	return JSON.parse(init.body) as Record<string, string>;
+}
+
+async function occupyCallbackPort(port: number): Promise<Server | undefined> {
+	const server = createServer();
+	const bound = await new Promise<boolean>((resolve) => {
+		server.once("error", () => resolve(false));
+		server.listen(port, "127.0.0.1", () => resolve(true));
+	});
+	return bound ? server : undefined;
+}
+
+async function closeServer(server: Server | undefined): Promise<void> {
+	if (!server) return;
+	await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 describe.sequential("Anthropic OAuth", () => {
@@ -181,6 +196,26 @@ describe.sequential("Anthropic OAuth", () => {
 		await expect(loginPromise).rejects.toEqual(
 			expect.objectContaining<Partial<OAuthLoginError>>({ code: "cancelled", source: "signal" }),
 		);
+	});
+
+	it("returns a typed callback-server error when the callback port is occupied", async () => {
+		const blocker = await occupyCallbackPort(53692);
+		try {
+			const error = await loginAnthropic({ onAuth: () => {}, onPrompt: async () => "" }).then(
+				() => undefined,
+				(reason: unknown) => reason,
+			);
+
+			expect(error).toBeInstanceOf(OAuthLoginError);
+			expect(error).toMatchObject({
+				code: "callback_server_error",
+				source: "server",
+				cause: expect.objectContaining({ code: "EADDRINUSE" }),
+			});
+			expect((error as Error).message).toMatch(/EADDRINUSE|address already in use/i);
+		} finally {
+			await closeServer(blocker);
+		}
 	});
 
 	it("omits scope from refresh token requests", async () => {

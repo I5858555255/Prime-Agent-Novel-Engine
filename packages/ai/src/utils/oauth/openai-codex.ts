@@ -371,6 +371,7 @@ export async function loginOpenAICodex(options: {
 	const server = await startLocalOAuthServer(state, options);
 
 	let code: string | undefined;
+	let manualWaiter: OAuthTerminalWaiter<OAuthCode> | undefined;
 	try {
 		options.onAuth({ url, instructions: "A browser window should open. Complete login to finish." });
 
@@ -382,21 +383,20 @@ export async function loginOpenAICodex(options: {
 			}
 			code = (await server.waiter.wait()).code;
 		} else {
-			if (options.onManualCodeInput) {
-				try {
-					code = parseAuthorizationResult(await options.onManualCodeInput(), state, "manual").code;
-				} catch (error) {
-					throw toOAuthLoginError(error, "cancelled", "manual");
-				}
-			}
-		}
-
-		// Fallback to onPrompt if still no code
-		if (!code) {
-			const input = await options.onPrompt({
-				message: "Paste the authorization code (or full redirect URL):",
+			manualWaiter = createOAuthTerminalWaiter<OAuthCode>({
+				timeoutMs: options.callbackTimeoutMs,
+				signal: options.signal,
 			});
-			code = parseAuthorizationResult(input, state, "manual").code;
+			connectOAuthManualInput(
+				manualWaiter,
+				options.onManualCodeInput ??
+					(() =>
+						options.onPrompt({
+							message: "Paste the authorization code (or full redirect URL):",
+						})),
+				(input) => parseAuthorizationResult(input, state, "manual"),
+			);
+			code = (await manualWaiter.wait()).code;
 		}
 
 		if (!code) {
@@ -420,6 +420,7 @@ export async function loginOpenAICodex(options: {
 			accountId,
 		};
 	} finally {
+		manualWaiter?.fail(new OAuthLoginError("cancelled", "server", "OAuth manual callback wait closed"));
 		if (server.available) {
 			server.waiter.fail(new OAuthLoginError("cancelled", "server", "OAuth callback wait closed"));
 		}

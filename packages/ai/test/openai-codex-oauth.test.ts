@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loginOpenAICodex, refreshOpenAICodexToken } from "../src/utils/oauth/openai-codex.js";
 import type { OAuthLoginError } from "../src/utils/oauth/types.js";
@@ -18,6 +19,20 @@ function tokenResponse(): Response {
 		JSON.stringify({ access_token: accessToken(), refresh_token: "refresh-token", expires_in: 3600 }),
 		{ status: 200, headers: { "Content-Type": "application/json" } },
 	);
+}
+
+async function occupyCallbackPort(port: number): Promise<Server | undefined> {
+	const server = createServer();
+	const bound = await new Promise<boolean>((resolve) => {
+		server.once("error", () => resolve(false));
+		server.listen(port, "127.0.0.1", () => resolve(true));
+	});
+	return bound ? server : undefined;
+}
+
+async function closeServer(server: Server | undefined): Promise<void> {
+	if (!server) return;
+	await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 describe.sequential("OpenAI Codex OAuth", () => {
@@ -169,5 +184,49 @@ describe.sequential("OpenAI Codex OAuth", () => {
 		await expect(loginPromise).rejects.toEqual(
 			expect.objectContaining<Partial<OAuthLoginError>>({ code: "cancelled", source: "signal" }),
 		);
+	});
+
+	it("times out pending manual input when the callback port is occupied", async () => {
+		const blocker = await occupyCallbackPort(1455);
+		const onPrompt = vi.fn(async () => "unused");
+		try {
+			const loginPromise = loginOpenAICodex({
+				onAuth: () => {},
+				onPrompt,
+				onManualCodeInput: () => new Promise<string>(() => {}),
+				callbackTimeoutMs: 5,
+			});
+
+			await expect(loginPromise).rejects.toMatchObject({ code: "timeout", source: "timeout" });
+			expect(onPrompt).not.toHaveBeenCalled();
+		} finally {
+			await closeServer(blocker);
+		}
+	});
+
+	it("cancels a pending manual prompt when the callback port is occupied", async () => {
+		const blocker = await occupyCallbackPort(1455);
+		const controller = new AbortController();
+		let markPromptStarted: () => void = () => {};
+		const promptStarted = new Promise<void>((resolve) => {
+			markPromptStarted = resolve;
+		});
+		try {
+			const loginPromise = loginOpenAICodex({
+				onAuth: () => {},
+				onPrompt: () => {
+					markPromptStarted();
+					return new Promise<string>(() => {});
+				},
+				signal: controller.signal,
+			});
+			const rejection = expect(loginPromise).rejects.toMatchObject({ code: "cancelled", source: "signal" });
+
+			await promptStarted;
+			controller.abort();
+			await rejection;
+		} finally {
+			await closeServer(blocker);
+		}
 	});
 });

@@ -37,8 +37,8 @@ export class OAuthLoginError extends Error {
 	readonly code: OAuthLoginErrorCode;
 	readonly source: OAuthLoginErrorSource;
 
-	constructor(code: OAuthLoginErrorCode, source: OAuthLoginErrorSource, message: string) {
-		super(message);
+	constructor(code: OAuthLoginErrorCode, source: OAuthLoginErrorSource, message: string, options?: ErrorOptions) {
+		super(message, options);
 		this.name = "OAuthLoginError";
 		this.code = code;
 		this.source = source;

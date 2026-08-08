@@ -171,6 +171,7 @@ async function startCallbackServer(
 		const server = createServer(handler);
 		// Persistent handler so a post-bind 'error' is never an unhandled crash.
 		let bindErr: ((err: unknown) => void) | undefined;
+		let bindFailure: unknown;
 		server.on("error", (err) => {
 			if (bindErr) {
 				bindErr(err);
@@ -180,7 +181,10 @@ async function startCallbackServer(
 		});
 		try {
 			const bound = await new Promise<boolean>((resolve) => {
-				bindErr = () => resolve(false);
+				bindErr = (error) => {
+					bindFailure = error;
+					resolve(false);
+				};
 				server.listen(port, CALLBACK_HOST, () => {
 					bindErr = undefined;
 					resolve(true);
@@ -197,17 +201,20 @@ async function startCallbackServer(
 					waiter,
 				};
 			}
-			lastError = `port ${port} in use`;
+			lastError = bindFailure ?? new Error(`port ${port} in use`);
 			server.close();
 		} catch (err) {
 			lastError = err;
 			server.close();
 		}
 	}
-	throw new Error(
+	throw new OAuthLoginError(
+		"callback_server_error",
+		"server",
 		`Could not start the OAuth callback server: ports ${CALLBACK_PORT_BASE}-${
 			CALLBACK_PORT_BASE + CALLBACK_PORT_COUNT - 1
 		} are all in use. Close other login attempts and retry. (${String(lastError)})`,
+		{ cause: lastError },
 	);
 }
 

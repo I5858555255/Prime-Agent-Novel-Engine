@@ -14,7 +14,7 @@ export function toOAuthLoginError(
 	source: OAuthLoginErrorSource,
 ): OAuthLoginError {
 	if (error instanceof OAuthLoginError) return error;
-	return new OAuthLoginError(code, source, error instanceof Error ? error.message : String(error));
+	return new OAuthLoginError(code, source, error instanceof Error ? error.message : String(error), { cause: error });
 }
 
 export function createOAuthTerminalWaiter<T>(options?: {
