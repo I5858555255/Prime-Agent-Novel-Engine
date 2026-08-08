@@ -35,11 +35,15 @@ interface PeerWorker {
 interface SupervisorPeerSyncInternals {
 	workers: Map<string, PeerWorker>;
 	shuttingDown: boolean;
+	agentPeerSyncDirty: boolean;
+	agentPeerSyncDrain?: Promise<void>;
 	agentPeerSyncStats: PeerSyncStats;
 	agentPeerSyncRetryAttempt: number;
 	agentPeerSyncRetryTimer?: ReturnType<typeof setTimeout>;
 	log: ReturnType<typeof vi.fn>;
 	beginShutdown(): void;
+	resetAgentPeerSyncRetry(): void;
+	scheduleAgentPeerSyncRetry(): void;
 	syncAgentPeers(): Promise<void>;
 }
 
@@ -315,6 +319,63 @@ describe("daemon supervisor peer synchronization", () => {
 		expect(supervisor.agentPeerSyncRetryAttempt).toBe(0);
 		expect(supervisor.agentPeerSyncRetryTimer).toBeUndefined();
 		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("hands fulfilled settlement-window dirtiness to a new drain", async () => {
+		const first = worker("first");
+		const second = worker("second");
+		const supervisor = createSupervisor([first, second]);
+		const resetRetry = supervisor.resetAgentPeerSyncRetry.bind(supervisor);
+		let injected = false;
+		supervisor.resetAgentPeerSyncRetry = () => {
+			resetRetry();
+			if (injected) return;
+			injected = true;
+			queueMicrotask(() => {
+				const updated = summary("second", { isStreaming: true });
+				second.summaries.set(updated.activeSessionId ?? updated.id, updated);
+				void supervisor.syncAgentPeers().catch(() => undefined);
+			});
+		};
+
+		await supervisor.syncAgentPeers();
+		await supervisor.agentPeerSyncDrain;
+
+		expect(first.client?.requestWorker).toHaveBeenCalledTimes(2);
+		expect(second.client?.requestWorker).toHaveBeenCalledOnce();
+		expect(supervisor.agentPeerSyncStats).toMatchObject({ passes: 2, sends: 3, catalogRevision: 2 });
+		expect(supervisor.agentPeerSyncDirty).toBe(false);
+		expect(supervisor.agentPeerSyncDrain).toBeUndefined();
+		expect(supervisor.agentPeerSyncRetryTimer).toBeUndefined();
+	});
+
+	it("hands rejected settlement-window dirtiness to a new drain", async () => {
+		let succeeds = false;
+		const requestWorker = vi.fn(async () => {
+			if (!succeeds) throw new Error("settling peer sync failure");
+			return workerSyncSuccess();
+		});
+		const supervisor = createSupervisor([worker("worker", requestWorker)]);
+		const scheduleRetry = supervisor.scheduleAgentPeerSyncRetry.bind(supervisor);
+		let injected = false;
+		supervisor.scheduleAgentPeerSyncRetry = () => {
+			scheduleRetry();
+			if (injected) return;
+			injected = true;
+			queueMicrotask(() => {
+				succeeds = true;
+				void supervisor.syncAgentPeers().catch(() => undefined);
+			});
+		};
+
+		await expect(supervisor.syncAgentPeers()).rejects.toThrow("Could not synchronize agent peers");
+		await supervisor.agentPeerSyncDrain;
+
+		expect(requestWorker).toHaveBeenCalledTimes(3);
+		expect(supervisor.agentPeerSyncStats).toMatchObject({ passes: 3, sends: 3, catalogRevision: 1 });
+		expect(supervisor.agentPeerSyncDirty).toBe(false);
+		expect(supervisor.agentPeerSyncDrain).toBeUndefined();
+		expect(supervisor.agentPeerSyncRetryTimer).toBeUndefined();
 	});
 
 	it("does not start or follow up peer synchronization after shutdown begins", async () => {

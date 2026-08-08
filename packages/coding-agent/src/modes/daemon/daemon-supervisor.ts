@@ -3087,10 +3087,21 @@ export class DaemonSupervisor {
 		this.clearAgentPeerSyncRetryTimer();
 		this.agentPeerSyncDirty = true;
 		if (this.agentPeerSyncDrain) return this.agentPeerSyncDrain;
+		return this.startAgentPeerSyncDrain();
+	}
+
+	private startAgentPeerSyncDrain(): Promise<void> {
 		const drain = Promise.resolve().then(() => this.drainAgentPeerSync());
 		let trackedDrain!: Promise<void>;
 		trackedDrain = drain.finally(() => {
-			if (this.agentPeerSyncDrain === trackedDrain) this.agentPeerSyncDrain = undefined;
+			if (this.agentPeerSyncDrain !== trackedDrain) return;
+			this.agentPeerSyncDrain = undefined;
+			if (this.shuttingDown || !this.agentPeerSyncDirty) return;
+			void this.startAgentPeerSyncDrain().catch((error) => {
+				if (!this.shuttingDown) {
+					this.log(`Could not synchronize agent peers after a settling update: ${String(error)}`);
+				}
+			});
 		});
 		this.agentPeerSyncDrain = trackedDrain;
 		return trackedDrain;
