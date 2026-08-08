@@ -135,19 +135,17 @@ const OpenAIResponsesCompatSchema = Type.Object({
 	supportsServerCompaction: Type.Optional(Type.Boolean()),
 });
 
-const OpenAICodexResponsesCompatSchema = Type.Object({
-	supportsServerCompaction: Type.Optional(Type.Boolean()),
-});
-
 const AnthropicMessagesCompatSchema = Type.Object({
 	supportsEagerToolInputStreaming: Type.Optional(Type.Boolean()),
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
 });
 
+// Every arm is all-optional and allows extra properties, so the union validates nothing
+// beyond "is an object". Codex Responses compat needs no arm of its own: its only field,
+// supportsServerCompaction, is already accepted by the OpenAI Responses arm.
 const ProviderCompatSchema = Type.Union([
 	OpenAICompletionsCompatSchema,
 	OpenAIResponsesCompatSchema,
-	OpenAICodexResponsesCompatSchema,
 	AnthropicMessagesCompatSchema,
 ]);
 

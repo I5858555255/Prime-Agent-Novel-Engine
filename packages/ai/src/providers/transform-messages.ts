@@ -4,6 +4,7 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	StopReason,
 	TextContent,
 	ToolCall,
 	ToolResultMessage,
@@ -54,6 +55,17 @@ function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model
 
 		return msg;
 	});
+}
+
+/**
+ * Whether this assistant turn is sent back to the model at all.
+ *
+ * Errored and aborted turns are incomplete — partial content, reasoning without a
+ * following item — so `transformMessages` drops them instead of replaying them. Anything
+ * that reasons about what the next request will carry has to drop them the same way.
+ */
+export function isReplayedAssistantMessage(message: { stopReason?: StopReason }): boolean {
+	return message.stopReason !== "error" && message.stopReason !== "aborted";
 }
 
 /**
@@ -189,7 +201,7 @@ export function transformMessages<TApi extends Api>(
 			// - Replaying them can cause API errors (e.g., OpenAI "reasoning without following item")
 			// - The model should retry from the last valid state
 			const assistantMsg = msg as AssistantMessage;
-			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+			if (!isReplayedAssistantMessage(assistantMsg)) {
 				continue;
 			}
 

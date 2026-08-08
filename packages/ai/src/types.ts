@@ -222,16 +222,8 @@ export interface OpenAICompactionItem {
 	encrypted_content: string;
 }
 
-export interface ContextTokenScope {
-	api: Api;
-	provider: string;
-	model: string;
-	baseUrl: string;
-}
-
 export interface OpenAICompactionCheckpoint {
 	item: OpenAICompactionItem;
-	contentIndex: number;
 	sourceBaseUrl: string;
 }
 
@@ -251,11 +243,19 @@ export interface AssistantMessage {
 	model: string;
 	responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
-	/** Replayed only to the same OpenAI provider, model, and endpoint that created it. */
+	/**
+	 * Opaque checkpoint from OpenAI server-side compaction. Replayed only to the same
+	 * provider, model, and endpoint that created it. Its presence also means the server
+	 * shortened the context mid-turn without reporting the new size, so `usage` on this
+	 * message is not a context size.
+	 */
 	openaiCompaction?: OpenAICompactionCheckpoint;
-	/** Context tokens represented by this message. null means the provider changed the context without reporting its new size. */
-	contextTokenScope?: ContextTokenScope;
-	contextTokens?: number | null;
+	/**
+	 * Endpoint whose compaction checkpoint shortened the context this message's `usage`
+	 * measured. The request carried only the messages after that checkpoint, so `usage`
+	 * is a context size for this endpoint and no other.
+	 */
+	contextTokenBaseUrl?: string;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;

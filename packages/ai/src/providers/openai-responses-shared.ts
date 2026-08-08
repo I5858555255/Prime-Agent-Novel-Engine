@@ -17,9 +17,9 @@ import type {
 	Api,
 	AssistantMessage,
 	Context,
-	ContextTokenScope,
 	ImageContent,
 	Model,
+	OpenAICompactionCheckpoint,
 	StopReason,
 	TextContent,
 	TextSignatureV1,
@@ -33,7 +33,7 @@ import { shortHash } from "../utils/hash.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { classifyStreamFailure, StreamFailureError } from "../utils/stream-failure.js";
-import { transformMessages } from "./transform-messages.js";
+import { isReplayedAssistantMessage, transformMessages } from "./transform-messages.js";
 
 // =============================================================================
 // Utilities
@@ -79,17 +79,40 @@ export interface OpenAIResponsesStreamOptions {
 
 export interface ConvertResponsesMessagesOptions {
 	includeSystemPrompt?: boolean;
+	/**
+	 * The `compact_threshold` this request carries, from `StreamOptions`. A request that
+	 * carries none does not ask the server to compact, so it replays no checkpoint either
+	 * — the input and the `context_management` field read one value.
+	 */
+	serverCompactionThreshold?: number;
 }
 
 export interface ConvertResponsesToolsOptions {
 	strict?: boolean | null;
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
+export function normalizeBaseUrl(baseUrl: string): string {
 	return baseUrl.replace(/\/+$/, "");
 }
 
-export function supportsOpenAIServerCompaction(model: Model<Api>): boolean {
+/** The model fields every compaction rule below reads. */
+export type CompactionModel = Pick<Model<Api>, "api" | "provider" | "id" | "baseUrl"> & { compat?: unknown };
+
+/**
+ * The request the replay rule is about: the model it goes to and the `compact_threshold`
+ * it carries (undefined when it carries none).
+ */
+export type OpenAICompactionRequest = CompactionModel & { serverCompactionThreshold: number | undefined };
+
+/**
+ * The message fields the replay rule reads. Structural, so a caller holding a wider
+ * message type — a coding agent's own message union — passes its array unchanged.
+ */
+export type CheckpointCandidateMessage = { role: string } & Partial<
+	Pick<AssistantMessage, "provider" | "api" | "model" | "stopReason" | "openaiCompaction">
+>;
+
+export function supportsOpenAIServerCompaction(model: CompactionModel): boolean {
 	if (model.api !== "openai-responses" && model.api !== "openai-codex-responses") return false;
 
 	const configured = (model.compat as { supportsServerCompaction?: boolean } | undefined)?.supportsServerCompaction;
@@ -102,33 +125,48 @@ export function supportsOpenAIServerCompaction(model: Model<Api>): boolean {
 	return model.provider === "openai-codex" && baseUrl === "https://chatgpt.com/backend-api";
 }
 
-export function getOpenAIContextTokenScope(
-	model: Pick<Model<Api>, "api" | "provider" | "id" | "baseUrl">,
-): ContextTokenScope {
-	return {
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		baseUrl: normalizeBaseUrl(model.baseUrl),
-	};
+/**
+ * Newest checkpoint the next request replays: same provider, api, model id, and endpoint,
+ * an endpoint that still takes `context_management`, and a request that actually carries
+ * a `compact_threshold`. An endpoint we stopped sending the field to cannot be handed a
+ * checkpoint back, and a request that does not ask the server to compact must send the
+ * whole history rather than a shortened one.
+ *
+ * Errored and aborted turns are skipped because `transformMessages` drops them: a stream
+ * that failed after the server emitted a compaction item leaves a checkpoint on a turn
+ * that never reaches the model again.
+ *
+ * This is the one implementation of that rule. Anything that has to agree with what the
+ * request sends — the `contextTokenBaseUrl` stamp here, a context-size estimate in a
+ * consumer — calls it rather than restating it.
+ */
+export function findOpenAICompactionCheckpoint(
+	messages: readonly CheckpointCandidateMessage[],
+	request: OpenAICompactionRequest,
+): { index: number; checkpoint: OpenAICompactionCheckpoint } | undefined {
+	if (request.serverCompactionThreshold === undefined) return undefined;
+	if (!supportsOpenAIServerCompaction(request)) return undefined;
+	const baseUrl = normalizeBaseUrl(request.baseUrl);
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role !== "assistant") continue;
+		if (!isReplayedAssistantMessage(message)) continue;
+		const checkpoint = message.openaiCompaction;
+		if (!checkpoint) continue;
+		if (
+			message.provider === request.provider &&
+			message.api === request.api &&
+			message.model === request.id &&
+			checkpoint.sourceBaseUrl === baseUrl
+		) {
+			return { index: i, checkpoint };
+		}
+	}
+	return undefined;
 }
 
-export function hasCompatibleOpenAICompactionCheckpoint(
-	message: AssistantMessage,
-	model: Pick<Model<Api>, "api" | "provider" | "id" | "baseUrl">,
-): boolean {
-	return (
-		message.provider === model.provider &&
-		message.api === model.api &&
-		message.model === model.id &&
-		message.openaiCompaction?.sourceBaseUrl === normalizeBaseUrl(model.baseUrl)
-	);
-}
-
-export function usesOpenAICompactionCheckpoint(model: Model<Api>, context: Context): boolean {
-	return context.messages.some(
-		(message) => message.role === "assistant" && hasCompatibleOpenAICompactionCheckpoint(message, model),
-	);
+export function usesOpenAICompactionCheckpoint(request: OpenAICompactionRequest, context: Context): boolean {
+	return findOpenAICompactionCheckpoint(context.messages, request) !== undefined;
 }
 
 // =============================================================================
@@ -169,28 +207,25 @@ export function convertResponsesMessages<TApi extends Api>(
 	};
 
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
-	let replayStart = 0;
-	let hasReplayCheckpoint = false;
-	for (let i = transformedMessages.length - 1; i >= 0; i--) {
-		const message = transformedMessages[i];
-		if (message.role === "assistant" && hasCompatibleOpenAICompactionCheckpoint(message, model)) {
-			replayStart = i;
-			hasReplayCheckpoint = true;
-			break;
-		}
-	}
-	const replayMessages = transformedMessages.slice(replayStart);
+	// The checkpoint stands in for every message before the turn that produced it. That
+	// turn is replayed whole, so the blocks it emitted before the checkpoint are sent
+	// again. They are also inside the checkpoint's `encrypted_content`, which makes the
+	// resend redundant rather than wrong. Not verified against the live API.
+	const replay = findOpenAICompactionCheckpoint(transformedMessages, {
+		...model,
+		serverCompactionThreshold: options?.serverCompactionThreshold,
+	});
+	const replayMessages = replay ? transformedMessages.slice(replay.index) : transformedMessages;
 
+	if (replay) {
+		messages.push(replay.checkpoint.item);
+	}
 	const includeSystemPrompt = options?.includeSystemPrompt ?? true;
-	const systemPromptMessage =
-		includeSystemPrompt && context.systemPrompt
-			? {
-					role: model.reasoning ? ("developer" as const) : ("system" as const),
-					content: sanitizeSurrogates(context.systemPrompt),
-				}
-			: undefined;
-	if (systemPromptMessage && !hasReplayCheckpoint) {
-		messages.push(systemPromptMessage);
+	if (includeSystemPrompt && context.systemPrompt) {
+		messages.push({
+			role: model.reasoning ? "developer" : "system",
+			content: sanitizeSurrogates(context.systemPrompt),
+		});
 	}
 
 	let msgIndex = 0;
@@ -224,20 +259,12 @@ export function convertResponsesMessages<TApi extends Api>(
 		} else if (msg.role === "assistant") {
 			const output: ResponseInput = [];
 			const assistantMsg = msg as AssistantMessage;
-			const checkpoint = hasCompatibleOpenAICompactionCheckpoint(assistantMsg, model)
-				? assistantMsg.openaiCompaction
-				: undefined;
-			if (checkpoint) {
-				messages.push(checkpoint.item);
-				if (systemPromptMessage) messages.push(systemPromptMessage);
-			}
 			const isDifferentModel =
 				assistantMsg.model !== model.id &&
 				assistantMsg.provider === model.provider &&
 				assistantMsg.api === model.api;
 
-			const content = checkpoint ? msg.content.slice(checkpoint.contentIndex) : msg.content;
-			for (const block of content) {
+			for (const block of msg.content) {
 				if (block.type === "thinking") {
 					if (block.thinkingSignature) {
 						const reasoningItem = JSON.parse(block.thinkingSignature) as ResponseReasoningItem;
@@ -509,17 +536,18 @@ export async function processResponsesStream<TApi extends Api>(
 			const item = event.item;
 
 			if (item.type === "compaction") {
-				output.openaiCompaction = {
-					item: {
-						type: "compaction",
-						id: item.id,
-						encrypted_content: item.encrypted_content,
-					},
-					contentIndex: blocks.length,
-					sourceBaseUrl: normalizeBaseUrl(model.baseUrl),
-				};
-				output.contextTokens = null;
-				output.contextTokenScope = getOpenAIContextTokenScope(model);
+				// Only keep a checkpoint this endpoint could be handed back. An endpoint we
+				// never send `context_management` to must not capture one either.
+				if (supportsOpenAIServerCompaction(model)) {
+					output.openaiCompaction = {
+						item: {
+							type: "compaction",
+							id: item.id,
+							encrypted_content: item.encrypted_content,
+						},
+						sourceBaseUrl: normalizeBaseUrl(model.baseUrl),
+					};
+				}
 			} else if (item.type === "reasoning" && currentBlock?.type === "thinking") {
 				const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";
 				const contentText = item.content?.map((c) => c.text).join("\n\n") || "";

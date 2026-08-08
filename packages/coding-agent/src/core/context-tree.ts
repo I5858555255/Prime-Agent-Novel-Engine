@@ -2,13 +2,18 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import type { RlmChildAgentStatus } from "./agent-session.js";
-import { calculateContextTokens, estimateContextTokens } from "./compaction/index.js";
+import { type ContextEndpoint, calculateContextTokens, estimateContextTokens } from "./compaction/index.js";
 import type { ContextUsage } from "./extensions/index.js";
 import { buildSessionContext, type FileEntry, loadEntriesFromFile, type SessionEntry } from "./session-manager.js";
 import { addAssistantUsage, cloneUsage, emptyUsage, subtractAssistantUsage } from "./usage.js";
 
-/** Resolves a model's context window so disk-only nodes can report utilization. */
-export type ContextWindowResolver = (provider: string, modelId: string) => number | undefined;
+/**
+ * Resolves the endpoint a persisted session would send to, so a disk-only node reports
+ * the same utilization a live session does. A session file records only the provider and
+ * model id; the registry supplies the api, endpoint, and context window from there, and
+ * the session's compaction settings supply the `compact_threshold` the request carries.
+ */
+export type ContextEndpointResolver = (provider: string, modelId: string) => ContextEndpoint | undefined;
 
 /**
  * One agent in the context overview: the main session or an RLM (sub-)agent.
@@ -105,12 +110,17 @@ export function computeOwnAndTotalUsage(
  * next assistant response, otherwise the last assistant usage plus an
  * estimate for trailing messages (tool results, queued user input) that have
  * not hit the model yet.
+ *
+ * `endpoint` is the session's own model resolved through the registry, the
+ * same value the live path reads off AgentSession, so both paths answer the
+ * server compaction checkpoint question with the same endpoint.
  */
 function computeContextUsageFromEntries(
 	allEntries: SessionEntry[],
 	branch: SessionEntry[],
-	contextWindow: number | undefined,
+	endpoint: ContextEndpoint | undefined,
 ): ContextUsage | undefined {
+	const contextWindow = endpoint?.contextWindow;
 	if (!contextWindow || contextWindow <= 0) {
 		return undefined;
 	}
@@ -144,9 +154,7 @@ function computeContextUsageFromEntries(
 		}
 	}
 
-	const context = buildSessionContext(allEntries);
-	const currentModel = context.model ? { provider: context.model.provider, id: context.model.modelId } : undefined;
-	const estimate = estimateContextTokens(context.messages, currentModel);
+	const estimate = estimateContextTokens(buildSessionContext(allEntries).messages, endpoint);
 	if (estimate.tokens === null) {
 		return { tokens: null, contextWindow, percent: null };
 	}
@@ -257,7 +265,7 @@ function listChildSessionDirs(rlmSessionDir: string): string[] {
  */
 export function loadContextTreeChildFromDisk(
 	childSessionDir: string,
-	resolveContextWindow: ContextWindowResolver,
+	resolveModel: ContextEndpointResolver,
 ): ContextTreeNode | undefined {
 	const sessionFile = findSessionFile(childSessionDir);
 	if (!sessionFile) {
@@ -288,7 +296,7 @@ export function loadContextTreeChildFromDisk(
 		}
 	}
 
-	const contextWindow = model ? resolveContextWindow(model.provider, model.id) : undefined;
+	const resolvedModel = model ? resolveModel(model.provider, model.id) : undefined;
 
 	return {
 		id: basename(childSessionDir),
@@ -297,8 +305,8 @@ export function loadContextTreeChildFromDisk(
 		model,
 		ownUsage,
 		totalUsage,
-		contextUsage: computeContextUsageFromEntries(allEntries, branch, contextWindow),
-		children: loadContextTreeChildrenFromDisk(childSessionDir, resolveContextWindow),
+		contextUsage: computeContextUsageFromEntries(allEntries, branch, resolvedModel),
+		children: loadContextTreeChildrenFromDisk(childSessionDir, resolveModel),
 	};
 }
 
@@ -309,7 +317,7 @@ export function loadContextTreeChildFromDisk(
  */
 export function loadContextTreeChildrenFromDisk(
 	rlmSessionDir: string | undefined,
-	resolveContextWindow: ContextWindowResolver,
+	resolveModel: ContextEndpointResolver,
 	skipIds?: ReadonlySet<string>,
 ): ContextTreeNode[] {
 	if (!rlmSessionDir || !existsSync(rlmSessionDir)) {
@@ -320,7 +328,7 @@ export function loadContextTreeChildrenFromDisk(
 		if (skipIds?.has(basename(childDir))) {
 			continue;
 		}
-		const node = loadContextTreeChildFromDisk(childDir, resolveContextWindow);
+		const node = loadContextTreeChildFromDisk(childDir, resolveModel);
 		if (node) {
 			nodes.push(node);
 		}

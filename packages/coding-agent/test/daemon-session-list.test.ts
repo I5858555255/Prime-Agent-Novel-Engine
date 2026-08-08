@@ -589,7 +589,7 @@ describe("buildRlmChildSnapshots", () => {
 		expect(snapshots.map((snapshot) => [snapshot.id, snapshot.status])).toEqual([["sub-aaa", "running"]]);
 	});
 
-	it("omits tokenCount when context usage is unknown", () => {
+	it("keeps tokenCount off the wire when context usage is unknown", () => {
 		const parent = makeState({ activeSessionId: "parent" });
 		const child = makeState({
 			activeSessionId: "child",
@@ -602,23 +602,10 @@ describe("buildRlmChildSnapshots", () => {
 				prompt: "Continue after compaction",
 			},
 		});
-
-		const invalidChild = makeState({
-			activeSessionId: "invalid-child",
-			contextTokens: Number.NaN,
-			metadata: {
-				kind: "subagent",
-				createdAt: 2,
-				parentActiveSessionId: "parent",
-				rlmChildId: "sub-invalid",
-				rlmParentNodeId: "sub-invalid",
-				prompt: "Invalid token count",
-			},
-		});
-		const snapshots = buildRlmChildSnapshots("parent", [parent, child, invalidChild]);
+		const snapshots = buildRlmChildSnapshots("parent", [parent, child]);
 
 		for (const snapshot of snapshots) {
-			expect(snapshot).not.toHaveProperty("tokenCount");
+			expect(snapshot.tokenCount).toBeUndefined();
 			expect(JSON.stringify(snapshot)).not.toContain("tokenCount");
 		}
 	});

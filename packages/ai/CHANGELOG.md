@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-- Added OpenAI Responses automatic server-side compaction with ordered, endpoint-matched checkpoint persistence and replay ([#913](https://github.com/PrimeIntellect-ai/prime-agent/pull/913) by [@paulbrav](https://github.com/paulbrav)).
+- Added OpenAI Responses server-side compaction. `serverCompactionThreshold` sends `context_management` on `openai-responses` and `openai-codex-responses` models, the `compaction` item the server returns is stored on the assistant message as `openaiCompaction`, and a later request replays that item in place of everything before the turn that produced it. Capture and replay both require the endpoint to support compaction: `compat.supportsServerCompaction` when set, otherwise the official OpenAI and Codex endpoints only. Replay also requires the request to carry a `serverCompactionThreshold`, so a caller that asks the server for no compaction still sends its whole history. A checkpoint replays only to the same provider, api, model id, and base URL ([#913](https://github.com/PrimeIntellect-ai/prime-agent/pull/913) by [@paulbrav](https://github.com/paulbrav)).
+- Added `AssistantMessage.contextTokenBaseUrl`, the endpoint whose checkpoint shortened the input that message's `usage` measured. A message carrying `openaiCompaction` reports no usable context size at all, because the server shortened the input mid-turn and did not report the new size ([#913](https://github.com/PrimeIntellect-ai/prime-agent/pull/913) by [@paulbrav](https://github.com/paulbrav)).
+- Added the `findOpenAICompactionCheckpoint`, `supportsOpenAIServerCompaction`, and `isReplayedAssistantMessage` exports so a caller reasoning about a request answers the same questions the providers do, from the same code: which checkpoint does the next request replay and at what index, does this endpoint take `context_management`, and will this assistant message be sent to the model again ([#913](https://github.com/PrimeIntellect-ai/prime-agent/pull/913) by [@paulbrav](https://github.com/paulbrav)).
 
 ## [0.7.1] - 2026-08-07
 

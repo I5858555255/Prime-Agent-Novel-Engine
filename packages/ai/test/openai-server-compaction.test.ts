@@ -1,4 +1,4 @@
-import type { ResponseStreamEvent } from "openai/resources/responses/responses.js";
+import type { ResponseInput, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 import { describe, expect, it } from "vitest";
 import { streamOpenAICodexResponses } from "../src/providers/openai-codex-responses.js";
 import { streamOpenAIResponses } from "../src/providers/openai-responses.js";
@@ -6,8 +6,17 @@ import {
 	convertResponsesMessages,
 	processResponsesStream,
 	supportsOpenAIServerCompaction,
+	usesOpenAICompactionCheckpoint,
 } from "../src/providers/openai-responses-shared.js";
-import type { AssistantMessage, Context, Model, OpenAICompactionCheckpoint, Usage } from "../src/types.js";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Message,
+	Model,
+	OpenAICompactionCheckpoint,
+	Usage,
+} from "../src/types.js";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.js";
 
 const usage: Usage = {
@@ -54,84 +63,116 @@ function assistant(text: string, overrides: Partial<AssistantMessage> = {}): Ass
 	};
 }
 
-function checkpoint(contentIndex = 0, sourceBaseUrl = model.baseUrl, id = "cmp_1"): OpenAICompactionCheckpoint {
+function checkpoint(sourceBaseUrl = model.baseUrl, id = "cmp_1"): OpenAICompactionCheckpoint {
 	return {
 		item: { type: "compaction", id, encrypted_content: "encrypted-summary" },
-		contentIndex,
 		sourceBaseUrl,
 	};
 }
 
-describe("OpenAI Responses automatic server-side compaction", () => {
-	it("persists an opaque compaction item from a Responses stream", async () => {
-		const output = assistant("", { content: [] });
-		const stream = new AssistantMessageEventStream();
-		const events = [
-			{
-				type: "response.output_item.added",
-				item: { type: "compaction", id: "cmp_1", encrypted_content: "encrypted-summary" },
-			},
-			{
-				type: "response.output_item.done",
-				item: { type: "compaction", id: "cmp_1", encrypted_content: "encrypted-summary" },
-			},
-			{
-				type: "response.completed",
-				response: {
-					status: "completed",
-					usage: {
-						input_tokens: 10,
-						output_tokens: 2,
-						total_tokens: 12,
-						input_tokens_details: { cached_tokens: 0 },
-					},
+/** Context that ends in a checkpointed turn, so any replay drops "old user input". */
+function checkpointedContext(overrides: Partial<AssistantMessage> = {}): Context {
+	return {
+		messages: [
+			{ role: "user", content: "old user input", timestamp: 1 },
+			assistant("work after compaction", { openaiCompaction: checkpoint(), ...overrides }),
+		],
+	};
+}
+
+/** The `compact_threshold` a session with server compaction on sends. */
+const THRESHOLD = 200000;
+
+/**
+ * Build the request input the way a provider does. The threshold is part of the request:
+ * pass `undefined` for a caller that asks the server for no compaction at all.
+ */
+function convert<TApi extends Api>(
+	requestModel: Model<TApi>,
+	context: Context,
+	serverCompactionThreshold: number | undefined = THRESHOLD,
+): ResponseInput {
+	return convertResponsesMessages(requestModel, context, new Set(["openai"]), { serverCompactionThreshold });
+}
+
+/** The model plus the threshold its request carries, which is what the replay rule reads. */
+function request<TApi extends Api>(
+	requestModel: Model<TApi>,
+	serverCompactionThreshold: number | undefined = THRESHOLD,
+) {
+	return { ...requestModel, serverCompactionThreshold };
+}
+
+function callIdsByType(input: ResponseInput, type: string): (string | undefined)[] {
+	const items = JSON.parse(JSON.stringify(input)) as { type?: string; call_id?: string }[];
+	return items.filter((item) => item.type === type).map((item) => item.call_id);
+}
+
+async function runStream(events: ResponseStreamEvent[], streamModel: Model<"openai-responses">) {
+	const output = assistant("", { content: [] });
+	await processResponsesStream(
+		(async function* () {
+			for (const event of events) yield event;
+		})(),
+		output,
+		new AssistantMessageEventStream(),
+		streamModel,
+	);
+	return output;
+}
+
+function compactionEvents(id: string): ResponseStreamEvent[] {
+	return [
+		{
+			type: "response.output_item.added",
+			item: { type: "compaction", id, encrypted_content: "encrypted-summary" },
+		},
+		{
+			type: "response.output_item.done",
+			item: { type: "compaction", id, encrypted_content: "encrypted-summary" },
+		},
+		{
+			type: "response.completed",
+			response: {
+				status: "completed",
+				usage: {
+					input_tokens: 10,
+					output_tokens: 2,
+					total_tokens: 12,
+					input_tokens_details: { cached_tokens: 0 },
 				},
 			},
-		] as ResponseStreamEvent[];
+		},
+	] as ResponseStreamEvent[];
+}
 
-		await processResponsesStream(
-			(async function* () {
-				for (const event of events) yield event;
-			})(),
-			output,
-			stream,
-			model,
-		);
+describe("OpenAI Responses automatic server-side compaction", () => {
+	it("persists an opaque compaction item from a Responses stream", async () => {
+		const output = await runStream(compactionEvents("cmp_1"), { ...model, baseUrl: `${model.baseUrl}/` });
 
 		expect(output.openaiCompaction).toEqual(checkpoint());
-		expect(output.contextTokens).toBeNull();
-		expect(output.contextTokenScope).toEqual({
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			baseUrl: model.baseUrl,
-		});
+	});
+
+	it("ignores a compaction item from an endpoint that never sends context management", async () => {
+		const output = await runStream(compactionEvents("cmp_1"), { ...model, baseUrl: "https://proxy.example/v1" });
+
+		expect(output.openaiCompaction).toBeUndefined();
 	});
 
 	it("drops input before the latest compaction item for the same OpenAI model", () => {
-		const compacted = assistant("work after compaction", {
-			openaiCompaction: checkpoint(),
-		});
 		const context: Context = {
 			systemPrompt: "system",
 			messages: [
 				{ role: "user", content: "old user input", timestamp: 1 },
 				assistant("old assistant output"),
-				compacted,
+				assistant("work after compaction", { openaiCompaction: checkpoint() }),
 				{ role: "user", content: "new user input", timestamp: 2 },
 			],
 		};
 
-		const input = convertResponsesMessages(model, context, new Set(["openai"]));
+		const input = convert(model, context);
 		expect(input.some((item) => JSON.stringify(item).includes("old user input"))).toBe(false);
 		expect(input.some((item) => JSON.stringify(item).includes("old assistant output"))).toBe(false);
-		expect(input).toContainEqual({
-			type: "compaction",
-			id: "cmp_1",
-			encrypted_content: "encrypted-summary",
-		});
-		expect(input.some((item) => JSON.stringify(item).includes("work after compaction"))).toBe(true);
-		expect(input.some((item) => JSON.stringify(item).includes("new user input"))).toBe(true);
 		expect(input[0]).toEqual({
 			type: "compaction",
 			id: "cmp_1",
@@ -139,24 +180,10 @@ describe("OpenAI Responses automatic server-side compaction", () => {
 		});
 		expect(input[1]).toEqual({ role: "developer", content: "system" });
 		expect(JSON.stringify(input[2])).toContain("work after compaction");
+		expect(input.some((item) => JSON.stringify(item).includes("new user input"))).toBe(true);
 	});
 
-	it("keeps full history when switching to a different model", () => {
-		const context: Context = {
-			messages: [
-				{ role: "user", content: "old user input", timestamp: 1 },
-				assistant("work after compaction", {
-					openaiCompaction: checkpoint(),
-				}),
-			],
-		};
-		const nextModel = { ...model, id: "gpt-5.6-terra" };
-
-		const input = convertResponsesMessages(nextModel, context, new Set(["openai"]));
-		expect(input.some((item) => JSON.stringify(item).includes("old user input"))).toBe(true);
-		expect(input.some((item) => item.type === "compaction")).toBe(false);
-	});
-	it("replays only assistant content after the checkpoint", () => {
+	it("replays the checkpoint turn whole, including blocks the checkpoint already covers", () => {
 		const context: Context = {
 			messages: [
 				{ role: "user", content: "old user input", timestamp: 1 },
@@ -165,28 +192,154 @@ describe("OpenAI Responses automatic server-side compaction", () => {
 						{ type: "text", text: "before checkpoint" },
 						{ type: "text", text: "after checkpoint" },
 					],
-					openaiCompaction: checkpoint(1),
+					openaiCompaction: checkpoint(),
 				}),
 			],
 		};
 
-		const input = convertResponsesMessages(model, context, new Set(["openai"]));
+		const input = convert(model, context);
 		const serialized = JSON.stringify(input);
 		expect(serialized).not.toContain("old user input");
-		expect(serialized).not.toContain("before checkpoint");
+		expect(serialized).toContain("before checkpoint");
 		expect(serialized).toContain("after checkpoint");
 	});
 
-	it("keeps full history when the endpoint changes", () => {
+	it("keeps every tool call paired with its result across a checkpoint", () => {
 		const context: Context = {
 			messages: [
 				{ role: "user", content: "old user input", timestamp: 1 },
-				assistant("work after compaction", { openaiCompaction: checkpoint() }),
+				assistant("", {
+					content: [
+						{ type: "toolCall", id: "call_1|fc_1", name: "read", arguments: { path: "a.txt" } },
+						{ type: "text", text: "after tool call" },
+					],
+					openaiCompaction: checkpoint(),
+				}),
+				{
+					role: "toolResult",
+					toolCallId: "call_1|fc_1",
+					toolName: "read",
+					content: [{ type: "text", text: "file body" }],
+					isError: false,
+					timestamp: 2,
+				},
 			],
 		};
+
+		const input = convert(model, context);
+		expect(callIdsByType(input, "function_call")).toEqual(["call_1"]);
+		expect(callIdsByType(input, "function_call_output")).toEqual(["call_1"]);
+	});
+
+	it("keeps full history when switching to a different model", () => {
+		const input = convert({ ...model, id: "gpt-5.6-terra" }, checkpointedContext());
+		expect(JSON.stringify(input)).toContain("old user input");
+		expect(input.some((item) => item.type === "compaction")).toBe(false);
+	});
+
+	it("keeps full history when only the provider differs", () => {
+		const otherProvider = {
+			...model,
+			provider: "azure-openai-responses",
+			compat: { supportsServerCompaction: true },
+		};
+
+		const input = convert(otherProvider, checkpointedContext());
+		expect(JSON.stringify(input)).toContain("old user input");
+		expect(input.some((item) => item.type === "compaction")).toBe(false);
+	});
+
+	it("keeps full history when only the api differs", () => {
+		const otherApi: Model<"openai-codex-responses"> = {
+			...model,
+			api: "openai-codex-responses",
+			compat: { supportsServerCompaction: true },
+		};
+
+		const input = convert(otherApi, checkpointedContext());
+		expect(JSON.stringify(input)).toContain("old user input");
+		expect(input.some((item) => item.type === "compaction")).toBe(false);
+	});
+
+	it("keeps full history when the endpoint changes", () => {
 		const proxyModel = { ...model, baseUrl: "https://proxy.example/v1" };
 
-		const input = convertResponsesMessages(proxyModel, context, new Set(["openai"]));
+		const input = convert(proxyModel, checkpointedContext());
+		expect(JSON.stringify(input)).toContain("old user input");
+		expect(input.some((item) => item.type === "compaction")).toBe(false);
+	});
+
+	it("keeps full history on another endpoint that takes context management", () => {
+		// A checkpoint is opaque to every server but the one that wrote it. Here provider,
+		// api, model id and the support rule all say yes, so the endpoint the checkpoint came
+		// from is the only thing left to compare.
+		const otherEndpoint = {
+			...model,
+			baseUrl: "https://proxy.example/v1",
+			compat: { supportsServerCompaction: true },
+		};
+
+		expect(usesOpenAICompactionCheckpoint(request(otherEndpoint), checkpointedContext())).toBe(false);
+		const input = convert(otherEndpoint, checkpointedContext());
+		expect(JSON.stringify(input)).toContain("old user input");
+		expect(input.some((item) => item.type === "compaction")).toBe(false);
+	});
+
+	it("matches a checkpoint through a trailing slash on the endpoint", () => {
+		const slashModel = { ...model, baseUrl: `${model.baseUrl}/` };
+
+		const input = convert(slashModel, checkpointedContext());
+		expect(JSON.stringify(input)).not.toContain("old user input");
+		expect(input.some((item) => item.type === "compaction")).toBe(true);
+	});
+
+	it("stops replaying a checkpoint when the endpoint opts out of server compaction", () => {
+		const optedOut = { ...model, compat: { supportsServerCompaction: false } };
+
+		const input = convert(optedOut, checkpointedContext());
+		expect(JSON.stringify(input)).toContain("old user input");
+		expect(input.some((item) => item.type === "compaction")).toBe(false);
+	});
+
+	it("keeps full history when the request carries no compaction threshold", async () => {
+		// A caller with compaction turned off sends no `context_management`, so it asks the
+		// server to compact nothing. Handing it a checkpoint anyway would drop the history
+		// ahead of that turn with no threshold running on either side.
+		expect(
+			usesOpenAICompactionCheckpoint({ ...model, serverCompactionThreshold: undefined }, checkpointedContext()),
+		).toBe(false);
+
+		// No options at all is what a caller that never sets the field passes.
+		const input = convertResponsesMessages(model, checkpointedContext(), new Set(["openai"]));
+		expect(JSON.stringify(input)).toContain("old user input");
+		expect(input.some((item) => item.type === "compaction")).toBe(false);
+
+		// The request the provider actually builds says the same thing.
+		let captured: { input?: unknown; context_management?: unknown } | undefined;
+		const stream = streamOpenAIResponses(model, checkpointedContext(), {
+			apiKey: "test-key",
+			onPayload: (payload) => {
+				captured = payload as { input?: unknown; context_management?: unknown };
+				throw new Error("payload captured");
+			},
+		});
+		for await (const event of stream) {
+			if (event.type === "error") break;
+		}
+		expect(captured).not.toHaveProperty("context_management");
+		expect(JSON.stringify(captured?.input)).toContain("old user input");
+	});
+
+	it("ignores a checkpoint left on a turn the request never replays", () => {
+		// The stream failed after the server emitted the compaction item, so the turn
+		// carrying it is dropped from the request. The converter and the pre-set that
+		// stamps contextTokenBaseUrl have to agree that nothing is replayed.
+		const errored = checkpointedContext({ stopReason: "error" });
+
+		expect(usesOpenAICompactionCheckpoint(request(model), checkpointedContext())).toBe(true);
+		expect(usesOpenAICompactionCheckpoint(request(model), errored)).toBe(false);
+
+		const input = convert(model, errored);
 		expect(JSON.stringify(input)).toContain("old user input");
 		expect(input.some((item) => item.type === "compaction")).toBe(false);
 	});
@@ -209,24 +362,22 @@ describe("OpenAI Responses automatic server-side compaction", () => {
 		}
 
 		await processResponsesStream(events(), output, stream, model);
-		const input = convertResponsesMessages(model, { messages: [output] }, new Set(["openai"]));
-		expect(input).toContainEqual({ type: "compaction", id: "cmp_2", encrypted_content: "second" });
+		const input = convert(model, { messages: [output] });
+		expect(input.filter((item) => item.type === "compaction")).toEqual([
+			{ type: "compaction", id: "cmp_2", encrypted_content: "second" },
+		]);
+		// The turn is replayed whole, so every block goes out again — including the two the
+		// newest checkpoint already covers.
 		const serialized = JSON.stringify(input);
-		expect(serialized).not.toContain("before first");
-		expect(serialized).not.toContain("between checkpoints");
+		expect(serialized).toContain("before first");
+		expect(serialized).toContain("between checkpoints");
 		expect(serialized).toContain("after second");
 	});
 
 	it("survives a JSON persistence round trip", () => {
-		const context: Context = {
-			messages: [
-				{ role: "user", content: "old user input", timestamp: 1 },
-				assistant("after checkpoint", { openaiCompaction: checkpoint() }),
-			],
-		};
-		const restored = JSON.parse(JSON.stringify(context)) as Context;
+		const restored = JSON.parse(JSON.stringify(checkpointedContext())) as Context;
 
-		const input = convertResponsesMessages(model, restored, new Set(["openai"]));
+		const input = convert(model, restored);
 		expect(input.some((item) => item.type === "compaction")).toBe(true);
 		expect(JSON.stringify(input)).not.toContain("old user input");
 	});
@@ -235,20 +386,56 @@ describe("OpenAI Responses automatic server-side compaction", () => {
 		const context: Context = {
 			messages: [
 				{ role: "user", content: "old input", timestamp: 1 },
-				assistant("after old checkpoint", { openaiCompaction: checkpoint(0, model.baseUrl, "cmp_old") }),
+				assistant("after old checkpoint", { openaiCompaction: checkpoint(model.baseUrl, "cmp_old") }),
 				{ role: "user", content: "middle input", timestamp: 2 },
-				assistant("after new checkpoint", { openaiCompaction: checkpoint(0, model.baseUrl, "cmp_new") }),
+				assistant("after new checkpoint", { openaiCompaction: checkpoint(model.baseUrl, "cmp_new") }),
 				{ role: "user", content: "latest input", timestamp: 3 },
 			],
 		};
 
-		const input = convertResponsesMessages(model, context, new Set(["openai"]));
+		const input = convert(model, context);
 		const checkpoints = input.filter((item) => item.type === "compaction");
 		expect(checkpoints).toEqual([{ type: "compaction", id: "cmp_new", encrypted_content: "encrypted-summary" }]);
 		const serialized = JSON.stringify(input);
 		expect(serialized).not.toContain("middle input");
 		expect(serialized).toContain("after new checkpoint");
 		expect(serialized).toContain("latest input");
+	});
+
+	it("records the endpoint whose checkpoint shortened the request", async () => {
+		async function captureOutput(
+			requestModel: Model<"openai-responses">,
+			messages: Message[],
+			serverCompactionThreshold?: number,
+		): Promise<AssistantMessage> {
+			const stream = streamOpenAIResponses(
+				requestModel,
+				{ messages },
+				{
+					apiKey: "test-key",
+					serverCompactionThreshold,
+					onPayload: () => {
+						throw new Error("payload captured");
+					},
+				},
+			);
+			for await (const event of stream) {
+				if (event.type === "error") return event.error;
+			}
+			throw new Error("stream did not fail");
+		}
+
+		const slashModel = { ...model, baseUrl: `${model.baseUrl}/` };
+		const replayed = await captureOutput(slashModel, checkpointedContext().messages, THRESHOLD);
+		expect(replayed.contextTokenBaseUrl).toBe(model.baseUrl);
+
+		const plain = await captureOutput(model, [assistant("no checkpoint here")], THRESHOLD);
+		expect(plain.contextTokenBaseUrl).toBeUndefined();
+
+		// A request carrying no threshold replays nothing, so its usage sizes the whole
+		// history and the stamp must stay off.
+		const noThreshold = await captureOutput(model, checkpointedContext().messages);
+		expect(noThreshold.contextTokenBaseUrl).toBeUndefined();
 	});
 
 	it("adds context management only for supported endpoints", async () => {
@@ -300,6 +487,7 @@ describe("OpenAI Responses automatic server-side compaction", () => {
 			}),
 		).toBe(false);
 	});
+
 	it("adds context management to the official Codex request builder", async () => {
 		const payload = Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }),
@@ -315,7 +503,7 @@ describe("OpenAI Responses automatic server-side compaction", () => {
 						api: codexModel.api,
 						provider: codexModel.provider,
 						model: codexModel.id,
-						openaiCompaction: checkpoint(0, codexModel.baseUrl),
+						openaiCompaction: checkpoint(codexModel.baseUrl),
 					}),
 				],
 			},
@@ -328,10 +516,15 @@ describe("OpenAI Responses automatic server-side compaction", () => {
 				},
 			},
 		);
+		let output: AssistantMessage | undefined;
 		for await (const event of request) {
-			if (event.type === "error") break;
+			if (event.type === "error") {
+				output = event.error;
+				break;
+			}
 		}
 
+		expect(output?.contextTokenBaseUrl).toBe(codexModel.baseUrl);
 		expect(captured).toMatchObject({
 			instructions: "fresh instructions",
 			input: [

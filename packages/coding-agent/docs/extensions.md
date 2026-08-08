@@ -615,7 +615,11 @@ pi.on("before_provider_request", (event, ctx) => {
 
 This is mainly useful for debugging provider serialization and cache behavior.
 
-For OpenAI Responses automatic server-side compaction, the core payload contains exactly one `context_management` entry whose type is `compaction`. An extension that changes its threshold must replace or modify that entry rather than append a second compaction entry. If an extension removes the entry while `compat.supportsServerCompaction` remains enabled, Prime Agent still leaves automatic threshold handling to the provider, so that extension assumes responsibility for threshold handling; local one-shot overflow recovery remains only a fallback. An extension that fully owns compaction should set `compat.supportsServerCompaction: false` and implement its own request behavior.
+For OpenAI Responses server-side compaction, the core payload holds exactly one `context_management` entry, whose type is `compaction`. An extension that changes the threshold must replace or modify that entry rather than append a second compaction entry.
+
+Prime Agent resolves the threshold before this hook runs, and the same resolved value decides both what the request carries and whether the local threshold still applies. An extension that deletes the entry therefore takes over threshold handling: the request no longer asks the server to compact, and Prime Agent still runs no local threshold compaction. One-shot context-overflow recovery is the only fallback left. An extension that wants Prime Agent to keep its local threshold should set `compat.supportsServerCompaction: false` on the model instead. That stops the entry from being built, stops checkpoint capture and replay, and leaves local threshold compaction running.
+
+When Prime Agent resolves no threshold, the payload holds no `context_management` entry and local threshold compaction is already running. See [Compaction](compaction.md) for the three conditions that resolve one.
 
 #### after_provider_response
 

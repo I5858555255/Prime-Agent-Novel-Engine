@@ -7,7 +7,12 @@
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
-import { completeSimple } from "@earendil-works/pi-ai";
+import {
+	completeSimple,
+	findOpenAICompactionCheckpoint,
+	isReplayedAssistantMessage,
+	supportsOpenAIServerCompaction,
+} from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
@@ -153,7 +158,7 @@ export function calculateContextTokens(usage: Usage): number {
 function getAssistantUsage(msg: AgentMessage): Usage | undefined {
 	if (msg.role === "assistant" && "usage" in msg) {
 		const assistantMsg = msg as AssistantMessage;
-		if (assistantMsg.stopReason !== "aborted" && assistantMsg.stopReason !== "error" && assistantMsg.usage) {
+		if (isReplayedAssistantMessage(assistantMsg) && assistantMsg.usage) {
 			return assistantMsg.usage;
 		}
 	}
@@ -175,62 +180,105 @@ export function getLastAssistantUsage(entries: SessionEntry[]): Usage | undefine
 }
 
 export interface ContextUsageEstimate {
+	/** null when no assistant response measured the context the next request sends. */
 	tokens: number | null;
-	usageTokens: number | null;
-	trailingTokens: number;
+	/** Index of the message whose reported usage `tokens` was built from, null when none was. */
 	lastUsageIndex: number | null;
 }
 
-interface ContextModel {
-	api?: Api;
+/** The model fields context accounting reads. */
+export interface ContextModel {
+	api: Api;
 	provider: string;
 	id: string;
-	baseUrl?: string;
+	baseUrl: string;
+	contextWindow: number;
+	/** Same optional field as `Model.compat`; read only to see if server compaction is on. */
+	compat?: unknown;
 }
 
-interface AssistantUsageInfo {
-	usage: Usage;
-	index: number;
-	contextTokens?: number | null;
+/**
+ * The endpoint the next request goes to, and the `compact_threshold` that request
+ * carries.
+ *
+ * Every field is required: a caller that could not resolve the model passes nothing,
+ * which means "unknown endpoint", never "matches any endpoint". The threshold belongs
+ * here because a request carrying none replays no checkpoint, so an estimate that
+ * disagrees with it is wrong by the size of a checkpoint. Build it with
+ * `contextEndpointFor`.
+ */
+export interface ContextEndpoint extends ContextModel {
+	serverCompactionThreshold: number | undefined;
 }
 
-function normalizeContextBaseUrl(baseUrl: string): string {
-	let end = baseUrl.length;
-	while (end > 0 && baseUrl[end - 1] === "/") end--;
-	return baseUrl.slice(0, end);
+/** The endpoint a session running under `settings` sends its next request to. */
+export function contextEndpointFor(
+	model: ContextModel | undefined,
+	settings: CompactionSettings,
+): ContextEndpoint | undefined {
+	if (!model) return undefined;
+	return { ...model, serverCompactionThreshold: getSentServerCompactionThreshold(model, settings) };
 }
 
-function getLastAssistantUsageInfo(
-	messages: AgentMessage[],
-	currentModel?: ContextModel,
-): AssistantUsageInfo | undefined {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const message = messages[i];
-		const usage = getAssistantUsage(message);
-		if (!usage) continue;
+/**
+ * Whether any checkpoint in the history could still be replayed to some endpoint. Not
+ * the replay rule — only whether the question matters. Errored and aborted turns are
+ * dropped before a request is built, so a checkpoint left on one never reaches a model
+ * again.
+ */
+function hasReplayableCheckpoint(message: AgentMessage): boolean {
+	if (message.role !== "assistant") return false;
+	const assistant = message as AssistantMessage;
+	return assistant.openaiCompaction !== undefined && isReplayedAssistantMessage(assistant);
+}
 
-		const assistant = message as AssistantMessage;
-		if (currentModel) {
-			const isCurrentModel =
-				assistant.provider === currentModel.provider &&
-				assistant.model === currentModel.id &&
-				(currentModel.api === undefined || assistant.api === currentModel.api);
-			if (!isCurrentModel) continue;
-		}
+/** What the next request puts in place of the history before it. */
+type ReplayTarget =
+	/** No checkpoint applies, so the whole history goes to the model. */
+	| { kind: "none" }
+	/** The request replays this checkpoint and sends nothing from before that turn. */
+	| { kind: "checkpoint"; index: number; sourceBaseUrl: string; endpoint: ContextEndpoint }
+	/** The endpoint is unresolved and the history holds a checkpoint, so neither is known. */
+	| { kind: "unknown" };
 
-		const scope = assistant.contextTokenScope;
-		const scopeMatches =
-			scope !== undefined &&
-			(!currentModel ||
-				(scope.provider === currentModel.provider &&
-					scope.model === currentModel.id &&
-					(currentModel.api === undefined || scope.api === currentModel.api) &&
-					(currentModel.baseUrl === undefined ||
-						normalizeContextBaseUrl(scope.baseUrl) === normalizeContextBaseUrl(currentModel.baseUrl))));
-		if (scope && !scopeMatches) continue;
-		return { usage, index: i, contextTokens: assistant.contextTokens };
+function resolveReplayTarget(messages: AgentMessage[], endpoint: ContextEndpoint | undefined): ReplayTarget {
+	if (!endpoint) {
+		return messages.some(hasReplayableCheckpoint) ? { kind: "unknown" } : { kind: "none" };
 	}
-	return undefined;
+	// The provider owns the replay rule; asking it is what keeps this estimate and the
+	// request it describes from drifting apart.
+	const replay = findOpenAICompactionCheckpoint(messages, endpoint);
+	if (!replay) return { kind: "none" };
+	return { kind: "checkpoint", index: replay.index, sourceBaseUrl: replay.checkpoint.sourceBaseUrl, endpoint };
+}
+
+/**
+ * Whether this response's request sent the same message prefix the next request will.
+ *
+ * A response that produced a checkpoint reports no context size at all: the server
+ * shortened the context mid-turn and never said by how much. Otherwise
+ * `contextTokenBaseUrl` says which endpoint's checkpoint the response's own request
+ * replayed, and the model that produced it says which checkpoint that was — two turns on
+ * one endpoint from different models replay different checkpoints, so both have to match.
+ *
+ * Absence of `contextTokenBaseUrl` means the request replayed nothing. No released build
+ * ever wrote a different field here, so there is no older session shape to migrate.
+ */
+function measuresSamePrefix(message: AssistantMessage, target: ReplayTarget): boolean {
+	if (message.openaiCompaction !== undefined) return false;
+	switch (target.kind) {
+		case "unknown":
+			return false;
+		case "none":
+			return message.contextTokenBaseUrl === undefined;
+		case "checkpoint":
+			return (
+				message.contextTokenBaseUrl === target.sourceBaseUrl &&
+				message.api === target.endpoint.api &&
+				message.provider === target.endpoint.provider &&
+				message.model === target.endpoint.id
+			);
+	}
 }
 
 export function estimateMessageTokens(messages: AgentMessage[]): number {
@@ -240,41 +288,76 @@ export function estimateMessageTokens(messages: AgentMessage[]): number {
 }
 
 /**
- * Estimate context tokens from messages, using the latest successful response
- * from the current model when available. A server checkpoint makes the count
- * unknown until that model responds again.
+ * Estimate the context the next request to `endpoint` will send.
+ *
+ * The base is an assistant response's reported usage plus a chars/4 estimate of the
+ * messages after it. A response measured that context only when its own request sent the
+ * same message prefix the next one will: both replay the same server compaction
+ * checkpoint, or neither replays one. Anything else is wrong by the size of a checkpoint,
+ * which the server never reports, so the walk skips that response and keeps going back —
+ * a plain response from another model still measured a real prefix.
+ *
+ * A checkpoint the next request replays ends the walk: it stands in for everything before
+ * it, and nothing there measured a comparable context.
+ *
+ * When no response qualifies the size is unknown, not a chars/4 guess a caller would read
+ * as a measurement. The one exception is a history that had nothing to reject: with no
+ * reported usage anywhere, estimating every message is the only answer there has ever
+ * been.
+ *
+ * Passing no endpoint means the model could not be resolved. Anything the caller does
+ * know about where the request goes belongs in `endpoint` — `undefined` is not a wildcard.
  */
-export function estimateContextTokens(messages: AgentMessage[], currentModel?: ContextModel): ContextUsageEstimate {
-	const usageInfo = getLastAssistantUsageInfo(messages, currentModel);
-
-	if (!usageInfo) {
-		const estimated = estimateMessageTokens(messages);
-		return {
-			tokens: estimated,
-			usageTokens: 0,
-			trailingTokens: estimated,
-			lastUsageIndex: null,
-		};
-	}
-
-	const usageTokens =
-		usageInfo.contextTokens === null ? null : (usageInfo.contextTokens ?? calculateContextTokens(usageInfo.usage));
+export function estimateContextTokens(messages: AgentMessage[], endpoint?: ContextEndpoint): ContextUsageEstimate {
+	const target = resolveReplayTarget(messages, endpoint);
+	// The turn that produced the checkpoint is replayed whole, and nothing before it is
+	// sent, so its own usage is the oldest one the walk can even consider — and that usage
+	// is not a context size, which is why the walk stops above it rather than at it.
+	const replayedTurn = target.kind === "checkpoint" ? target.index : -1;
 	let trailingTokens = 0;
-	for (let i = usageInfo.index + 1; i < messages.length; i++) {
-		trailingTokens += estimateTokens(messages[i]);
+	let rejectedUsage = false;
+
+	for (let i = messages.length - 1; i > replayedTurn; i--) {
+		const message = messages[i];
+		const usage = getAssistantUsage(message);
+		if (usage) {
+			if (measuresSamePrefix(message as AssistantMessage, target)) {
+				return { tokens: calculateContextTokens(usage) + trailingTokens, lastUsageIndex: i };
+			}
+			rejectedUsage = true;
+		}
+		trailingTokens += estimateTokens(message);
 	}
 
-	return {
-		tokens: usageTokens === null ? null : usageTokens + trailingTokens,
-		usageTokens,
-		trailingTokens,
-		lastUsageIndex: usageInfo.index,
-	};
+	// The walk covered every message and rejected no measurement, so trailingTokens is the
+	// whole-history estimate.
+	if (target.kind === "none" && !rejectedUsage) {
+		return { tokens: trailingTokens, lastUsageIndex: null };
+	}
+	return { tokens: null, lastUsageIndex: null };
 }
 
-export function getServerCompactionThreshold(contextWindow: number, settings: CompactionSettings): number | undefined {
-	if (!settings.enabled) return undefined;
-	const threshold = contextWindow - settings.reserveTokens;
+/** Context size a request is allowed to reach: the window minus the space held for the response. */
+function compactionThreshold(contextWindow: number, settings: CompactionSettings): number {
+	return contextWindow - settings.reserveTokens;
+}
+
+/**
+ * The `compact_threshold` this model's requests actually carry, or undefined when they
+ * carry none.
+ *
+ * Undefined is the single answer to "does the local threshold still own compaction?".
+ * It covers an endpoint that does not take `context_management`, compaction turned off,
+ * and a model whose window is smaller than the reserve — there is no positive threshold
+ * to send there, so the server compacts nothing and the local threshold must still run.
+ */
+export function getSentServerCompactionThreshold(
+	model: ContextModel | undefined,
+	settings: CompactionSettings,
+): number | undefined {
+	if (!model || !settings.enabled) return undefined;
+	if (!supportsOpenAIServerCompaction(model)) return undefined;
+	const threshold = compactionThreshold(model.contextWindow, settings);
 	return Number.isSafeInteger(threshold) && threshold > 0 ? threshold : undefined;
 }
 
@@ -284,7 +367,7 @@ export function getServerCompactionThreshold(contextWindow: number, settings: Co
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
 	if (contextWindow <= 0) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	return contextTokens > compactionThreshold(contextWindow, settings);
 }
 
 // ============================================================================
@@ -691,6 +774,7 @@ export interface CompactionPreparation {
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
+	endpoint?: ContextEndpoint,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -715,8 +799,12 @@ export function prepareCompaction(
 	const boundaryEnd = pathEntries.length;
 
 	const contextMessages = buildSessionContext(pathEntries).messages;
-	const contextEstimate = estimateContextTokens(contextMessages);
-	const tokensBefore = contextEstimate.tokens ?? estimateMessageTokens(contextMessages);
+	// `tokensBefore` is a record of how big this conversation got, shown on the compaction
+	// entry forever, so it reads the same rule the live context display does. When nothing
+	// measured this context the chars/4 estimate is all there is — the same number a
+	// session that never got a response reports.
+	const tokensBefore =
+		estimateContextTokens(contextMessages, endpoint).tokens ?? estimateMessageTokens(contextMessages);
 
 	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
 

@@ -7,7 +7,7 @@ import type { AgentSessionCreationOptions } from "./agent-session-services.js";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.js";
 import { AuthStorage } from "./auth-storage.js";
 import type { AgentAutonomousConfig } from "./autonomous.js";
-import { getServerCompactionThreshold } from "./compaction/index.js";
+import { getSentServerCompactionThreshold } from "./compaction/index.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
 import { McpManager } from "./mcp/mcp-manager.js";
@@ -310,8 +310,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				throw new Error(auth.error);
 			}
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
-			const serverCompactionThreshold = getServerCompactionThreshold(
-				model.contextWindow,
+			const serverCompactionThreshold = getSentServerCompactionThreshold(
+				model,
 				settingsManager.getCompactionSettings(),
 			);
 			return streamSimple(model, context, {

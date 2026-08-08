@@ -470,6 +470,26 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 }
 
 /**
+ * Strip an OpenAI server compaction checkpoint from a retained message.
+ *
+ * A checkpoint stands in for everything before the turn that produced it, so a request
+ * that replays one drops every message ahead of it — including the compaction summary,
+ * which sits first in the rebuilt context. The local summary already covers that history,
+ * so the checkpoints it replaced go with it. Returns a copy; the persisted entry keeps
+ * what the provider recorded.
+ *
+ * The turn keeps `contextTokenBaseUrl`, set to the endpoint that issued the checkpoint.
+ * The server shortened this turn's input mid-stream, so its `usage` was never a
+ * whole-history size; dropping the checkpoint must not turn that number into one.
+ */
+function dropServerCompactionCheckpoint(message: AgentMessage): AgentMessage {
+	if (message.role !== "assistant") return message;
+	const { openaiCompaction, ...rest } = message as AssistantMessage;
+	if (openaiCompaction === undefined) return message;
+	return { ...rest, contextTokenBaseUrl: openaiCompaction.sourceBaseUrl };
+}
+
+/**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
  * Handles compaction and branch summaries along the path.
@@ -578,7 +598,7 @@ export function buildSessionContext(
 				compaction.customInstructions,
 				retainedMessages.length,
 			),
-			...retainedMessages,
+			...retainedMessages.map(dropServerCompactionCheckpoint),
 		);
 
 		// Emit messages after compaction

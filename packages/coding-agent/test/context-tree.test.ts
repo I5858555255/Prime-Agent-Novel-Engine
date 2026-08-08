@@ -2,11 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { type AssistantMessage, getModel, type Usage } from "@earendil-works/pi-ai";
+import { type AssistantMessage, getModel, type Model, type Usage } from "@earendil-works/pi-ai";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import { contextEndpointFor, DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/index.js";
 import { type ContextTreeNode, loadContextTreeChildrenFromDisk } from "../src/core/context-tree.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -17,6 +18,20 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { createTestResourceLoader } from "./utilities.js";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
+
+/** An endpoint that takes `context_management`, so a compaction checkpoint on it is replayable. */
+const serverCompactingModel: Model<"openai-responses"> = {
+	id: "gpt-5.6-sol",
+	name: "GPT-5.6 Sol",
+	api: "openai-responses",
+	provider: "openai",
+	baseUrl: "https://api.openai.com/v1",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200000,
+	maxTokens: 128000,
+};
 
 beforeAll(() => {
 	initTheme("dark");
@@ -52,6 +67,24 @@ function createAssistantMessage(text: string, usage: Usage): AssistantMessage {
 	};
 }
 
+/** An assistant turn the server compacted, on the endpoint that produced the checkpoint. */
+function createCheckpointAssistantMessage(text: string, usage: Usage): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: serverCompactingModel.api,
+		provider: serverCompactingModel.provider,
+		model: serverCompactingModel.id,
+		openaiCompaction: {
+			item: { type: "compaction", id: "cmp_1", encrypted_content: "opaque" },
+			sourceBaseUrl: serverCompactingModel.baseUrl,
+		},
+		usage,
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
 function createUserMessage(text: string) {
 	return {
 		role: "user" as const,
@@ -69,17 +102,25 @@ function writeChildSession(
 	dir: string,
 	prompt: string,
 	assistantUsage: Usage,
+	sessionModel: Model<any> = model,
 ): { assistantEntryId: string; sessionManager: SessionManager } {
 	mkdirSync(dir, { recursive: true });
 	const sessionManager = SessionManager.create(process.cwd(), dir);
 	sessionManager.newSession();
-	sessionManager.appendModelChange(model.provider, model.id);
+	sessionManager.appendModelChange(sessionModel.provider, sessionModel.id);
 	sessionManager.appendMessage(createUserMessage(prompt));
 	const assistantEntryId = sessionManager.appendMessage(createAssistantMessage("done", cloneUsage(assistantUsage)));
 	return { assistantEntryId, sessionManager };
 }
 
-const resolveContextWindow = () => 200000;
+/** Stands in for the model registry plus settings the live session resolves its endpoint through. */
+const resolveModel = (provider: string, modelId: string) =>
+	contextEndpointFor(
+		provider === serverCompactingModel.provider && modelId === serverCompactingModel.id
+			? serverCompactingModel
+			: { ...model, contextWindow: 200000 },
+		DEFAULT_COMPACTION_SETTINGS,
+	);
 
 let tempDirs: string[] = [];
 
@@ -98,9 +139,9 @@ afterEach(() => {
 
 describe("loadContextTreeChildrenFromDisk", () => {
 	it("returns no nodes for a missing or empty rlm session dir", () => {
-		expect(loadContextTreeChildrenFromDisk(undefined, resolveContextWindow)).toEqual([]);
-		expect(loadContextTreeChildrenFromDisk(join(makeTempDir(), "missing"), resolveContextWindow)).toEqual([]);
-		expect(loadContextTreeChildrenFromDisk(makeTempDir(), resolveContextWindow)).toEqual([]);
+		expect(loadContextTreeChildrenFromDisk(undefined, resolveModel)).toEqual([]);
+		expect(loadContextTreeChildrenFromDisk(join(makeTempDir(), "missing"), resolveModel)).toEqual([]);
+		expect(loadContextTreeChildrenFromDisk(makeTempDir(), resolveModel)).toEqual([]);
 	});
 
 	it("builds nodes recursively and separates own usage from attributed child usage", () => {
@@ -119,7 +160,7 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		addAssistantUsage(aggregate, grandchildUsage);
 		child.sessionManager.appendChildUsageAttribution(child.assistantEntryId, grandchildUsage, aggregate);
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
 		expect(nodes).toHaveLength(1);
 
 		const childNode = nodes[0];
@@ -150,7 +191,7 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		const rlmDir = makeTempDir();
 		writeChildSession(join(rlmDir, "sub-ctx00001"), "check context", createUsage(1500, 500, 0.02));
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
 		expect(nodes[0].contextUsage).toEqual({
 			tokens: 2000,
 			contextWindow: 200000,
@@ -167,32 +208,50 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		const child = writeChildSession(join(rlmDir, "sub-comp0001"), "compact me", createUsage(1500, 500, 0.02));
 		child.sessionManager.appendCompaction("summary", child.assistantEntryId, 2000);
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
 		expect(nodes[0].contextUsage).toEqual({ tokens: null, contextWindow: 200000, percent: null });
 	});
 
 	it("reports unknown persisted context after a server checkpoint", () => {
 		const rlmDir = makeTempDir();
-		const child = writeChildSession(join(rlmDir, "sub-srvcmp01"), "server compact", createUsage(1500, 500, 0.02));
-		child.sessionManager.appendMessage({
-			...createAssistantMessage("after checkpoint", createUsage(1500, 500, 0.02)),
-			openaiCompaction: {
-				item: { type: "compaction", id: "cmp_1", encrypted_content: "opaque" },
-				contentIndex: 0,
-				sourceBaseUrl: model.baseUrl,
-			},
-			contextTokenScope: {
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				baseUrl: model.baseUrl,
-			},
-			contextTokens: null,
-		});
+		const child = writeChildSession(
+			join(rlmDir, "sub-srvcmp01"),
+			"server compact",
+			createUsage(1500, 500, 0.02),
+			serverCompactingModel,
+		);
+		child.sessionManager.appendMessage(
+			createCheckpointAssistantMessage("after checkpoint", createUsage(1500, 500, 0.02)),
+		);
 		child.sessionManager.appendMessage(createUserMessage("trailing input"));
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		// The disk path resolves the session's own model, so it replays the checkpoint the
+		// live path would and reports the same unknown size.
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
 		expect(nodes[0].contextUsage).toEqual({ tokens: null, contextWindow: 200000, percent: null });
+	});
+
+	it("reports persisted context when the session's model cannot replay the checkpoint", () => {
+		const rlmDir = makeTempDir();
+		const child = writeChildSession(
+			join(rlmDir, "sub-switch01"),
+			"server compact then switch",
+			createUsage(1500, 500, 0.02),
+			serverCompactingModel,
+		);
+		child.sessionManager.appendMessage(
+			createCheckpointAssistantMessage("after checkpoint", createUsage(1500, 500, 0.02)),
+		);
+		child.sessionManager.appendModelChange(model.provider, model.id);
+		child.sessionManager.appendMessage(
+			createAssistantMessage("answered after the switch", createUsage(3000, 1000, 0.05)),
+		);
+
+		// Anthropic takes no OpenAI checkpoint, so it receives the whole history and the
+		// response after the switch measured it. The session file records only a provider and
+		// a model id; resolving the model is what supplies the api and endpoint that answer.
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
+		expect(nodes[0].contextUsage?.tokens).toBe(4000);
 	});
 
 	it("derives error and cancelled status from the last assistant stop reason", () => {
@@ -208,7 +267,7 @@ describe("loadContextTreeChildrenFromDisk", () => {
 			stopReason: "aborted",
 		});
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
 		const byId = new Map(nodes.map((n) => [n.id, n]));
 		expect(byId.get("sub-err00001")?.status).toBe("error");
 		expect(byId.get("sub-abr00001")?.status).toBe("cancelled");
@@ -250,7 +309,7 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		];
 		writeFileSync(join(childDir, `${header.id}.jsonl`), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
 		expect(nodes).toHaveLength(1);
 		// Only the leaf branch (u1 -> a2) counts; the abandoned a1 path does not.
 		expect(nodes[0].ownUsage.input).toBe(1000);
@@ -301,7 +360,7 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		];
 		writeFileSync(join(childDir, `${header.id}.jsonl`), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
 		expect(nodes).toHaveLength(1);
 		// a1 carries the aggregate (1500) on the branch; own must subtract the
 		// off-branch attribution back out.
@@ -314,7 +373,7 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		const child = writeChildSession(join(rlmDir, "sub-trail001"), "trailing", createUsage(1500, 500, 0.02));
 		child.sessionManager.appendMessage(createUserMessage("a trailing user message that has not reached the model"));
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel);
 		const tokens = nodes[0].contextUsage?.tokens;
 		// Last assistant usage is 2000; the trailing message adds an estimate on top.
 		expect(tokens).toBeGreaterThan(2000);
@@ -325,22 +384,22 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		writeChildSession(join(rlmDir, "sub-live0001"), "live child", createUsage(100, 10, 0.01));
 		writeChildSession(join(rlmDir, "sub-done0001"), "done child", createUsage(200, 20, 0.02));
 
-		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow, new Set(["sub-live0001"]));
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveModel, new Set(["sub-live0001"]));
 		expect(nodes.map((node) => node.id)).toEqual(["sub-done0001"]);
 	});
 });
 
 describe("AgentSession.getContextTree", () => {
-	function createSession() {
+	function createSession(sessionModel: Model<any> = model) {
 		const settingsManager = SettingsManager.inMemory();
 		const sessionManager = SessionManager.inMemory();
 		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.setRuntimeApiKey(sessionModel.provider, "test-key");
 		const session = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
 				initialState: {
-					model,
+					model: sessionModel,
 					systemPrompt: "You are a helpful assistant.",
 					tools: [],
 					thinkingLevel: "high",
@@ -384,27 +443,29 @@ describe("AgentSession.getContextTree", () => {
 	});
 
 	it("keeps live context unknown after a server checkpoint", () => {
-		const { session, sessionManager } = createSession();
+		const { session, sessionManager } = createSession(serverCompactingModel);
 		sessionManager.appendMessage(createUserMessage("work"));
-		sessionManager.appendMessage({
-			...createAssistantMessage("after checkpoint", createUsage(1500, 500, 0.02)),
-			openaiCompaction: {
-				item: { type: "compaction", id: "cmp_1", encrypted_content: "opaque" },
-				contentIndex: 0,
-				sourceBaseUrl: model.baseUrl,
-			},
-			contextTokenScope: {
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				baseUrl: model.baseUrl,
-			},
-			contextTokens: null,
-		});
+		sessionManager.appendMessage(createCheckpointAssistantMessage("after checkpoint", createUsage(1500, 500, 0.02)));
 		syncAgentMessages(session, sessionManager);
 
 		expect(session._contextTokensForCurrentMessages()).toBeUndefined();
-		expect(session.getContextUsage()).toEqual({ tokens: null, contextWindow: model.contextWindow, percent: null });
+		expect(session.getContextUsage()).toEqual({
+			tokens: null,
+			contextWindow: serverCompactingModel.contextWindow,
+			percent: null,
+		});
+	});
+
+	it("reports no live context size when the last turn's usage is not a number", () => {
+		// Both producers of the daemon `rlm_child_update` / session-list `tokenCount` field
+		// read this method, and that wire field is a `number`. A provider that reported a
+		// malformed usage must leave the field off, not put NaN on it.
+		const { session, sessionManager } = createSession();
+		sessionManager.appendMessage(createUserMessage("work"));
+		sessionManager.appendMessage(createAssistantMessage("done", createUsage(Number.NaN, Number.NaN, Number.NaN)));
+		syncAgentMessages(session, sessionManager);
+
+		expect(session._contextTokensForCurrentMessages()).toBeUndefined();
 	});
 
 	it("keeps pre-compaction spend in the totals after compaction", () => {

@@ -43,7 +43,7 @@ import { headersToRecord } from "../utils/headers.js";
 import {
 	convertResponsesMessages,
 	convertResponsesTools,
-	getOpenAIContextTokenScope,
+	normalizeBaseUrl,
 	processResponsesStream,
 	supportsOpenAIServerCompaction,
 	usesOpenAICompactionCheckpoint,
@@ -157,8 +157,13 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
-		if (usesOpenAICompactionCheckpoint(model, context)) {
-			output.contextTokenScope = getOpenAIContextTokenScope(model);
+		if (
+			usesOpenAICompactionCheckpoint(
+				{ ...model, serverCompactionThreshold: options?.serverCompactionThreshold },
+				context,
+			)
+		) {
+			output.contextTokenBaseUrl = normalizeBaseUrl(model.baseUrl);
 		}
 
 		try {
@@ -357,6 +362,7 @@ function buildRequestBody(
 ): RequestBody {
 	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
 		includeSystemPrompt: false,
+		serverCompactionThreshold: options?.serverCompactionThreshold,
 	});
 
 	const body: RequestBody = {
@@ -1215,6 +1221,7 @@ async function processWebSocketStream(
 		} else if (useCachedContext && entry && output.responseId) {
 			const responseItems = convertResponsesMessages(model, { messages: [output] }, CODEX_TOOL_CALL_PROVIDERS, {
 				includeSystemPrompt: false,
+				serverCompactionThreshold: options?.serverCompactionThreshold,
 			}).filter((item) => item.type !== "function_call_output");
 			entry.continuation = {
 				lastRequestBody: fullBody,

@@ -26,7 +26,7 @@ import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copi
 import {
 	convertResponsesMessages,
 	convertResponsesTools,
-	getOpenAIContextTokenScope,
+	normalizeBaseUrl,
 	processResponsesStream,
 	supportsOpenAIServerCompaction,
 	usesOpenAICompactionCheckpoint,
@@ -80,6 +80,7 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 	options?: OpenAIResponsesOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
+	const serverCompactionThreshold = options?.serverCompactionThreshold;
 
 	// Start async processing
 	(async () => {
@@ -100,8 +101,8 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
-		if (usesOpenAICompactionCheckpoint(model, context)) {
-			output.contextTokenScope = getOpenAIContextTokenScope(model);
+		if (usesOpenAICompactionCheckpoint({ ...model, serverCompactionThreshold }, context)) {
+			output.contextTokenBaseUrl = normalizeBaseUrl(model.baseUrl);
 		}
 
 		try {
@@ -234,7 +235,9 @@ function createClient(
 }
 
 function buildParams(model: Model<"openai-responses">, context: Context, options?: OpenAIResponsesOptions) {
-	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS);
+	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+		serverCompactionThreshold: options?.serverCompactionThreshold,
+	});
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention);
 	const compat = getCompat(model);
@@ -247,7 +250,7 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		store: false,
 	};
 
-	if (options?.serverCompactionThreshold !== undefined && supportsOpenAIServerCompaction(model)) {
+	if (options?.serverCompactionThreshold !== undefined && compat.supportsServerCompaction) {
 		params.context_management = [{ type: "compaction", compact_threshold: options.serverCompactionThreshold }];
 	}
 
