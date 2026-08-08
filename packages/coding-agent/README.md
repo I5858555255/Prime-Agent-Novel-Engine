@@ -150,7 +150,6 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/effort` | Set reasoning/thinking level |
 | `/scoped-models` | Enable/disable models for Ctrl+P cycling |
 | `/settings` | Thinking level, theme, message delivery, transport |
-| `/resume` | Open the searchable session view |
 | `/new`, `/clear` | Start a new session |
 | `/name <name>` | Set session display name |
 | `/session` | Show session info (file, ID, messages) |
@@ -210,7 +209,7 @@ Sessions auto-save as flat JSONL files under `~/.prime/agent/sessions/`. Each se
 
 ```bash
 prime-agent -c                  # Continue most recent session
-prime-agent -r [path|id]        # Browse past sessions or resume one directly
+prime-agent -r <path|id>        # Resume a saved session directly
 prime-agent --no-session        # Ephemeral mode (don't save)
 prime-agent --fork <path|id>    # Fork specific session file or ID into a new session
 ```
@@ -563,7 +562,7 @@ Use `prime-agent model list [search]` to list available models.
 | Option | Description |
 |--------|-------------|
 | `-c`, `--continue` | Continue most recent session |
-| `-r`, `--resume [path\|id]` | Open the searchable session view, or resume a specific session file or partial UUID |
+| `-r`, `--resume <path\|id>` | Resume a specific session file or partial UUID |
 | `--fork <path\|id>` | Fork specific session file or partial UUID into a new session |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--no-session` | Ephemeral mode (don't save) |

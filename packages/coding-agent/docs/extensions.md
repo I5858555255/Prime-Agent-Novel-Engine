@@ -303,7 +303,7 @@ user sends prompt ────────────────────�
                                                            │
 user sends another prompt ◄────────────────────────────────┘
 
-/new (new session) or /resume (switch session)
+/new (new session) or resuming a saved session (agents view, `--resume <path|id>`, or `/import`)
   ├─► session_before_switch (can cancel)
   ├─► session_shutdown
   ├─► session_start { reason: "new" | "resume", previousSessionFile? }
@@ -371,7 +371,7 @@ pi.on("session_start", async (event, ctx) => {
 
 #### session_before_switch
 
-Fired before starting a new session (`/new`) or switching sessions (`/resume`).
+Fired before starting a new session (`/new`) or resuming a saved session (`--resume <path|id>`, the agents view, or `/import`).
 
 ```typescript
 pi.on("session_before_switch", async (event, ctx) => {

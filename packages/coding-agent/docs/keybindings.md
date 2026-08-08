@@ -106,7 +106,18 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `app.session.new` | *(none)* | Start a new session (`/new`) |
 | `app.session.tree` | *(none)* | Open session tree navigator (`/tree`) |
 | `app.session.fork` | *(none)* | Fork current session (`/fork`) |
-| `app.session.resume` | *(none)* | Open session resume picker (`/resume`) |
+| `app.session.resume` | *(none)* | Return to the agents view to browse and resume sessions |
+
+### Agents View
+
+| Keybinding id | Default | Description |
+|--------|---------|-------------|
+| `app.agents.back` | `left` | Return to the agents view |
+| `app.agents.open` | `right` | Open the selected agent or session |
+| `app.agents.reply` | `space` | Reply to the selected agent, or resume an inactive session and send a prompt |
+| `app.agents.new` | `ctrl+n` | Start a new session from the agents view |
+| `app.agents.delete` | `ctrl+x` | Stop or delete the selected agent; press again to confirm |
+| `app.agents.rename` | `ctrl+r` | Rename the selected agent session |
 
 ### Models and Thinking
 
