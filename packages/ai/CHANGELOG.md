@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Added ordered, endpoint-matched persistence and replay for OpenAI server-side compaction items.
+- Added OpenAI Responses automatic server-side compaction with ordered, endpoint-matched checkpoint persistence and replay.
 
 ## [0.7.1] - 2026-08-07
 

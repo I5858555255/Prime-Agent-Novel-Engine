@@ -911,7 +911,7 @@ If `compat` is not set, the library falls back to URL-based detection. If `compa
 
 ### Type Safety
 
-Models are typed by their API, which keeps the model metadata accurate. Provider-specific option types are enforced when you call the provider functions directly. The generic `stream` and `complete` functions accept `StreamOptions` with additional provider fields. Set `serverCompactionThreshold` to request provider-managed compaction at a token threshold; unsupported providers ignore it. Official OpenAI Responses and Codex endpoints support it by default, while custom endpoints require `compat.supportsServerCompaction: true`.
+Models are typed by their API, which keeps the model metadata accurate. Provider-specific option types are enforced when you call the provider functions directly. The generic `stream` and `complete` functions accept `StreamOptions` with additional provider fields. Set `serverCompactionThreshold` to request OpenAI Responses automatic server-side compaction at a token threshold; unsupported providers ignore it. Every model on the official OpenAI Responses and Codex endpoints supports it by default. Custom endpoints require `compat.supportsServerCompaction: true`, and an explicit `false` overrides endpoint detection.
 
 ```typescript
 import { streamAnthropic, type AnthropicOptions } from 'prime-agent-ai';

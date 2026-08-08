@@ -6,6 +6,7 @@ import type {
 	Api,
 	Context,
 	Model,
+	OpenAICodexResponsesCompat,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
 } from "@earendil-works/pi-ai";
@@ -512,6 +513,34 @@ describe("ModelRegistry", () => {
 
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 			const compat = registry.find("demo", "demo-model")?.compat as OpenAIResponsesCompat | undefined;
+
+			expect(registry.getError()).toBeUndefined();
+			expect(compat?.supportsServerCompaction).toBe(true);
+		});
+
+		test("Codex Responses compat schema accepts server compaction overrides", () => {
+			writeRawModelsJson({
+				"openai-codex": {
+					baseUrl: "https://chatgpt.example/backend-api",
+					apiKey: "CODEX_KEY",
+					api: "openai-codex-responses",
+					compat: { supportsServerCompaction: false },
+					models: [
+						{
+							id: "codex-model",
+							compat: { supportsServerCompaction: true },
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 1000,
+							maxTokens: 100,
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const compat = registry.find("openai-codex", "codex-model")?.compat as OpenAICodexResponsesCompat | undefined;
 
 			expect(registry.getError()).toBeUndefined();
 			expect(compat?.supportsServerCompaction).toBe(true);

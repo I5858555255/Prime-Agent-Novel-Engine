@@ -135,6 +135,10 @@ const OpenAIResponsesCompatSchema = Type.Object({
 	supportsServerCompaction: Type.Optional(Type.Boolean()),
 });
 
+const OpenAICodexResponsesCompatSchema = Type.Object({
+	supportsServerCompaction: Type.Optional(Type.Boolean()),
+});
+
 const AnthropicMessagesCompatSchema = Type.Object({
 	supportsEagerToolInputStreaming: Type.Optional(Type.Boolean()),
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
@@ -143,6 +147,7 @@ const AnthropicMessagesCompatSchema = Type.Object({
 const ProviderCompatSchema = Type.Union([
 	OpenAICompletionsCompatSchema,
 	OpenAIResponsesCompatSchema,
+	OpenAICodexResponsesCompatSchema,
 	AnthropicMessagesCompatSchema,
 ]);
 

@@ -1,6 +1,6 @@
 # Compaction & Branch Summarization
 
-LLMs have limited context windows. When conversations grow too long, Prime Agent uses compaction to summarize older content while preserving recent work. This page covers both auto-compaction and branch summarization.
+LLMs have limited context windows. When conversations grow too long, Prime Agent either asks OpenAI Responses to compact its input or summarizes older content locally. This page covers automatic server-side compaction, local compaction, and branch summarization.
 
 **Source files:**
 - [`compaction.ts`](../src/core/compaction/compaction.ts) - Auto-compaction logic
@@ -17,8 +17,8 @@ Prime Agent has three context-management mechanisms:
 
 | Mechanism | Trigger | Purpose |
 |-----------|---------|---------|
-| OpenAI server compaction | OpenAI context exceeds threshold | Replace old OpenAI input with an opaque encrypted checkpoint |
-| Local compaction | Context without a usable server checkpoint exceeds the threshold, overflow fallback, or `/compact` | Summarize old messages to free up context |
+| OpenAI Responses automatic server-side compaction | A supported OpenAI Responses request crosses the threshold | Replace old request input with an opaque encrypted checkpoint |
+| Local compaction | An unsupported or opted-out model crosses the threshold, context overflows, or local compaction is requested | Summarize old messages to free up context |
 | Branch summarization | `/tree` navigation | Preserve context when switching branches |
 
 Local compaction and branch summarization use the same structured summary format and track file operations cumulatively.
@@ -27,19 +27,19 @@ Local compaction and branch summarization use the same structured summary format
 
 ### When It Triggers
 
-Auto-compaction triggers when:
+Automatic context management uses this threshold:
 
 ```
 contextTokens > contextWindow - reserveTokens
 ```
 
-By default, `reserveTokens` is 16384 tokens (configurable in `~/.prime/agent/settings.json` or `<project-dir>/.prime/agent/settings.json`). This leaves room for the LLM's response.
+By default, `reserveTokens` is 16384 tokens (configurable in `~/.prime/agent/settings.json` or `<project-dir>/.prime/agent/settings.json`). This leaves room for the LLM's response. Supported OpenAI Responses endpoints receive the same threshold through `context_management`; Prime Agent does not run local threshold summarization for those models. Other providers continue to use local threshold compaction.
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary — for example `/compact focus on the auth refactor, remember the exact migration command`. The instructions are passed to the summarization prompt with high priority, persisted on the `CompactionEntry`, and shown on the `[compaction]` message in the TUI.
 
-### OpenAI Server Compaction
+### OpenAI Responses Automatic Server-Side Compaction
 
-For the built-in `openai` Responses API and `openai-codex` subscription providers on their official endpoints, auto-compaction uses OpenAI's server-side compaction. Custom endpoints must explicitly set `compat.supportsServerCompaction` because checkpoints are endpoint-specific. Prime Agent adds this request configuration:
+For every model using the built-in `openai` Responses API or `openai-codex` subscription provider on its official endpoint, automatic context management uses OpenAI Responses server-side compaction. This is gated by API, provider, and endpoint rather than a model-name allowlist. Custom endpoints must explicitly set `compat.supportsServerCompaction: true` because checkpoints are endpoint-specific; an explicit `false` disables it. Prime Agent adds this request configuration to the normal `/responses` request:
 
 ```json
 {
@@ -49,9 +49,9 @@ For the built-in `openai` Responses API and `openai-codex` subscription provider
 }
 ```
 
-When OpenAI returns a compaction item, Prime Agent stores the opaque item together with its position in the response and the source endpoint. The next request to the same provider, model, and endpoint starts with that item, omits earlier input, and preserves any response content emitted after the item. Prime Agent keeps the complete local session history, so switching models still has the original messages available instead of replaying an OpenAI checkpoint that another model cannot read.
+When OpenAI returns a compaction item, Prime Agent stores the opaque item together with its position in the response and the source endpoint. The next request to the same provider, model, and endpoint starts with that item. For direct OpenAI Responses requests, Prime Agent then reapplies the current system or developer instructions before response content emitted after the checkpoint and later conversation messages. The Codex transport sends the same fresh instructions in the top-level `instructions` field and starts its input array with the checkpoint. Stale pre-checkpoint instructions and earlier input are not replayed. Prime Agent keeps the complete local session history, so switching models still has the original messages available instead of replaying an OpenAI checkpoint that another model cannot read.
 
-Setting `compaction.enabled` to `false` disables this request configuration. Manual `/compact` remains the readable local summarizer. Local compaction also remains the recovery path if an OpenAI request reaches a context overflow without producing a usable compaction item.
+Requests remain stateless: Prime Agent sends `store: false` and chains the input array rather than using `previous_response_id`. Setting `compaction.enabled` to `false` disables the `context_management` request configuration. Manual `/compact`, model-requested compaction, and one-shot context-overflow recovery remain local summarization paths.
 
 The implementation follows OpenAI's [compaction guide](https://developers.openai.com/api/docs/guides/compaction).
 

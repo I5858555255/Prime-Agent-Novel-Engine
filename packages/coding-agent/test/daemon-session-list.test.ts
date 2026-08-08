@@ -589,6 +589,40 @@ describe("buildRlmChildSnapshots", () => {
 		expect(snapshots.map((snapshot) => [snapshot.id, snapshot.status])).toEqual([["sub-aaa", "running"]]);
 	});
 
+	it("omits tokenCount when context usage is unknown", () => {
+		const parent = makeState({ activeSessionId: "parent" });
+		const child = makeState({
+			activeSessionId: "child",
+			metadata: {
+				kind: "subagent",
+				createdAt: 1,
+				parentActiveSessionId: "parent",
+				rlmChildId: "sub-unknown",
+				rlmParentNodeId: "sub-unknown",
+				prompt: "Continue after compaction",
+			},
+		});
+
+		const invalidChild = makeState({
+			activeSessionId: "invalid-child",
+			contextTokens: Number.NaN,
+			metadata: {
+				kind: "subagent",
+				createdAt: 2,
+				parentActiveSessionId: "parent",
+				rlmChildId: "sub-invalid",
+				rlmParentNodeId: "sub-invalid",
+				prompt: "Invalid token count",
+			},
+		});
+		const snapshots = buildRlmChildSnapshots("parent", [parent, child, invalidChild]);
+
+		for (const snapshot of snapshots) {
+			expect(snapshot).not.toHaveProperty("tokenCount");
+			expect(JSON.stringify(snapshot)).not.toContain("tokenCount");
+		}
+	});
+
 	it("keeps terminal run status while projecting a retained child's active follow-up", () => {
 		const parent = makeState({
 			activeSessionId: "parent",

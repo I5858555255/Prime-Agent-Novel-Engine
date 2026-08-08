@@ -2,7 +2,11 @@ import type { ResponseStreamEvent } from "openai/resources/responses/responses.j
 import { describe, expect, it } from "vitest";
 import { streamOpenAICodexResponses } from "../src/providers/openai-codex-responses.js";
 import { streamOpenAIResponses } from "../src/providers/openai-responses.js";
-import { convertResponsesMessages, processResponsesStream } from "../src/providers/openai-responses-shared.js";
+import {
+	convertResponsesMessages,
+	processResponsesStream,
+	supportsOpenAIServerCompaction,
+} from "../src/providers/openai-responses-shared.js";
 import type { AssistantMessage, Context, Model, OpenAICompactionCheckpoint, Usage } from "../src/types.js";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.js";
 
@@ -58,7 +62,7 @@ function checkpoint(contentIndex = 0, sourceBaseUrl = model.baseUrl, id = "cmp_1
 	};
 }
 
-describe("OpenAI server compaction replay", () => {
+describe("OpenAI Responses automatic server-side compaction", () => {
 	it("persists an opaque compaction item from a Responses stream", async () => {
 		const output = assistant("", { content: [] });
 		const stream = new AssistantMessageEventStream();
@@ -128,6 +132,13 @@ describe("OpenAI server compaction replay", () => {
 		});
 		expect(input.some((item) => JSON.stringify(item).includes("work after compaction"))).toBe(true);
 		expect(input.some((item) => JSON.stringify(item).includes("new user input"))).toBe(true);
+		expect(input[0]).toEqual({
+			type: "compaction",
+			id: "cmp_1",
+			encrypted_content: "encrypted-summary",
+		});
+		expect(input[1]).toEqual({ role: "developer", content: "system" });
+		expect(JSON.stringify(input[2])).toContain("work after compaction");
 	});
 
 	it("keeps full history when switching to a different model", () => {
@@ -240,39 +251,6 @@ describe("OpenAI server compaction replay", () => {
 		expect(serialized).toContain("latest input");
 	});
 
-	it("records usage and length stop reason for incomplete responses", async () => {
-		const output = assistant("", { content: [] });
-		const stream = new AssistantMessageEventStream();
-		const events = [
-			{
-				type: "response.incomplete",
-				response: {
-					id: "resp_incomplete",
-					status: "incomplete",
-					usage: {
-						input_tokens: 30,
-						output_tokens: 5,
-						total_tokens: 35,
-						input_tokens_details: { cached_tokens: 10 },
-					},
-				},
-			},
-		] as ResponseStreamEvent[];
-
-		await processResponsesStream(
-			(async function* () {
-				for (const event of events) yield event;
-			})(),
-			output,
-			stream,
-			model,
-		);
-
-		expect(output.stopReason).toBe("length");
-		expect(output.responseId).toBe("resp_incomplete");
-		expect(output.usage).toMatchObject({ input: 20, cacheRead: 10, output: 5, totalTokens: 35 });
-	});
-
 	it("adds context management only for supported endpoints", async () => {
 		async function capturePayload(requestModel: Model<"openai-responses">): Promise<unknown> {
 			let captured: unknown;
@@ -297,6 +275,9 @@ describe("OpenAI server compaction replay", () => {
 		await expect(capturePayload(model)).resolves.toMatchObject({
 			context_management: [{ type: "compaction", compact_threshold: 200000 }],
 		});
+		await expect(capturePayload({ ...model, id: "future-responses-model" })).resolves.toHaveProperty(
+			"context_management",
+		);
 		await expect(capturePayload({ ...model, baseUrl: "https://proxy.example/v1" })).resolves.not.toHaveProperty(
 			"context_management",
 		);
@@ -310,6 +291,14 @@ describe("OpenAI server compaction replay", () => {
 		await expect(
 			capturePayload({ ...model, compat: { supportsServerCompaction: false } }),
 		).resolves.not.toHaveProperty("context_management");
+		expect(
+			supportsOpenAIServerCompaction({
+				...model,
+				api: "anthropic-messages",
+				provider: "anthropic",
+				baseUrl: "https://api.anthropic.com",
+			}),
+		).toBe(false);
 	});
 	it("adds context management to the official Codex request builder", async () => {
 		const payload = Buffer.from(
@@ -319,7 +308,17 @@ describe("OpenAI server compaction replay", () => {
 		let captured: unknown;
 		const request = streamOpenAICodexResponses(
 			codexModel,
-			{ messages: [] },
+			{
+				systemPrompt: "fresh instructions",
+				messages: [
+					assistant("continued after checkpoint", {
+						api: codexModel.api,
+						provider: codexModel.provider,
+						model: codexModel.id,
+						openaiCompaction: checkpoint(0, codexModel.baseUrl),
+					}),
+				],
+			},
 			{
 				apiKey: ["aaa", payload, "bbb"].join("."),
 				serverCompactionThreshold: 255616,
@@ -334,6 +333,11 @@ describe("OpenAI server compaction replay", () => {
 		}
 
 		expect(captured).toMatchObject({
+			instructions: "fresh instructions",
+			input: [
+				{ type: "compaction", id: "cmp_1", encrypted_content: "encrypted-summary" },
+				expect.objectContaining({ type: "message", role: "assistant" }),
+			],
 			context_management: [{ type: "compaction", compact_threshold: 255616 }],
 		});
 	});

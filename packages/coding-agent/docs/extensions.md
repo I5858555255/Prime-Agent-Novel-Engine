@@ -615,6 +615,8 @@ pi.on("before_provider_request", (event, ctx) => {
 
 This is mainly useful for debugging provider serialization and cache behavior.
 
+For OpenAI Responses automatic server-side compaction, the core payload contains exactly one `context_management` entry whose type is `compaction`. An extension that changes its threshold must replace or modify that entry rather than append a second compaction entry. If an extension removes the entry while `compat.supportsServerCompaction` remains enabled, Prime Agent still leaves automatic threshold handling to the provider, so that extension assumes responsibility for threshold handling; local one-shot overflow recovery remains only a fallback. An extension that fully owns compaction should set `compat.supportsServerCompaction: false` and implement its own request behavior.
+
 #### after_provider_response
 
 Fired after an HTTP response is received and before its stream body is consumed. Handlers run in extension load order.

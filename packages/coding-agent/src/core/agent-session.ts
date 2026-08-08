@@ -47,6 +47,7 @@ import {
 	modelsAreEqual,
 	resetApiProviders,
 	supportsFastMode,
+	supportsOpenAIServerCompaction,
 } from "@earendil-works/pi-ai";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
@@ -8009,7 +8010,12 @@ export class AgentSession {
 
 		if (!settings.enabled || assistantIsFromBeforeCompaction) return false;
 
-		// Case 3: Threshold - context is getting large.
+		// Case 3: Threshold - supported OpenAI Responses endpoints own the automatic
+		// threshold. Local compaction remains available for overflow recovery and
+		// explicit model requests handled above.
+		if (this.model && supportsOpenAIServerCompaction(this.model)) return false;
+
+		// The local threshold applies when the active provider cannot compact on the server.
 		// Use the full-session estimate so messages appended after the last successful
 		// assistant usage are included, matching the /usage context display.
 		const contextTokens = this._getThresholdContextTokens(assistantMessage, compactionTimestamp);

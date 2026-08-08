@@ -85,14 +85,14 @@ export interface ConvertResponsesToolsOptions {
 	strict?: boolean | null;
 }
 
-type ServerCompactionModel = Model<"openai-responses"> | Model<"openai-codex-responses">;
-
 function normalizeBaseUrl(baseUrl: string): string {
 	return baseUrl.replace(/\/+$/, "");
 }
 
-export function supportsOpenAIServerCompaction(model: ServerCompactionModel): boolean {
-	const configured = model.compat?.supportsServerCompaction;
+export function supportsOpenAIServerCompaction(model: Model<Api>): boolean {
+	if (model.api !== "openai-responses" && model.api !== "openai-codex-responses") return false;
+
+	const configured = (model.compat as { supportsServerCompaction?: boolean } | undefined)?.supportsServerCompaction;
 	if (configured !== undefined) return configured;
 
 	const baseUrl = normalizeBaseUrl(model.baseUrl);
@@ -170,22 +170,27 @@ export function convertResponsesMessages<TApi extends Api>(
 
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	let replayStart = 0;
+	let hasReplayCheckpoint = false;
 	for (let i = transformedMessages.length - 1; i >= 0; i--) {
 		const message = transformedMessages[i];
 		if (message.role === "assistant" && hasCompatibleOpenAICompactionCheckpoint(message, model)) {
 			replayStart = i;
+			hasReplayCheckpoint = true;
 			break;
 		}
 	}
 	const replayMessages = transformedMessages.slice(replayStart);
 
 	const includeSystemPrompt = options?.includeSystemPrompt ?? true;
-	if (includeSystemPrompt && context.systemPrompt) {
-		const role = model.reasoning ? "developer" : "system";
-		messages.push({
-			role,
-			content: sanitizeSurrogates(context.systemPrompt),
-		});
+	const systemPromptMessage =
+		includeSystemPrompt && context.systemPrompt
+			? {
+					role: model.reasoning ? ("developer" as const) : ("system" as const),
+					content: sanitizeSurrogates(context.systemPrompt),
+				}
+			: undefined;
+	if (systemPromptMessage && !hasReplayCheckpoint) {
+		messages.push(systemPromptMessage);
 	}
 
 	let msgIndex = 0;
@@ -222,7 +227,10 @@ export function convertResponsesMessages<TApi extends Api>(
 			const checkpoint = hasCompatibleOpenAICompactionCheckpoint(assistantMsg, model)
 				? assistantMsg.openaiCompaction
 				: undefined;
-			if (checkpoint) output.push(checkpoint.item);
+			if (checkpoint) {
+				messages.push(checkpoint.item);
+				if (systemPromptMessage) messages.push(systemPromptMessage);
+			}
 			const isDifferentModel =
 				assistantMsg.model !== model.id &&
 				assistantMsg.provider === model.provider &&
@@ -559,7 +567,7 @@ export async function processResponsesStream<TApi extends Api>(
 				currentBlock = null;
 				stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
 			}
-		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
+		} else if (event.type === "response.completed") {
 			const response = event.response;
 			if (response?.id) {
 				output.responseId = response.id;
