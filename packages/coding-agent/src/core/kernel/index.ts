@@ -31,6 +31,7 @@ const READY_TIMEOUT_MS = 5000;
 const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
 const HOST_REQUEST_DISPOSE_TIMEOUT_MS = 5000;
+const KERNEL_EXIT_TIMEOUT_MS = 5000;
 const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 1500;
 // How often to poll a forked kernel's pid for unexpected death.
 const FORKED_LIVENESS_POLL_MS = 1000;
@@ -508,6 +509,28 @@ function installSignalHandlersOnce(): void {
 }
 
 // ---- kernel manager ------------------------------------------------------
+
+/**
+ * Resolve once a killed child has actually exited, or after `timeoutMs`.
+ *
+ * Never rejects: disposal is best-effort, and a kernel that outlives its kill
+ * should not fail the caller's shutdown.
+ */
+function waitForProcessExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const finish = () => {
+			globalThis.clearTimeout(timer);
+			child.off("exit", finish);
+			child.off("error", finish);
+			resolve();
+		};
+		const timer = globalThis.setTimeout(finish, timeoutMs);
+		if (typeof timer === "object" && "unref" in timer) timer.unref();
+		child.once("exit", finish);
+		child.once("error", finish);
+	});
+}
 
 export class KernelManager {
 	private readonly options: Pick<
@@ -1505,6 +1528,10 @@ export class KernelManager {
 			await this.flushSnapshotForDispose();
 			this.state = "shutdown";
 			liveKernels.delete(this);
+			// Captured before cleanupResources() clears them: the temp dir can only be
+			// removed once the kernel is really gone.
+			const kernelProcess = this.kernel;
+			const kernelTempDir = this.tempDir;
 			const inFlightHostRequests = [...this.inFlightHostRequests];
 			// TODO: plumb AbortSignal through AgentSession.prompt so disposal can cancel long-running child loops.
 			try {
@@ -1513,6 +1540,20 @@ export class KernelManager {
 				}
 			} finally {
 				this.cleanupResources();
+			}
+			// Killing a process is asynchronous. Unix unlinks the connection files
+			// regardless, but Windows keeps the kernel's working directory and open
+			// handles locked until it actually exits — so an awaited dispose() has to
+			// outlive the kill, or the caller's own cleanup fails with EPERM.
+			if (kernelProcess) {
+				await waitForProcessExit(kernelProcess, KERNEL_EXIT_TIMEOUT_MS);
+			}
+			if (kernelTempDir) {
+				try {
+					removePathSync(kernelTempDir);
+				} catch {
+					// Leave the temp dir for OS tmp cleanup.
+				}
 			}
 		})();
 	}

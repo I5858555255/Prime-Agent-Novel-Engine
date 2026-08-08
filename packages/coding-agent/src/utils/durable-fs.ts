@@ -2,26 +2,62 @@ import { closeSync, fsyncSync, openSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 
 /**
- * Windows refuses to unlink a file while any handle to it is open, and a handle
- * can outlive the process that owned it by a few milliseconds. Node's own retry
- * loop covers exactly that race (EBUSY/EPERM/ENOTEMPTY), but only when asked.
+ * Windows refuses to unlink a file, or its containing directory, while any
+ * handle to it is open — and the handles a just-exited child held are released
+ * shortly *after* its `exit` event, so a correct delete can still lose the race
+ * by a few milliseconds.
+ *
+ * `rmSync`'s own `maxRetries` does not cover this: the native implementation
+ * surfaces the directory-level EPERM without retrying, so the loop lives here.
  */
-const WINDOWS_REMOVE_RETRIES = { maxRetries: 10, retryDelay: 50 } as const;
+const WINDOWS_REMOVE_ATTEMPTS = 20;
+const WINDOWS_REMOVE_DELAY_MS = 50;
+const RETRYABLE_REMOVE_CODES = new Set(["EPERM", "EACCES", "EBUSY", "ENOTEMPTY", "EMFILE", "ENFILE"]);
 
-function removeOptions(): { recursive: true; force: true; maxRetries?: number; retryDelay?: number } {
-	return process.platform === "win32"
-		? { recursive: true, force: true, ...WINDOWS_REMOVE_RETRIES }
-		: { recursive: true, force: true };
+const REMOVE_OPTIONS = { recursive: true, force: true } as const;
+
+function isRetryableRemoveError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code !== undefined && RETRYABLE_REMOVE_CODES.has(code);
+}
+
+/** Block the calling thread; only used to space out sync delete retries. */
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** Recursively delete a path, tolerating Windows' briefly-held file handles. */
 export function removePathSync(path: string): void {
-	rmSync(path, removeOptions());
+	if (process.platform !== "win32") {
+		rmSync(path, REMOVE_OPTIONS);
+		return;
+	}
+	for (let attempt = 1; ; attempt++) {
+		try {
+			rmSync(path, REMOVE_OPTIONS);
+			return;
+		} catch (error) {
+			if (attempt >= WINDOWS_REMOVE_ATTEMPTS || !isRetryableRemoveError(error)) throw error;
+			sleepSync(WINDOWS_REMOVE_DELAY_MS);
+		}
+	}
 }
 
 /** Async counterpart of {@link removePathSync}. */
 export async function removePath(path: string): Promise<void> {
-	await rm(path, removeOptions());
+	if (process.platform !== "win32") {
+		await rm(path, REMOVE_OPTIONS);
+		return;
+	}
+	for (let attempt = 1; ; attempt++) {
+		try {
+			await rm(path, REMOVE_OPTIONS);
+			return;
+		} catch (error) {
+			if (attempt >= WINDOWS_REMOVE_ATTEMPTS || !isRetryableRemoveError(error)) throw error;
+			await new Promise((resolve) => setTimeout(resolve, WINDOWS_REMOVE_DELAY_MS));
+		}
+	}
 }
 
 /**

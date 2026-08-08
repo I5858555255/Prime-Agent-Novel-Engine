@@ -1,27 +1,19 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { removePath, removePathSync } from "../../src/utils/durable-fs.js";
 
 /**
- * Windows will not unlink a file while any handle to it is open, and handles
- * held by a just-exited child (kernel, daemon, worker) are released a few
- * milliseconds after the process itself is gone. Test teardown therefore races
- * the OS. Node implements the retry loop for exactly this case — it is only
- * opt-in — so scratch-tree cleanup goes through these helpers instead of a bare
- * `rmSync`.
+ * Scratch-tree teardown uses the product's own remove helpers, which retry the
+ * Windows race where a just-exited child (kernel, daemon, worker) still holds a
+ * handle inside the directory being deleted.
  */
-const REMOVE_OPTIONS =
-	process.platform === "win32"
-		? ({ recursive: true, force: true, maxRetries: 20, retryDelay: 50 } as const)
-		: ({ recursive: true, force: true } as const);
-
 export function removeTempDirSync(path: string): void {
-	rmSync(path, REMOVE_OPTIONS);
+	removePathSync(path);
 }
 
 export async function removeTempDir(path: string): Promise<void> {
-	await rm(path, REMOVE_OPTIONS);
+	await removePath(path);
 }
 
 /**
