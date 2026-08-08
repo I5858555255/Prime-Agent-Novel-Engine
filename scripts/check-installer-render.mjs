@@ -11,6 +11,7 @@ const mainCall = '\nmain "$@"';
 const mainCallIndex = installerSource.lastIndexOf(mainCall);
 const ansiPattern = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const syncEnd = "\x1b[?2026l";
+const posixShell = "/bin/sh";
 const failures = [];
 
 if (mainCallIndex === -1) {
@@ -182,6 +183,13 @@ try {
 		'printf "  Candidate: %s\\n" "$PRIME_AGENT_TEST_NODE_VERSION"',
 	);
 	writeCommandStub(join(commandStubDir, "apk"), 'printf "nodejs-%s\\n" "$PRIME_AGENT_TEST_NODE_VERSION"');
+	for (const utility of ["awk", "cut", "sed", "tr", "wc"]) {
+		writeCommandStub(join(commandStubDir, utility), `exec /usr/bin/${utility} "$@"`);
+	}
+	const dashProbe = spawnSync("dash", ["-c", ":"], {
+		env: { ...process.env, PATH: commandStubDir },
+	});
+	check(dashProbe.error?.code === "ENOENT", "expected the portability test PATH not to provide dash");
 	assertInstallerRendering(tempDir);
 
 	const stableVisible = runCase("stable visible logo", 100, 30, 90, 30);
@@ -310,8 +318,11 @@ function assertInstallerRendering(outputDir) {
 		check(cliRendered.includes("https://downloads.example.test"), "expected CLI rendering to set the base URL");
 		check(cliRendered.includes('prime_agent_default_release_channel="beta"'), "expected CLI rendering to set beta");
 		check(!/__PRIME_AGENT_[A-Z0-9_]+__/.test(cliRendered), "expected CLI rendering to resolve all placeholders");
-		const syntax = spawnSync("dash", ["-n", cliOutput], { encoding: "utf8" });
-		check(syntax.status === 0, `expected CLI-rendered installer to pass dash syntax validation: ${syntax.stderr}`);
+		const syntax = spawnSync(posixShell, ["-n", cliOutput], {
+			encoding: "utf8",
+			env: { ...process.env, PATH: commandStubDir },
+		});
+		check(syntax.status === 0, `expected CLI-rendered installer to pass sh syntax validation: ${syntax.stderr}`);
 	}
 }
 
@@ -325,12 +336,12 @@ function assertRenderFails(name, source, options) {
 }
 
 function runCase(name, initialCols, initialRows, resizedCols, resizedRows) {
-	const result = spawnSync("dash", [harnessPath, String(initialCols), String(initialRows), String(resizedCols), String(resizedRows)], {
+	const result = spawnSync(posixShell, [harnessPath, String(initialCols), String(initialRows), String(resizedCols), String(resizedRows)], {
 		detached: true,
 		encoding: "utf-8",
 		env: {
 			...process.env,
-			PATH: `${commandStubDir}:${process.env.PATH ?? ""}`,
+			PATH: commandStubDir,
 		},
 	});
 	if (result.status !== 0) {
