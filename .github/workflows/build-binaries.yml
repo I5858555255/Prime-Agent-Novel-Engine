@@ -282,3 +282,4 @@ jobs:
             --default-branch "$DEFAULT_BRANCH" \
             --stable-installer /tmp/prime-agent-install.sh \
             --beta-installer /tmp/prime-agent-install-beta.sh
+
