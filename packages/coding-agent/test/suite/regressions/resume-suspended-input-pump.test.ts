@@ -47,4 +47,23 @@ describe("suspended input pump resumes on programmatic admission", () => {
 			expect(users).toContain("queued after abort");
 		});
 	});
+
+	it("resumes the pump when a coalesced follow-up re-fires at idle", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("wake handled")]);
+
+		const pause = harness.session.acquireQueuedWorkPause();
+		await harness.session.followUp("wake fire", undefined, { queueKey: "wake:test" });
+		harness.session.requestAbort();
+		pause.release();
+		await harness.session.agent.waitForIdle();
+
+		// A re-fire with the same queueKey coalesces into the queued owner. Without the
+		// fix it is dropped without resuming the pump, so the owner starves forever.
+		await harness.session.followUp("wake fire", undefined, { queueKey: "wake:test" });
+
+		await vi.waitFor(() => expect(getUserTexts(harness)).toContain("wake fire"));
+		expect(getAssistantTexts(harness)).toContain("wake handled");
+	});
 });

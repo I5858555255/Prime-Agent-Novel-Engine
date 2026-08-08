@@ -5304,6 +5304,13 @@ export class AgentSession {
 		}
 		const coalescedOwner = options.restore ? undefined : this._coalescedFollowUpOwner(action);
 		if (coalescedOwner) {
+			// A coalesced re-fire is still evidence a producer wants delivery: resume a
+			// pump suspended by an abort so the owning queued action can drain at idle.
+			if (options.wake !== false && !this.isStreaming && this._sessionInputPumpSuspended) {
+				this._sessionInputPumpSuspended = false;
+				this._notifySessionInputCheckpointChange();
+				this._scheduleSessionInputPump();
+			}
 			if (action.agentMessageId !== coalescedOwner.agentMessageId) {
 				this._rejectAgentMessage(
 					action.agentMessageId,
