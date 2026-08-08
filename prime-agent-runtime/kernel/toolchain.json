@@ -1,0 +1,45 @@
+{
+	"schema": 1,
+	"managedPython": "3.11.15",
+	"uv": "0.11.33",
+	"excludeNewer": "2026-08-01T14:06:46.468Z",
+	"termuxPython": {
+		"minimum": "3.11.0",
+		"maximumExclusive": "3.15.0",
+		"validation": "3.14.6",
+		"androidApiLevel": 24,
+		"buildRequirements": [
+			"cython",
+			"meson",
+			"meson-python",
+			"versioneer[toml]",
+			"wheel"
+		],
+		"nativePackages": [
+			{
+				"systemPackage": "python-lxml",
+				"packageVersion": "6.1.1-1",
+				"distribution": "lxml",
+				"version": "6.1.1"
+			},
+			{
+				"systemPackage": "python-numpy",
+				"packageVersion": "2.4.4-1",
+				"distribution": "numpy",
+				"version": "2.4.4"
+			},
+			{
+				"systemPackage": "python-psutil",
+				"packageVersion": "7.2.2-2",
+				"distribution": "psutil",
+				"version": "7.2.2"
+			},
+			{
+				"systemPackage": "python-scipy",
+				"packageVersion": "1.18.0-1",
+				"distribution": "scipy",
+				"version": "1.18.0"
+			}
+		]
+	}
+}

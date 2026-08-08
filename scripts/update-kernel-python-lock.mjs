@@ -1,49 +1,64 @@
 #!/usr/bin/env node
 
+import { writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { constraints, project, root, toolchain } from "./kernel-lock-config.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const project = join(root, "prime-agent-runtime", "kernel");
-const supportedPlatforms = [
-	{ target: "aarch64-apple-darwin", requireWheels: true },
-	{ target: "x86_64-apple-darwin", requireWheels: true },
-	{ target: "aarch64-unknown-linux-gnu", requireWheels: true },
-	{ target: "x86_64-unknown-linux-gnu", requireWheels: true },
-	{ target: "x86_64-pc-windows-msvc", requireWheels: true },
-	{ target: "aarch64-linux-android", requireWheels: false },
-];
-
-function run(args) {
-	const result = spawnSync("uv", args, { cwd: root, encoding: "utf8", stdio: "pipe" });
-	if (result.stdout) process.stdout.write(result.stdout);
-	if (result.stderr) process.stderr.write(result.stderr);
+function uv(args, capture = false) {
+	const result = spawnSync("uv", args, {
+		cwd: root,
+		encoding: "utf8",
+		stdio: capture ? "pipe" : "inherit",
+	});
 	if (result.error) throw result.error;
 	if (result.status !== 0) {
 		throw new Error(`uv ${args.join(" ")} failed with exit code ${result.status}`);
 	}
+	return result.stdout ?? "";
 }
 
-run(["lock", "--project", project, "--python", "3.11", "--upgrade", "--exclude-newer", "7 days"]);
+const version = uv(["--version"], true).trim();
+if (!version.startsWith(`uv ${toolchain.uv} `) && version !== `uv ${toolchain.uv}`) {
+	throw new Error(`refresh requires uv ${toolchain.uv}; found ${version || "no version"}`);
+}
 
-for (const platform of supportedPlatforms) {
-	run([
-		"sync",
+toolchain.excludeNewer = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+writeFileSync(join(project, "toolchain.json"), `${JSON.stringify(toolchain, null, "\t")}\n`, "utf8");
+
+uv([
+	"lock",
+	"--project",
+	project,
+	"--python",
+	toolchain.managedPython,
+	"--upgrade",
+	"--exclude-newer",
+	toolchain.excludeNewer,
+]);
+
+const exported = uv(
+	[
+		"export",
 		"--project",
 		project,
-		"--python",
-		"3.11",
-		"--python-platform",
-		platform.target,
 		"--locked",
-		"--dry-run",
 		"--no-dev",
-		"--no-install-project",
-		...(platform.requireWheels ? ["--no-build"] : []),
+		"--no-emit-project",
+		"--no-header",
+		"--no-hashes",
+		"--python",
+		toolchain.managedPython,
 		"--exclude-newer",
-		"7 days",
-	]);
-}
+		toolchain.excludeNewer,
+	],
+	true,
+);
+writeFileSync(constraints, exported, "utf8");
 
-console.log(`validated ${supportedPlatforms.length} supported kernel platforms`);
+const check = spawnSync(process.execPath, ["scripts/check-kernel-python-lock.mjs"], {
+	cwd: root,
+	stdio: "inherit",
+});
+if (check.error) throw check.error;
+if (check.status !== 0) process.exit(check.status ?? 1);

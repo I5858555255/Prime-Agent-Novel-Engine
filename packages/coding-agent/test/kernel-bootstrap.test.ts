@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,9 +7,11 @@ import {
 	DEFAULT_RLM_EXTRA_IMPORT_NAMES,
 	DEFAULT_RLM_EXTRA_UV_ARGS,
 	ensureKernelPython,
+	getKernelPythonPath,
 	getKernelVenvDir,
 	type KernelPythonSkill,
 	resolveKernelLockDigest,
+	resolveKernelLockPlatform,
 	resolveRuntimeIdentity,
 } from "../src/core/kernel/bootstrap.js";
 
@@ -31,11 +33,14 @@ function writeBootstrapVersion(venv: string, pythonSkills: readonly KernelPython
 	writeFileSync(
 		join(venv, ".bootstrap-version"),
 		`${JSON.stringify({
-			schema: 9,
+			schema: 10,
 			ipykernel: "ipykernel",
 			runtime: runtimeIdentity,
 			snapshot: "dill",
 			kernelLock: kernelLockDigest,
+			kernelPlatform: resolveKernelLockPlatform(),
+			pythonIdentity: "managed:3.11.15",
+			uvVersion: "0.11.33",
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 			pythonSkills: pythonSkills.map((skill) => ({
 				importName: skill.importName,
@@ -107,6 +112,7 @@ function installFakeUv(): string {
 	const logPath = join(tempDir, "uv.log");
 	const extraImportCases = DEFAULT_RLM_EXTRA_IMPORT_NAMES.map((moduleName) => `    "import ${moduleName}") exit 0 ;;`);
 	process.env.UV_LOG = logPath;
+	process.env.KERNEL_CONSTRAINTS_FILE = join(process.cwd(), "../../prime-agent-runtime/kernel/constraints.txt");
 	process.env.PATH = `${binDir}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
 	writeExecutable(
 		join(binDir, "uv"),
@@ -114,6 +120,26 @@ function installFakeUv(): string {
 			"#!/bin/sh",
 			"set -e",
 			'printf "%s\\n" "$*" >> "$UV_LOG"',
+			'if [ "$1" = "--version" ]; then',
+			'  if [ "$UV_FAKE_VERSION" != "" ]; then',
+			'    echo "uv $UV_FAKE_VERSION (test)"',
+			"  else",
+			'    echo "uv 0.11.33 (test)"',
+			"  fi",
+			"  exit 0",
+			"fi",
+			'for arg in "$@"; do',
+			'  if [ "$UV_FAIL_ARG" != "" ] && [ "$arg" = "$UV_FAIL_ARG" ]; then',
+			"    exit 1",
+			"  fi",
+			"done",
+			'if [ "$1" = "lock" ]; then',
+			"  exit 0",
+			"fi",
+			'if [ "$1" = "export" ]; then',
+			'  cat "$KERNEL_CONSTRAINTS_FILE"',
+			"  exit 0",
+			"fi",
 			'if [ "$1" = "python" ]; then',
 			"  exit 0",
 			"fi",
@@ -137,14 +163,16 @@ function installFakeUv(): string {
 			"fi",
 			'if [ "$1" = "sync" ]; then',
 			'  [ "$VIRTUAL_ENV" != "" ]',
+			'  if [ "$UV_BASE_STATE" != "" ]; then echo "numpy=2.4.4" > "$UV_BASE_STATE"; fi',
 			"  exit 0",
 			"fi",
 			'if [ "$1" = "pip" ]; then',
-			'  for arg in "$@"; do',
-			'    if [ "$UV_FAIL_ARG" != "" ] && [ "$arg" = "$UV_FAIL_ARG" ]; then',
-			"      exit 1",
-			"    fi",
-			"  done",
+			'  if [ "$2" = "install" ] && [ "$UV_MUTATE_ARG" != "" ]; then',
+			'    for arg in "$@"; do',
+			'      if [ "$arg" = "$UV_MUTATE_ARG" ]; then echo "numpy=999.0.0" > "$UV_BASE_STATE"; fi',
+			"    done",
+			"  fi",
+			'  if [ "$2" = "uninstall" ] && [ "$UV_BASE_STATE" != "" ]; then echo "numpy=missing" > "$UV_BASE_STATE"; fi',
 			"  exit 0",
 			"fi",
 			"exit 2",
@@ -182,6 +210,22 @@ describe("kernel bootstrap", () => {
 		expect(getKernelVenvDir()).toBe(venv);
 	});
 
+	it("maps GNU, musl, Android, and Windows to distinct supported targets", () => {
+		expect(resolveKernelLockPlatform("linux", "x64", "gnu")).toBe("x86_64-unknown-linux-gnu");
+		expect(resolveKernelLockPlatform("linux", "x64", "musl")).toBe("x86_64-unknown-linux-musl");
+		expect(resolveKernelLockPlatform("linux", "arm64", "musl")).toBe("aarch64-unknown-linux-musl");
+		expect(resolveKernelLockPlatform("android", "arm64")).toBe("aarch64-linux-android");
+		expect(resolveKernelLockPlatform("win32", "x64")).toBe("x86_64-pc-windows-msvc");
+		expect(getKernelPythonPath("C:\\kernel", "win32")).toBe("C:\\kernel/Scripts/python.exe");
+		expect(() => resolveKernelLockPlatform("linux", "s390x")).toThrow(/PRIME_AGENT_KERNEL_PYTHON/);
+	});
+
+	it("includes more than uv.lock in the freshness digest", async () => {
+		const lockPath = join(process.cwd(), "../../prime-agent-runtime/kernel/uv.lock");
+		const uvOnlyDigest = `sha256:${createHash("sha256").update(readFileSync(lockPath)).digest("hex")}`;
+		expect(await resolveKernelLockDigest()).not.toBe(uvOnlyDigest);
+	});
+
 	it("bootstraps a missing venv from the locked base runtime", async () => {
 		const logPath = installFakeUv();
 		const venv = join(tempDir, "kernel-venv");
@@ -190,20 +234,23 @@ describe("kernel bootstrap", () => {
 		await expect(ensureKernelPython()).resolves.toBe(join(venv, "bin", "python"));
 
 		const log = readFileSync(logPath, "utf8");
-		expect(log).toContain("python install 3.11");
-		expect(log).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(log).toContain("python install 3.11.15");
+		expect(log).toContain(`venv ${venv}.next --python 3.11.15 --seed --relocatable`);
 		expect(log).toContain("sync --project");
-		expect(log).toContain("--locked --active --no-dev --no-install-project --no-build --exclude-newer 7 days");
+		expect(log).toContain("--locked --active --no-dev --no-install-project --no-build --exclude-newer");
 		expect(log).toContain("pip install --python");
 		expect(log).toContain("--no-deps");
 		expect(log).toContain("prime-agent-runtime");
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version).toEqual({
-			schema: 9,
+			schema: 10,
 			ipykernel: "ipykernel",
 			runtime: runtimeIdentity,
 			snapshot: "dill",
 			kernelLock: kernelLockDigest,
+			kernelPlatform: resolveKernelLockPlatform(),
+			pythonIdentity: "managed:3.11.15",
+			uvVersion: "0.11.33",
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 			pythonSkills: [],
 		});
@@ -339,7 +386,7 @@ dependencies = ["httpx"]
 		await expect(ensureKernelPython({ pythonSkills: [pythonSkill] })).resolves.toBe(python);
 
 		const log = readFileSync(logPath, "utf8");
-		expect(log).not.toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(log).not.toContain(`venv ${venv}.next --python 3.11.15 --seed --relocatable`);
 		expect(log).toContain(`--editable ${pythonSkill.packagePath}`);
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version.pythonSkills[0].pyprojectHash).toBe(pyprojectHash(pythonSkill.pyprojectPath));
@@ -358,6 +405,8 @@ dependencies = ["httpx"]
 		);
 
 		const log = readFileSync(logPath, "utf8");
+		expect(log).toContain("--constraint");
+		expect(log).toContain("--locked --active --no-dev --no-install-project --inexact");
 		expect(log).toContain(`--editable ${goodSkill.packagePath}`);
 		expect(log).toContain(`--editable ${brokenSkill.packagePath}`);
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
@@ -375,10 +424,48 @@ dependencies = ["httpx"]
 		);
 
 		const retryLog = readFileSync(logPath, "utf8");
-		expect(retryLog.split("\n").filter((line) => line.startsWith(`venv ${venv} `))).toHaveLength(1);
+		expect(retryLog.split("\n").filter((line) => line.startsWith(`venv ${venv}.next `))).toHaveLength(1);
 		expect(
 			retryLog.split("\n").filter((line) => line.includes(`--editable ${brokenSkill.packagePath}`)),
 		).toHaveLength(2);
+	});
+
+	it("restores the locked base after a skill install attempts a dependency replacement", async () => {
+		const logPath = installFakeUv();
+		const venv = join(tempDir, "kernel-venv");
+		const baseState = join(tempDir, "base-state");
+		const conflictingSkill = createPythonSkillWithDependency("conflicting-skill", "numpy>=999");
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+		process.env.UV_BASE_STATE = baseState;
+		process.env.UV_MUTATE_ARG = conflictingSkill.packagePath;
+
+		await expect(ensureKernelPython({ pythonSkills: [conflictingSkill] })).resolves.toBe(join(venv, "bin", "python"));
+
+		const log = readFileSync(logPath, "utf8");
+		const skillInstall = log.indexOf(`--editable ${conflictingSkill.packagePath}`);
+		const lockedRestore = log.lastIndexOf("sync --project");
+		expect(skillInstall).toBeGreaterThanOrEqual(0);
+		expect(lockedRestore).toBeGreaterThan(skillInstall);
+		expect(readFileSync(baseState, "utf8")).toBe("numpy=2.4.4\n");
+	});
+
+	it("removes retired skills and restores the locked base without deleting remaining skills", async () => {
+		const logPath = installFakeUv();
+		const venv = join(tempDir, "kernel-venv");
+		const baseState = join(tempDir, "base-state");
+		const pythonSkill = createPythonSkill();
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+		process.env.UV_BASE_STATE = baseState;
+		await ensureKernelPython({ pythonSkills: [pythonSkill] });
+		writeFileSync(logPath, "");
+
+		await expect(ensureKernelPython()).resolves.toBe(join(venv, "bin", "python"));
+
+		const log = readFileSync(logPath, "utf8");
+		expect(log).toContain(`pip uninstall --python ${join(venv, "bin", "python")} ${pythonSkill.name}`);
+		expect(log).toContain("--locked --active --no-dev --no-install-project --inexact");
+		expect(readFileSync(baseState, "utf8")).toBe("numpy=2.4.4\n");
+		expect(JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8")).pythonSkills).toEqual([]);
 	});
 
 	it("rebuilds a warm venv with legacy unhashed Python skill manifest entries", async () => {
@@ -408,7 +495,7 @@ dependencies = ["httpx"]
 
 		await expect(ensureKernelPython()).resolves.toBe(python);
 
-		expect(readFileSync(logPath, "utf8")).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(readFileSync(logPath, "utf8")).toContain(`venv ${venv}.next --python 3.11.15 --seed --relocatable`);
 	});
 
 	it("shares concurrent bootstrap work in one process", async () => {
@@ -420,10 +507,11 @@ dependencies = ["httpx"]
 		await expect(Promise.all([ensureKernelPython(), ensureKernelPython()])).resolves.toEqual([python, python]);
 
 		const log = readFileSync(logPath, "utf8");
-		expect(log.split("\n").filter((line) => line.startsWith(`venv ${venv} `))).toHaveLength(1);
+		expect(log.split("\n").filter((line) => line.startsWith(`venv ${venv}.next `))).toHaveLength(1);
 	});
 
-	it("reuses a current warm venv without invoking uv", async () => {
+	it("validates the lock before reusing a current warm venv", async () => {
+		const logPath = installFakeUv();
 		const venv = join(tempDir, "kernel-venv");
 		const python = join(venv, "bin", "python");
 		mkdirSync(join(venv, "bin"), { recursive: true });
@@ -432,6 +520,61 @@ dependencies = ["httpx"]
 		process.env.PRIME_AGENT_KERNEL_VENV = venv;
 
 		await expect(ensureKernelPython()).resolves.toBe(python);
+		const log = readFileSync(logPath, "utf8");
+		expect(log).toContain("lock --project");
+		expect(log).not.toContain(`venv ${venv}.next`);
+	});
+
+	it("rejects an incompatible uv without mutating the active environment", async () => {
+		installFakeUv();
+		const venv = join(tempDir, "kernel-venv");
+		const python = join(venv, "bin", "python");
+		mkdirSync(join(venv, "bin"), { recursive: true });
+		writeFakePython(python, ["ipykernel", "rlm", ...DEFAULT_RLM_EXTRA_IMPORT_NAMES]);
+		writeBootstrapVersion(venv);
+		writeFileSync(join(venv, "sentinel"), "active");
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+		process.env.UV_FAKE_VERSION = "0.12.3";
+
+		await expect(ensureKernelPython()).rejects.toThrow(/uv 0\.11\.33 is required/);
+		expect(readFileSync(join(venv, "sentinel"), "utf8")).toBe("active");
+	});
+
+	it("keeps the active venv when staging a replacement fails", async () => {
+		installFakeUv();
+		const venv = join(tempDir, "kernel-venv");
+		const python = join(venv, "bin", "python");
+		mkdirSync(join(venv, "bin"), { recursive: true });
+		writeFakePython(python, ["ipykernel", "rlm", ...DEFAULT_RLM_EXTRA_IMPORT_NAMES]);
+		writeBootstrapVersion(venv);
+		const markerPath = join(venv, ".bootstrap-version");
+		const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+		writeFileSync(markerPath, `${JSON.stringify({ ...marker, runtime: "sha256:stale" })}\n`);
+		writeFileSync(join(venv, "sentinel"), "active");
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+		process.env.UV_FAIL_ARG = join(process.cwd(), "../../prime-agent-runtime");
+
+		await expect(ensureKernelPython()).rejects.toThrow(/Failed to set up/);
+		expect(readFileSync(join(venv, "sentinel"), "utf8")).toBe("active");
+		expect(existsSync(`${venv}.next`)).toBe(false);
+		expect(existsSync(`${venv}.previous`)).toBe(false);
+	});
+
+	it("recovers the previous venv after an interrupted swap", async () => {
+		const logPath = installFakeUv();
+		const venv = join(tempDir, "kernel-venv");
+		const previous = `${venv}.previous`;
+		const previousPython = join(previous, "bin", "python");
+		mkdirSync(join(previous, "bin"), { recursive: true });
+		writeFakePython(previousPython, ["ipykernel", "rlm", ...DEFAULT_RLM_EXTRA_IMPORT_NAMES]);
+		writeBootstrapVersion(previous);
+		writeFileSync(join(previous, "sentinel"), "previous");
+		process.env.PRIME_AGENT_KERNEL_VENV = venv;
+
+		await expect(ensureKernelPython()).resolves.toBe(join(venv, "bin", "python"));
+		expect(readFileSync(join(venv, "sentinel"), "utf8")).toBe("previous");
+		expect(existsSync(previous)).toBe(false);
+		expect(readFileSync(logPath, "utf8")).not.toContain(`venv ${venv}.next`);
 	});
 
 	it("rebuilds a warm venv whose recorded runtime hash no longer matches local source", async () => {
@@ -440,23 +583,15 @@ dependencies = ["httpx"]
 		const python = join(venv, "bin", "python");
 		mkdirSync(join(venv, "bin"), { recursive: true });
 		writeFakePython(python, ["ipykernel", "rlm", ...DEFAULT_RLM_EXTRA_IMPORT_NAMES]);
-		writeFileSync(
-			join(venv, ".bootstrap-version"),
-			`${JSON.stringify({
-				schema: 9,
-				ipykernel: "ipykernel",
-				runtime: "sha256:stale",
-				snapshot: "dill",
-				kernelLock: kernelLockDigest,
-				extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
-				pythonSkills: [],
-			})}\n`,
-		);
+		writeBootstrapVersion(venv);
+		const markerPath = join(venv, ".bootstrap-version");
+		const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+		writeFileSync(markerPath, `${JSON.stringify({ ...marker, runtime: "sha256:stale" })}\n`);
 		process.env.PRIME_AGENT_KERNEL_VENV = venv;
 
 		await expect(ensureKernelPython()).resolves.toBe(python);
 
-		expect(readFileSync(logPath, "utf8")).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(readFileSync(logPath, "utf8")).toContain(`venv ${venv}.next --python 3.11.15 --seed --relocatable`);
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version.runtime).toBe(runtimeIdentity);
 	});
@@ -485,7 +620,7 @@ dependencies = ["httpx"]
 
 		await expect(ensureKernelPython()).resolves.toBe(python);
 
-		expect(readFileSync(logPath, "utf8")).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(readFileSync(logPath, "utf8")).toContain(`venv ${venv}.next --python 3.11.15 --seed --relocatable`);
 	});
 
 	it("rebuilds a broken venv", async () => {
@@ -497,7 +632,7 @@ dependencies = ["httpx"]
 
 		await expect(ensureKernelPython()).resolves.toBe(join(venv, "bin", "python"));
 
-		expect(readFileSync(logPath, "utf8")).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(readFileSync(logPath, "utf8")).toContain(`venv ${venv}.next --python 3.11.15 --seed --relocatable`);
 	});
 
 	it("uses PRIME_AGENT_KERNEL_PYTHON as an override contract", async () => {
