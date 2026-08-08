@@ -1,3 +1,5 @@
+import type { ClientRequest } from "node:http";
+import { ProxyAgent } from "proxy-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const bedrockMock = vi.hoisted(() => ({
@@ -55,12 +57,26 @@ const context: Context = {
 const originalAwsRegion = process.env.AWS_REGION;
 const originalAwsDefaultRegion = process.env.AWS_DEFAULT_REGION;
 const originalAwsProfile = process.env.AWS_PROFILE;
+const proxyEnvKeys = [
+	"ALL_PROXY",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"all_proxy",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
+] as const;
+const originalProxyEnv = new Map(proxyEnvKeys.map((key) => [key, process.env[key]]));
 
 beforeEach(() => {
 	bedrockMock.constructorCalls.length = 0;
 	delete process.env.AWS_REGION;
 	delete process.env.AWS_DEFAULT_REGION;
 	delete process.env.AWS_PROFILE;
+	for (const key of proxyEnvKeys) {
+		delete process.env[key];
+	}
 });
 
 afterEach(() => {
@@ -80,6 +96,15 @@ afterEach(() => {
 		delete process.env.AWS_PROFILE;
 	} else {
 		process.env.AWS_PROFILE = originalAwsProfile;
+	}
+
+	for (const key of proxyEnvKeys) {
+		const originalValue = originalProxyEnv.get(key);
+		if (originalValue === undefined) {
+			delete process.env[key];
+		} else {
+			process.env[key] = originalValue;
+		}
 	}
 });
 
@@ -127,5 +152,43 @@ describe("bedrock endpoint resolution", () => {
 
 		expect(config.endpoint).toBe("https://bedrock-vpc.example.com");
 		expect(config.region).toBe("us-west-2");
+	});
+});
+
+interface InspectableNodeHttpHandler {
+	metadata?: { handlerProtocol?: string };
+	configProvider?: Promise<{ httpsAgent?: ProxyAgent }>;
+}
+
+describe("bedrock proxy resolution", () => {
+	it.each([
+		{
+			name: "HTTP",
+			envKey: "HTTP_PROXY" as const,
+			proxyUrl: "http://127.0.0.1:8080",
+			requestUrl: "http://bedrock-vpc.example.com",
+		},
+		{
+			name: "SOCKS",
+			envKey: "HTTPS_PROXY" as const,
+			proxyUrl: "socks5://127.0.0.1:1080",
+			requestUrl: "https://bedrock-vpc.example.com",
+		},
+	])("uses the configured $name proxy through the HTTP/1.1 handler", async ({ envKey, proxyUrl, requestUrl }) => {
+		process.env[envKey] = proxyUrl;
+		const baseModel = getModel("amazon-bedrock", "us.anthropic.claude-opus-4-7");
+		const model: Model<"bedrock-converse-stream"> = {
+			...baseModel,
+			baseUrl: requestUrl,
+		};
+
+		const config = await captureClientConfig(model);
+		const requestHandler = config.requestHandler as unknown as InspectableNodeHttpHandler;
+		const handlerConfig = await requestHandler.configProvider;
+		const agent = handlerConfig?.httpsAgent;
+
+		expect(requestHandler.metadata?.handlerProtocol).toBe("http/1.1");
+		expect(agent).toBeInstanceOf(ProxyAgent);
+		expect(await agent?.getProxyForUrl(requestUrl, {} as ClientRequest)).toBe(proxyUrl);
 	});
 });

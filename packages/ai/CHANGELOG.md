@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed the Bedrock proxy dependency chain containing high-severity runtime advisories ([#931](https://github.com/PrimeIntellect-ai/prime-agent/issues/931)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
