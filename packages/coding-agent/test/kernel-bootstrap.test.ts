@@ -552,7 +552,7 @@ dependencies = ["httpx"]
 		writeFileSync(markerPath, `${JSON.stringify({ ...marker, runtime: "sha256:stale" })}\n`);
 		writeFileSync(join(venv, "sentinel"), "active");
 		process.env.PRIME_AGENT_KERNEL_VENV = venv;
-		process.env.UV_FAIL_ARG = join(process.cwd(), "../../prime-agent-runtime");
+		process.env.UV_FAIL_ARG = "--no-deps";
 
 		await expect(ensureKernelPython()).rejects.toThrow(/Failed to set up/);
 		expect(readFileSync(join(venv, "sentinel"), "utf8")).toBe("active");
