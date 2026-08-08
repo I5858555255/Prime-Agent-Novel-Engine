@@ -10,7 +10,8 @@ private candidate lock before atomically installing it as ``<state>.lock``, relo
 under that lock, advance the document's monotonic revision, fsync a same-directory
 temporary file, atomically replace the state document, and fence every operation
 by the exact owner fingerprint. Direct stale saves fail explicitly; ordinary
-Python mutations reload and merge.
+Python mutations reload and merge. Valid foreign-host owners are never reclaimed
+automatically: this is a same-host protocol, not a renewable distributed lease.
 """
 
 from __future__ import annotations
@@ -164,7 +165,9 @@ def _lock_is_stale(
     stale_lock_seconds: float,
 ) -> bool:
     owner = observation.owner if observation else None
-    if owner and owner["hostname"] == _hostname():
+    if owner:
+        if owner["hostname"] != _hostname():
+            return False
         if not _pid_alive(owner["pid"]):
             return True
         if process_start_id := owner.get("process_start_id"):
@@ -175,6 +178,18 @@ def _lock_is_stale(
         return time.time() - lock_path.stat().st_mtime >= stale_lock_seconds
     except FileNotFoundError:
         return False
+
+
+def _lock_timeout_error(lock_path: Path, observation: _LockObservation | None) -> TimeoutError:
+    owner = observation.owner if observation else None
+    if owner and owner["hostname"] != _hostname():
+        return TimeoutError(
+            f"Timed out waiting for harness-state lock {lock_path} owned by foreign host "
+            f"{owner['hostname']}. Automatic foreign-host reclamation is disabled because "
+            "harness-state locking is same-host only. Verify the remote owner is inactive, "
+            "then remove the lock directory manually."
+        )
+    return TimeoutError(f"Timed out waiting for harness-state lock {lock_path}")
 
 
 def _restore_moved_lock(moved_path: Path, lock_path: Path) -> None:
@@ -242,7 +257,7 @@ def _state_lock(
             _remove_observed_lock(lock_path, observation)
             continue
         if time.monotonic() >= deadline:
-            raise TimeoutError(f"Timed out waiting for harness-state lock {lock_path}")
+            raise _lock_timeout_error(lock_path, observation)
         time.sleep(min(_LOCK_POLL_SECONDS, max(0.001, deadline - time.monotonic())))
 
     def assert_owned() -> None:

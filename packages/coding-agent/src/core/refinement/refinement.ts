@@ -48,6 +48,8 @@ const HARNESS_LOCK_OWNER_FILE_NAME = "owner.json";
  *    replace the state file, then fsync the directory where the platform allows.
  * 4. Fence reads, commits, stale reclamation, and release by the exact observed
  *    owner fingerprint. A moved successor is restored or quarantined, never deleted.
+ * 5. Treat valid foreign-host owners as live until operator cleanup. This is a
+ *    same-host protocol; it is not a renewable distributed filesystem lease.
  */
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
@@ -466,7 +468,10 @@ function isHarnessLockStale(
 	staleLockMs: number,
 ): boolean {
 	const owner = observation?.owner;
-	if (owner?.hostname === hostname()) {
+	if (owner) {
+		if (owner.hostname !== hostname()) {
+			return false;
+		}
 		if (!processIsAlive(owner.pid)) {
 			return true;
 		}
@@ -484,6 +489,18 @@ function isHarnessLockStale(
 		}
 		throw error;
 	}
+}
+
+function harnessLockTimeoutError(lockPath: string, observation: HarnessLockObservation | undefined): Error {
+	const owner = observation?.owner;
+	if (owner && owner.hostname !== hostname()) {
+		return new Error(
+			`Timed out waiting for harness-state lock ${lockPath} owned by foreign host ${owner.hostname}. ` +
+				"Automatic foreign-host reclamation is disabled because harness-state locking is same-host only. " +
+				"Verify the remote owner is inactive, then remove the lock directory manually.",
+		);
+	}
+	return new Error(`Timed out waiting for harness-state lock ${lockPath}`);
 }
 
 function readPersistedHarnessRevision(statePath: string): number {
@@ -603,7 +620,7 @@ function acquireHarnessStateLock(harnessStateDir: string, options: HarnessStateS
 			continue;
 		}
 		if (performance.now() >= deadline) {
-			throw new Error(`Timed out waiting for harness-state lock ${lockPath}`);
+			throw harnessLockTimeoutError(lockPath, observation);
 		}
 		sleepSync(Math.min(HARNESS_LOCK_POLL_MS, Math.max(1, deadline - performance.now())));
 	}

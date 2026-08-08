@@ -207,6 +207,52 @@ class HarnessStateTest(unittest.TestCase):
             with self.assertRaisesRegex(TimeoutError, "Timed out waiting for harness-state lock"):
                 state.create_memory("Blocked", "must time out", id="blocked")
 
+    def test_old_foreign_host_lock_times_out_without_mutating_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            HarnessState(state_path).create_memory("Baseline", "preserve", id="baseline")
+            persisted_before = state_path.read_text(encoding="utf-8")
+            state = HarnessState(state_path, lock_timeout_seconds=0.02, stale_lock_seconds=0)
+            lock_path.mkdir()
+            (lock_path / "owner.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 42,
+                        "hostname": "foreign-host.example.invalid",
+                        "token": "foreign-host-owner",
+                        "created_at": "2000-01-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.utime(lock_path, (0, 0))
+
+            with self.assertRaisesRegex(
+                TimeoutError,
+                r"foreign host foreign-host\.example\.invalid.*same-host only.*remove the lock directory manually",
+            ):
+                state.create_memory("Blocked", "must not persist", id="blocked")
+
+            self.assertNotIn("blocked", state.entries["memory"])
+            self.assertEqual(state_path.read_text(encoding="utf-8"), persisted_before)
+            owner = json.loads((lock_path / "owner.json").read_text(encoding="utf-8"))
+            self.assertEqual(owner["token"], "foreign-host-owner")
+
+    def test_malformed_owner_lock_is_age_reclaimed_with_fingerprint_fencing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            lock_path.mkdir()
+            (lock_path / "owner.json").write_text("not owner json", encoding="utf-8")
+            os.utime(lock_path, (0, 0))
+
+            state = HarnessState(state_path, lock_timeout_seconds=0.1, stale_lock_seconds=0)
+            state.create_memory("Recovered", "malformed owner reclaimed", id="recovered")
+
+            self.assertFalse(lock_path.exists())
+            self.assertEqual(HarnessState(state_path).get("memory", "recovered").content, "malformed owner reclaimed")
+
     def test_process_start_identity_reclaims_reused_live_pid(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "harness_state.json"

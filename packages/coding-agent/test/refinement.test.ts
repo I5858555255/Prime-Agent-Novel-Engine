@@ -1451,6 +1451,45 @@ describe("transactional harness-state persistence", () => {
 		expect(existsSync(lockPath)).toBe(true);
 	});
 
+	it("does not age-reclaim an old foreign-host lock or mutate persisted state", () => {
+		const root = makeTempDir();
+		const statePath = getHarnessStatePath(root);
+		const lockPath = getHarnessStateLockPath(root);
+		const baseline = loadHarnessState(root, "local");
+		saveHarnessState(root, baseline);
+		const persistedBefore = readFileSync(statePath, "utf8");
+		const blocked = loadHarnessState(root, "local");
+		blocked.entries.memory.blocked = transactionMemoryEntry("blocked", "must not persist");
+		mkdirSync(lockPath);
+		writeFileSync(
+			join(lockPath, "owner.json"),
+			JSON.stringify({
+				pid: 42,
+				hostname: "foreign-host.example.invalid",
+				token: "foreign-host-owner",
+				created_at: "2000-01-01T00:00:00.000Z",
+			}),
+		);
+		utimesSync(lockPath, 0, 0);
+
+		expect(() => saveHarnessState(root, blocked, { lockTimeoutMs: 20, staleLockMs: 0 })).toThrow(
+			/foreign host foreign-host\.example\.invalid.*same-host only.*remove the lock directory manually/,
+		);
+		expect(readFileSync(statePath, "utf8")).toBe(persistedBefore);
+		expect(JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf8")).token).toBe("foreign-host-owner");
+	});
+
+	it("age-reclaims a missing-owner lock with fingerprint fencing", () => {
+		const root = makeTempDir();
+		const lockPath = getHarnessStateLockPath(root);
+		mkdirSync(lockPath);
+		utimesSync(lockPath, 0, 0);
+
+		const state = loadHarnessState(root, "local");
+		expect(() => saveHarnessState(root, state, { lockTimeoutMs: 100, staleLockMs: 0 })).not.toThrow();
+		expect(existsSync(lockPath)).toBe(false);
+	});
+
 	it("reclaims a live PID whose process-start identity no longer matches", () => {
 		const root = makeTempDir();
 		const lockPath = getHarnessStateLockPath(root);
