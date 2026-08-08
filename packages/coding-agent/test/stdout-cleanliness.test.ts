@@ -2,7 +2,43 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const cliMocks = vi.hoisted(() => ({
+	agentOptions: [] as Array<Record<string, unknown>>,
+	closeOwnedSessionWorkerOwnerWatch: vi.fn(),
+	installOwnedSessionWorkerOwnerWatch: vi.fn(),
+	main: vi.fn(async () => {}),
+	maybeRunOwnedSessionWorkerFrontend: vi.fn(async () => false),
+	maybeStartDaemonEarly: vi.fn(),
+	setGlobalDispatcher: vi.fn(),
+}));
+
+vi.mock("undici", () => ({
+	EnvHttpProxyAgent: class EnvHttpProxyAgent {
+		constructor(options: Record<string, unknown>) {
+			cliMocks.agentOptions.push(options);
+		}
+	},
+	setGlobalDispatcher: cliMocks.setGlobalDispatcher,
+}));
+
+vi.mock("../src/cli/daemon-launch.js", () => ({
+	maybeStartDaemonEarly: cliMocks.maybeStartDaemonEarly,
+}));
+
+vi.mock("../src/cli/owned-session-worker.js", () => ({
+	closeOwnedSessionWorkerOwnerWatch: cliMocks.closeOwnedSessionWorkerOwnerWatch,
+	installOwnedSessionWorkerOwnerWatch: cliMocks.installOwnedSessionWorkerOwnerWatch,
+	isOwnedSessionWorkerProcess: () => false,
+	maybeRunOwnedSessionWorkerFrontend: cliMocks.maybeRunOwnedSessionWorkerFrontend,
+}));
+
+vi.mock("../src/main.js", () => ({
+	main: cliMocks.main,
+}));
+
+import { runCli as runCliMain } from "../src/cli-main.js";
 import { ENV_AGENT_DIR } from "../src/config.js";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
@@ -22,7 +58,7 @@ function createTempDir(): string {
 	return dir;
 }
 
-async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
+async function runCliProcess(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
 	const tempRoot = createTempDir();
 	const agentDir = join(tempRoot, "agent");
 	const projectDir = join(tempRoot, "project");
@@ -82,7 +118,7 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 
 describe("stdout cleanliness in non-interactive modes", () => {
 	it("keeps stdout empty for --mode json --help without starting runtime packages", async () => {
-		const result = await runCli(["--mode", "json", "--help"]);
+		const result = await runCliProcess(["--mode", "json", "--help"]);
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("");
@@ -95,7 +131,7 @@ describe("stdout cleanliness in non-interactive modes", () => {
 	});
 
 	it("keeps stdout empty for -p -h without starting runtime packages", async () => {
-		const result = await runCli(["-p", "-h"]);
+		const result = await runCliProcess(["-p", "-h"]);
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("");
@@ -104,5 +140,41 @@ describe("stdout cleanliness in non-interactive modes", () => {
 		expect(result.stderr).toContain("Usage:");
 		expect(result.stderr).not.toContain("Examples:");
 		expect(result.stderr).not.toContain("Built-in Tool Names:");
+	});
+});
+
+describe("CLI proxy dispatcher", () => {
+	const originalArgv = process.argv;
+	const originalEmitWarning = process.emitWarning;
+	const originalPiCodingAgent = process.env.PI_CODING_AGENT;
+	const originalTitle = process.title;
+
+	beforeEach(() => {
+		cliMocks.agentOptions.length = 0;
+		vi.clearAllMocks();
+		process.argv = ["node", "pi"];
+	});
+
+	afterEach(() => {
+		process.argv = originalArgv;
+		process.emitWarning = originalEmitWarning;
+		process.title = originalTitle;
+		if (originalPiCodingAgent === undefined) {
+			delete process.env.PI_CODING_AGENT;
+		} else {
+			process.env.PI_CODING_AGENT = originalPiCodingAgent;
+		}
+	});
+
+	it("installs an unlimited-timeout environment proxy dispatcher before main", async () => {
+		await runCliMain();
+
+		expect(cliMocks.agentOptions).toEqual([{ bodyTimeout: 0, headersTimeout: 0 }]);
+		expect(cliMocks.setGlobalDispatcher).toHaveBeenCalledTimes(1);
+		expect(cliMocks.setGlobalDispatcher.mock.invocationCallOrder[0]).toBeLessThan(
+			cliMocks.main.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+		expect(cliMocks.main).toHaveBeenCalledWith([]);
+		expect(cliMocks.closeOwnedSessionWorkerOwnerWatch).toHaveBeenCalledTimes(1);
 	});
 });

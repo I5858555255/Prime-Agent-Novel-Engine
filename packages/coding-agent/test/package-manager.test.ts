@@ -948,6 +948,21 @@ Content`,
 			expect(result.extensions.some((r) => isDisabled(r, "remove.ts"))).toBe(true);
 		});
 
+		it("should preserve brace-expanded exclusions", async () => {
+			const extDir = join(agentDir, "extensions");
+			mkdirSync(extDir, { recursive: true });
+			for (const name of ["alpha", "beta", "gamma"]) {
+				writeFileSync(join(extDir, `${name}.ts`), "export default function() {}");
+			}
+
+			settingsManager.setExtensionPaths(["extensions", "!extensions/{beta,gamma}.ts"]);
+
+			const result = await packageManager.resolve();
+			expect(result.extensions.some((r) => isEnabled(r, "alpha.ts"))).toBe(true);
+			expect(result.extensions.some((r) => isDisabled(r, "beta.ts"))).toBe(true);
+			expect(result.extensions.some((r) => isDisabled(r, "gamma.ts"))).toBe(true);
+		});
+
 		it("should filter themes with glob patterns", async () => {
 			const themesDir = join(agentDir, "themes");
 			mkdirSync(themesDir, { recursive: true });
