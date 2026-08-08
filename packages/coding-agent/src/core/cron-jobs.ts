@@ -1377,9 +1377,9 @@ function nextCronRunAfter(expression: string, after: Date): Date {
 	candidate.setSeconds(0, 0);
 	candidate.setMinutes(candidate.getMinutes() + 1);
 
-	// Gregorian calendar dates repeat every 400 years. Scan that full cycle so
-	// valid sparse schedules such as leap day are not rejected, while skipping
-	// non-matching calendar days instead of checking every minute.
+	// Gregorian calendar date/weekday combinations repeat every 400 years. Scan
+	// that full cycle so valid sparse schedules such as leap day are not rejected,
+	// while skipping non-matching calendar days instead of checking every minute.
 	const deadline = new Date(candidate.getTime());
 	deadline.setFullYear(deadline.getFullYear() + 400);
 	while (candidate.getTime() <= deadline.getTime()) {

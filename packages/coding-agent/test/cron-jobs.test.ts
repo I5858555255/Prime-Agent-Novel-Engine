@@ -43,6 +43,14 @@ describe("parseAgentCronSchedule", () => {
 		]).toEqual([2028, 1, 29, 0, 0]);
 	});
 
+	it("rejects impossible calendar dates after a finite scan", () => {
+		const after = new Date(2025, 2, 1, 0, 0, 0, 0);
+
+		expect(() => parseAgentCronSchedule("0 0 31 2 *", after)).toThrow(
+			"Cron schedule has no matching date: 0 0 31 2 *",
+		);
+	});
+
 	it("parses recurring heartbeat intervals with seconds", () => {
 		const parsed = parseAgentCronSchedule("every 30s", start);
 
