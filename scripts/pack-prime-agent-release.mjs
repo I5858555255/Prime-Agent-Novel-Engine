@@ -23,6 +23,7 @@ const defaultOutputDir = join(root, "packages", "coding-agent", "release");
 const defaultBaseUrl = process.env.PRIME_AGENT_DOWNLOAD_BASE_URL;
 const publicPackageName = process.env.PRIME_AGENT_PACKAGE_NAME || "prime-agent";
 const publicCommandName = process.env.PRIME_AGENT_CMD || "prime-agent";
+const defaultSourceSha = process.env.PRIME_AGENT_SOURCE_SHA;
 const releaseChannels = new Set(["stable", "beta"]);
 
 const releasePackages = [
@@ -37,6 +38,7 @@ function parseArgs(args) {
 		baseUrl: defaultBaseUrl,
 		channel: "stable",
 		outDir: defaultOutputDir,
+		sourceSha: defaultSourceSha,
 		version: undefined,
 	};
 
@@ -66,6 +68,13 @@ function parseArgs(args) {
 				i += 1;
 				break;
 			}
+			case "--source-sha": {
+				const value = args[i + 1];
+				if (!value) throw new Error("--source-sha requires a value");
+				parsed.sourceSha = value;
+				i += 1;
+				break;
+			}
 			case "--version": {
 				const value = args[i + 1];
 				if (!value) throw new Error("--version requires a value");
@@ -86,13 +95,16 @@ function parseArgs(args) {
 	if (!parsed.baseUrl) {
 		throw new Error("--base-url or PRIME_AGENT_DOWNLOAD_BASE_URL is required");
 	}
+	if (!parsed.sourceSha || !/^[0-9a-f]{40}$/.test(parsed.sourceSha)) {
+		throw new Error("--source-sha or PRIME_AGENT_SOURCE_SHA must be a full 40-character commit SHA");
+	}
 
 	parsed.baseUrl = parsed.baseUrl.replace(/\/+$/, "");
 	return parsed;
 }
 
 function printHelp() {
-	console.log(`Usage: node scripts/pack-prime-agent-release.mjs --base-url url [--channel stable|beta] [--version x.y.z] [--out-dir path]
+	console.log(`Usage: node scripts/pack-prime-agent-release.mjs --base-url url --source-sha sha [--channel stable|beta] [--version x.y.z] [--out-dir path]
 
 Creates private npm tarballs for R2 distribution:
 
@@ -330,6 +342,7 @@ function main() {
 	const manifestName = args.channel === "stable" ? "latest.json" : "beta.json";
 	writeJson(join(artifactsDir, manifestName), {
 		version: `v${releaseVersion}`,
+		sourceSha: args.sourceSha,
 		package: publicPackageName,
 		tarball: `releases/v${releaseVersion}/${artifactFiles.get("coding-agent")}`,
 		tarballs: tarballs.map((tarball) => ({
