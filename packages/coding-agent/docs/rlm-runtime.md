@@ -75,11 +75,74 @@ The Python side does not call providers or implement an agent loop.
 
 The kernel is created lazily on first IPython use. Python resolution is:
 
-1. `PRIME_AGENT_KERNEL_PYTHON`, when it can import `ipykernel`;
+1. `PRIME_AGENT_KERNEL_PYTHON`, when it satisfies the [override contract](#prime_agent_kernel_python-contract) below;
 2. `~/.prime/agent/kernel-venv/bin/python`, bootstrapped with `uv`; or
 3. the XDG data location when `~/.prime` is not writable.
 
-The managed environment includes Python 3.11, `ipykernel`, and `prime-agent-runtime`. A bootstrap marker detects stale environments.
+The managed environment installs Python 3.11, `ipykernel`, `prime-agent-runtime`, `dill` (namespace snapshots), and the [default Python packages](#blocking-base-packages). A bootstrap marker detects stale environments.
+
+### `PRIME_AGENT_KERNEL_PYTHON` contract
+
+Set `PRIME_AGENT_KERNEL_PYTHON` to a Python executable to skip auto-bootstrap of `~/.prime/agent/kernel-venv`. Installing only `ipykernel` is not enough: bootstrap rejects the override when blocking base packages are missing.
+
+Package lists below mirror `DEFAULT_RLM_EXTRA_PACKAGES` and the override checks in `packages/coding-agent/src/core/kernel/bootstrap.ts`. Update docs when those definitions change.
+
+#### Blocking base packages
+
+These must import successfully or kernel start fails with `PRIME_AGENT_KERNEL_PYTHON points to a Python missing ...`:
+
+| Requirement | What bootstrap checks |
+|---|---|
+| `ipykernel` | `import ipykernel` |
+| current `prime-agent-runtime` | importable `rlm` with callable `rlm.run` / `rlm.host_request`, harness CRUD methods, and related readiness asserts |
+| default Python packages | `requests`, `httpx`, `yaml` (PyYAML), `tomli`, `dotenv` (python-dotenv), `pandas`, `numpy`, `scipy`, `bs4` (Beautiful Soup), `lxml`, `pydantic`, `tyro` |
+
+#### Optional skill warnings
+
+Missing Python-backed skills are **not** blocking. Bootstrap prints a warning and disables those skills for the session:
+
+```text
+Warning: Python skills unavailable in PRIME_AGENT_KERNEL_PYTHON and will be disabled: ...
+```
+
+Managed bootstrap installs skills into the kernel venv; with an override, install each skill package into that same interpreter if you need them.
+
+#### Setup and validation
+
+From a Prime Agent source or release tree that includes `prime-agent-runtime/`:
+
+```bash
+export PRIME_AGENT_KERNEL_PYTHON=/path/to/python   # or python.exe on Windows
+
+uv pip install --python "$PRIME_AGENT_KERNEL_PYTHON" \
+  ipykernel \
+  requests httpx pyyaml tomli python-dotenv \
+  pandas numpy scipy beautifulsoup4 lxml pydantic tyro \
+  ./prime-agent-runtime
+```
+
+Validate the blocking contract (must exit 0):
+
+```bash
+"$PRIME_AGENT_KERNEL_PYTHON" - <<'PY'
+import importlib
+import ipykernel  # noqa: F401
+import rlm
+
+assert callable(rlm) and callable(rlm.run) and callable(rlm.host_request)
+assert hasattr(rlm, "harness") and hasattr(rlm, "get_harness_state")
+
+for name in (
+    "requests", "httpx", "yaml", "tomli", "dotenv",
+    "pandas", "numpy", "scipy", "bs4", "lxml", "pydantic", "tyro",
+):
+    importlib.import_module(name)
+
+print("PRIME_AGENT_KERNEL_PYTHON blocking contract OK")
+PY
+```
+
+If validation fails, unset `PRIME_AGENT_KERNEL_PYTHON` and let Prime Agent bootstrap `~/.prime/agent/kernel-venv` instead.
 
 Startup creates a temporary Jupyter connection file with loopback TCP ports and an HMAC key, starts `python -m ipykernel_launcher`, connects shell, IOPub, and control sockets, waits for subscription propagation, and probes readiness with `kernel_info_request`.
 
