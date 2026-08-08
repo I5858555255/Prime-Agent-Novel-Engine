@@ -37,6 +37,9 @@ export interface EditorComponent extends Component {
 	/** Called when text changes */
 	onChange?: (text: string) => void;
 
+	/** Called when an autocomplete provider fails for reasons other than cancellation */
+	onAutocompleteError?: (error: unknown) => void | Promise<void>;
+
 	// =========================================================================
 	// History support (optional)
 	// =========================================================================

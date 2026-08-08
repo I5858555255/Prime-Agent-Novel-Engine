@@ -32,6 +32,10 @@ function isAtomicMarker(segment: string): boolean {
 	return segment.length >= 10 && (PASTE_MARKER_SINGLE.test(segment) || IMAGE_MARKER_SINGLE.test(segment));
 }
 
+function isAbortError(error: unknown): boolean {
+	return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
 /**
  * A segmenter that wraps Intl.Segmenter and merges graphemes that fall
  * within paste or image markers into single atomic segments. This makes cursor
@@ -339,6 +343,7 @@ export class Editor implements Component, Focusable {
 
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
+	public onAutocompleteError?: (error: unknown) => void | Promise<void>;
 	public disableSubmit: boolean = false;
 
 	constructor(tui: TUI, theme: EditorTheme, options: EditorOptions = {}) {
@@ -2353,7 +2358,7 @@ export class Editor implements Component, Focusable {
 	): Promise<void> {
 		const previousTask = this.autocompleteRequestTask;
 		this.autocompleteRequestTask = (async () => {
-			await previousTask;
+			await previousTask.catch(() => undefined);
 			if (startToken !== this.autocompleteStartToken || !this.autocompleteProvider) {
 				return;
 			}
@@ -2365,9 +2370,28 @@ export class Editor implements Component, Focusable {
 			const snapshotLine = this.state.cursorLine;
 			const snapshotCol = this.state.cursorCol;
 
-			await this.runAutocompleteRequest(requestId, controller, snapshotText, snapshotLine, snapshotCol, options);
+			try {
+				await this.runAutocompleteRequest(requestId, controller, snapshotText, snapshotLine, snapshotCol, options);
+			} catch (error) {
+				if (!controller.signal.aborted && !isAbortError(error)) {
+					this.reportAutocompleteError(error);
+				}
+			} finally {
+				if (this.autocompleteAbort === controller) {
+					this.autocompleteAbort = undefined;
+				}
+			}
 		})();
 		await this.autocompleteRequestTask;
+	}
+
+	private reportAutocompleteError(error: unknown): void {
+		try {
+			const result = this.onAutocompleteError?.(error);
+			void Promise.resolve(result).catch(() => undefined);
+		} catch {
+			// Diagnostics must not interrupt editor input or the autocomplete queue.
+		}
 	}
 
 	private getAutocompleteDebounceMs(options: { force: boolean; explicitTab: boolean }): number {
