@@ -306,6 +306,18 @@ interface WorkerAttachData {
 	releaseTranscript?: () => void;
 }
 
+interface AgentPeerCatalogWorkerSnapshot {
+	readonly workerId: string;
+	readonly worker: ResidentWorker;
+	readonly client: DaemonWorkerClient;
+	readonly peer?: Readonly<AgentSessionMessageAgentSummary>;
+}
+
+interface AgentPeerCatalogSnapshot {
+	readonly revision: number;
+	readonly workers: readonly AgentPeerCatalogWorkerSnapshot[];
+}
+
 interface SupervisorPromptAdmission {
 	client: DaemonSocketClient;
 	activeSessionId: string;
@@ -604,7 +616,14 @@ export class DaemonSupervisor {
 	private commandJournal!: CommandRecoveryJournal;
 	private readonly streamReconstructor = new CompactAssistantStreamReconstructor();
 	private readonly compactCatchupInProgress = new Set<string>();
-	private agentPeerSyncQueue: Promise<void> = Promise.resolve();
+	private agentPeerSyncDirty = false;
+	private agentPeerSyncDrain?: Promise<void>;
+	private readonly deliveredAgentPeerPayloads = new WeakMap<
+		DaemonWorkerClient,
+		{ revision: number; fingerprint: string }
+	>();
+	private agentPeerCatalogFingerprint?: string;
+	private readonly agentPeerSyncStats = { passes: 0, sends: 0, catalogRevision: 0 };
 	private readonly pendingSessionNames = new Set<string>();
 	private readonly catalog: DaemonCatalogClient;
 	private readonly settingsManager: SettingsManager;
@@ -3052,34 +3071,93 @@ export class DaemonSupervisor {
 	}
 
 	private syncAgentPeers(): Promise<void> {
-		const sync = this.agentPeerSyncQueue
-			.catch(() => undefined)
-			.then(async () => {
-				const readyWorkers = [...this.workers.values()].filter(
+		if (this.shuttingDown) return Promise.resolve();
+		this.agentPeerSyncDirty = true;
+		if (this.agentPeerSyncDrain) return this.agentPeerSyncDrain;
+		const drain = Promise.resolve().then(() => this.drainAgentPeerSync());
+		let trackedDrain!: Promise<void>;
+		trackedDrain = drain.finally(() => {
+			if (this.agentPeerSyncDrain === trackedDrain) this.agentPeerSyncDrain = undefined;
+		});
+		this.agentPeerSyncDrain = trackedDrain;
+		return trackedDrain;
+	}
+
+	private async drainAgentPeerSync(): Promise<void> {
+		let retryAvailable = true;
+		let failures: Error[] = [];
+		while (this.agentPeerSyncDirty && !this.shuttingDown) {
+			this.agentPeerSyncDirty = false;
+			failures = await this.runAgentPeerSyncPass(this.createAgentPeerCatalogSnapshot());
+			if (failures.length > 0 && retryAvailable && !this.shuttingDown) {
+				retryAvailable = false;
+				this.agentPeerSyncDirty = true;
+			}
+		}
+		if (failures.length > 0) {
+			throw new AggregateError(failures, `Could not synchronize agent peers with ${failures.length} worker(s)`);
+		}
+	}
+
+	private createAgentPeerCatalogSnapshot(): AgentPeerCatalogSnapshot {
+		const workers = Object.freeze(
+			[...this.workers.values()]
+				.filter(
 					(worker): worker is ResidentWorker & { client: DaemonWorkerClient } =>
 						this.isVisibleWorker(worker) &&
 						worker.descriptor.lifecycle === "ready" &&
 						worker.client !== undefined,
+				)
+				.map((worker): AgentPeerCatalogWorkerSnapshot => {
+					const root = worker.summaries.get(worker.descriptor.rootActiveSessionId);
+					return Object.freeze({
+						workerId: worker.descriptor.workerId,
+						worker,
+						client: worker.client,
+						...(root ? { peer: Object.freeze(this.agentPeerSummary(root)) } : {}),
+					});
+				}),
+		);
+		const fingerprint = createHash("sha256")
+			.update(JSON.stringify(workers.map((worker) => [worker.workerId, worker.peer])))
+			.digest("base64url");
+		if (fingerprint !== this.agentPeerCatalogFingerprint) {
+			this.agentPeerCatalogFingerprint = fingerprint;
+			this.agentPeerSyncStats.catalogRevision++;
+		}
+		return Object.freeze({ revision: this.agentPeerSyncStats.catalogRevision, workers });
+	}
+
+	private async runAgentPeerSyncPass(snapshot: AgentPeerCatalogSnapshot): Promise<Error[]> {
+		this.agentPeerSyncStats.passes++;
+		const results = await Promise.all(
+			snapshot.workers.map(async (target): Promise<Error | undefined> => {
+				const peers = snapshot.workers.flatMap((candidate) =>
+					candidate.workerId !== target.workerId && candidate.peer ? [candidate.peer] : [],
 				);
-				await Promise.all(
-					readyWorkers.map(async (worker) => {
-						const peers = [
-							...readyWorkers
-								.filter((candidate) => candidate !== worker)
-								.flatMap((candidate) => {
-									const root = candidate.summaries.get(candidate.descriptor.rootActiveSessionId);
-									return root ? [this.agentPeerSummary(root)] : [];
-								}),
-						];
-						const response = await worker.client.requestWorker({ type: "worker_sync_agent_peers", peers }, 5000);
-						if (!response.success) {
-							throw new Error(response.error);
-						}
-					}),
-				);
-			});
-		this.agentPeerSyncQueue = sync;
-		return sync;
+				Object.freeze(peers);
+				const fingerprint = createHash("sha256").update(JSON.stringify(peers)).digest("base64url");
+				if (this.deliveredAgentPeerPayloads.get(target.client)?.fingerprint === fingerprint) return undefined;
+				this.agentPeerSyncStats.sends++;
+				try {
+					const response = await target.client.requestWorker({ type: "worker_sync_agent_peers", peers }, 5000);
+					if (!response.success) throw new Error(response.error);
+					const current = this.workers.get(target.workerId);
+					if (
+						current === target.worker &&
+						current.client === target.client &&
+						this.isVisibleWorker(current) &&
+						current.descriptor.lifecycle === "ready"
+					) {
+						this.deliveredAgentPeerPayloads.set(target.client, { revision: snapshot.revision, fingerprint });
+					}
+					return undefined;
+				} catch (error) {
+					return error instanceof Error ? error : new Error(String(error));
+				}
+			}),
+		);
+		return results.filter((error): error is Error => error !== undefined);
 	}
 
 	private isVisibleWorker(worker: ResidentWorker): boolean {
