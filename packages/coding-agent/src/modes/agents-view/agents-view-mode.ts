@@ -94,6 +94,11 @@ import {
 	type UnifiedSessionIndex,
 	type UnifiedSessionRecord,
 } from "./agents-view-state.js";
+import {
+	ProgressiveCatalogBatcher,
+	SAVED_CATALOG_BATCH_MAX_DELAY_MS,
+	SAVED_CATALOG_BATCH_SIZE,
+} from "./progressive-catalog-batcher.js";
 import { matchesSearchText } from "./session-view-search.js";
 
 const POLL_INTERVAL_MS = 1000;
@@ -654,6 +659,7 @@ export class AgentsViewMode implements Component, Focusable {
 	private liveCatalogPollPromise: Promise<void> | undefined;
 	private liveCatalogRefreshPending = false;
 	private savedCatalogRefreshPending = false;
+	private savedCatalogBatcher: ProgressiveCatalogBatcher | undefined;
 	private expandedSubagentParents = new Set<string>();
 	// Agent row identities whose full spawn program is currently shown.
 	// The program key toggles each agent shown ↔ hidden.
@@ -2217,6 +2223,7 @@ export class AgentsViewMode implements Component, Focusable {
 		options: { duringReconnect?: boolean; preserveStatusOnError?: boolean } = {},
 	): Promise<boolean> {
 		if ((!options.duringReconnect && this.reconnectPromise) || this.daemonShutdownReceived) return false;
+		this.savedCatalogBatcher?.cancel();
 		const generation = ++this.savedCatalogGeneration;
 		this.persistentState.savedCatalogGeneration = generation;
 		this.savedCatalogRefreshPending = true;
@@ -2225,13 +2232,25 @@ export class AgentsViewMode implements Component, Focusable {
 		const progressiveSessions = new Map(
 			successfulSessions.map((session) => [resolvePath(canonicalizePath(session.path)), session]),
 		);
+		let terminalSessions: AgentConnectionSavedSessionInfo[] | undefined;
+		const publish = () => {
+			if (generation !== this.savedCatalogGeneration || this.stopped) return;
+			const sessions = terminalSessions ?? [...progressiveSessions.values()];
+			this.savedSessions = sessions;
+			this.persistentState.savedSessions = sessions;
+			this.reconcileCatalogs();
+		};
+		const batcher = new ProgressiveCatalogBatcher({
+			maxBatchSize: SAVED_CATALOG_BATCH_SIZE,
+			maxDelayMs: SAVED_CATALOG_BATCH_MAX_DELAY_MS,
+			onFlush: publish,
+		});
+		this.savedCatalogBatcher = batcher;
 		try {
 			const onSession = (session: AgentConnectionSavedSessionInfo) => {
 				if (generation !== this.savedCatalogGeneration) return;
 				progressiveSessions.set(resolvePath(canonicalizePath(session.path)), session);
-				this.savedSessions = [...progressiveSessions.values()];
-				this.persistentState.savedSessions = this.savedSessions;
-				this.reconcileCatalogs();
+				batcher.add();
 			};
 			const sessions = await listDaemonSavedSessions(
 				this.requireClient(),
@@ -2241,27 +2260,31 @@ export class AgentsViewMode implements Component, Focusable {
 					onSession,
 				},
 			);
-			if (generation !== this.savedCatalogGeneration) return false;
-			this.savedSessions = sessions;
+			if (generation !== this.savedCatalogGeneration) {
+				batcher.cancel();
+				return false;
+			}
+			terminalSessions = sessions;
 			this.lastSuccessfulSavedSessions = sessions;
 			this.savedCatalogReady = true;
 			this.persistentState.lastSuccessfulSavedSessions = sessions;
-			this.persistentState.savedSessions = sessions;
-			this.reconcileCatalogs();
+			batcher.finish();
 			return true;
 		} catch (error) {
 			if (generation === this.savedCatalogGeneration) {
-				this.savedSessions = successfulSessions;
-				this.persistentState.savedSessions = successfulSessions;
+				terminalSessions = successfulSessions;
 				// Treat a terminal failure as settled so scope fallback cannot soft-lock.
 				this.savedCatalogReady = true;
-				this.reconcileCatalogs();
+				batcher.finish();
 				if (!options.preserveStatusOnError && !this.reconnectPromise && !this.daemonShutdownReceived) {
 					this.setStatusMessage(formatError("Failed to load saved sessions", error));
 				}
+			} else {
+				batcher.cancel();
 			}
 			return false;
 		} finally {
+			if (this.savedCatalogBatcher === batcher) this.savedCatalogBatcher = undefined;
 			if (generation === this.savedCatalogGeneration) {
 				this.savedCatalogRefreshPending = false;
 				this.resolveMissingSelectionAnchor();
@@ -2371,6 +2394,8 @@ export class AgentsViewMode implements Component, Focusable {
 		}
 		this.stopped = true;
 		this.savedCatalogGeneration += 1;
+		this.savedCatalogBatcher?.cancel();
+		this.savedCatalogBatcher = undefined;
 		this.liveCatalogGeneration += 1;
 		this.heartbeatCatalogGeneration += 1;
 		if (this.pollTimer) {

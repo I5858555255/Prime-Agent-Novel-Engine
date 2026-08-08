@@ -12,10 +12,11 @@ import {
 	realpathSync,
 	renameSync,
 	rmSync,
+	type Stats,
 	statSync,
 	writeFileSync,
 } from "fs";
-import { readdir, readFile, stat } from "fs/promises";
+import { open, readdir, readFile, stat } from "fs/promises";
 import { basename, dirname, join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
@@ -34,6 +35,9 @@ export const CURRENT_SESSION_VERSION = 3;
 const SESSION_LIST_SEARCH_TEXT_MAX_CHARS = 64 * 1024;
 const SESSION_LIST_PARSE_MAX_LINE_CHARS = 1024 * 1024;
 const SESSION_LIST_LARGE_MESSAGE_PREVIEW_MAX_CHARS = 256;
+const SESSION_LIST_PREFIX_PROOF_BYTES = 4096;
+const SESSION_LIST_READ_BUFFER_BYTES = 64 * 1024;
+export const SESSION_LIST_METADATA_CONCURRENCY = 16;
 const SESSION_STREAMING_LOAD_THRESHOLD_BYTES = 128 * 1024 * 1024;
 const SESSION_ASYNC_PARSE_YIELD_BYTES = 4 * 1024 * 1024;
 
@@ -992,148 +996,439 @@ function extractOversizedMessageSummary(line: string): {
 	};
 }
 
+type SessionFileStats = Stats;
+
+export type SessionInfoReadMode = "cache" | "append" | "full";
+
+export interface SessionInfoReadDiagnostics {
+	onBytesRead?: (bytes: number) => void;
+	onMode?: (mode: SessionInfoReadMode) => void;
+}
+
+interface SessionFileIdentity {
+	dev: number;
+	ino: number;
+	birthtimeMs: number;
+}
+
+interface SessionInfoAccumulator {
+	header?: SessionHeader;
+	messageCount: number;
+	firstMessage: string;
+	allMessagesText: string;
+	name?: string;
+	state?: SessionState;
+	agentStatus?: AgentStatus;
+	lastActivityTime?: number;
+}
+
+interface SessionInfoCacheSnapshot {
+	offset: number;
+	accumulator: SessionInfoAccumulator;
+	verificationPrefix: Buffer;
+	verificationSuffix: Buffer;
+}
+
 interface SessionInfoCacheEntry {
+	identity: SessionFileIdentity;
 	size: number;
 	mtimeMs: number;
+	ctimeMs: number;
 	info: SessionInfo | null;
+	snapshot?: SessionInfoCacheSnapshot;
 }
 
-// Session files are append-only, so an unchanged (size, mtimeMs) means identical
-// content: cache list metadata and rescan only files that changed.
+interface SessionInfoScanResult {
+	accumulator: SessionInfoAccumulator;
+	verificationPrefix: Buffer;
+	verificationSuffix: Buffer;
+	safeToResume: boolean;
+	invalidHeader: boolean;
+}
+
 const sessionInfoCache = new Map<string, SessionInfoCacheEntry>();
 
-export async function readSessionInfo(filePath: string): Promise<SessionInfo | null> {
-	let stats: Awaited<ReturnType<typeof stat>>;
+export async function readSessionInfo(
+	filePath: string,
+	diagnostics: SessionInfoReadDiagnostics = {},
+): Promise<SessionInfo | null> {
 	try {
-		stats = await stat(filePath);
+		return await readVerifiedSessionInfo(filePath, diagnostics);
 	} catch {
+		sessionInfoCache.delete(filePath);
 		return null;
 	}
-	const cached = sessionInfoCache.get(filePath);
-	if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
-		return cached.info;
-	}
-	const info = await scanSessionInfo(filePath, stats);
-	sessionInfoCache.set(filePath, { size: stats.size, mtimeMs: stats.mtimeMs, info });
-	return info;
 }
 
-async function scanSessionInfo(filePath: string, stats: Awaited<ReturnType<typeof stat>>): Promise<SessionInfo | null> {
-	try {
-		let header: SessionHeader | undefined;
-		let messageCount = 0;
-		let firstMessage = "";
-		let allMessagesText = "";
-		let name: string | undefined;
-		let state: SessionState | undefined;
-		let agentStatus: AgentStatus | undefined;
-		let lastActivityTime: number | undefined;
-
-		for await (const lineBuffer of readLinesAsBuffers(filePath)) {
-			const line = lineBuffer.toString("utf8");
-			if (!line.trim()) continue;
-
-			// Large tool-result entries can be many MB. They do not carry the
-			// session-list metadata we need, and parsing them during every refresh
-			// can exhaust the daemon heap.
-			if (line.length > SESSION_LIST_PARSE_MAX_LINE_CHARS) {
-				if (looksLikeMessageEntry(line)) {
-					messageCount++;
-					const summary = extractOversizedMessageSummary(line);
-					if (typeof summary.timestamp === "number" && (summary.role === "user" || summary.role === "assistant")) {
-						lastActivityTime = Math.max(lastActivityTime ?? 0, summary.timestamp);
-					}
-					if (summary.role === "user" && !firstMessage) {
-						firstMessage = summary.textPreview || "(large message)";
-					}
-				}
-				continue;
-			}
-
-			const trimmed = line.trim();
-			let entry: FileEntry;
-			try {
-				entry = JSON.parse(trimmed) as FileEntry;
-			} catch {
-				// Skip malformed lines
-				continue;
-			}
-
-			// Extract session name (use latest, including explicit clears)
-			if (entry.type === "session_info") {
-				const infoEntry = entry as SessionInfoEntry;
-				name = infoEntry.name?.trim() || undefined;
-			}
-			if (entry.type === "session_state") {
-				const stateEntry = entry as SessionStateEntry;
-				const status = normalizeSessionStateStatus(stateEntry.state?.status);
-				if (status) {
-					state = { status };
-				}
-			}
-			// Keep the latest recap/verdict so off-daemon sessions don't all show as
-			// unjudged in the agents view. Append-only, so last seen wins.
-			if (entry.type === "agent_status") {
-				agentStatus = (entry as AgentStatusEntry).status;
-			}
-
-			if (!header) {
-				if (entry.type !== "session") {
-					return null;
-				}
-				header = entry as SessionHeader;
-			}
-
-			lastActivityTime = updateLastActivityTime(lastActivityTime, entry);
-
-			if (entry.type !== "message") continue;
-			messageCount++;
-
-			const message = (entry as SessionMessageEntry).message;
-			if (!isMessageWithContent(message)) continue;
-			if (message.role !== "user" && message.role !== "assistant") continue;
-
-			const textContent = extractTextContent(message);
-			if (!textContent) continue;
-
-			allMessagesText = appendCappedSearchText(allMessagesText, textContent);
-			if (!firstMessage && message.role === "user") {
-				firstMessage = textContent;
-			}
+async function readVerifiedSessionInfo(
+	filePath: string,
+	diagnostics: SessionInfoReadDiagnostics,
+): Promise<SessionInfo | null> {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		let stats: SessionFileStats;
+		try {
+			stats = await stat(filePath);
+		} catch {
+			sessionInfoCache.delete(filePath);
+			return null;
+		}
+		const identity = getSessionFileIdentity(stats);
+		const cached = sessionInfoCache.get(filePath);
+		if (
+			cached &&
+			sameSessionFileIdentity(cached.identity, identity) &&
+			cached.size === stats.size &&
+			cached.mtimeMs === stats.mtimeMs &&
+			cached.ctimeMs === stats.ctimeMs
+		) {
+			diagnostics.onMode?.("cache");
+			return cached.info;
 		}
 
-		if (!header) return null;
-		const cwd = typeof header.cwd === "string" ? header.cwd : "";
-		const parentSessionPath = header.parentSession;
-		const rlmDepth = resolveSessionRlmDepth(header, filePath);
-		const modified = getSessionModifiedDateFromLastActivity(lastActivityTime, header, stats.mtime);
+		let mode: SessionInfoReadMode = "full";
+		let scan: SessionInfoScanResult | undefined;
+		if (
+			cached?.snapshot &&
+			sameSessionFileIdentity(cached.identity, identity) &&
+			stats.size > cached.size &&
+			cached.snapshot.offset === cached.size
+		) {
+			// Session files are append-only. Identity plus bounded opening/boundary
+			// proofs catch replacement and practical rewrites without turning every
+			// append into another O(file size) scan. Arbitrary same-inode middle
+			// rewrites remain outside the session store's append-only contract.
+			const prefix = await readSessionFileRange(filePath, 0, cached.snapshot.verificationPrefix.length, diagnostics);
+			const proofStart = Math.max(0, cached.size - cached.snapshot.verificationSuffix.length);
+			const suffix = await readSessionFileRange(filePath, proofStart, cached.size, diagnostics);
+			if (prefix.equals(cached.snapshot.verificationPrefix) && suffix.equals(cached.snapshot.verificationSuffix)) {
+				const appended = await scanSessionInfoRange(
+					filePath,
+					stats,
+					cached.size,
+					cloneSessionInfoAccumulator(cached.snapshot.accumulator),
+					cached.snapshot.verificationPrefix,
+					cached.snapshot.verificationSuffix,
+					diagnostics,
+				);
+				if (appended.safeToResume && !appended.invalidHeader) {
+					scan = appended;
+					mode = "append";
+				}
+			}
+		}
+		if (!scan) {
+			scan = await scanSessionInfoRange(
+				filePath,
+				stats,
+				0,
+				createSessionInfoAccumulator(),
+				Buffer.alloc(0),
+				Buffer.alloc(0),
+				diagnostics,
+			);
+		}
 
-		return {
-			path: filePath,
-			id: header.id,
-			cwd,
-			name,
-			state,
-			parentSessionPath,
-			rlmDepth,
-			created: new Date(header.timestamp),
-			modified,
-			messageCount,
-			firstMessage: firstMessage || "(no messages)",
-			allMessagesText,
-			agentStatus,
-		};
-	} catch {
-		return null;
+		let stableStats: SessionFileStats;
+		try {
+			stableStats = await stat(filePath);
+		} catch {
+			sessionInfoCache.delete(filePath);
+			return null;
+		}
+		let cacheStats = stableStats;
+		if (!sameSessionFileVersion(stats, stableStats)) {
+			if (!(await isVerifiedSessionFileGrowth(filePath, stats, stableStats, scan, diagnostics))) continue;
+			// The bytes through stats.size were stable and the same file only grew.
+			// Return that complete catalog snapshot now; its old offset catches up on
+			// the next refresh instead of hiding a continuously active session.
+			cacheStats = stats;
+		}
+
+		const info = scan.invalidHeader ? null : buildSessionInfo(filePath, scan.accumulator, cacheStats);
+		sessionInfoCache.set(filePath, {
+			identity: getSessionFileIdentity(cacheStats),
+			size: cacheStats.size,
+			mtimeMs: cacheStats.mtimeMs,
+			ctimeMs: cacheStats.ctimeMs,
+			info,
+			...(scan.safeToResume && info
+				? {
+						snapshot: {
+							offset: cacheStats.size,
+							accumulator: cloneSessionInfoAccumulator(scan.accumulator),
+							verificationPrefix: Buffer.from(scan.verificationPrefix),
+							verificationSuffix: Buffer.from(scan.verificationSuffix),
+						},
+					}
+				: {}),
+		});
+		diagnostics.onMode?.(mode);
+		return info;
 	}
+	sessionInfoCache.delete(filePath);
+	return null;
+}
+
+function createSessionInfoAccumulator(): SessionInfoAccumulator {
+	return {
+		messageCount: 0,
+		firstMessage: "",
+		allMessagesText: "",
+	};
+}
+
+function cloneSessionInfoAccumulator(accumulator: SessionInfoAccumulator): SessionInfoAccumulator {
+	return {
+		...accumulator,
+		...(accumulator.header ? { header: { ...accumulator.header } } : {}),
+		...(accumulator.state ? { state: { ...accumulator.state } } : {}),
+		...(accumulator.agentStatus ? { agentStatus: { ...accumulator.agentStatus } } : {}),
+	};
+}
+
+function getSessionFileIdentity(stats: SessionFileStats): SessionFileIdentity {
+	return { dev: stats.dev, ino: stats.ino, birthtimeMs: stats.birthtimeMs };
+}
+
+function sameSessionFileIdentity(a: SessionFileIdentity, b: SessionFileIdentity): boolean {
+	return a.dev === b.dev && a.ino === b.ino && a.birthtimeMs === b.birthtimeMs;
+}
+
+function sameSessionFileVersion(a: SessionFileStats, b: SessionFileStats): boolean {
+	return (
+		sameSessionFileIdentity(getSessionFileIdentity(a), getSessionFileIdentity(b)) &&
+		a.size === b.size &&
+		a.mtimeMs === b.mtimeMs &&
+		a.ctimeMs === b.ctimeMs
+	);
+}
+
+async function isVerifiedSessionFileGrowth(
+	filePath: string,
+	before: SessionFileStats,
+	after: SessionFileStats,
+	scan: SessionInfoScanResult,
+	diagnostics: SessionInfoReadDiagnostics,
+): Promise<boolean> {
+	if (
+		!scan.safeToResume ||
+		!sameSessionFileIdentity(getSessionFileIdentity(before), getSessionFileIdentity(after)) ||
+		after.size <= before.size
+	) {
+		return false;
+	}
+	const prefix = await readSessionFileRange(filePath, 0, scan.verificationPrefix.length, diagnostics);
+	const suffixStart = Math.max(0, before.size - scan.verificationSuffix.length);
+	const suffix = await readSessionFileRange(filePath, suffixStart, before.size, diagnostics);
+	return prefix.equals(scan.verificationPrefix) && suffix.equals(scan.verificationSuffix);
+}
+
+async function readSessionFileRange(
+	filePath: string,
+	start: number,
+	end: number,
+	diagnostics: SessionInfoReadDiagnostics,
+): Promise<Buffer> {
+	const handle = await open(filePath, "r");
+	const chunks: Buffer[] = [];
+	let position = start;
+	try {
+		while (position < end) {
+			const buffer = Buffer.allocUnsafe(Math.min(SESSION_LIST_READ_BUFFER_BYTES, end - position));
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+			if (bytesRead === 0) break;
+			diagnostics.onBytesRead?.(bytesRead);
+			chunks.push(buffer.subarray(0, bytesRead));
+			position += bytesRead;
+		}
+	} finally {
+		await handle.close();
+	}
+	return Buffer.concat(chunks);
+}
+
+async function scanSessionInfoRange(
+	filePath: string,
+	stats: SessionFileStats,
+	start: number,
+	accumulator: SessionInfoAccumulator,
+	initialVerificationPrefix: Buffer,
+	initialVerificationSuffix: Buffer,
+	diagnostics: SessionInfoReadDiagnostics,
+): Promise<SessionInfoScanResult> {
+	const handle = await open(filePath, "r");
+	let position = start;
+	const pendingParts: Buffer[] = [];
+	let pendingBytes = 0;
+	let verificationPrefix: Buffer = Buffer.from(initialVerificationPrefix);
+	let verificationSuffix: Buffer = Buffer.from(initialVerificationSuffix);
+	let lastNonBlankMalformed = false;
+	let endedAtBoundary = start === stats.size;
+	let invalidHeader = false;
+	try {
+		while (position < stats.size && !invalidHeader) {
+			const buffer = Buffer.allocUnsafe(Math.min(SESSION_LIST_READ_BUFFER_BYTES, stats.size - position));
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+			if (bytesRead === 0) break;
+			const chunk = buffer.subarray(0, bytesRead);
+			diagnostics.onBytesRead?.(bytesRead);
+			position += bytesRead;
+			verificationPrefix = appendVerificationPrefix(verificationPrefix, chunk);
+			verificationSuffix = appendVerificationSuffix(verificationSuffix, chunk);
+			endedAtBoundary = chunk[chunk.length - 1] === 0x0a;
+			let lineStart = 0;
+			for (let newline = chunk.indexOf(0x0a); newline >= 0; newline = chunk.indexOf(0x0a, lineStart)) {
+				const part = chunk.subarray(lineStart, newline);
+				let line = part;
+				if (pendingParts.length > 0) {
+					pendingParts.push(part);
+					line = Buffer.concat(pendingParts, pendingBytes + part.length);
+				}
+				pendingParts.length = 0;
+				pendingBytes = 0;
+				const outcome = applySessionInfoLine(accumulator, line);
+				if (outcome !== "blank") lastNonBlankMalformed = outcome === "malformed";
+				if (outcome === "invalid-header") {
+					invalidHeader = true;
+					break;
+				}
+				lineStart = newline + 1;
+			}
+			if (!invalidHeader && lineStart < chunk.length) {
+				const part = chunk.subarray(lineStart);
+				pendingParts.push(part);
+				pendingBytes += part.length;
+			}
+		}
+		if (!invalidHeader && pendingBytes > 0) {
+			const outcome = applySessionInfoLine(accumulator, Buffer.concat(pendingParts, pendingBytes));
+			if (outcome !== "blank") lastNonBlankMalformed = outcome === "malformed";
+			invalidHeader = outcome === "invalid-header";
+			endedAtBoundary = false;
+		}
+	} finally {
+		await handle.close();
+	}
+	return {
+		accumulator,
+		verificationPrefix,
+		verificationSuffix,
+		safeToResume:
+			!invalidHeader &&
+			position === stats.size &&
+			endedAtBoundary &&
+			!lastNonBlankMalformed &&
+			accumulator.header !== undefined,
+		invalidHeader,
+	};
+}
+
+function appendVerificationPrefix(current: Buffer, chunk: Buffer): Buffer {
+	if (current.length >= SESSION_LIST_PREFIX_PROOF_BYTES) return current;
+	return Buffer.concat([current, chunk.subarray(0, SESSION_LIST_PREFIX_PROOF_BYTES - current.length)]);
+}
+
+function appendVerificationSuffix(current: Buffer, chunk: Buffer): Buffer {
+	if (chunk.length >= SESSION_LIST_PREFIX_PROOF_BYTES) {
+		return Buffer.from(chunk.subarray(chunk.length - SESSION_LIST_PREFIX_PROOF_BYTES));
+	}
+	const combined = Buffer.concat([current, chunk]);
+	return combined.length <= SESSION_LIST_PREFIX_PROOF_BYTES
+		? combined
+		: combined.subarray(combined.length - SESSION_LIST_PREFIX_PROOF_BYTES);
+}
+
+function applySessionInfoLine(
+	accumulator: SessionInfoAccumulator,
+	lineBuffer: Buffer,
+): "blank" | "valid" | "malformed" | "invalid-header" {
+	const line = lineBuffer.toString("utf8");
+	if (!line.trim()) return "blank";
+	if (line.length > SESSION_LIST_PARSE_MAX_LINE_CHARS) {
+		if (looksLikeMessageEntry(line)) {
+			accumulator.messageCount++;
+			const summary = extractOversizedMessageSummary(line);
+			if (typeof summary.timestamp === "number" && (summary.role === "user" || summary.role === "assistant")) {
+				accumulator.lastActivityTime = Math.max(accumulator.lastActivityTime ?? 0, summary.timestamp);
+			}
+			if (summary.role === "user" && !accumulator.firstMessage) {
+				accumulator.firstMessage = summary.textPreview || "(large message)";
+			}
+		}
+		return "valid";
+	}
+
+	let entry: FileEntry;
+	try {
+		entry = JSON.parse(line.trim()) as FileEntry;
+	} catch {
+		return "malformed";
+	}
+	if (entry.type === "session_info") {
+		accumulator.name = (entry as SessionInfoEntry).name?.trim() || undefined;
+	}
+	if (entry.type === "session_state") {
+		const status = normalizeSessionStateStatus((entry as SessionStateEntry).state?.status);
+		if (status) accumulator.state = { status };
+	}
+	if (entry.type === "agent_status") {
+		accumulator.agentStatus = (entry as AgentStatusEntry).status;
+	}
+	if (!accumulator.header) {
+		if (entry.type !== "session") return "invalid-header";
+		accumulator.header = entry as SessionHeader;
+	}
+	accumulator.lastActivityTime = updateLastActivityTime(accumulator.lastActivityTime, entry);
+	if (entry.type !== "message") return "valid";
+	accumulator.messageCount++;
+
+	const message = (entry as SessionMessageEntry).message;
+	if (!isMessageWithContent(message) || (message.role !== "user" && message.role !== "assistant")) return "valid";
+	const textContent = extractTextContent(message);
+	if (!textContent) return "valid";
+	accumulator.allMessagesText = appendCappedSearchText(accumulator.allMessagesText, textContent);
+	if (!accumulator.firstMessage && message.role === "user") accumulator.firstMessage = textContent;
+	return "valid";
+}
+
+function buildSessionInfo(
+	filePath: string,
+	accumulator: SessionInfoAccumulator,
+	stats: SessionFileStats,
+): SessionInfo | null {
+	const header = accumulator.header;
+	if (!header) return null;
+	return {
+		path: filePath,
+		id: header.id,
+		cwd: typeof header.cwd === "string" ? header.cwd : "",
+		name: accumulator.name,
+		state: accumulator.state,
+		parentSessionPath: header.parentSession,
+		rlmDepth: resolveSessionRlmDepth(header, filePath),
+		created: new Date(header.timestamp),
+		modified: getSessionModifiedDateFromLastActivity(accumulator.lastActivityTime, header, stats.mtime),
+		messageCount: accumulator.messageCount,
+		firstMessage: accumulator.firstMessage || "(no messages)",
+		allMessagesText: accumulator.allMessagesText,
+		agentStatus: accumulator.agentStatus,
+	};
 }
 
 export type SessionListProgress = (loaded: number, total: number) => void;
 export type SessionListItem = (session: SessionInfo) => void;
 
+export interface SessionListDiagnostics {
+	onReadStart?: (filePath: string) => void;
+	onReadEnd?: (filePath: string) => void;
+	onBytesRead?: (filePath: string, bytes: number) => void;
+	onReadMode?: (filePath: string, mode: SessionInfoReadMode) => void;
+}
+
 export interface SessionListCallbacks {
 	onProgress?: SessionListProgress;
 	onSession?: SessionListItem;
+	diagnostics?: SessionListDiagnostics;
 }
 
 async function listSessionsFromDir(
@@ -1160,15 +1455,33 @@ async function listSessionsFromDir(
 			}
 		}
 
+		const results = new Array<SessionInfo | null>(files.length).fill(null);
+		let nextIndex = 0;
 		let loaded = 0;
-		for (const file of files) {
-			const info = await readSessionInfo(file);
-			loaded++;
-			callbacks?.onProgress?.(progressOffset + loaded, total);
-			if (info) {
-				sessions.push(info);
-				callbacks?.onSession?.(info);
+		const readNext = async (): Promise<void> => {
+			while (nextIndex < files.length) {
+				const index = nextIndex++;
+				const file = files[index]!;
+				callbacks?.diagnostics?.onReadStart?.(file);
+				let info: SessionInfo | null;
+				try {
+					info = await readSessionInfo(file, {
+						onBytesRead: (bytes) => callbacks?.diagnostics?.onBytesRead?.(file, bytes),
+						onMode: (mode) => callbacks?.diagnostics?.onReadMode?.(file, mode),
+					});
+				} finally {
+					callbacks?.diagnostics?.onReadEnd?.(file);
+				}
+				results[index] = info;
+				loaded += 1;
+				callbacks?.onProgress?.(progressOffset + loaded, total);
+				if (info) callbacks?.onSession?.(info);
 			}
+		};
+		const workerCount = Math.min(files.length, SESSION_LIST_METADATA_CONCURRENCY);
+		await Promise.all(Array.from({ length: workerCount }, () => readNext()));
+		for (const info of results) {
+			if (info) sessions.push(info);
 		}
 	} catch {
 		// Return empty list on error
@@ -2297,6 +2610,7 @@ export class SessionManager {
 		const sessions = (
 			await listSessionsFromDir(dir, {
 				onProgress: callbacks?.onProgress,
+				diagnostics: callbacks?.diagnostics,
 				onSession: callbacks?.onSession
 					? (session) => {
 							if (matchesCwd(session)) {
