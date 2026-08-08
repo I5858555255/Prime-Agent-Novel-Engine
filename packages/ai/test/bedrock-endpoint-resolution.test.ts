@@ -6,7 +6,12 @@ import {
 	get as httpGet,
 	request as httpRequest,
 } from "node:http";
-import { connect as connectTcp, createServer as createNetServer, type Server as NetServer } from "node:net";
+import {
+	connect as connectTcp,
+	createServer as createNetServer,
+	type Server as NetServer,
+	type Socket,
+} from "node:net";
 import { ProxyAgent } from "proxy-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -189,8 +194,8 @@ async function listenOnLoopback(server: LoopbackServer): Promise<number> {
 	return address.port;
 }
 
-async function closeServer(server: LoopbackServer): Promise<void> {
-	if (!server.listening) return;
+async function closeServer(server: LoopbackServer | undefined): Promise<void> {
+	if (server === undefined || !server.listening) return;
 	server.close();
 	await once(server, "close");
 }
@@ -305,19 +310,36 @@ function createSocks5ProxyServer(observations: SocksConnectObservation[]): NetSe
 	});
 }
 
-async function requestText(url: string, agent: ProxyAgent): Promise<{ body: string; statusCode: number }> {
+async function requestText(
+	url: string,
+	agent: ProxyAgent,
+	timeoutMs = 2_000,
+): Promise<{ body: string; statusCode: number }> {
 	return await new Promise((resolvePromise, reject) => {
+		const timeoutError = new Error(`Loopback proxy request timed out after ${timeoutMs}ms`);
 		const request = httpGet(url, { agent }, (response) => {
 			const chunks: Buffer[] = [];
 			response.on("data", (chunk: Buffer) => chunks.push(chunk));
 			response.once("end", () => {
+				clearTimeout(timeout);
 				resolvePromise({
 					body: Buffer.concat(chunks).toString("utf8"),
 					statusCode: response.statusCode ?? 0,
 				});
 			});
+			response.once("error", (error) => {
+				clearTimeout(timeout);
+				reject(error);
+			});
 		});
-		request.once("error", reject);
+		const timeout = setTimeout(() => {
+			request.destroy(timeoutError);
+			reject(timeoutError);
+		}, timeoutMs);
+		request.once("error", (error) => {
+			clearTimeout(timeout);
+			reject(error);
+		});
 	});
 }
 
@@ -338,22 +360,26 @@ async function captureBedrockProxyAgent(requestUrl: string): Promise<ProxyAgent>
 describe("bedrock proxy resolution", () => {
 	it("moves response bytes through the configured HTTP proxy", async () => {
 		const proxyRequests: string[] = [];
-		const targetServer = createTargetServer();
-		const proxyServer = createHttpProxyServer(proxyRequests);
-		const targetPort = await listenOnLoopback(targetServer);
-		const proxyPort = await listenOnLoopback(proxyServer);
-		const targetUrl = `http://127.0.0.1:${targetPort}/bedrock-runtime`;
-		process.env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;
-		const agent = await captureBedrockProxyAgent(targetUrl);
+		let targetServer: HttpServer | undefined;
+		let proxyServer: HttpServer | undefined;
+		let agent: ProxyAgent | undefined;
 
 		try {
+			targetServer = createTargetServer();
+			proxyServer = createHttpProxyServer(proxyRequests);
+			const targetPort = await listenOnLoopback(targetServer);
+			const proxyPort = await listenOnLoopback(proxyServer);
+			const targetUrl = `http://127.0.0.1:${targetPort}/bedrock-runtime`;
+			process.env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;
+			agent = await captureBedrockProxyAgent(targetUrl);
+
 			await expect(requestText(targetUrl, agent)).resolves.toEqual({
 				body: "bedrock-loopback-ok",
 				statusCode: 200,
 			});
 			expect(proxyRequests).toEqual([targetUrl]);
 		} finally {
-			agent.destroy();
+			agent?.destroy();
 			await Promise.all([closeServer(proxyServer), closeServer(targetServer)]);
 		}
 	});
@@ -365,24 +391,51 @@ describe("bedrock proxy resolution", () => {
 		"moves response bytes through the configured $proxyProtocol proxy",
 		async ({ addressType, proxyProtocol, targetHost }) => {
 			const observations: SocksConnectObservation[] = [];
-			const targetServer = createTargetServer();
-			const proxyServer = createSocks5ProxyServer(observations);
-			const targetPort = await listenOnLoopback(targetServer);
-			const proxyPort = await listenOnLoopback(proxyServer);
-			const targetUrl = `http://${targetHost}:${targetPort}/bedrock-runtime`;
-			process.env.HTTP_PROXY = `${proxyProtocol}://127.0.0.1:${proxyPort}`;
-			const agent = await captureBedrockProxyAgent(targetUrl);
+			let targetServer: HttpServer | undefined;
+			let proxyServer: NetServer | undefined;
+			let agent: ProxyAgent | undefined;
 
 			try {
+				targetServer = createTargetServer();
+				proxyServer = createSocks5ProxyServer(observations);
+				const targetPort = await listenOnLoopback(targetServer);
+				const proxyPort = await listenOnLoopback(proxyServer);
+				const targetUrl = `http://${targetHost}:${targetPort}/bedrock-runtime`;
+				process.env.HTTP_PROXY = `${proxyProtocol}://127.0.0.1:${proxyPort}`;
+				agent = await captureBedrockProxyAgent(targetUrl);
+
 				await expect(requestText(targetUrl, agent)).resolves.toEqual({
 					body: "bedrock-loopback-ok",
 					statusCode: 200,
 				});
 				expect(observations).toEqual([{ addressType, host: targetHost, port: targetPort }]);
 			} finally {
-				agent.destroy();
+				agent?.destroy();
 				await Promise.all([closeServer(proxyServer), closeServer(targetServer)]);
 			}
 		},
 	);
+
+	it("bounds stalled proxy handshakes and closes their request", async () => {
+		const proxyConnections = new Set<Socket>();
+		let proxyServer: NetServer | undefined;
+		let agent: ProxyAgent | undefined;
+
+		try {
+			proxyServer = createNetServer((connection) => {
+				proxyConnections.add(connection);
+				connection.once("close", () => proxyConnections.delete(connection));
+			});
+			const proxyPort = await listenOnLoopback(proxyServer);
+			const targetUrl = "http://127.0.0.1:9/stalled";
+			process.env.HTTP_PROXY = `socks5://127.0.0.1:${proxyPort}`;
+			agent = await captureBedrockProxyAgent(targetUrl);
+
+			await expect(requestText(targetUrl, agent, 25)).rejects.toThrow("Loopback proxy request timed out after 25ms");
+		} finally {
+			agent?.destroy();
+			for (const connection of proxyConnections) connection.destroy();
+			await closeServer(proxyServer);
+		}
+	});
 });
