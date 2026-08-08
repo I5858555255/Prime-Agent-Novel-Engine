@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed GitHub Copilot routing `grok-4.5` through the unsupported Chat Completions endpoint instead of the Responses endpoint ([#875](https://github.com/PrimeIntellect-ai/prime-agent/issues/875)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
