@@ -22,6 +22,7 @@ import {
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { LoadExtensionsResult } from "../src/core/extensions/index.js";
+import { kernelVenvPythonPath } from "../src/core/kernel/bootstrap.js";
 import { type HostRequestHandlers, KernelManager } from "../src/core/kernel/index.js";
 import { convertToLlm } from "../src/core/messages.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -2138,7 +2139,8 @@ describe("AgentSession rlm recursion", () => {
 
 	it("lets a stale kernel depth cap defer to the live host gate", () => {
 		const python =
-			process.env.PRIME_AGENT_KERNEL_PYTHON ?? join(homedir(), ".prime", "agent", "kernel-venv", "bin", "python");
+			process.env.PRIME_AGENT_KERNEL_PYTHON ??
+			kernelVenvPythonPath(join(homedir(), ".prime", "agent", "kernel-venv"));
 		const runtime = join(process.cwd(), "..", "..", "prime-agent-runtime", "src");
 		const probe = spawnSync(
 			python,
