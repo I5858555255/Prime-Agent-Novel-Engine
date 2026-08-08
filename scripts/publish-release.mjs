@@ -389,10 +389,16 @@ function publishBeta(options, store, github, baseUrl) {
 		console.log("A newer default-branch commit exists; leaving beta release state unchanged.");
 		return;
 	}
+	const requireCurrentBuild = () => {
+		if (github.latestDefaultBranchSha(defaultBranch) !== buildRef) {
+			throw new Error("A newer default-branch commit exists; refusing stale mutable beta updates");
+		}
+	};
 	validateReleaseRepository(sourceRoot, { requireChangelogs: false, version: version.split("-", 1)[0] });
 	verifyReleaseArtifacts(artifactsDir, { baseUrl, channel: "beta", version });
 	const result = publishChannel({
 		artifactsDir,
+		beforeMutable: requireCurrentBuild,
 		channel: "beta",
 		installers: installers(options),
 		mirror: () => github.replaceBetaRelease(buildRef, version, artifactsDir, defaultBranch),

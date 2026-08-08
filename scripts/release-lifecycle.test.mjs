@@ -12,6 +12,7 @@ import {
 	bumpVersion,
 	createReleasePlan,
 	decideImmutableWrite,
+	parseReleaseComment,
 	prepareRelease,
 	promotionKeys,
 	validateReleaseRepository,
@@ -267,10 +268,55 @@ test("main pushes publish beta and only a strictly newer version publishes produ
 	);
 });
 
-test("manual production retry is bound to an existing tag and its immutable commit", () => {
+test("trusted maintainer release comments are bound to default-branch workflow code", () => {
+	assert.deepEqual(
+		parseReleaseComment({
+			actorPermission: "maintain",
+			body: "/prime-agent release retry v0.7.2",
+			defaultBranch: "main",
+			expectedOperation: "retry-production",
+			workflowRef: "PrimeIntellect-ai/prime-agent/.github/workflows/build-binaries.yml@refs/heads/main",
+		}),
+		{ operation: "retry-production", releaseTag: "v0.7.2" },
+	);
+	assert.deepEqual(
+		parseReleaseComment({
+			actorPermission: "admin",
+			body: "/prime-agent release rollback v0.7.1\nROLLBACK v0.7.1",
+			defaultBranch: "main",
+			expectedOperation: "rollback-production",
+			workflowRef: "PrimeIntellect-ai/prime-agent/.github/workflows/rollback-release.yml@refs/heads/main",
+		}),
+		{ confirmation: "ROLLBACK v0.7.1", operation: "rollback-production", releaseTag: "v0.7.1" },
+	);
+	assert.throws(
+		() =>
+			parseReleaseComment({
+				actorPermission: "write",
+				body: "/prime-agent release retry v0.7.2",
+				defaultBranch: "main",
+				expectedOperation: "retry-production",
+				workflowRef: "PrimeIntellect-ai/prime-agent/.github/workflows/build-binaries.yml@refs/heads/main",
+			}),
+		/admin or maintain/i,
+	);
+	assert.throws(
+		() =>
+			parseReleaseComment({
+				actorPermission: "admin",
+				body: "/prime-agent release retry v0.7.2",
+				defaultBranch: "main",
+				expectedOperation: "retry-production",
+				workflowRef: "PrimeIntellect-ai/prime-agent/.github/workflows/build-binaries.yml@refs/heads/feature",
+			}),
+		/protected default branch/i,
+	);
+});
+
+test("comment-requested production retry is bound to an existing tag and its immutable commit", () => {
 	assert.deepEqual(
 		createReleasePlan({
-			eventName: "workflow_dispatch",
+			eventName: "issue_comment",
 			operation: "retry-production",
 			releaseTag: "v0.7.2",
 			version: "0.7.2",
@@ -288,7 +334,7 @@ test("manual production retry is bound to an existing tag and its immutable comm
 	assert.throws(
 		() =>
 			createReleasePlan({
-				eventName: "workflow_dispatch",
+				eventName: "issue_comment",
 				operation: "retry-production",
 				releaseTag: "v0.7.2",
 				version: "0.7.2",
@@ -298,7 +344,7 @@ test("manual production retry is bound to an existing tag and its immutable comm
 	assert.throws(
 		() =>
 			createReleasePlan({
-				eventName: "workflow_dispatch",
+				eventName: "issue_comment",
 				operation: "retry-production",
 				releaseTag: "v0.7.2",
 				version: "0.7.2",

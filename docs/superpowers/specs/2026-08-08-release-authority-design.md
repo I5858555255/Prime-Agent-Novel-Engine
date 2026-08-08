@@ -32,7 +32,7 @@ A merged release-preparation commit on the protected default branch is the only 
 
 Every default-branch commit may produce a beta. A production release is additionally planned only when the root release-control version changes to a valid higher version. Tag pushes do not independently publish.
 
-A manual production retry accepts only an existing immutable `vX.Y.Z` tag. CI derives both the version and commit from that tag, verifies that the tag is on the default branch and that repository metadata at the tagged commit agrees, and then reruns the same publication transaction. The protected workflow commit supplies release tooling from a separate checkout while the tagged checkout supplies source and lockfiles, preserving retries for tags created before this lifecycle existed.
+A manual production retry is an exact issue-comment command from an actor whose repository permission resolves to `admin` or `maintain`. GitHub loads `issue_comment` workflow code from the default branch, so the privileged path has no branch-selectable dispatch. CI accepts only an existing immutable `vX.Y.Z` tag, derives both the version and commit from that tag, verifies that the tag is on the default branch and that repository metadata at the tagged commit agrees, and then reruns the same publication transaction. The protected workflow commit supplies release tooling from a separate checkout while the tagged checkout supplies source and lockfiles, preserving retries for tags created before this lifecycle existed.
 
 ## Local Commands
 
@@ -80,11 +80,11 @@ The production transaction is:
 
 If a failure occurs before step 6, stable clients do not observe the candidate. If step 6 succeeds but step 7 fails, fresh installs may resolve the new complete release while update checks still see the previous release; rerunning the same tagged release converges safely. Repeating any completed step with identical content is a no-op.
 
-Beta publication keeps its stale-default-branch guard. It applies the same compare-before-write rule to versioned objects, updates `/beta` before `/beta.json`, and treats `/beta.json` as the beta commit marker. The mutable `beta` Git tag and prerelease remain beta-only compatibility surfaces.
+Beta publication keeps its stale-default-branch guard. After immutable uploads it rechecks default-branch freshness immediately before the GitHub mirror, installer updates, and channel-pointer promotion. It applies the same compare-before-write rule to versioned objects, updates `/beta` before `/beta.json`, and treats `/beta.json` as the beta commit marker. The mutable `beta` Git tag and prerelease remain beta-only compatibility surfaces.
 
 ## Rollback
 
-Rollback is a separate manually dispatched workflow using the protected production environment. It requires an existing stable `vX.Y.Z` tag and exact confirmation text. Normal publication treats the higher version from `/stable` and `/latest.json` as the monotonic floor; only this rollback path may lower both.
+Rollback is a separate exact two-line issue-comment command authorized by protected default-branch workflow code and an API-derived `admin` or `maintain` permission. The workflow also names the `production` environment as an optional additional gate. It requires an existing stable `vX.Y.Z` tag and matching confirmation text. Normal publication treats the higher version from `/stable` and `/latest.json` as the monotonic floor; only this rollback path may lower both.
 
 The rollback workflow verifies the tag target, GitHub Release, saved release manifest, checksums, and every referenced R2 artifact before changing channel state. It changes only `/stable` and `/latest.json`, in that order. It never creates or moves an immutable version tag and never deletes or overwrites a versioned object.
 
@@ -106,7 +106,7 @@ Existing npm package identities are neither unpublished nor redefined. Direct SD
 Deterministic tests cover:
 
 - default-branch beta-only and version-bump production plans;
-- manual retry from an existing tag and rejection of free-form or conflicting targets;
+- maintainer-authorized default-branch retry from an existing tag and rejection of free-form or conflicting targets;
 - public-package version, dependency, lockfile, changelog, and tag drift;
 - rejection of major, equal, and lower versions;
 - private/example workspace preservation during preparation;

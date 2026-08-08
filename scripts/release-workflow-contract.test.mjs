@@ -8,6 +8,8 @@ const legacyRelease = readFileSync(new URL("release.mjs", import.meta.url), "utf
 const legacySync = readFileSync(new URL("sync-versions.js", import.meta.url), "utf8");
 const releaseWorkflow = readFileSync(new URL("../.github/workflows/build-binaries.yml", import.meta.url), "utf8");
 const rollbackWorkflow = readFileSync(new URL("../.github/workflows/rollback-release.yml", import.meta.url), "utf8");
+const rollbackResolver = readFileSync(new URL("resolve-rollback-context.mjs", import.meta.url), "utf8");
+const publisher = readFileSync(new URL("publish-release.mjs", import.meta.url), "utf8");
 
 test("legacy local release and publish commands are non-mutating tombstones", () => {
 	for (const scriptName of [
@@ -32,8 +34,10 @@ test("legacy local release and publish commands are non-mutating tombstones", ()
 
 test("release workflow publishes from main or an immutable retry tag, never a tag push", () => {
 	assert.doesNotMatch(releaseWorkflow, /^\s+tags:/m);
-	assert.match(releaseWorkflow, /operation:/);
-	assert.match(releaseWorkflow, /retry-production/);
+	assert.doesNotMatch(releaseWorkflow, /workflow_dispatch/);
+	assert.match(releaseWorkflow, /issue_comment:/);
+	assert.match(releaseWorkflow, /\/prime-agent release retry/);
+	assert.match(releaseWorkflow, /collaborators\/\$\{ACTOR\}\/permission/);
 	assert.match(releaseWorkflow, /node scripts\/resolve-release-context\.mjs/);
 	assert.doesNotMatch(releaseWorkflow, /Production release tag to create or update/);
 	assert.match(releaseWorkflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
@@ -50,12 +54,18 @@ test("production publication compares immutable assets and commits latest.json l
 	const betaStep = releaseWorkflow.indexOf("node ../release-tooling/scripts/publish-release.mjs beta");
 	assert.ok(productionStep > -1);
 	assert.ok(betaStep > productionStep);
+	assert.match(publisher, /beforeMutable: requireCurrentBuild/);
 });
 
 test("rollback is a separately protected pointer-only workflow", () => {
 	assert.match(rollbackWorkflow, /^name: Rollback Prime Agent stable channel$/m);
+	assert.doesNotMatch(rollbackWorkflow, /workflow_dispatch/);
+	assert.match(rollbackWorkflow, /issue_comment:/);
+	assert.match(rollbackWorkflow, /\/prime-agent release rollback/);
+	assert.match(rollbackWorkflow, /collaborators\/\$\{ACTOR\}\/permission/);
 	assert.match(rollbackWorkflow, /environment: production/);
-	assert.match(rollbackWorkflow, /ROLLBACK vX\.Y\.Z/);
+	assert.match(rollbackResolver, /confirmation/);
+	assert.match(rollbackWorkflow, /node scripts\/resolve-rollback-context\.mjs/);
 	assert.match(rollbackWorkflow, /node scripts\/publish-release\.mjs rollback/);
 	assert.doesNotMatch(rollbackWorkflow, /gh release (?:create|edit|upload)|git (?:tag|push)|npm publish/);
 });

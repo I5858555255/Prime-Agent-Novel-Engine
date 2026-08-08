@@ -204,7 +204,7 @@ The protected GitHub Actions workflows are the only release authority. Local rel
 4. Build through the normal repository process, then run `npm run release:dry-run`, `npm run release:test`, and `npm run check`.
 5. Open a release-preparation pull request. CI publishes only after that exact version commit merges to the protected default branch.
 
-The inherited `release:patch`, `release:minor`, `release:major`, `version:*`, root `publish*`, and `scripts/sync-versions.js` paths intentionally hard-fail. Never bypass them. Never dispatch a publishing or rollback workflow unless the user explicitly authorizes that external state change.
+The inherited `release:patch`, `release:minor`, `release:major`, `version:*`, root `publish*`, and `scripts/sync-versions.js` paths intentionally hard-fail. Never bypass them. Never post a release retry or rollback control comment unless the user explicitly authorizes that external state change.
 
 ## **CRITICAL** Git Rules for Parallel Agents **CRITICAL**
 
