@@ -19,22 +19,22 @@ vi.mock("undici", () => ({
 	setGlobalDispatcher: mocks.setGlobalDispatcher,
 }));
 
-vi.mock("../src/cli/daemon-launch.js", () => ({
+vi.mock("../../../src/cli/daemon-launch.js", () => ({
 	maybeStartDaemonEarly: mocks.maybeStartDaemonEarly,
 }));
 
-vi.mock("../src/cli/owned-session-worker.js", () => ({
+vi.mock("../../../src/cli/owned-session-worker.js", () => ({
 	closeOwnedSessionWorkerOwnerWatch: mocks.closeOwnedSessionWorkerOwnerWatch,
 	installOwnedSessionWorkerOwnerWatch: mocks.installOwnedSessionWorkerOwnerWatch,
 	isOwnedSessionWorkerProcess: () => false,
 	maybeRunOwnedSessionWorkerFrontend: mocks.maybeRunOwnedSessionWorkerFrontend,
 }));
 
-vi.mock("../src/main.js", () => ({
+vi.mock("../../../src/main.js", () => ({
 	main: mocks.main,
 }));
 
-import { runCli } from "../src/cli-main.js";
+import { runCli } from "../../../src/cli-main.js";
 
 describe("CLI proxy dispatcher", () => {
 	const originalArgv = process.argv;
