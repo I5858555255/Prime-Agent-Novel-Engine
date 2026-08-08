@@ -210,8 +210,10 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 				throw new Error("Request aborted by user");
 			}
 
+			materializeOpenProxyToolArguments(partial, toolArgumentAccumulators);
 			stream.end();
 		} catch (error) {
+			materializeOpenProxyToolArguments(partial, toolArgumentAccumulators);
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			const reason = options.signal?.aborted ? "aborted" : "error";
 			partial.stopReason = reason;
@@ -223,6 +225,7 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 			});
 			stream.end();
 		} finally {
+			toolArgumentAccumulators.clear();
 			if (options.signal) {
 				options.signal.removeEventListener("abort", abortHandler);
 			}
@@ -230,6 +233,23 @@ export function streamProxy(model: Model<any>, context: Context, options: ProxyS
 	})();
 
 	return stream;
+}
+
+function materializeOpenProxyToolArguments(
+	partial: AssistantMessage,
+	toolArgumentAccumulators: Map<number, StreamingJsonAccumulator<Record<string, unknown>>>,
+): void {
+	for (const [contentIndex, accumulator] of toolArgumentAccumulators) {
+		const content = partial.content[contentIndex];
+		if (content?.type === "toolCall") {
+			try {
+				content.arguments = accumulator.finish();
+			} catch {
+				// Preserve the proxy's terminal error if cleanup parsing fails.
+			}
+		}
+	}
+	toolArgumentAccumulators.clear();
 }
 
 /**
@@ -352,11 +372,13 @@ function processProxyEvent(
 		}
 
 		case "done":
+			materializeOpenProxyToolArguments(partial, toolArgumentAccumulators);
 			partial.stopReason = proxyEvent.reason;
 			partial.usage = proxyEvent.usage;
 			return { type: "done", reason: proxyEvent.reason, message: partial };
 
 		case "error":
+			materializeOpenProxyToolArguments(partial, toolArgumentAccumulators);
 			partial.stopReason = proxyEvent.reason;
 			partial.errorMessage = proxyEvent.errorMessage;
 			partial.usage = proxyEvent.usage;

@@ -293,8 +293,29 @@ export async function processResponsesStream<TApi extends Api>(
 	let currentArgumentAccumulator: StreamingJsonAccumulator | null = null;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
+	const materializeOpenToolArguments = (): void => {
+		const block = currentBlock;
+		const accumulator = currentArgumentAccumulator;
+		currentArgumentAccumulator = null;
+		if (block?.type !== "toolCall" || !accumulator) {
+			return;
+		}
+		try {
+			block.arguments = accumulator.finish();
+		} catch {
+			// Preserve the response stream's terminal error if cleanup parsing fails.
+		}
+	};
 
-	for await (const event of openaiStream) {
+	const streamWithTerminalMaterialization = async function* (): AsyncGenerator<ResponseStreamEvent> {
+		try {
+			yield* openaiStream;
+		} finally {
+			materializeOpenToolArguments();
+		}
+	};
+
+	for await (const event of streamWithTerminalMaterialization()) {
 		if (event.type === "response.created") {
 			output.responseId = event.response.id;
 		} else if (event.type === "response.output_item.added") {

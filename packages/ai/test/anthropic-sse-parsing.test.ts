@@ -370,8 +370,9 @@ describe("Anthropic raw SSE parsing", () => {
 
 	it("keeps emitted deltas and displayable partial arguments when SSE ends prematurely", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
-		const delta = '{"nested":{"kept":true}}';
-		const response = createSseResponse(createToolUseEvents([delta], { complete: false }));
+		const deltas = ['{"first":"materialized"', ',"x":1}'];
+		expect(deltas.map((delta) => delta.length)).toEqual([23, 7]);
+		const response = createSseResponse(createToolUseEvents(deltas, { complete: false }));
 		const stream = streamAnthropic(
 			model,
 			{ messages: [{ role: "user", content: "Use the edit tool.", timestamp: Date.now() }] },
@@ -386,11 +387,12 @@ describe("Anthropic raw SSE parsing", () => {
 		}
 		const result = await stream.result();
 
-		expect(emittedDeltas).toEqual([delta]);
+		expect(emittedDeltas).toEqual(deltas);
 		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("stream ended before message_stop");
 		expect(result.content[0]).toMatchObject({
 			type: "toolCall",
-			arguments: { nested: { kept: true } },
+			arguments: { first: "materialized", x: 1 },
 		});
 	});
 });

@@ -95,11 +95,18 @@ describe("streamProxy tool arguments", () => {
 
 	it("retains displayable tolerant arguments when the proxy stream is aborted", async () => {
 		const controller = new AbortController();
-		const delta = String.raw`{"path":"A\H","text":"col1	col2"}`;
+		const deltas = ['{"first":"materialized"', ',"x":1}'];
+		expect(deltas.map((delta) => delta.length)).toEqual([23, 7]);
 		const events: ProxyAssistantMessageEvent[] = [
 			{ type: "start" },
 			{ type: "toolcall_start", contentIndex: 0, id: "tool-1", toolName: "edit" },
-			{ type: "toolcall_delta", contentIndex: 0, delta },
+			...deltas.map(
+				(delta): ProxyAssistantMessageEvent => ({
+					type: "toolcall_delta",
+					contentIndex: 0,
+					delta,
+				}),
+			),
 		];
 		vi.stubGlobal(
 			"fetch",
@@ -111,20 +118,25 @@ describe("streamProxy tool arguments", () => {
 			signal: controller.signal,
 		});
 		const seenEvents: AssistantMessageEvent[] = [];
+		let seenDeltaCount = 0;
 
 		for await (const event of stream) {
 			seenEvents.push(event);
 			if (event.type === "toolcall_delta") {
-				controller.abort();
+				seenDeltaCount += 1;
+				if (seenDeltaCount === deltas.length) {
+					controller.abort();
+				}
 			}
 		}
 		const result = await stream.result();
 
-		expect(seenEvents.some((event) => event.type === "toolcall_delta" && event.delta === delta)).toBe(true);
+		expect(seenEvents.filter((event) => event.type === "toolcall_delta").map((event) => event.delta)).toEqual(deltas);
 		expect(result.stopReason).toBe("aborted");
+		expect(result.errorMessage).toBe("Request aborted by user");
 		expect(result.content[0]).toMatchObject({
 			type: "toolCall",
-			arguments: { path: "A\\H", text: "col1\tcol2" },
+			arguments: { first: "materialized", x: 1 },
 		});
 	});
 });

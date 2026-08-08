@@ -480,6 +480,17 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
+		const toolArgumentAccumulators = new Map<number, { accumulator: StreamingJsonAccumulator; block: ToolCall }>();
+		const materializeOpenToolArguments = (): void => {
+			for (const { accumulator, block } of toolArgumentAccumulators.values()) {
+				try {
+					block.arguments = accumulator.finish();
+				} catch {
+					// Preserve the provider's terminal error if cleanup parsing fails.
+				}
+			}
+			toolArgumentAccumulators.clear();
+		};
 
 		try {
 			let client: Anthropic;
@@ -534,7 +545,6 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 
 			type Block = (ThinkingContent | TextContent | ToolCall) & { index: number };
 			const blocks = output.content as Block[];
-			const toolArgumentAccumulators = new Map<number, StreamingJsonAccumulator>();
 
 			for await (const event of iterateAnthropicEvents(response, options?.signal, requestId)) {
 				if (event.type === "message_start") {
@@ -598,7 +608,10 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							arguments: (event.content_block.input as Record<string, unknown>) ?? {},
 							index: event.index,
 						};
-						toolArgumentAccumulators.set(event.index, new StreamingJsonAccumulator());
+						toolArgumentAccumulators.set(event.index, {
+							accumulator: new StreamingJsonAccumulator(),
+							block,
+						});
 						output.content.push(block);
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
 					}
@@ -633,7 +646,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						if (block && block.type === "toolCall") {
 							const partialArguments = toolArgumentAccumulators
 								.get(event.index)
-								?.append(event.delta.partial_json);
+								?.accumulator?.append(event.delta.partial_json);
 							if (partialArguments !== undefined) {
 								block.arguments = partialArguments;
 							}
@@ -672,7 +685,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 								partial: output,
 							});
 						} else if (block.type === "toolCall") {
-							block.arguments = toolArgumentAccumulators.get(event.index)?.finish() ?? {};
+							block.arguments = toolArgumentAccumulators.get(event.index)?.accumulator.finish() ?? {};
 							toolArgumentAccumulators.delete(event.index);
 							stream.push({
 								type: "toolcall_end",
@@ -722,9 +735,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				throw streamFailureFromStopReason(output.stopReasonRaw, { requestId });
 			}
 
+			materializeOpenToolArguments();
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
+			materializeOpenToolArguments();
 			for (const block of output.content) {
 				delete (block as { index?: number }).index;
 			}

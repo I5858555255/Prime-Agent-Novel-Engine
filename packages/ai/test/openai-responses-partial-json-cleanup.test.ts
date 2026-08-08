@@ -60,7 +60,7 @@ async function* createFunctionCallEvents(
 	} as ResponseStreamEvent;
 }
 
-async function* createInterruptedFunctionCallEvents(delta: string): AsyncIterable<ResponseStreamEvent> {
+async function* createInterruptedFunctionCallEvents(deltas: string[]): AsyncIterable<ResponseStreamEvent> {
 	yield {
 		type: "response.output_item.added",
 		item: {
@@ -71,10 +71,12 @@ async function* createInterruptedFunctionCallEvents(delta: string): AsyncIterabl
 			arguments: "",
 		},
 	} as ResponseStreamEvent;
-	yield {
-		type: "response.function_call_arguments.delta",
-		delta,
-	} as ResponseStreamEvent;
+	for (const delta of deltas) {
+		yield {
+			type: "response.function_call_arguments.delta",
+			delta,
+		} as ResponseStreamEvent;
+	}
 	throw new Error("interrupted response stream");
 }
 
@@ -141,21 +143,24 @@ describe("openai responses partialJson cleanup", () => {
 	});
 
 	it("keeps emitted deltas and displayable partial arguments when the stream is interrupted", async () => {
-		const delta = '{"nested":{"kept":true}}';
+		const deltas = ['{"first":"materialized"', ',"x":1}'];
+		expect(deltas.map((delta) => delta.length)).toEqual([23, 7]);
 		const output = createOutput(model);
 		const stream = new AssistantMessageEventStream();
 		const pushSpy = vi.spyOn(stream, "push");
 
 		await expect(
-			processResponsesStream(createInterruptedFunctionCallEvents(delta), output, stream, model),
+			processResponsesStream(createInterruptedFunctionCallEvents(deltas), output, stream, model),
 		).rejects.toThrow("interrupted response stream");
 
 		const emittedEvents = pushSpy.mock.calls.map(([event]) => event as AssistantMessageEvent);
-		expect(emittedEvents.some((event) => event.type === "toolcall_delta" && event.delta === delta)).toBe(true);
+		expect(emittedEvents.filter((event) => event.type === "toolcall_delta").map((event) => event.delta)).toEqual(
+			deltas,
+		);
 		expect(emittedEvents.some((event) => event.type === "toolcall_end")).toBe(false);
 		expect(output.content[0]).toMatchObject({
 			type: "toolCall",
-			arguments: { nested: { kept: true } },
+			arguments: { first: "materialized", x: 1 },
 		});
 	});
 });
