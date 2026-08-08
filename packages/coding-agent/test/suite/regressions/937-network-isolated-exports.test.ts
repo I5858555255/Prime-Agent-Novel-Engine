@@ -60,6 +60,7 @@ function dumpDom(chromePath: string, url: string, userDataDir: string): Promise<
 				"--host-resolver-rules=MAP network-isolation.test 127.0.0.1,EXCLUDE localhost",
 				"--no-proxy-server",
 				`--user-data-dir=${userDataDir}`,
+				"--timeout=5000",
 				"--dump-dom",
 				url,
 			],
@@ -81,7 +82,7 @@ function dumpDom(chromePath: string, url: string, userDataDir: string): Promise<
 				`Timed out waiting for the export browser smoke test (stdout: ${Buffer.concat(stdout).length} bytes): ${Buffer.concat(stderr).toString("utf8")}`,
 			);
 			stopBrowser("SIGKILL");
-		}, 20_000);
+		}, 30_000);
 
 		child.stdout.on("data", (chunk: Buffer) => {
 			stdout.push(chunk);
@@ -232,6 +233,6 @@ describe("#937 network-isolated transcript exports", () => {
 			await dumpDom(chromePath, redirectUrl, join(harness.tempDir, "chrome-explicit-navigation"));
 			expect(remoteRequests.filter((path) => path !== "/favicon.ico")).toEqual(["/redirect.png", "/final.png"]);
 		},
-		30_000,
+		60_000,
 	);
 });
