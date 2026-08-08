@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed Bedrock proxy and forced-HTTP/1 transports to resolve their declared Smithy dependencies from isolated package installations ([#948](https://github.com/PrimeIntellect-ai/prime-agent/issues/948)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
