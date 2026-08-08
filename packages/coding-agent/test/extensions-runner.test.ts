@@ -9,10 +9,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { createExtensionRuntime, discoverAndLoadExtensions } from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
-import type { ExtensionActions, ExtensionContextActions, ProviderConfig } from "../src/core/extensions/types.js";
+import type {
+	Extension,
+	ExtensionActions,
+	ExtensionContextActions,
+	ProviderConfig,
+} from "../src/core/extensions/types.js";
 import { KeybindingsManager, type KeyId } from "../src/core/keybindings.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { createSyntheticSourceInfo } from "../src/core/source-info.js";
 
 describe("ExtensionRunner", () => {
 	let tempDir: string;
@@ -695,6 +701,88 @@ describe("ExtensionRunner", () => {
 				details: { source: "ext1" },
 				isError: true,
 			});
+		});
+	});
+
+	describe("tool_call error isolation", () => {
+		const makeToolCallExtension = (extPath: string, handler: () => Promise<unknown>): Extension => ({
+			path: extPath,
+			resolvedPath: extPath,
+			sourceInfo: createSyntheticSourceInfo(extPath, { source: "local" }),
+			handlers: new Map([["tool_call", [handler]]]),
+			tools: new Map(),
+			messageRenderers: new Map(),
+			commands: new Map(),
+			flags: new Map(),
+			shortcuts: new Map(),
+		});
+
+		it("runs remaining handlers when one throws and routes the error through onError", async () => {
+			let secondRan = false;
+			const throwing = makeToolCallExtension("/ext/tool-call-throws.ts", async () => {
+				throw new Error("broken tool_call handler");
+			});
+			const second = makeToolCallExtension("/ext/tool-call-second.ts", async () => {
+				secondRan = true;
+			});
+			const runner = new ExtensionRunner(
+				[throwing, second],
+				createExtensionRuntime(),
+				tempDir,
+				sessionManager,
+				modelRegistry,
+			);
+			const errors: Array<{ extensionPath: string; event: string; error: string }> = [];
+			runner.onError((err) => {
+				errors.push(err);
+			});
+
+			const emitted = await runner.emitToolCall({
+				type: "tool_call",
+				toolName: "my_tool",
+				toolCallId: "call-1",
+				input: {},
+			});
+
+			expect(emitted).toBeUndefined();
+			expect(secondRan).toBe(true);
+			expect(errors.length).toBe(1);
+			expect(errors[0].error).toContain("broken tool_call handler");
+			expect(errors[0].event).toBe("tool_call");
+			expect(errors[0].extensionPath).toBe("/ext/tool-call-throws.ts");
+		});
+
+		it("still short-circuits on a block result", async () => {
+			let secondRan = false;
+			const blocker = makeToolCallExtension("/ext/tool-call-block.ts", async () => ({
+				block: true,
+				reason: "not allowed",
+			}));
+			const second = makeToolCallExtension("/ext/tool-call-second.ts", async () => {
+				secondRan = true;
+			});
+			const runner = new ExtensionRunner(
+				[blocker, second],
+				createExtensionRuntime(),
+				tempDir,
+				sessionManager,
+				modelRegistry,
+			);
+			const errors: string[] = [];
+			runner.onError((err) => {
+				errors.push(err.error);
+			});
+
+			const emitted = await runner.emitToolCall({
+				type: "tool_call",
+				toolName: "my_tool",
+				toolCallId: "call-2",
+				input: {},
+			});
+
+			expect(emitted).toEqual({ block: true, reason: "not allowed" });
+			expect(secondRan).toBe(false);
+			expect(errors).toEqual([]);
 		});
 	});
 
