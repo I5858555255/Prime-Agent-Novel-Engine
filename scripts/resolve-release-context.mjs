@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-import { createReleasePlan, validateReleaseRepository } from "./lib/release-lifecycle.mjs";
+import { createReleasePlan, parseReleaseComment, validateReleaseRepository } from "./lib/release-lifecycle.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -52,21 +52,22 @@ function planPush() {
 
 function planRetry() {
 	const defaultBranch = process.env.DEFAULT_BRANCH;
-	if (process.env.REF_NAME !== defaultBranch) {
-		throw new Error(`Manual retries must run from the default branch (${defaultBranch})`);
-	}
-	const releaseTag = process.env.INPUT_RELEASE_TAG;
-	if (!/^v0\.\d+\.\d+$/.test(releaseTag ?? "")) {
-		throw new Error(`Retry target must be an existing plain release tag like v0.7.1: ${releaseTag ?? ""}`);
-	}
+	const command = parseReleaseComment({
+		actorPermission: process.env.ACTOR_PERMISSION,
+		body: process.env.COMMENT_BODY,
+		defaultBranch,
+		expectedOperation: "retry-production",
+		workflowRef: process.env.WORKFLOW_REF,
+	});
+	const releaseTag = command.releaseTag;
 	const tagTarget = resolveTagTarget(releaseTag);
 	const tagOnDefaultBranch =
 		tagTarget !== undefined &&
 		git(["merge-base", "--is-ancestor", tagTarget, `origin/${defaultBranch}`], { allowFailure: true }) !== undefined;
 	const version = tagTarget ? versionAt(tagTarget) : releaseTag.slice(1);
 	return createReleasePlan({
-		eventName: "workflow_dispatch",
-		operation: process.env.INPUT_OPERATION,
+		eventName: "issue_comment",
+		operation: command.operation,
 		releaseTag,
 		tagOnDefaultBranch,
 		tagTarget,
@@ -92,7 +93,7 @@ function writeOutputs(plan) {
 
 try {
 	const eventName = process.env.EVENT_NAME;
-	const plan = eventName === "push" ? planPush() : eventName === "workflow_dispatch" ? planRetry() : undefined;
+	const plan = eventName === "push" ? planPush() : eventName === "issue_comment" ? planRetry() : undefined;
 	if (!plan) throw new Error(`Unsupported release event: ${eventName ?? ""}`);
 	writeOutputs(plan);
 } catch (error) {

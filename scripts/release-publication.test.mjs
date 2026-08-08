@@ -106,6 +106,62 @@ test("channel transaction completes the mirror before pointer and manifest promo
 	}
 });
 
+test("beta publication rechecks freshness before every mutable phase", () => {
+	const { artifactsDir, root } = createPublicationFixture("0.7.2-beta.42.1.0123456", "beta");
+	const installerPath = join(root, "install-beta.sh");
+	writeFileSync(installerPath, "installer");
+	const store = new MemoryStore();
+	try {
+		publishChannel({
+			artifactsDir,
+			beforeMutable: (phase) => store.events.push(`guard:${phase}`),
+			channel: "beta",
+			installers: [{ key: "install-beta.sh", path: installerPath }],
+			mirror: () => store.events.push("mirror"),
+			store,
+			version: "0.7.2-beta.42.1.0123456",
+		});
+		assert.notEqual(store.events.indexOf("guard:mirror"), -1);
+		assert.notEqual(store.events.indexOf("guard:installers"), -1);
+		assert.notEqual(store.events.indexOf("guard:promotion"), -1);
+		assert.ok(store.events.indexOf("guard:mirror") < store.events.indexOf("mirror"));
+		assert.ok(store.events.indexOf("guard:installers") < store.events.indexOf("mutable:install-beta.sh"));
+		assert.ok(store.events.indexOf("guard:promotion") < store.events.indexOf("mutable:beta"));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a beta that becomes stale during mutable work cannot advance channel pointers", () => {
+	const { artifactsDir, root } = createPublicationFixture("0.7.2-beta.42.1.0123456", "beta");
+	const installerPath = join(root, "install-beta.sh");
+	writeFileSync(installerPath, "installer");
+	const store = new MemoryStore();
+	try {
+		assert.throws(
+			() =>
+				publishChannel({
+					artifactsDir,
+					beforeMutable(phase) {
+						store.events.push(`guard:${phase}`);
+						if (phase === "installers") throw new Error("newer main commit");
+					},
+					channel: "beta",
+					installers: [{ key: "install-beta.sh", path: installerPath }],
+					mirror: () => store.events.push("mirror"),
+					store,
+					version: "0.7.2-beta.42.1.0123456",
+				}),
+			/newer main commit/,
+		);
+		assert.equal(store.objects.has("install-beta.sh"), false);
+		assert.equal(store.objects.has("beta"), false);
+		assert.equal(store.objects.has("beta.json"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("stable promotion is monotonic unless an explicit rollback allows regression", () => {
 	const { artifactsDir, root } = createPublicationFixture();
 	const store = new MemoryStore({

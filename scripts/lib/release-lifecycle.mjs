@@ -316,7 +316,7 @@ export function createReleasePlan(input) {
 		};
 	}
 
-	if (input.eventName === "workflow_dispatch" && input.operation === "retry-production") {
+	if (input.eventName === "issue_comment" && input.operation === "retry-production") {
 		const expectedTag = `v${version}`;
 		if (input.releaseTag !== expectedTag) {
 			throw new Error(`Retry tag ${input.releaseTag ?? ""} does not match package version ${expectedTag}`);
@@ -364,6 +364,34 @@ export function validateRollbackRequest(releaseTag, confirmation) {
 		pointerKey: "stable",
 		version: releaseTag.slice(1),
 	};
+}
+
+export function parseReleaseComment(input) {
+	if (input.actorPermission !== "admin" && input.actorPermission !== "maintain") {
+		throw new Error("Release commands require repository admin or maintain permission");
+	}
+	const trustedRefSuffix = `@refs/heads/${input.defaultBranch}`;
+	if (!input.workflowRef?.endsWith(trustedRefSuffix)) {
+		throw new Error(`Release commands must use workflow code from the protected default branch (${input.defaultBranch})`);
+	}
+	const body = input.body?.trim() ?? "";
+	if (input.expectedOperation === "retry-production") {
+		const match = body.match(/^\/prime-agent release retry (v0\.\d+\.\d+)$/);
+		if (!match) throw new Error("Retry command must be exactly: /prime-agent release retry v0.x.y");
+		return { operation: "retry-production", releaseTag: match[1] };
+	}
+	if (input.expectedOperation === "rollback-production") {
+		const match = body.match(/^\/prime-agent release rollback (v0\.\d+\.\d+)\nROLLBACK (v0\.\d+\.\d+)$/);
+		if (!match || match[1] !== match[2]) {
+			throw new Error("Rollback command must use matching tags on both lines");
+		}
+		return {
+			confirmation: `ROLLBACK ${match[1]}`,
+			operation: "rollback-production",
+			releaseTag: match[1],
+		};
+	}
+	throw new Error(`Unsupported release command operation: ${input.expectedOperation ?? ""}`);
 }
 
 function sha256File(path) {

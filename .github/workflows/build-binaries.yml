@@ -4,18 +4,8 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
-    inputs:
-      operation:
-        description: 'Release operation'
-        required: true
-        type: choice
-        options:
-          - retry-production
-      release_tag:
-        description: 'Existing immutable production tag to retry (for example v0.7.1)'
-        required: true
-        type: string
+  issue_comment:
+    types: [created]
 
 concurrency:
   group: release-prime-agent
@@ -27,6 +17,7 @@ permissions:
 
 jobs:
   release-context:
+    if: github.event_name == 'push' || startsWith(github.event.comment.body, '/prime-agent release retry ')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,7 +33,22 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
+
+      - name: Authorize release comment
+        id: authorization
+        if: github.event_name == 'issue_comment'
+        env:
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq .permission)
+          case "$permission" in
+            admin|maintain) ;;
+            *) echo "Release commands require admin or maintain permission." >&2; exit 1 ;;
+          esac
+          echo "permission=$permission" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -52,15 +58,15 @@ jobs:
       - name: Resolve release context
         id: context
         env:
+          ACTOR_PERMISSION: ${{ steps.authorization.outputs.permission || '' }}
           BEFORE_SHA: ${{ github.event.before || '' }}
+          COMMENT_BODY: ${{ github.event.comment.body || '' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_SHA_VALUE: ${{ github.sha }}
-          INPUT_OPERATION: ${{ inputs.operation || '' }}
-          INPUT_RELEASE_TAG: ${{ inputs.release_tag || '' }}
-          REF_NAME: ${{ github.ref_name }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_NUMBER: ${{ github.run_number }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
         run: node scripts/resolve-release-context.mjs
 
   build:

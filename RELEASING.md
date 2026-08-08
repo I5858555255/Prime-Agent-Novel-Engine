@@ -70,9 +70,15 @@ The workflow serializes publication and refuses to move either stable surface ba
 
 ## Retry
 
-Use the Release Prime Agent workflow's `retry-production` dispatch only after the immutable `vX.Y.Z` tag exists. The workflow derives both the version and commit from that tag, verifies that it belongs to the default branch, and rebuilds the exact tagged source. Release policy and publication scripts come from the protected workflow commit in a separate checkout, so tags created before this lifecycle was introduced remain retryable. A free-form version paired with current `main` is not supported.
+After the immutable `vX.Y.Z` tag exists, a maintainer with repository `admin` or `maintain` permission can post this exact issue comment:
 
-If the original production run failed before creating the version tag, rerun that exact failed workflow run instead. Do not use a later default-branch run or create the tag locally. Once the immutable tag exists, use `retry-production` for subsequent recovery attempts.
+```text
+/prime-agent release retry vX.Y.Z
+```
+
+The `issue_comment` event always loads workflow code from the protected default branch; branch-selectable release dispatches are not supported. The workflow derives both the version and commit from the tag, verifies that it belongs to the default branch, and rebuilds the exact tagged source. Release policy and publication scripts come from the protected workflow commit in a separate checkout, so tags created before this lifecycle was introduced remain retryable. A free-form version paired with current `main` is not supported.
+
+If the original production run failed before creating the version tag, rerun that exact failed workflow run instead. Do not use a later default-branch run or create the tag locally. Once the immutable tag exists, use the issue-comment retry command for subsequent recovery attempts.
 
 Retries are idempotent:
 
@@ -86,9 +92,14 @@ Never delete or replace an immutable version tag or artifact to make a retry pas
 
 ## Rollback
 
-Prefer a forward fix. If stable must be restored immediately, dispatch the Rollback Prime Agent stable channel workflow. Select an existing stable `vX.Y.Z` tag and enter the exact confirmation `ROLLBACK vX.Y.Z`.
+Prefer a forward fix. If stable must be restored immediately, a maintainer with repository `admin` or `maintain` permission can post this exact two-line issue comment:
 
-The rollback job uses the protected `production` environment. Configure that environment with required reviewers before enabling rollback credentials. The job verifies the immutable tag, GitHub Release assets, manifest, checksums, and every referenced R2 tarball before writing `/stable` and then `/latest.json`. It does not create or move tags, rewrite immutable objects, or change GitHub Releases.
+```text
+/prime-agent release rollback vX.Y.Z
+ROLLBACK vX.Y.Z
+```
+
+The default-branch workflow and an API-derived maintainer permission are the repository-enforced authorization boundary. The job also targets the `production` environment, so configured environment reviewers provide an additional gate but are not assumed to exist. The job verifies the immutable tag, GitHub Release assets, manifest, checksums, and every referenced R2 tarball before writing `/stable` and then `/latest.json`. It does not create or move tags, rewrite immutable objects, or change GitHub Releases.
 
 Rollback changes what fresh installations and future update checks select. It does not force already-installed newer clients to downgrade.
 
