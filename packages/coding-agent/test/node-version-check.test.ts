@@ -75,6 +75,20 @@ describe("assertNodeVersion", () => {
 		expect(exitCode).toBe(1);
 	});
 
+	test("rejects an arbitrary prerelease identifier", () => {
+		for (const prerelease of ["experimental", "0.experimental"]) {
+			const { ok, exitCode } = run(`${MIN_NODE_VERSION}-${prerelease}`);
+			expect(ok).toBe(false);
+			expect(exitCode).toBe(1);
+		}
+	});
+
+	test("rejects a prerelease from a newer major", () => {
+		const { ok, exitCode } = run("23.0.0-experimental");
+		expect(ok).toBe(false);
+		expect(exitCode).toBe(1);
+	});
+
 	test("lets an unparseable version through rather than blocking", () => {
 		const { ok, exitCode } = run("not-a-version");
 		expect(ok).toBe(true);

@@ -15,6 +15,7 @@ fi
 prime_agent_release_channel="${PRIME_AGENT_RELEASE_CHANNEL:-$prime_agent_default_release_channel}"
 prime_agent_package="${PRIME_AGENT_PACKAGE:-prime-agent}"
 prime_agent_cmd="${PRIME_AGENT_CMD:-prime-agent}"
+prime_agent_min_node_version="22.8.0" # generated from packages/coding-agent/package.json engines.node
 prime_agent_esc=$(printf '\033')
 prime_agent_original_path="${PATH:-}"
 prime_agent_reset="${prime_agent_esc}[0m"
@@ -33,7 +34,7 @@ prime_agent_color_dim="${prime_agent_esc}[38;2;113;113;122m"
 prime_agent_color_primary="${prime_agent_esc}[38;2;127;91;213m"
 prime_agent_color_scan="${prime_agent_esc}[38;2;14;165;233m"
 prime_agent_color_warning="${prime_agent_esc}[38;2;245;158;11m"
-readonly prime_agent_unconfigured_base_url prime_agent_unconfigured_default_release_channel prime_agent_base_url prime_agent_default_release_channel prime_agent_release_channel prime_agent_package prime_agent_cmd prime_agent_esc prime_agent_original_path
+readonly prime_agent_unconfigured_base_url prime_agent_unconfigured_default_release_channel prime_agent_base_url prime_agent_default_release_channel prime_agent_release_channel prime_agent_package prime_agent_cmd prime_agent_min_node_version prime_agent_esc prime_agent_original_path
 readonly prime_agent_reset prime_agent_bold prime_agent_italic prime_agent_hide_cursor prime_agent_show_cursor prime_agent_home_cursor prime_agent_clear_screen prime_agent_clear_line
 readonly prime_agent_sync_start prime_agent_sync_end
 readonly prime_agent_color_text prime_agent_color_muted prime_agent_color_dim prime_agent_color_primary prime_agent_color_scan prime_agent_color_warning
@@ -874,7 +875,7 @@ finish_preflight_checks() {
 	if [ "$prime_agent_screen_enabled" = 1 ]; then
 		if [ "$preflight_status" -ne 0 ]; then
 			preflight_summary=$(sed -n '1p' "$preflight_file")
-			prime_agent_screen "Node.js 20.6.0 or newer is required" "" "$preflight_summary" ""
+			prime_agent_screen "Node.js $prime_agent_min_node_version or newer is required" "" "$preflight_summary" ""
 			sleep 0.4
 		elif [ -s "$preflight_file" ]; then
 			preflight_summary="Existing $prime_agent_cmd command found on PATH."
@@ -895,12 +896,12 @@ run_preflight_checks() {
 
 	if command -v node >/dev/null 2>&1; then
 		node_version=$(node --version)
-		if ! node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && (minor > 6 || (minor === 6 && patch >= 0))) ? 0 : 1)' >/dev/null; then
-			printf 'error: Prime Agent requires Node.js 20.6.0 or newer. Found %s.\n' "$node_version"
+		if ! node_version_string_is_new_enough "$node_version"; then
+			printf 'error: Prime Agent requires Node.js %s or newer. Found %s.\n' "$prime_agent_min_node_version" "$node_version"
 			status=1
 		fi
 	else
-		printf 'error: Node.js 20.6.0 or newer is required to install Prime Agent.\n'
+		printf 'error: Node.js %s or newer is required to install Prime Agent.\n' "$prime_agent_min_node_version"
 		status=1
 	fi
 
@@ -1010,9 +1011,9 @@ install_node_npm_interactive() {
 		prompt_status=$?
 	fi
 	if [ "$prompt_status" -eq 2 ]; then
-		printf 'No terminal detected; install Node.js 20.6.0 or newer and npm, then run this installer again.\n'
+		printf 'No terminal detected; install Node.js %s or newer and npm, then run this installer again.\n' "$prime_agent_min_node_version"
 	else
-		printf '\nInstall Node.js 20.6.0 or newer and npm, then run this installer again.\n'
+		printf '\nInstall Node.js %s or newer and npm, then run this installer again.\n' "$prime_agent_min_node_version"
 	fi
 	return 1
 }
@@ -1057,10 +1058,15 @@ node_version_string_is_new_enough() {
 		[0-9]*) ;;
 		*) return 1 ;;
 	esac
-	version="${version%%[!0-9.]*}"
+	numeric_version="${version%%[!0-9.]*}"
+	suffix="${version#"$numeric_version"}"
+	case "$suffix" in
+		""|+*|-[0-9]*nodesource*|-r[0-9]*) ;;
+		*) return 1 ;;
+	esac
 	version_ifs=${IFS- }
 	IFS=.
-	set -- $version
+	set -- $numeric_version
 	IFS=$version_ifs
 	major="${1:-}"
 	minor="${2:-0}"
@@ -1069,10 +1075,20 @@ node_version_string_is_new_enough() {
 	case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
 	case "$patch" in ''|*[!0-9]*) patch=0 ;; esac
 
-	[ "$major" -gt 20 ] && return 0
-	[ "$major" -eq 20 ] && [ "$minor" -gt 6 ] && return 0
-	[ "$major" -eq 20 ] && [ "$minor" -eq 6 ] && [ "$patch" -ge 0 ] && return 0
-	return 1
+	IFS=.
+	set -- $prime_agent_min_node_version
+	IFS=$version_ifs
+	minimum_major="$1"
+	minimum_minor="$2"
+	minimum_patch="$3"
+
+	[ "$major" -gt "$minimum_major" ] && return 0
+	[ "$major" -lt "$minimum_major" ] && return 1
+	[ "$minor" -gt "$minimum_minor" ] && return 0
+	[ "$minor" -lt "$minimum_minor" ] && return 1
+	[ "$patch" -gt "$minimum_patch" ] && return 0
+	[ "$patch" -lt "$minimum_patch" ] && return 1
+	return 0
 }
 
 install_node_npm() {
@@ -1181,7 +1197,8 @@ install_node_standalone() {
 		printf 'Unsupported CPU architecture for automatic Node.js install: %s\n' "$(uname -m)"
 		return 1
 	}
-	node_dist_base="https://nodejs.org/dist/latest-v22.x"
+	minimum_node_major="${prime_agent_min_node_version%%.*}"
+	node_dist_base="https://nodejs.org/dist/latest-v${minimum_node_major}.x"
 	node_base_dir=$(node_standalone_base_dir)
 	node_tmp_dir=$(create_temp_dir)
 

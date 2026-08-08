@@ -2,8 +2,11 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertInstallerMinimumIsCurrent, renderInstallerMinimum } from "./render-installer.mjs";
 
-const installerSource = readFileSync("install.sh", "utf-8");
+const installerTemplate = readFileSync("install.sh", "utf-8");
+assertInstallerMinimumIsCurrent(installerTemplate);
+const installerSource = renderInstallerMinimum(installerTemplate);
 const mainCall = '\nmain "$@"';
 const mainCallIndex = installerSource.lastIndexOf(mainCall);
 const ansiPattern = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -102,9 +105,30 @@ Finalizing npm install."
 	done
 }
 
+node_version_case() {
+	version="$1"
+	if node_version_string_is_new_enough "$version"; then
+		supported=1
+	else
+		supported=0
+	fi
+	printf '__NODE_VERSION__ %s\t%s\n' "$version" "$supported"
+}
+
 render_case "$@"
 screen_case "$@"
 progress_case
+node_version_case 20.6.0
+node_version_case 22.7.0
+node_version_case 22.8.0
+node_version_case 23.0.0
+node_version_case 22.8.0-rc.1
+node_version_case 22.8.0-experimental
+node_version_case 22.8.0-0.experimental
+node_version_case 23.0.0-experimental
+node_version_case 22.8.0+dfsg-1ubuntu1
+node_version_case 22.8.0-1nodesource1
+node_version_case 22.8.0-r0
 `;
 
 const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-installer-render-"));
@@ -121,6 +145,7 @@ try {
 		"expected logo lab width to stay stable across a safe resize",
 	);
 	assertInstallerProgress(stableVisible.progress);
+	assertNodeVersions(stableVisible.nodeVersions);
 
 	const stableExpand = runCase("stable expanded logo", 60, 24, 120, 32);
 	check(stableExpand.meta.first.visible === "1", "expected the initial medium render to show the logo");
@@ -207,12 +232,36 @@ function parseRenderOutput(output) {
 			parsed.progress.push({ frame: Number(frame), status, detail });
 			continue;
 		}
+		if (line.startsWith("__NODE_VERSION__ ")) {
+			const [version, supported] = line.slice("__NODE_VERSION__ ".length).split("\t");
+			parsed.nodeVersions[version] = supported === "1";
+			continue;
+		}
 		if (activeRender) {
 			parsed.renders[activeRender].push(line.replace(ansiPattern, ""));
 		}
 	}
 
 	return parsed;
+}
+
+function assertNodeVersions(versions) {
+	const expected = {
+		"20.6.0": false,
+		"22.7.0": false,
+		"22.8.0": true,
+		"23.0.0": true,
+		"22.8.0-rc.1": false,
+		"22.8.0-experimental": false,
+		"22.8.0-0.experimental": false,
+		"23.0.0-experimental": false,
+		"22.8.0+dfsg-1ubuntu1": true,
+		"22.8.0-1nodesource1": true,
+		"22.8.0-r0": true,
+	};
+	for (const [version, supported] of Object.entries(expected)) {
+		check(versions[version] === supported, `expected Node ${version} support to be ${supported}`);
+	}
 }
 
 function parseScreenOutput(output) {
@@ -311,5 +360,6 @@ function emptyParsedCase() {
 		},
 		screens: {},
 		progress: [],
+		nodeVersions: {},
 	};
 }
