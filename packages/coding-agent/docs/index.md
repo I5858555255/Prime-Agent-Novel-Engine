@@ -29,6 +29,8 @@ Public releases are currently installed from versioned release artifacts. The in
 - [RLM programming model](rlm.md) - programmatic execution, native subagents, Python skills, and durable state.
 - [Long-running and background agents](long-running-agents.md) - daemon workers, messaging, heartbeats, goals, schedules, and autonomous mode.
 - [Providers](providers.md) - subscription and API-key setup for built-in providers.
+- [Custom models](models.md) - Ollama, vLLM, LM Studio, and other OpenAI-compatible endpoints via `models.json`.
+- [Custom providers](custom-provider.md) - implement custom APIs and OAuth flows.
 - [Settings](settings.md) - global and project settings.
 - [Keybindings](keybindings.md) - default shortcuts and custom keybindings.
 - [Sessions](sessions.md) - session management, branching, and tree navigation.
@@ -42,8 +44,6 @@ Public releases are currently installed from versioned release artifacts. The in
 - [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
 - [Themes](themes.md) - built-in and custom terminal themes.
 - [Prime Agent packages](packages.md) - bundle and share extensions, skills, prompts, and themes.
-- [Custom models](models.md) - add model entries for supported provider APIs.
-- [Custom providers](custom-provider.md) - implement custom APIs and OAuth flows.
 
 ## Programmatic Usage
 
