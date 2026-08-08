@@ -24,7 +24,10 @@ function createOutput(model: Model<"openai-responses">): AssistantMessage {
 	};
 }
 
-async function* createFunctionCallEvents(argumentsJson: string): AsyncIterable<ResponseStreamEvent> {
+async function* createFunctionCallEvents(
+	argumentsJson: string,
+	deltas = ['{"path":"README.md"', ',"content":"updated"}'],
+): AsyncIterable<ResponseStreamEvent> {
 	yield {
 		type: "response.output_item.added",
 		item: {
@@ -35,14 +38,12 @@ async function* createFunctionCallEvents(argumentsJson: string): AsyncIterable<R
 			arguments: "",
 		},
 	} as ResponseStreamEvent;
-	yield {
-		type: "response.function_call_arguments.delta",
-		delta: '{"path":"README.md"',
-	} as ResponseStreamEvent;
-	yield {
-		type: "response.function_call_arguments.delta",
-		delta: ',"content":"updated"}',
-	} as ResponseStreamEvent;
+	for (const delta of deltas) {
+		yield {
+			type: "response.function_call_arguments.delta",
+			delta,
+		} as ResponseStreamEvent;
+	}
 	yield {
 		type: "response.function_call_arguments.done",
 		arguments: argumentsJson,
@@ -59,20 +60,39 @@ async function* createFunctionCallEvents(argumentsJson: string): AsyncIterable<R
 	} as ResponseStreamEvent;
 }
 
+async function* createInterruptedFunctionCallEvents(delta: string): AsyncIterable<ResponseStreamEvent> {
+	yield {
+		type: "response.output_item.added",
+		item: {
+			type: "function_call",
+			id: "fc_test",
+			call_id: "call_test",
+			name: "edit",
+			arguments: "",
+		},
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.function_call_arguments.delta",
+		delta,
+	} as ResponseStreamEvent;
+	throw new Error("interrupted response stream");
+}
+
+const model: Model<"openai-responses"> = {
+	id: "gpt-5-mini",
+	name: "GPT-5 Mini",
+	api: "openai-responses",
+	provider: "openai",
+	baseUrl: "https://api.openai.com/v1",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 400000,
+	maxTokens: 128000,
+};
+
 describe("openai responses partialJson cleanup", () => {
 	it("removes partialJson from persisted tool-call blocks at output_item.done", async () => {
-		const model: Model<"openai-responses"> = {
-			id: "gpt-5-mini",
-			name: "GPT-5 Mini",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 400000,
-			maxTokens: 128000,
-		};
 		const output = createOutput(model);
 		const stream = new AssistantMessageEventStream();
 		const pushSpy = vi.spyOn(stream, "push");
@@ -97,5 +117,45 @@ describe("openai responses partialJson cleanup", () => {
 		}
 		expect(toolCallEnd.toolCall).toBe(persistedToolCall);
 		expect("partialJson" in toolCallEnd.toolCall).toBe(false);
+	});
+
+	it("emits every raw delta and finalizes complex arguments exactly", async () => {
+		const expected = {
+			nested: { quote: 'say "hello"', path: "C:\\tmp", emoji: "🫠" },
+			items: [1, true, null],
+		};
+		const argumentsJson = JSON.stringify(expected);
+		const deltas = argumentsJson.split("");
+		const output = createOutput(model);
+		const stream = new AssistantMessageEventStream();
+		const pushSpy = vi.spyOn(stream, "push");
+
+		await processResponsesStream(createFunctionCallEvents(argumentsJson, deltas), output, stream, model);
+
+		const emittedDeltas = pushSpy.mock.calls
+			.map(([event]) => event as AssistantMessageEvent)
+			.filter((event) => event.type === "toolcall_delta")
+			.map((event) => event.delta);
+		expect(emittedDeltas).toEqual(deltas);
+		expect(output.content[0]).toMatchObject({ type: "toolCall", arguments: expected });
+	});
+
+	it("keeps emitted deltas and displayable partial arguments when the stream is interrupted", async () => {
+		const delta = '{"nested":{"kept":true}}';
+		const output = createOutput(model);
+		const stream = new AssistantMessageEventStream();
+		const pushSpy = vi.spyOn(stream, "push");
+
+		await expect(
+			processResponsesStream(createInterruptedFunctionCallEvents(delta), output, stream, model),
+		).rejects.toThrow("interrupted response stream");
+
+		const emittedEvents = pushSpy.mock.calls.map(([event]) => event as AssistantMessageEvent);
+		expect(emittedEvents.some((event) => event.type === "toolcall_delta" && event.delta === delta)).toBe(true);
+		expect(emittedEvents.some((event) => event.type === "toolcall_end")).toBe(false);
+		expect(output.content[0]).toMatchObject({
+			type: "toolCall",
+			arguments: { nested: { kept: true } },
+		});
 	});
 });

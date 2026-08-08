@@ -117,6 +117,71 @@ function createCacheUsageEvents(cacheCreation: {
 	];
 }
 
+function createToolUseEvents(
+	deltas: string[],
+	options: { complete?: boolean; stopReason?: "tool_use" | "end_turn" } = {},
+): Array<{ event: string; data: string }> {
+	const events: Array<{ event: string; data: string }> = [
+		{
+			event: "message_start",
+			data: JSON.stringify({
+				type: "message_start",
+				message: {
+					id: "msg_tool_test",
+					usage: {
+						input_tokens: 12,
+						output_tokens: 0,
+						cache_read_input_tokens: 0,
+						cache_creation_input_tokens: 0,
+					},
+				},
+			}),
+		},
+		{
+			event: "content_block_start",
+			data: JSON.stringify({
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "tool_use", id: "toolu_test", name: "edit", input: {} },
+			}),
+		},
+		...deltas.map((partialJson) => ({
+			event: "content_block_delta",
+			data: JSON.stringify({
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "input_json_delta", partial_json: partialJson },
+			}),
+		})),
+	];
+
+	if (options.complete === false) {
+		return events;
+	}
+
+	events.push(
+		{
+			event: "content_block_stop",
+			data: JSON.stringify({ type: "content_block_stop", index: 0 }),
+		},
+		{
+			event: "message_delta",
+			data: JSON.stringify({
+				type: "message_delta",
+				delta: { stop_reason: options.stopReason ?? "tool_use" },
+				usage: {
+					input_tokens: 12,
+					output_tokens: 5,
+					cache_read_input_tokens: 0,
+					cache_creation_input_tokens: 0,
+				},
+			}),
+		},
+		{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
+	);
+	return events;
+}
+
 describe("Anthropic raw SSE parsing", () => {
 	it.each([
 		{
@@ -274,5 +339,58 @@ describe("Anthropic raw SSE parsing", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(result.errorMessage).toBeUndefined();
 		expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
+	});
+
+	it("emits every raw tool delta and finalizes complex arguments exactly", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const expected = {
+			nested: { quote: 'say "hello"', path: "C:\\tmp", emoji: "🫠" },
+			items: [1, true, null],
+		};
+		const argumentsJson = JSON.stringify(expected);
+		const deltas = argumentsJson.split("");
+		const response = createSseResponse(createToolUseEvents(deltas));
+		const stream = streamAnthropic(
+			model,
+			{ messages: [{ role: "user", content: "Use the edit tool.", timestamp: Date.now() }] },
+			{ client: createFakeAnthropicClient(response) },
+		);
+		const emittedDeltas: string[] = [];
+
+		for await (const event of stream) {
+			if (event.type === "toolcall_delta") {
+				emittedDeltas.push(event.delta);
+			}
+		}
+		const result = await stream.result();
+
+		expect(emittedDeltas).toEqual(deltas);
+		expect(result.content[0]).toMatchObject({ type: "toolCall", arguments: expected });
+	});
+
+	it("keeps emitted deltas and displayable partial arguments when SSE ends prematurely", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const delta = '{"nested":{"kept":true}}';
+		const response = createSseResponse(createToolUseEvents([delta], { complete: false }));
+		const stream = streamAnthropic(
+			model,
+			{ messages: [{ role: "user", content: "Use the edit tool.", timestamp: Date.now() }] },
+			{ client: createFakeAnthropicClient(response) },
+		);
+		const emittedDeltas: string[] = [];
+
+		for await (const event of stream) {
+			if (event.type === "toolcall_delta") {
+				emittedDeltas.push(event.delta);
+			}
+		}
+		const result = await stream.result();
+
+		expect(emittedDeltas).toEqual([delta]);
+		expect(result.stopReason).toBe("error");
+		expect(result.content[0]).toMatchObject({
+			type: "toolCall",
+			arguments: { nested: { kept: true } },
+		});
 	});
 });

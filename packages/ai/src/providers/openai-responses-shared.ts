@@ -29,7 +29,7 @@ import type {
 } from "../types.js";
 import type { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { shortHash } from "../utils/hash.js";
-import { parseStreamingJson } from "../utils/json-parse.js";
+import { parseStreamingJson, StreamingJsonAccumulator } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { classifyStreamFailure, StreamFailureError } from "../utils/stream-failure.js";
 import { transformMessages } from "./transform-messages.js";
@@ -289,7 +289,8 @@ export async function processResponsesStream<TApi extends Api>(
 	options?: OpenAIResponsesStreamOptions,
 ): Promise<void> {
 	let currentItem: ResponseReasoningItem | ResponseOutputMessage | ResponseFunctionToolCall | null = null;
-	let currentBlock: ThinkingContent | TextContent | (ToolCall & { partialJson: string }) | null = null;
+	let currentBlock: ThinkingContent | TextContent | ToolCall | null = null;
+	let currentArgumentAccumulator: StreamingJsonAccumulator | null = null;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
 
@@ -301,11 +302,13 @@ export async function processResponsesStream<TApi extends Api>(
 			if (item.type === "reasoning") {
 				currentItem = item;
 				currentBlock = { type: "thinking", thinking: "" };
+				currentArgumentAccumulator = null;
 				output.content.push(currentBlock);
 				stream.push({ type: "thinking_start", contentIndex: blockIndex(), partial: output });
 			} else if (item.type === "message") {
 				currentItem = item;
 				currentBlock = { type: "text", text: "" };
+				currentArgumentAccumulator = null;
 				output.content.push(currentBlock);
 				stream.push({ type: "text_start", contentIndex: blockIndex(), partial: output });
 			} else if (item.type === "function_call") {
@@ -315,8 +318,8 @@ export async function processResponsesStream<TApi extends Api>(
 					id: `${item.call_id}|${item.id}`,
 					name: item.name,
 					arguments: {},
-					partialJson: item.arguments || "",
 				};
+				currentArgumentAccumulator = new StreamingJsonAccumulator(item.arguments || "");
 				output.content.push(currentBlock);
 				stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
 			}
@@ -408,9 +411,11 @@ export async function processResponsesStream<TApi extends Api>(
 				}
 			}
 		} else if (event.type === "response.function_call_arguments.delta") {
-			if (currentItem?.type === "function_call" && currentBlock?.type === "toolCall") {
-				currentBlock.partialJson += event.delta;
-				currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
+			if (currentItem?.type === "function_call" && currentBlock?.type === "toolCall" && currentArgumentAccumulator) {
+				const partialArguments = currentArgumentAccumulator.append(event.delta);
+				if (partialArguments !== undefined) {
+					currentBlock.arguments = partialArguments;
+				}
 				stream.push({
 					type: "toolcall_delta",
 					contentIndex: blockIndex(),
@@ -419,10 +424,9 @@ export async function processResponsesStream<TApi extends Api>(
 				});
 			}
 		} else if (event.type === "response.function_call_arguments.done") {
-			if (currentItem?.type === "function_call" && currentBlock?.type === "toolCall") {
-				const previousPartialJson = currentBlock.partialJson;
-				currentBlock.partialJson = event.arguments;
-				currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
+			if (currentItem?.type === "function_call" && currentBlock?.type === "toolCall" && currentArgumentAccumulator) {
+				const previousPartialJson = currentArgumentAccumulator.currentJson();
+				currentBlock.arguments = currentArgumentAccumulator.finish(event.arguments);
 
 				if (event.arguments.startsWith(previousPartialJson)) {
 					const delta = event.arguments.slice(previousPartialJson.length);
@@ -462,17 +466,15 @@ export async function processResponsesStream<TApi extends Api>(
 				});
 				currentBlock = null;
 			} else if (item.type === "function_call") {
-				const args =
-					currentBlock?.type === "toolCall" && currentBlock.partialJson
-						? parseStreamingJson(currentBlock.partialJson)
-						: parseStreamingJson(item.arguments || "{}");
+				const accumulatedJson = currentArgumentAccumulator?.currentJson() ?? "";
+				const finalJson = accumulatedJson || item.arguments || "{}";
+				const args = currentArgumentAccumulator
+					? currentArgumentAccumulator.finish(finalJson)
+					: parseStreamingJson(finalJson);
 
 				let toolCall: ToolCall;
 				if (currentBlock?.type === "toolCall") {
-					// Finalize in-place and strip the scratch buffer so replay only
-					// carries parsed arguments.
 					currentBlock.arguments = args;
-					delete (currentBlock as { partialJson?: string }).partialJson;
 					toolCall = currentBlock;
 				} else {
 					toolCall = {
@@ -484,6 +486,7 @@ export async function processResponsesStream<TApi extends Api>(
 				}
 
 				currentBlock = null;
+				currentArgumentAccumulator = null;
 				stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
 			}
 		} else if (event.type === "response.completed") {
