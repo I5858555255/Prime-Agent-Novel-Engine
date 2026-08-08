@@ -6021,10 +6021,11 @@ export class InteractiveMode {
 		const goalLabel = this.getTrayGoalLabel();
 		const heartbeatLabel = this.getTrayHeartbeatLabel();
 		const usage = this.getConnectionContextUsage();
-		const contextLabel =
-			usage && typeof usage.tokens === "number" && typeof usage.percent === "number"
+		const contextLabel = usage
+			? typeof usage.tokens === "number" && typeof usage.percent === "number"
 				? `${formatTokenCount(usage.tokens)} (${Math.round(usage.percent)}%)`
-				: undefined;
+				: "context unknown"
+			: undefined;
 		return [goalLabel, heartbeatLabel, contextLabel].filter((label) => label !== undefined).join(" · ") || undefined;
 	}
 

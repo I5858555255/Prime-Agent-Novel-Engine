@@ -893,7 +893,13 @@ interface OpenAICompletionsCompat {
 }
 
 interface OpenAIResponsesCompat {
-  // Reserved for future use
+  sendSessionIdHeader?: boolean;
+  supportsLongCacheRetention?: boolean;
+  supportsServerCompaction?: boolean;
+}
+
+interface OpenAICodexResponsesCompat {
+  supportsServerCompaction?: boolean;
 }
 ```
 
@@ -903,9 +909,21 @@ If `compat` is not set, the library falls back to URL-based detection. If `compa
 - **Custom inference servers**: May use non-standard field names
 - **Self-hosted endpoints**: May have different feature support
 
+#### supportsServerCompaction
+
+`supportsServerCompaction` decides three things for an `openai-responses` or `openai-codex-responses` model:
+
+- Whether `serverCompactionThreshold` is sent as `context_management: [{ type: 'compaction', compact_threshold }]`.
+- Whether a `compaction` item the server returns is stored on the assistant message as `openaiCompaction`.
+- Whether a stored item is replayed on a later request. Replay also requires that request to carry a `serverCompactionThreshold`: a caller that asks the server for no compaction sends its whole history.
+
+An explicit value wins in either direction. Unset, it defaults to `true` for provider `openai` at `https://api.openai.com/v1` and for provider `openai-codex` at `https://chatgpt.com/backend-api`. It defaults to `false` for every other endpoint, including a proxy in front of either API. A checkpoint is opaque and endpoint-specific, so the library replays one only to the same provider, api, model id, and base URL that produced it. Set `true` to opt a custom endpoint in. Set `false` to opt an official endpoint out, which also stops replay of checkpoints a resumed conversation already holds.
+
+The default is a rule about endpoints, not a list of models. Model ids that predate server-side compaction receive `context_management` on the official endpoint like every other model there: `gpt-4`, `gpt-4-turbo`, the `gpt-4o` and `gpt-4.1` families, `o1`, `o1-pro`, `o3`, `o3-mini`, `o3-pro`, and `o4-mini`. How those models respond to the field is not established here. The library does not remove the field and retry if a request is rejected. Set `compat.supportsServerCompaction: false` on such a model to stop sending it.
+
 ### Type Safety
 
-Models are typed by their API, which keeps the model metadata accurate. Provider-specific option types are enforced when you call the provider functions directly. The generic `stream` and `complete` functions accept `StreamOptions` with additional provider fields.
+Models are typed by their API, which keeps the model metadata accurate. Provider-specific option types are enforced when you call the provider functions directly. The generic `stream` and `complete` functions accept `StreamOptions` with additional provider fields. One of them is `serverCompactionThreshold`, the token threshold at which an OpenAI Responses endpoint compacts its own input. Every other API ignores it; see [supportsServerCompaction](#supportsservercompaction) for which OpenAI endpoints receive it.
 
 ```typescript
 import { streamAnthropic, type AnthropicOptions } from 'prime-agent-ai';

@@ -23,7 +23,14 @@ import {
 } from "../utils/stream-failure.js";
 import { isCloudflareProvider, resolveCloudflareBaseUrl } from "./cloudflare.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
+import {
+	convertResponsesMessages,
+	convertResponsesTools,
+	normalizeBaseUrl,
+	processResponsesStream,
+	supportsOpenAIServerCompaction,
+	usesOpenAICompactionCheckpoint,
+} from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
@@ -46,6 +53,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 	return {
 		sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+		supportsServerCompaction: supportsOpenAIServerCompaction(model),
 	};
 }
 
@@ -72,6 +80,7 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 	options?: OpenAIResponsesOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
+	const serverCompactionThreshold = options?.serverCompactionThreshold;
 
 	// Start async processing
 	(async () => {
@@ -92,6 +101,9 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
+		if (usesOpenAICompactionCheckpoint({ ...model, serverCompactionThreshold }, context)) {
+			output.contextTokenBaseUrl = normalizeBaseUrl(model.baseUrl);
+		}
 
 		try {
 			// Create OpenAI client
@@ -223,7 +235,9 @@ function createClient(
 }
 
 function buildParams(model: Model<"openai-responses">, context: Context, options?: OpenAIResponsesOptions) {
-	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS);
+	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+		serverCompactionThreshold: options?.serverCompactionThreshold,
+	});
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention);
 	const compat = getCompat(model);
@@ -235,6 +249,10 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		prompt_cache_retention: getPromptCacheRetention(compat, cacheRetention),
 		store: false,
 	};
+
+	if (options?.serverCompactionThreshold !== undefined && compat.supportsServerCompaction) {
+		params.context_management = [{ type: "compaction", compact_threshold: options.serverCompactionThreshold }];
+	}
 
 	if (options?.maxTokens) {
 		params.max_output_tokens = options?.maxTokens;

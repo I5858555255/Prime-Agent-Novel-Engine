@@ -4013,7 +4013,7 @@ describe("InteractiveMode tray goal label", () => {
 		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · 1 heartbeat · 75k (75%)");
 	});
 
-	test("omits the usage segment when token count is unknown", () => {
+	test("renders unknown context explicitly when token count is unknown", () => {
 		const fakeThis = Object.create(InteractiveMode.prototype) as TrayLabelHarness;
 		fakeThis.heartbeats = [];
 		fakeThis.connectionState = {
@@ -4029,7 +4029,7 @@ describe("InteractiveMode tray goal label", () => {
 		};
 		fakeThis.uiServices = { getContextUsage: () => undefined };
 
-		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s)");
+		expect(getTrayContextLabel.call(fakeThis)).toBe("Pursuing goal (1m 05s) · context unknown");
 	});
 });
 

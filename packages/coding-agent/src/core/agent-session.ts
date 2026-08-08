@@ -106,17 +106,19 @@ import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
 import {
 	COMPACT_SKILL_NAME,
 	type CompactionResult,
+	type ContextEndpoint,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	contextEndpointFor,
 	estimateContextTokens,
 	generateBranchSummary,
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.js";
 import {
+	type ContextEndpointResolver,
 	type ContextTreeNode,
-	type ContextWindowResolver,
 	computeOwnAndTotalUsage,
 	loadContextTreeChildFromDisk,
 	loadContextTreeChildrenFromDisk,
@@ -2675,9 +2677,32 @@ export class AgentSession {
 		}
 	}
 
+	/**
+	 * Where this session's next request goes and what `compact_threshold` it carries.
+	 * `this.model` is `agent.state.model`, the object the stream function receives, so
+	 * this cannot describe a different request than the one sent.
+	 */
+	private _contextEndpoint(): ContextEndpoint | undefined {
+		return contextEndpointFor(this.model, this.settingsManager.getCompactionSettings());
+	}
+
+	/**
+	 * Whether the request carries a `compact_threshold`, so the server shortens the
+	 * context instead of the local threshold.
+	 *
+	 * This is the only answer to that question. The park (_thresholdCompactionNeeded,
+	 * reached from _shouldStopAfterTurn) and the unpark (_checkCompaction, which runs
+	 * the compaction that resumes the loop) both read it, so the loop cannot stop for a
+	 * compaction that will never run.
+	 */
+	private _serverOwnsCompactionThreshold(): boolean {
+		return this._contextEndpoint()?.serverCompactionThreshold !== undefined;
+	}
+
 	private async _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
+		if (this._serverOwnsCompactionThreshold()) return false;
 
 		const contextWindow = this.model?.contextWindow ?? 0;
 		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
@@ -2873,6 +2898,7 @@ export class AgentSession {
 				const preparation = prepareCompaction(
 					this.sessionManager.getBranch(),
 					this.settingsManager.getCompactionSettings(),
+					this._contextEndpoint(),
 				);
 				if (!preparation) {
 					const lastEntry = this.sessionManager.getBranch().at(-1);
@@ -7098,7 +7124,7 @@ export class AgentSession {
 		const pathEntries = this.sessionManager.getBranch();
 		const settings = this.settingsManager.getCompactionSettings();
 
-		const preparation = prepareCompaction(pathEntries, settings);
+		const preparation = prepareCompaction(pathEntries, settings, this._contextEndpoint());
 		if (!preparation) {
 			const lastEntry = pathEntries[pathEntries.length - 1];
 			if (lastEntry?.type === "compaction") {
@@ -7906,7 +7932,8 @@ export class AgentSession {
 		compactionTimestamp: number | undefined,
 	): number | undefined {
 		const messages = this.agent.state.messages;
-		const estimate = estimateContextTokens(messages);
+		const estimate = estimateContextTokens(messages, this._contextEndpoint());
+		if (estimate.tokens === null) return undefined;
 		if (estimate.lastUsageIndex !== null) {
 			// Verify the usage source is post-compaction. Kept pre-compaction messages
 			// have stale usage reflecting the old (larger) context and would falsely
@@ -8008,7 +8035,12 @@ export class AgentSession {
 
 		if (!settings.enabled || assistantIsFromBeforeCompaction) return false;
 
-		// Case 3: Threshold - context is getting large.
+		// Case 3: Threshold - the request that carries a `compact_threshold` hands the
+		// automatic threshold to the server. Local compaction remains available for
+		// overflow recovery and explicit model requests handled above.
+		if (this._serverOwnsCompactionThreshold()) return false;
+
+		// The local threshold applies when the request carries no server threshold.
 		// Use the full-session estimate so messages appended after the last successful
 		// assistant usage are included, matching the /usage context display.
 		const contextTokens = this._getThresholdContextTokens(assistantMessage, compactionTimestamp);
@@ -8900,10 +8932,14 @@ export class AgentSession {
 		return this._rlmSessionDir;
 	}
 
-	/** Context size (tokens) of this session's latest assistant turn, for live subagent display. */
+	/**
+	 * Context size (tokens) of this session's latest assistant turn, for live subagent
+	 * display. Undefined when the size is unknown or not a finite number, so every caller
+	 * that puts it on the `tokenCount` wire field inherits that guard.
+	 */
 	_contextTokensForCurrentMessages(): number | undefined {
-		const last = this._findLastAssistantMessage();
-		return last ? calculateContextTokens(last.usage) : undefined;
+		const tokens = estimateContextTokens(this.messages, this._contextEndpoint()).tokens;
+		return tokens !== null && Number.isFinite(tokens) ? tokens : undefined;
 	}
 
 	setCurrentRecap(recap: string | undefined): void {
@@ -11002,7 +11038,8 @@ export class AgentSession {
 			}
 		}
 
-		const estimate = estimateContextTokens(this.messages);
+		const estimate = estimateContextTokens(this.messages, this._contextEndpoint());
+		if (estimate.tokens === null) return { tokens: null, contextWindow, percent: null };
 		const percent = (estimate.tokens / contextWindow) * 100;
 
 		return {
@@ -11017,8 +11054,9 @@ export class AgentSession {
 		return this._rlmSessionDir ?? this.sessionManager.getSessionArtifactDir();
 	}
 
-	private _contextWindowResolver(): ContextWindowResolver {
-		return (provider, modelId) => this._modelRegistry.find(provider, modelId)?.contextWindow;
+	private _contextEndpointResolver(): ContextEndpointResolver {
+		const settings = this.settingsManager.getCompactionSettings();
+		return (provider, modelId) => contextEndpointFor(this._modelRegistry.find(provider, modelId), settings);
 	}
 
 	/**
@@ -11028,7 +11066,7 @@ export class AgentSession {
 	 * dirs, so the tree survives child disposal and session resume.
 	 */
 	getContextTree(): ContextTreeNode {
-		const resolveContextWindow = this._contextWindowResolver();
+		const resolveModel = this._contextEndpointResolver();
 		const { ownUsage, totalUsage } = computeOwnAndTotalUsage(
 			this.sessionManager.getBranch(),
 			this.sessionManager.getEntries(),
@@ -11038,8 +11076,7 @@ export class AgentSession {
 		const liveIds = new Set<string>();
 		for (const run of this._activeRlmChildRuns.values()) {
 			liveIds.add(run.id);
-			const node =
-				run.session?.getContextTree() ?? loadContextTreeChildFromDisk(run.sessionDir, resolveContextWindow);
+			const node = run.session?.getContextTree() ?? loadContextTreeChildFromDisk(run.sessionDir, resolveModel);
 			children.push({
 				...(node ?? {
 					ownUsage: emptyUsage(),
@@ -11051,7 +11088,7 @@ export class AgentSession {
 				status: run.status,
 			});
 		}
-		children.push(...loadContextTreeChildrenFromDisk(this._rlmSessionDirForReading(), resolveContextWindow, liveIds));
+		children.push(...loadContextTreeChildrenFromDisk(this._rlmSessionDirForReading(), resolveModel, liveIds));
 
 		const model = this.model;
 		return {

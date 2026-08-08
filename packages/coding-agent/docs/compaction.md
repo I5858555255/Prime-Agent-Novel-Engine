@@ -1,6 +1,6 @@
 # Compaction & Branch Summarization
 
-LLMs have limited context windows. When conversations grow too long, Prime Agent uses compaction to summarize older content while preserving recent work. This page covers both auto-compaction and branch summarization.
+LLMs have limited context windows. When conversations grow too long, Prime Agent either asks OpenAI Responses to compact its input or summarizes older content locally. This page covers automatic server-side compaction, local compaction, and branch summarization.
 
 **Source files:**
 - [`compaction.ts`](../src/core/compaction/compaction.ts) - Auto-compaction logic
@@ -13,30 +13,98 @@ For TypeScript definitions in your project, inspect `node_modules/@earendil-work
 
 ## Overview
 
-Prime Agent has two summarization mechanisms:
+Prime Agent has three context-management mechanisms:
 
 | Mechanism | Trigger | Purpose |
 |-----------|---------|---------|
-| Compaction | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |
+| OpenAI Responses server-side compaction | The request carries a `compact_threshold` and the input crosses it | OpenAI replaces the older input with one opaque encrypted checkpoint |
+| Local compaction | The request carries no `compact_threshold` and the context crosses the threshold, or the context overflows, or `/compact` or the model asks for it | Summarize old messages to free up context |
 | Branch summarization | `/tree` navigation | Preserve context when switching branches |
 
-Both use the same structured summary format and track file operations cumulatively.
+Local compaction and branch summarization use the same structured summary format and track file operations cumulatively.
 
 ## Compaction
 
 ### When It Triggers
 
-Auto-compaction triggers when:
+Both automatic paths use the same number:
 
 ```
-contextTokens > contextWindow - reserveTokens
+contextWindow - reserveTokens
 ```
 
 By default, `reserveTokens` is 16384 tokens (configurable in `~/.prime/agent/settings.json` or `<project-dir>/.prime/agent/settings.json`). This leaves room for the LLM's response.
 
-You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary — for example `/compact focus on the auth refactor, remember the exact migration command`. The instructions are passed to the summarization prompt with high priority, persisted on the `CompactionEntry`, and shown on the `[compaction]` message in the TUI.
+`getSentServerCompactionThreshold()` in [`compaction.ts`](../src/core/compaction/compaction.ts) resolves that number once and answers one question: does the request carry a `compact_threshold`? It returns the threshold when all three of these hold, and `undefined` otherwise:
+
+1. `compaction.enabled` is `true`.
+2. The model's endpoint takes `context_management` (see below).
+3. `contextWindow - reserveTokens` is a positive integer.
+
+When it returns a threshold, the request carries it and OpenAI compacts the input once the input crosses it. Prime Agent runs no local threshold compaction for that model. When it returns `undefined`, the request carries no `context_management` and the local threshold applies: Prime Agent summarizes once `contextTokens > contextWindow - reserveTokens`.
+
+`sdk.ts` builds the request from that one answer and `AgentSession` decides the local threshold from it, so the two cannot disagree. A session never stops a turn waiting for a compaction that never starts.
+
+The third condition applies to a real model. `openai/gpt-4` has an 8192-token context window, which is smaller than the default 16384-token reserve, so no positive threshold exists to send. That model keeps local threshold compaction. So does any model whose `reserveTokens` is set at or above its context window.
+
+Setting `compaction.enabled` to `false` turns off both automatic paths. The request then carries no `compact_threshold`, so it also replays no checkpoint and sends the whole local history.
+
+Manual compaction still works either way. Trigger it with `/compact [instructions]`, where optional instructions focus the summary — for example `/compact focus on the auth refactor, remember the exact migration command`. The instructions are passed to the summarization prompt with high priority, persisted on the `CompactionEntry`, and shown on the `[compaction]` message in the TUI.
+
+### OpenAI Responses Server-Side Compaction
+
+#### Which endpoints receive it
+
+`compat.supportsServerCompaction` decides, and its default is a rule about endpoints rather than a list of model names:
+
+- `api: "openai-responses"` on provider `openai` at `https://api.openai.com/v1`: enabled.
+- `api: "openai-codex-responses"` on provider `openai-codex` at `https://chatgpt.com/backend-api`: enabled.
+- Every other model, including a proxy in front of either API: disabled.
+
+Set `compat.supportsServerCompaction` on the provider or the model to override the default in either direction. A checkpoint is opaque and endpoint-specific, which is why a custom endpoint has to opt in by hand.
+
+The default enables the field for every model id on those endpoints, including ids that predate server-side compaction: `gpt-4-turbo`, the `gpt-4o` and `gpt-4.1` families, `o1`, `o1-pro`, `o3`, `o3-mini`, `o3-pro`, and `o4-mini`. How those models respond to `context_management` is not established here. Prime Agent does not remove the field and retry if a request is rejected. Set `compat.supportsServerCompaction: false` on such a model to stop sending it and keep local threshold compaction.
+
+#### The request
+
+Prime Agent adds one entry to the normal `/responses` request:
+
+```json
+{
+  "context_management": [
+    { "type": "compaction", "compact_threshold": 255616 }
+  ]
+}
+```
+
+Requests remain stateless: Prime Agent sends `store: false` and chains the input array rather than using `previous_response_id`.
+
+#### The checkpoint
+
+When OpenAI returns a compaction item, Prime Agent stores the opaque item and the endpoint that produced it on the assistant message. A later request replays that checkpoint only when it carries a `compact_threshold` and the provider, api, model id, and base URL all still match on an endpoint that is still enabled. `findOpenAICompactionCheckpoint()` in pi-ai is the one implementation of that rule; the request builder and the context-size estimate both call it, so they cannot disagree about what the model receives. That request is built as: the checkpoint item, then the current system or developer instructions, then every message from the turn that produced the checkpoint onwards. The Codex transport carries the same fresh instructions in the top-level `instructions` field instead. Nothing from before that turn is sent, so stale pre-checkpoint instructions and input are dropped.
+
+The turn that produced the checkpoint is replayed whole. The content blocks it emitted before the checkpoint are therefore sent twice: once as blocks, and once inside the checkpoint's `encrypted_content`. That is redundant rather than wrong. It has not been verified against the live API.
+
+Prime Agent keeps the complete local session history. Switching models still has the original messages, so a model that cannot read another endpoint's checkpoint receives the full history instead.
+
+Local compaction removes the checkpoints from the messages it retains. A retained checkpoint would make the next request replay it and drop everything before it, and the new summary sits first in the rebuilt context, so the summary would be dropped with the rest. Manual `/compact`, model-requested compaction, and one-shot context-overflow recovery all rebuild the context this way.
+
+The implementation follows OpenAI's [compaction guide](https://developers.openai.com/api/docs/guides/compaction).
+
+#### Context size after a checkpoint
+
+A response that produced a checkpoint reports no usable context size. The server shortened its input mid-turn and did not report the new size. Prime Agent then reports the context as unknown instead of a number that is wrong by the size of the checkpoint. The status tray shows `context unknown`, and `/context` shows `unknown after compaction` for the session and for any subagent row in the same state.
+
+The size stays unknown until a response measures the same input the next request will send. `estimateContextTokens()` walks back to the newest assistant response whose own request sent the same message prefix, then adds a chars/4 estimate for the messages after it:
+
+- When the next request replays no checkpoint, any response that itself replayed no checkpoint measured the same prefix. A response from a different model counts, so switching models does not lose the number.
+- When the next request replays a checkpoint, only a response from the same model whose own request also replayed a checkpoint at that endpoint measured the same prefix.
+
+Anything else is rejected, because a checkpoint changes the input size by an amount the server never reports. If the walk rejects every response and finds no replacement, the size is unknown. The one whole-history chars/4 estimate left is the case that rejected nothing: a conversation with no reported usage anywhere.
 
 ### How It Works
+
+The following steps describe local compaction:
 
 1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.prime/agent/settings.json` or `<project-dir>/.prime/agent/settings.json`) is reached
 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point

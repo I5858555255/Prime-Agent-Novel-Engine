@@ -6,6 +6,7 @@ import { SessionManager } from "../../src/core/session-manager.js";
 import { createHarness, getMessageText, type Harness } from "./harness.js";
 
 type SessionWithCompactionInternals = {
+	_pendingRequestedCompaction?: { customInstructions?: string };
 	_checkCompaction: (
 		assistantMessage: AssistantMessage,
 		skipAbortedCheck?: boolean,
@@ -1221,6 +1222,83 @@ describe("AgentSession compaction characterization", () => {
 
 		expect(belowThresholdSpy).not.toHaveBeenCalled();
 		expect(disabledSpy).not.toHaveBeenCalled();
+	});
+
+	it("leaves automatic threshold compaction to supported or opted-in OpenAI Responses endpoints", async () => {
+		const harness = await createHarness({
+			api: "openai-responses",
+			provider: "openai",
+			settings: { compaction: { enabled: true, reserveTokens: 1000 } },
+			models: [{ id: "future-responses-model", contextWindow: 200_000 }],
+		});
+		harnesses.push(harness);
+		Object.assign(harness.getModel(), { baseUrl: "https://api.openai.com/v1" });
+		const internals = harness.session as unknown as SessionWithCompactionInternals;
+		const runAutoCompactionSpy = vi.spyOn(internals, "_runAutoCompaction").mockResolvedValue();
+
+		await internals._checkCompaction(
+			createAssistant(harness, { stopReason: "stop", totalTokens: 200_000, timestamp: Date.now() }),
+		);
+
+		Object.assign(harness.getModel(), {
+			baseUrl: "https://proxy.example/v1",
+			compat: { supportsServerCompaction: true },
+		});
+		await internals._checkCompaction(
+			createAssistant(harness, { stopReason: "stop", totalTokens: 200_000, timestamp: Date.now() + 1 }),
+		);
+
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
+	});
+
+	it("uses local threshold compaction when server compaction is explicitly disabled", async () => {
+		const harness = await createHarness({
+			api: "openai-responses",
+			provider: "openai",
+			settings: { compaction: { enabled: true, reserveTokens: 1000 } },
+			models: [{ id: "future-responses-model", contextWindow: 200_000 }],
+		});
+		harnesses.push(harness);
+		Object.assign(harness.getModel(), {
+			baseUrl: "https://api.openai.com/v1",
+			compat: { supportsServerCompaction: false },
+		});
+		const internals = harness.session as unknown as SessionWithCompactionInternals;
+		const runAutoCompactionSpy = vi.spyOn(internals, "_runAutoCompaction").mockResolvedValue();
+
+		await internals._checkCompaction(
+			createAssistant(harness, { stopReason: "stop", totalTokens: 200_000, timestamp: Date.now() }),
+		);
+
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
+	});
+
+	it("keeps overflow and requested local compaction for server-supported models", async () => {
+		const harness = await createHarness({
+			api: "openai-responses",
+			provider: "openai",
+			settings: { compaction: { enabled: true, reserveTokens: 1000 } },
+			models: [{ id: "future-responses-model", contextWindow: 200_000 }],
+		});
+		harnesses.push(harness);
+		Object.assign(harness.getModel(), { baseUrl: "https://api.openai.com/v1" });
+		const internals = harness.session as unknown as SessionWithCompactionInternals;
+		const runAutoCompactionSpy = vi.spyOn(internals, "_runAutoCompaction").mockResolvedValue();
+
+		await internals._checkCompaction(
+			createAssistant(harness, {
+				stopReason: "error",
+				errorMessage: "prompt is too long",
+				timestamp: Date.now(),
+			}),
+		);
+		expect(runAutoCompactionSpy).toHaveBeenLastCalledWith("overflow", true);
+
+		internals._pendingRequestedCompaction = {};
+		await internals._checkCompaction(
+			createAssistant(harness, { stopReason: "stop", totalTokens: 200_000, timestamp: Date.now() + 1 }),
+		);
+		expect(runAutoCompactionSpy).toHaveBeenLastCalledWith("requested", false);
 	});
 
 	it("rolls back failed outcome persistence without breaking the persisted branch", async () => {

@@ -19,7 +19,14 @@ export type {
 } from "./providers/openai-codex-responses.js";
 export type { OpenAICompletionsOptions } from "./providers/openai-completions.js";
 export type { OpenAIResponsesOptions } from "./providers/openai-responses.js";
+export type {
+	CheckpointCandidateMessage,
+	CompactionModel,
+	OpenAICompactionRequest,
+} from "./providers/openai-responses-shared.js";
+export { findOpenAICompactionCheckpoint, supportsOpenAIServerCompaction } from "./providers/openai-responses-shared.js";
 export * from "./providers/register-builtins.js";
+export { isReplayedAssistantMessage } from "./providers/transform-messages.js";
 export * from "./session-resources.js";
 export * from "./stream.js";
 export * from "./types.js";

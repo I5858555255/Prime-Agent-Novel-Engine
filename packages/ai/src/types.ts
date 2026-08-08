@@ -86,6 +86,8 @@ export interface StreamOptions {
 	 */
 	transport?: Transport;
 	serviceTier?: ServiceTier;
+	/** Provider-managed compaction threshold. Ignored by providers that do not support it. */
+	serverCompactionThreshold?: number;
 	/**
 	 * Prompt cache retention preference. Providers map this to their supported values.
 	 * Default: "short".
@@ -213,6 +215,18 @@ export interface Usage {
 	};
 }
 
+/** Opaque context checkpoint returned by OpenAI server-side compaction. */
+export interface OpenAICompactionItem {
+	type: "compaction";
+	id?: string;
+	encrypted_content: string;
+}
+
+export interface OpenAICompactionCheckpoint {
+	item: OpenAICompactionItem;
+	sourceBaseUrl: string;
+}
+
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
 export interface UserMessage {
@@ -229,6 +243,19 @@ export interface AssistantMessage {
 	model: string;
 	responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
+	/**
+	 * Opaque checkpoint from OpenAI server-side compaction. Replayed only to the same
+	 * provider, model, and endpoint that created it. Its presence also means the server
+	 * shortened the context mid-turn without reporting the new size, so `usage` on this
+	 * message is not a context size.
+	 */
+	openaiCompaction?: OpenAICompactionCheckpoint;
+	/**
+	 * Endpoint whose compaction checkpoint shortened the context this message's `usage`
+	 * measured. The request carried only the messages after that checkpoint, so `usage`
+	 * is a context size for this endpoint and no other.
+	 */
+	contextTokenBaseUrl?: string;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
@@ -332,6 +359,13 @@ export interface OpenAIResponsesCompat {
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
 	supportsLongCacheRetention?: boolean;
+	/** Whether the endpoint supports server-side compaction. Defaults to true only for the official endpoint. */
+	supportsServerCompaction?: boolean;
+}
+
+export interface OpenAICodexResponsesCompat {
+	/** Whether the endpoint supports server-side compaction. Defaults to true only for the official endpoint. */
+	supportsServerCompaction?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */
@@ -465,7 +499,9 @@ export interface Model<TApi extends Api> {
 		? OpenAICompletionsCompat
 		: TApi extends "openai-responses"
 			? OpenAIResponsesCompat
-			: TApi extends "anthropic-messages"
-				? AnthropicMessagesCompat
-				: never;
+			: TApi extends "openai-codex-responses"
+				? OpenAICodexResponsesCompat
+				: TApi extends "anthropic-messages"
+					? AnthropicMessagesCompat
+					: never;
 }
