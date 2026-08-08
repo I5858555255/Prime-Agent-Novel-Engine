@@ -11,10 +11,12 @@ import { fileURLToPath } from "node:url";
 import { getPackageDir } from "../../config.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 
-const BOOTSTRAP_SCHEMA = 8;
+const BOOTSTRAP_SCHEMA = 9;
 const PYTHON_VERSION = "3.11";
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
+const KERNEL_LOCK_DIR = "kernel";
+const KERNEL_LOCK_FILE = "uv.lock";
 // Serializes the kernel's user namespace so it can be revived across session
 // resume. Internal-only; intentionally not surfaced to the model as an import.
 const STATE_SNAPSHOT_REQUIREMENT = "dill";
@@ -79,8 +81,16 @@ interface BootstrapVersion {
 	ipykernel?: string;
 	runtime?: string;
 	snapshot?: string;
+	kernelLock?: string;
 	extraUvArgs?: string[];
 	pythonSkills?: BootstrapPythonSkill[];
+}
+
+interface KernelLock {
+	projectDir: string;
+	digest: string;
+	platform: string;
+	requireWheels: boolean;
 }
 
 function errorMessage(error: unknown): string {
@@ -371,10 +381,14 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 	}
 }
 
-function run(command: string, args: string[], options: { stdio?: "ignore" | "inherit" } = {}): Promise<void> {
+function run(
+	command: string,
+	args: string[],
+	options: { stdio?: "ignore" | "inherit"; env?: NodeJS.ProcessEnv } = {},
+): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
-			env: process.env,
+			env: options.env ?? process.env,
 			stdio: options.stdio ?? "ignore",
 		});
 		child.on("error", reject);
@@ -589,6 +603,7 @@ async function readBootstrapVersion(venv: string): Promise<BootstrapVersion | nu
 			ipykernel: typeof parsed.ipykernel === "string" ? parsed.ipykernel : undefined,
 			runtime: typeof parsed.runtime === "string" ? parsed.runtime : undefined,
 			snapshot: typeof parsed.snapshot === "string" ? parsed.snapshot : undefined,
+			kernelLock: typeof parsed.kernelLock === "string" ? parsed.kernelLock : undefined,
 			extraUvArgs,
 			pythonSkills,
 		};
@@ -621,21 +636,27 @@ function pythonSkillsMatch(a: BootstrapPythonSkill[] | undefined, b: readonly Bo
 function bootstrapVersionCurrent(
 	version: BootstrapVersion | null,
 	runtimeIdentity: string,
+	kernelLockDigest: string,
 	pythonSkills: readonly BootstrapPythonSkill[],
 ): boolean {
 	return (
 		version !== null &&
-		bootstrapBaseVersionCurrent(version, runtimeIdentity) &&
+		bootstrapBaseVersionCurrent(version, runtimeIdentity, kernelLockDigest) &&
 		pythonSkillsMatch(version.pythonSkills, pythonSkills)
 	);
 }
 
-function bootstrapBaseVersionCurrent(version: BootstrapVersion | null, runtimeIdentity: string): boolean {
+function bootstrapBaseVersionCurrent(
+	version: BootstrapVersion | null,
+	runtimeIdentity: string,
+	kernelLockDigest: string,
+): boolean {
 	return (
 		version?.schema === BOOTSTRAP_SCHEMA &&
 		version.ipykernel === IPYKERNEL_REQUIREMENT &&
 		version.runtime === runtimeIdentity &&
 		version.snapshot === STATE_SNAPSHOT_REQUIREMENT &&
+		version.kernelLock === kernelLockDigest &&
 		extraUvArgsMatch(version.extraUvArgs, DEFAULT_RLM_EXTRA_UV_ARGS)
 	);
 }
@@ -643,6 +664,7 @@ function bootstrapBaseVersionCurrent(version: BootstrapVersion | null, runtimeId
 async function writeBootstrapVersion(
 	venv: string,
 	runtimeIdentity: string,
+	kernelLockDigest: string,
 	pythonSkills: readonly BootstrapPythonSkill[],
 ): Promise<void> {
 	const version: BootstrapVersion = {
@@ -650,6 +672,7 @@ async function writeBootstrapVersion(
 		ipykernel: IPYKERNEL_REQUIREMENT,
 		runtime: runtimeIdentity,
 		snapshot: STATE_SNAPSHOT_REQUIREMENT,
+		kernelLock: kernelLockDigest,
 		extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 		pythonSkills: [...pythonSkills],
 	};
@@ -677,6 +700,54 @@ async function resolveRuntimeSourceDir(): Promise<string | null> {
 		}
 	}
 	return null;
+}
+
+export function resolveKernelLockPlatform(platform = process.platform, arch = process.arch): string {
+	const target = `${platform}-${arch}`;
+	switch (target) {
+		case "darwin-arm64":
+			return "aarch64-apple-darwin";
+		case "darwin-x64":
+			return "x86_64-apple-darwin";
+		case "linux-arm64":
+			return "aarch64-unknown-linux-gnu";
+		case "linux-x64":
+			return "x86_64-unknown-linux-gnu";
+		case "win32-x64":
+			return "x86_64-pc-windows-msvc";
+		case "android-arm64":
+			return "aarch64-linux-android";
+		default:
+			throw new Error(
+				`the managed Python kernel is unavailable on ${target}; set PRIME_AGENT_KERNEL_PYTHON to a compatible environment`,
+			);
+	}
+}
+
+export function getKernelPythonPath(venv: string, platform = process.platform): string {
+	return platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
+}
+
+async function resolveKernelLock(): Promise<KernelLock> {
+	const sourceDir = await resolveRuntimeSourceDir();
+	if (!sourceDir) {
+		throw new Error("bundled prime-agent-runtime source is missing");
+	}
+	const projectDir = path.join(sourceDir, KERNEL_LOCK_DIR);
+	const lockPath = path.join(projectDir, KERNEL_LOCK_FILE);
+	if (!(await exists(path.join(projectDir, "pyproject.toml"))) || !(await exists(lockPath))) {
+		throw new Error(`bundled Python kernel lock is missing from ${projectDir}`);
+	}
+	return {
+		projectDir,
+		digest: fileContentHash(lockPath),
+		platform: resolveKernelLockPlatform(),
+		requireWheels: process.platform !== "android",
+	};
+}
+
+export async function resolveKernelLockDigest(): Promise<string> {
+	return (await resolveKernelLock()).digest;
 }
 
 // Identity of the runtime to be installed. For a local source checkout this is a
@@ -720,29 +791,42 @@ async function hashRuntimeSource(sourceDir: string): Promise<string> {
 
 async function bootstrapVenv(
 	venv: string,
+	kernelLock: KernelLock,
 	pythonSkills: readonly BootstrapPythonSkill[],
 	options: EnsureKernelPythonOptions,
 ): Promise<void> {
 	await mkdir(path.dirname(venv), { recursive: true });
 	const uv = await ensureUv(options);
-	const python = path.join(venv, "bin", "python");
+	const python = getKernelPythonPath(venv);
 	const sourceDir = await resolveRuntimeSourceDir();
 	const runtimeRequirement = sourceDir ?? RUNTIME_REQUIREMENT;
 	const runtimeIdentity = await resolveRuntimeIdentity();
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
-	await run(uv, [
-		"pip",
-		"install",
-		"--python",
-		python,
-		IPYKERNEL_REQUIREMENT,
-		runtimeRequirement,
-		STATE_SNAPSHOT_REQUIREMENT,
-		...DEFAULT_RLM_EXTRA_UV_ARGS,
-	]);
-	await syncPythonSkills(uv, venv, python, runtimeIdentity, pythonSkills, options);
+	const wheelArgs = kernelLock.requireWheels ? ["--no-build"] : [];
+	await run(
+		uv,
+		[
+			"sync",
+			"--project",
+			kernelLock.projectDir,
+			"--locked",
+			"--active",
+			"--no-dev",
+			"--no-install-project",
+			...wheelArgs,
+			"--exclude-newer",
+			"7 days",
+			"--python-platform",
+			kernelLock.platform,
+		],
+		{
+			env: { ...process.env, VIRTUAL_ENV: venv },
+		},
+	);
+	await run(uv, ["pip", "install", "--python", python, "--no-deps", runtimeRequirement]);
+	await syncPythonSkills(uv, venv, python, runtimeIdentity, kernelLock.digest, pythonSkills, options);
 }
 
 async function syncPythonSkills(
@@ -750,6 +834,7 @@ async function syncPythonSkills(
 	venv: string,
 	python: string,
 	runtimeIdentity: string,
+	kernelLockDigest: string,
 	pythonSkills: readonly BootstrapPythonSkill[],
 	options: EnsureKernelPythonOptions,
 ): Promise<void> {
@@ -820,14 +905,19 @@ async function syncPythonSkills(
 			);
 		}
 	}
-	await writeBootstrapVersion(venv, runtimeIdentity, installedPythonSkills);
+	await writeBootstrapVersion(venv, runtimeIdentity, kernelLockDigest, installedPythonSkills);
 }
 
-async function kernelBaseReady(python: string, venv: string, runtimeIdentity: string): Promise<boolean> {
+async function kernelBaseReady(
+	python: string,
+	venv: string,
+	runtimeIdentity: string,
+	kernelLockDigest: string,
+): Promise<boolean> {
 	return (
 		(await hasIpykernel(python)) &&
 		(await hasPrimeAgentRuntime(python)) &&
-		bootstrapBaseVersionCurrent(await readBootstrapVersion(venv), runtimeIdentity)
+		bootstrapBaseVersionCurrent(await readBootstrapVersion(venv), runtimeIdentity, kernelLockDigest)
 	);
 }
 
@@ -835,12 +925,13 @@ async function kernelReady(
 	python: string,
 	venv: string,
 	runtimeIdentity: string,
+	kernelLockDigest: string,
 	pythonSkills: readonly BootstrapPythonSkill[],
 ): Promise<boolean> {
 	return (
 		(await hasIpykernel(python)) &&
 		(await hasPrimeAgentRuntime(python)) &&
-		bootstrapVersionCurrent(await readBootstrapVersion(venv), runtimeIdentity, pythonSkills)
+		bootstrapVersionCurrent(await readBootstrapVersion(venv), runtimeIdentity, kernelLockDigest, pythonSkills)
 	);
 }
 
@@ -886,15 +977,24 @@ async function ensureKernelPythonUncached(
 	}
 
 	const venv = await resolveWritableKernelVenvDir();
-	const python = path.join(venv, "bin", "python");
+	const python = getKernelPythonPath(venv);
 	const runtimeIdentity = await resolveRuntimeIdentity();
-	if (await kernelReady(python, venv, runtimeIdentity, pythonSkills)) return python;
+	const kernelLock = await resolveKernelLock();
+	if (await kernelReady(python, venv, runtimeIdentity, kernelLock.digest, pythonSkills)) return python;
 
 	const releaseLock = await acquireBootstrapLock(venv);
 	try {
-		if (await kernelReady(python, venv, runtimeIdentity, pythonSkills)) return python;
-		if (await kernelBaseReady(python, venv, runtimeIdentity)) {
-			await syncPythonSkills(await ensureUv(options), venv, python, runtimeIdentity, pythonSkills, options);
+		if (await kernelReady(python, venv, runtimeIdentity, kernelLock.digest, pythonSkills)) return python;
+		if (await kernelBaseReady(python, venv, runtimeIdentity, kernelLock.digest)) {
+			await syncPythonSkills(
+				await ensureUv(options),
+				venv,
+				python,
+				runtimeIdentity,
+				kernelLock.digest,
+				pythonSkills,
+				options,
+			);
 			return python;
 		}
 
@@ -905,7 +1005,7 @@ async function ensureKernelPythonUncached(
 			await rm(venv, { recursive: true, force: true });
 		}
 
-		await bootstrapVenv(venv, pythonSkills, options);
+		await bootstrapVenv(venv, kernelLock, pythonSkills, options);
 	} catch (error) {
 		throw formatBootstrapFailure(error);
 	} finally {

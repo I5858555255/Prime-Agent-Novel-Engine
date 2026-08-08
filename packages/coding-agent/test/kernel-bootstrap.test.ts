@@ -9,12 +9,14 @@ import {
 	ensureKernelPython,
 	getKernelVenvDir,
 	type KernelPythonSkill,
+	resolveKernelLockDigest,
 	resolveRuntimeIdentity,
 } from "../src/core/kernel/bootstrap.js";
 
 let tempDir = "";
 let originalEnv: NodeJS.ProcessEnv;
 let runtimeIdentity = "";
+let kernelLockDigest = "";
 
 function pyprojectHash(pyprojectPath: string): string {
 	return `sha256:${createHash("sha256").update(readFileSync(pyprojectPath)).digest("hex")}`;
@@ -29,10 +31,11 @@ function writeBootstrapVersion(venv: string, pythonSkills: readonly KernelPython
 	writeFileSync(
 		join(venv, ".bootstrap-version"),
 		`${JSON.stringify({
-			schema: 8,
+			schema: 9,
 			ipykernel: "ipykernel",
 			runtime: runtimeIdentity,
 			snapshot: "dill",
+			kernelLock: kernelLockDigest,
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 			pythonSkills: pythonSkills.map((skill) => ({
 				importName: skill.importName,
@@ -132,6 +135,10 @@ function installFakeUv(): string {
 			'  chmod +x "$venv/bin/python"',
 			"  exit 0",
 			"fi",
+			'if [ "$1" = "sync" ]; then',
+			'  [ "$VIRTUAL_ENV" != "" ]',
+			"  exit 0",
+			"fi",
 			'if [ "$1" = "pip" ]; then',
 			'  for arg in "$@"; do',
 			'    if [ "$UV_FAIL_ARG" != "" ] && [ "$arg" = "$UV_FAIL_ARG" ]; then',
@@ -150,6 +157,7 @@ function installFakeUv(): string {
 describe("kernel bootstrap", () => {
 	beforeEach(async () => {
 		runtimeIdentity = await resolveRuntimeIdentity();
+		kernelLockDigest = await resolveKernelLockDigest();
 		originalEnv = { ...process.env };
 		tempDir = mkdtempSync(join(tmpdir(), "prime-agent-kernel-bootstrap-"));
 		process.env.HOME = tempDir;
@@ -174,7 +182,7 @@ describe("kernel bootstrap", () => {
 		expect(getKernelVenvDir()).toBe(venv);
 	});
 
-	it("bootstraps a missing venv with uv, ipykernel, prime-agent-runtime, and default extra packages", async () => {
+	it("bootstraps a missing venv from the locked base runtime", async () => {
 		const logPath = installFakeUv();
 		const venv = join(tempDir, "kernel-venv");
 		process.env.PRIME_AGENT_KERNEL_VENV = venv;
@@ -184,19 +192,18 @@ describe("kernel bootstrap", () => {
 		const log = readFileSync(logPath, "utf8");
 		expect(log).toContain("python install 3.11");
 		expect(log).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(log).toContain("sync --project");
+		expect(log).toContain("--locked --active --no-dev --no-install-project --no-build --exclude-newer 7 days");
 		expect(log).toContain("pip install --python");
-		expect(log).toContain("ipykernel");
+		expect(log).toContain("--no-deps");
 		expect(log).toContain("prime-agent-runtime");
-		expect(log).toContain("dill");
-		for (const uvArg of DEFAULT_RLM_EXTRA_UV_ARGS) {
-			expect(log).toContain(uvArg);
-		}
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version).toEqual({
-			schema: 8,
+			schema: 9,
 			ipykernel: "ipykernel",
 			runtime: runtimeIdentity,
 			snapshot: "dill",
+			kernelLock: kernelLockDigest,
 			extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 			pythonSkills: [],
 		});
@@ -436,10 +443,11 @@ dependencies = ["httpx"]
 		writeFileSync(
 			join(venv, ".bootstrap-version"),
 			`${JSON.stringify({
-				schema: 8,
+				schema: 9,
 				ipykernel: "ipykernel",
 				runtime: "sha256:stale",
 				snapshot: "dill",
+				kernelLock: kernelLockDigest,
 				extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 				pythonSkills: [],
 			})}\n`,
