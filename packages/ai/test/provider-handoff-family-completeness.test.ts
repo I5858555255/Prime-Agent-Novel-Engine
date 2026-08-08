@@ -7,12 +7,15 @@ import { getApiProviders } from "../src/api-registry.js";
 import { resetApiProviders } from "../src/providers/register-builtins.js";
 import type { Api, Model, SimpleStreamOptions, ThinkingLevel, Tool } from "../src/types.js";
 import {
-	getCatalogProviderHandoffModels,
 	loadProviderHandoffFamilyFile,
+	PROVIDER_HANDOFF_FAMILY_SCHEMA_VERSION,
 	parseProviderHandoffFamilyFile,
 	type ResolvedProviderHandoffFamily,
 	resolveProviderHandoffFamilies,
+	STABLE_HANDOFF_APIS,
+	STABLE_HANDOFF_PROVIDERS,
 } from "./provider-handoff-families.js";
+import { getCatalogProviderHandoffModels } from "./provider-handoff-family-catalog-audit.js";
 import { createHandoffContext, loadProviderHandoffFixtureFile } from "./provider-handoff-fixtures.js";
 import { getTargetTransportAttempts, resetTargetTransportAttempts } from "./provider-handoff-target-transport.js";
 
@@ -49,51 +52,93 @@ describe("provider handoff behavior-family completeness", () => {
 		const serialized = JSON.stringify(familyFile);
 		expect(JSON.stringify(parseProviderHandoffFamilyFile(serialized))).toBe(serialized);
 		expect(() =>
-			parseProviderHandoffFamilyFile(serialized.replace('"schemaVersion":1', '"schemaVersion":2')),
+			parseProviderHandoffFamilyFile(serialized.replace('"schemaVersion":2', '"schemaVersion":3')),
 		).toThrow("schema validation");
 	});
 
-	it("requires one representative for every effective catalog payload shape", async () => {
+	it("resolves snapshotted behavior after a model is removed from the generated catalog", () => {
+		const removedCatalogFamily = familyFile.families.find(
+			(family) => family.provider === "github-copilot" && family.model === "gemini-2.5-pro",
+		);
+		if (!removedCatalogFamily) throw new Error("Missing GitHub Copilot catalog-removal regression family");
+
+		const renamedFamily = {
+			...removedCatalogFamily,
+			model: "removed-from-generated-catalog",
+		};
+		const [resolved] = resolveProviderHandoffFamilies({
+			...familyFile,
+			families: [renamedFamily],
+		});
+
+		expect(resolved.model.id).toBe("removed-from-generated-catalog");
+		expect(resolved.model.api).toBe(removedCatalogFamily.api);
+		expect(resolved.model.provider).toBe(removedCatalogFamily.provider);
+	});
+
+	it("covers every stable built-in API and provider definition", () => {
+		resetApiProviders();
+		expect([...new Set(getApiProviders().map(({ api }) => api))].sort()).toEqual([...STABLE_HANDOFF_APIS].sort());
+		expect([...new Set(familyFile.families.map(({ api }) => api))].sort()).toEqual([...STABLE_HANDOFF_APIS].sort());
+		expect([...new Set(familyFile.families.map(({ provider }) => provider))].sort()).toEqual(
+			[...STABLE_HANDOFF_PROVIDERS].sort(),
+		);
+	});
+
+	it("requires one representative for every snapshotted payload shape", async () => {
 		const syntheticFamilies = resolvedFamilies.filter(({ fixture }) => fixture.synthetic);
 		expect(
 			new Set(syntheticFamilies.map(({ fixture }) => `${fixture.api}|${fixture.provider}|${fixture.model}`)),
 		).toEqual(REQUIRED_SYNTHETIC_FAMILIES);
 
 		resetApiProviders();
-		const expectedCandidates = [...getCatalogProviderHandoffModels(), ...syntheticFamilies];
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		let expectedGroups: Map<string, ResolvedProviderHandoffFamily[]>;
 		let manifestGroups: Map<string, ResolvedProviderHandoffFamily[]>;
 		try {
-			expectedGroups = await groupByFingerprint(expectedCandidates);
 			manifestGroups = await groupByFingerprint(resolvedFamilies);
 		} finally {
 			errorSpy.mockRestore();
 		}
 		const duplicateManifestGroups = [...manifestGroups.values()].filter((group) => group.length > 1);
+		expect(duplicateManifestGroups).toEqual([]);
+		expect(new Set(resolvedFamilies.map(({ model }) => model.api)).size).toBe(STABLE_HANDOFF_APIS.length);
+	});
+
+	it("compares the manifest with the live catalog only during an explicit audit", async () => {
+		const auditRequested =
+			process.env.AUDIT_PROVIDER_HANDOFF_CATALOG === "1" || process.env.UPDATE_PROVIDER_HANDOFF_FAMILIES === "1";
+		if (!auditRequested) return;
+
+		const syntheticFamilies = resolvedFamilies.filter(({ fixture }) => fixture.synthetic);
+		resetApiProviders();
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		let expectedGroups: Map<string, ResolvedProviderHandoffFamily[]>;
+		let manifestGroups: Map<string, ResolvedProviderHandoffFamily[]>;
+		try {
+			expectedGroups = await groupByFingerprint([...getCatalogProviderHandoffModels(), ...syntheticFamilies]);
+			manifestGroups = await groupByFingerprint(resolvedFamilies);
+		} finally {
+			errorSpy.mockRestore();
+		}
+
 		const expectedFingerprints = [...expectedGroups.keys()].sort();
 		const manifestFingerprints = [...manifestGroups.keys()].sort();
 		const fingerprintsDiffer = JSON.stringify(manifestFingerprints) !== JSON.stringify(expectedFingerprints);
 		const suggestedManifest = {
-			schemaVersion: 1,
+			schemaVersion: PROVIDER_HANDOFF_FAMILY_SCHEMA_VERSION,
 			families: [...expectedGroups.values()].map(([family]) => family.fixture),
 		};
-		if (
-			(duplicateManifestGroups.length > 0 || fingerprintsDiffer) &&
-			process.env.UPDATE_PROVIDER_HANDOFF_FAMILIES === "1"
-		) {
+		if (fingerprintsDiffer && process.env.UPDATE_PROVIDER_HANDOFF_FAMILIES === "1") {
 			const fixtureUrl = new URL("./fixtures/provider-handoffs/v1/families.json", import.meta.url);
 			writeFileSync(fixtureUrl, `${JSON.stringify(suggestedManifest, null, "\t")}\n`);
 			return;
 		}
 
-		expect(duplicateManifestGroups).toEqual([]);
 		if (fingerprintsDiffer) {
 			throw new Error(
 				`Provider handoff payload-family completeness failure. Suggested manifest:\n${JSON.stringify(suggestedManifest, null, 2)}`,
 			);
 		}
-		expect(new Set(resolvedFamilies.map(({ model }) => model.api)).size).toBe(9);
 	});
 });
 

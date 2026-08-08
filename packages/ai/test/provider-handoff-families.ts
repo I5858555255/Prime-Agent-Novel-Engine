@@ -1,8 +1,62 @@
 import { readFileSync } from "node:fs";
 import Type, { type Static } from "typebox";
 import Schema from "typebox/schema";
-import { MODELS } from "../src/models.generated.js";
-import type { Api, Model } from "../src/types.js";
+import type { Api, KnownApi, KnownProvider, Model } from "../src/types.js";
+
+export const PROVIDER_HANDOFF_FAMILY_SCHEMA_VERSION = 2;
+
+export const STABLE_HANDOFF_APIS = requireAllKnownApis(
+	[
+		"anthropic-messages",
+		"azure-openai-responses",
+		"bedrock-converse-stream",
+		"google-generative-ai",
+		"google-vertex",
+		"mistral-conversations",
+		"openai-codex-responses",
+		"openai-completions",
+		"openai-responses",
+	] as const,
+	{},
+);
+
+export const STABLE_HANDOFF_PROVIDERS = requireAllKnownProviders(
+	[
+		"amazon-bedrock",
+		"anthropic",
+		"azure-openai-responses",
+		"cerebras",
+		"cloudflare-ai-gateway",
+		"cloudflare-workers-ai",
+		"deepseek",
+		"fireworks",
+		"github-copilot",
+		"google",
+		"google-vertex",
+		"groq",
+		"huggingface",
+		"kimi-coding",
+		"minimax",
+		"minimax-cn",
+		"mistral",
+		"moonshotai",
+		"moonshotai-cn",
+		"openai",
+		"openai-codex",
+		"opencode",
+		"opencode-go",
+		"openrouter",
+		"prime-inference",
+		"vercel-ai-gateway",
+		"xai",
+		"xiaomi",
+		"xiaomi-token-plan-ams",
+		"xiaomi-token-plan-cn",
+		"xiaomi-token-plan-sgp",
+		"zai",
+	] as const,
+	{},
+);
 
 const handoffApiSchema = Type.Union([
 	Type.Literal("anthropic-messages"),
@@ -16,37 +70,54 @@ const handoffApiSchema = Type.Union([
 	Type.Literal("openai-responses"),
 ]);
 
+const modelMetadataSchema = Type.Object(
+	{
+		name: Type.String({ minLength: 1 }),
+		baseUrl: Type.String(),
+		reasoning: Type.Boolean(),
+		thinkingLevelMap: Type.Optional(Type.Record(Type.String(), Type.Union([Type.String(), Type.Null()]))),
+		input: Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]), {
+			minItems: 1,
+			uniqueItems: true,
+		}),
+		cost: Type.Object(
+			{
+				input: Type.Number(),
+				output: Type.Number(),
+				cacheRead: Type.Number(),
+				cacheWrite: Type.Number(),
+			},
+			{ additionalProperties: false },
+		),
+		contextWindow: Type.Number(),
+		maxTokens: Type.Number(),
+		featured: Type.Optional(Type.Boolean()),
+		headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+		compat: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+	},
+	{ additionalProperties: false },
+);
+
+const providerHandoffFamilySchema = Type.Object(
+	{
+		api: handoffApiSchema,
+		provider: Type.String({ minLength: 1 }),
+		model: Type.String({ minLength: 1 }),
+		synthetic: Type.Boolean(),
+		metadata: modelMetadataSchema,
+	},
+	{ additionalProperties: false },
+);
+
 const providerHandoffFamilyFileSchema = Type.Object(
 	{
-		schemaVersion: Type.Literal(1),
-		families: Type.Array(
-			Type.Object(
-				{
-					api: handoffApiSchema,
-					provider: Type.String({ minLength: 1 }),
-					model: Type.String({ minLength: 1 }),
-					synthetic: Type.Boolean(),
-				},
-				{ additionalProperties: false },
-			),
-			{ minItems: 1 },
-		),
+		schemaVersion: Type.Literal(PROVIDER_HANDOFF_FAMILY_SCHEMA_VERSION),
+		families: Type.Array(providerHandoffFamilySchema, { minItems: 1 }),
 	},
 	{ additionalProperties: false },
 );
 
 const providerHandoffFamilyFileValidator = Schema.Compile(providerHandoffFamilyFileSchema);
-const supportedHandoffApis = new Set<string>([
-	"anthropic-messages",
-	"azure-openai-responses",
-	"bedrock-converse-stream",
-	"google-generative-ai",
-	"google-vertex",
-	"mistral-conversations",
-	"openai-codex-responses",
-	"openai-completions",
-	"openai-responses",
-]);
 
 export type ProviderHandoffFamilyFile = Static<typeof providerHandoffFamilyFileSchema>;
 export type ProviderHandoffFamily = ProviderHandoffFamilyFile["families"][number];
@@ -72,60 +143,39 @@ export function loadProviderHandoffFamilyFile(): ProviderHandoffFamilyFile {
 }
 
 export function resolveProviderHandoffFamilies(file: ProviderHandoffFamilyFile): ResolvedProviderHandoffFamily[] {
-	const catalog = MODELS as unknown as Record<string, Record<string, Model<Api>>>;
-	return file.families.map((fixture) => {
-		if (fixture.synthetic) {
-			return { fixture, model: createSyntheticModel(fixture) };
-		}
-		const model = catalog[fixture.provider]?.[fixture.model];
-		if (!model) throw new Error(`Unknown provider handoff family model: ${fixture.provider}/${fixture.model}`);
-		if (model.api !== fixture.api) {
-			throw new Error(
-				`Provider handoff family API mismatch for ${fixture.provider}/${fixture.model}: ${model.api} != ${fixture.api}`,
-			);
-		}
-		return { fixture, model };
-	});
+	return file.families.map((fixture) => ({
+		fixture,
+		model: {
+			id: fixture.model,
+			api: fixture.api,
+			provider: fixture.provider,
+			...fixture.metadata,
+		} as Model<Api>,
+	}));
 }
 
-export function getCatalogProviderHandoffModels(): ResolvedProviderHandoffFamily[] {
-	const catalog = MODELS as unknown as Record<string, Record<string, Model<Api>>>;
-	const families: ResolvedProviderHandoffFamily[] = [];
-	for (const [provider, models] of Object.entries(catalog)) {
-		for (const model of Object.values(models)) {
-			if (!supportedHandoffApis.has(model.api)) {
-				throw new Error(`Unsupported catalog handoff API: ${model.api}`);
-			}
-			families.push({
-				fixture: {
-					api: model.api as ProviderHandoffFamily["api"],
-					provider,
-					model: model.id,
-					synthetic: false,
-				},
-				model,
-			});
-		}
-	}
-	return families;
+export function snapshotProviderHandoffFamily(model: Model<Api>, synthetic: boolean): ProviderHandoffFamily {
+	const serializedModel = JSON.parse(JSON.stringify(model)) as Record<string, unknown>;
+	const { id, api, provider, ...metadata } = serializedModel;
+	const parsed = parseProviderHandoffFamilyFile(
+		JSON.stringify({
+			schemaVersion: PROVIDER_HANDOFF_FAMILY_SCHEMA_VERSION,
+			families: [{ api, provider, model: id, synthetic, metadata }],
+		}),
+	);
+	return parsed.families[0];
 }
 
-function createSyntheticModel(fixture: ProviderHandoffFamily): Model<Api> {
-	if (fixture.api !== "google-generative-ai") {
-		throw new Error(
-			`Unsupported synthetic provider handoff family: ${fixture.api}/${fixture.provider}/${fixture.model}`,
-		);
-	}
-	return {
-		id: fixture.model,
-		name: `Synthetic ${fixture.model}`,
-		api: fixture.api,
-		provider: fixture.provider,
-		baseUrl: "http://127.0.0.1:9",
-		reasoning: true,
-		input: ["text", "image"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 32_000,
-		maxTokens: 4_096,
-	};
+function requireAllKnownApis<const T extends readonly KnownApi[]>(
+	apis: T,
+	_missing: Record<Exclude<KnownApi, T[number]>, never>,
+): T {
+	return apis;
+}
+
+function requireAllKnownProviders<const T extends readonly KnownProvider[]>(
+	providers: T,
+	_missing: Record<Exclude<KnownProvider, T[number]>, never>,
+): T {
+	return providers;
 }
