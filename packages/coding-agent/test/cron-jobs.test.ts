@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -118,6 +118,7 @@ describe("five-field cron semantics", () => {
 			"0 0 * *",
 			"0 0 * * MONDAY",
 			"0 0 * * 1-5/0",
+			"0 0 * * 1/2",
 			"0 0 * * 1//2",
 			"0 0 * * 1,",
 			"0 0 * 13 *",
@@ -559,6 +560,46 @@ describe("AgentCronJobStore", () => {
 			nextRunAt: expectedNextRunAt,
 			updatedAt: normalizationNow.toISOString(),
 		});
+	});
+
+	it("normalizes a legacy session artifact registered after the scheduler starts empty", () => {
+		const root = makeTempDir(tempDirs);
+		const sessionId = "late-session";
+		const artifactDir = join(root, "session-artifacts", sessionId);
+		const artifactPath = join(artifactDir, SESSION_SCHEDULED_JOBS_FILENAME);
+		const normalizationNow = new Date(2026, 0, 1, 0, 0);
+		const activeCron = makePersistedScheduleJob("late-active-cron", {
+			sessionId,
+			nextRunAt: new Date(2026, 5, 1, 0, 0).toISOString(),
+			schedule: { kind: "cron", expression: "0 0 1 * 1" },
+		});
+		mkdirSync(artifactDir, { recursive: true });
+		writeFileSync(artifactPath, `${JSON.stringify({ jobs: [activeCron], dispatches: [] }, null, 2)}\n`);
+		const store = AgentCronJobStore.forSessionArtifacts();
+		const scheduler = new AgentCronScheduler(store, {
+			now: () => normalizationNow,
+			runJob: async () => undefined,
+		});
+		scheduler.start();
+
+		expect(store.registerSessionArtifact(sessionId, artifactDir)).toBe(true);
+		expect(store.recoverSessionArtifact(sessionId, normalizationNow)).toEqual([]);
+		scheduler.wake();
+		expect(store.list()).toEqual([
+			expect.objectContaining({
+				id: activeCron.id,
+				nextRunAt: new Date(2026, 0, 5, 0, 0).toISOString(),
+				updatedAt: normalizationNow.toISOString(),
+			}),
+		]);
+		expect(JSON.parse(readFileSync(artifactPath, "utf8"))).toMatchObject({ scheduleSemanticsRevision: 1 });
+
+		const normalizedFile = readFileSync(artifactPath, "utf8");
+		expect(store.registerSessionArtifact(sessionId, artifactDir)).toBe(false);
+		expect(store.recoverSessionArtifact(sessionId, new Date(2026, 0, 2, 0, 0))).toEqual([]);
+		scheduler.start();
+		scheduler.stop();
+		expect(readFileSync(artifactPath, "utf8")).toBe(normalizedFile);
 	});
 
 	it("preserves one overdue legacy cron occurrence for normal claiming", async () => {

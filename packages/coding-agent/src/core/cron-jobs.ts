@@ -210,9 +210,11 @@ export class AgentCronJobStore {
 		}
 		return withCronJobsStateLocks([path], () => {
 			const state = readJobsState(path);
+			const before = JSON.stringify(state);
 			const recovered: AgentCronJob[] = [];
-			if (state.dispatches.length > 0) {
-				recoverInterruptedInState(state, now, recovered);
+			recoverInterruptedInState(state, now, recovered);
+			upgradeCronScheduleSemanticsInState(state, now);
+			if (JSON.stringify(state) !== before) {
 				writeJobsState(path, state);
 			}
 			return recovered;

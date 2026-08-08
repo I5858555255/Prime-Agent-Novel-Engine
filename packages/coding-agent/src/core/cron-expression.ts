@@ -131,6 +131,9 @@ function parseCronField(field: string, min: number, max: number, names?: Readonl
 		} else {
 			const rangeParts = rangeText.split("-");
 			if (rangeParts.length === 1) {
+				if (stepParts[1] !== undefined) {
+					throw new Error(`Cron steps require a range or wildcard: ${part}`);
+				}
 				start = parseCronValue(rangeParts[0], min, max, names);
 				end = start;
 			} else if (rangeParts.length === 2) {
