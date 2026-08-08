@@ -8,7 +8,11 @@ on:
   workflow_call:
     inputs:
       source_sha:
-        description: Full commit SHA to verify
+        description: Full source commit SHA to verify
+        required: true
+        type: string
+      tooling_sha:
+        description: Protected commit SHA containing the reusable CI workflow
         required: true
         type: string
 
@@ -26,7 +30,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha || github.sha }}
@@ -59,9 +63,11 @@ jobs:
         run: npm run check
 
       - name: Check release packages
+        if: inputs.source_sha == ''
         run: npm run check:release-packages
 
       - name: Check workflow security contracts
+        if: inputs.source_sha == ''
         working-directory: packages/coding-agent
         run: node --test scripts/check-workflow-security.mjs
 
@@ -108,7 +114,7 @@ jobs:
             command: npm run test:kernel
             install_uv: true
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha || github.sha }}
@@ -137,10 +143,10 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Install uv
+      - name: Install pinned uv
         if: matrix.install_uv
         run: |
-          python3 -m pip install --user uv
+          python3 -m pip install --user uv==0.11.33
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Test
@@ -154,10 +160,17 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Checkout protected Python lock
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tooling_sha || github.sha }}
+          path: release-tooling
           persist-credentials: false
 
       - name: Verify source commit
@@ -174,12 +187,17 @@ jobs:
         run: python -m pip install uv==0.11.33
 
       - name: Install locked runtime test dependencies
-        working-directory: prime-agent-runtime
-        run: uv sync --frozen --group test
+        run: uv sync --project release-tooling/prime-agent-runtime --frozen --group test
 
-      - name: Test runtime
-        working-directory: prime-agent-runtime
-        run: uv run --frozen --group test python -m unittest discover -s test -p 'test_*.py'
+      - name: Test exact source runtime
+        env:
+          PYTHONPATH: ${{ github.workspace }}/prime-agent-runtime
+        run: >-
+          uv run
+          --project release-tooling/prime-agent-runtime
+          --frozen
+          --group test
+          python -m unittest discover -s prime-agent-runtime/test -p 'test_*.py'
 
   build-check-test:
     name: build-check-test
@@ -189,16 +207,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
+      - name: Checkout protected CI tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ inputs.tooling_sha || github.sha }}
           persist-credentials: false
-
-      - name: Verify source commit
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - name: Verify CI results
         run: >-

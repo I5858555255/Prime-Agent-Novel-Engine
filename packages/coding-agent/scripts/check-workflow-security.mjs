@@ -7,16 +7,23 @@ const workflowsDirectory = new URL("../../../.github/workflows/", import.meta.ur
 const expectedPermissionsByWorkflow = {
 	"build-binaries.yml": {
 		build: { contents: "read" },
+		"full-ci": { contents: "read" },
 		publish: { contents: "write" },
+		"release-gate": { contents: "read" },
 		"release-context": { contents: "read" },
 	},
 	"ci.yml": {
 		"build-check": { contents: "read" },
-		"build-check-test": {},
+		"build-check-test": { contents: "read" },
+		"python-runtime": { contents: "read" },
 		test: { contents: "read" },
 	},
 	"nightly-process-stress.yml": {
 		"process-stress": { contents: "read" },
+	},
+	"rollback-release.yml": {
+		authorize: { contents: "read" },
+		rollback: { contents: "read" },
 	},
 };
 
@@ -122,53 +129,64 @@ test("workflows default to no token permissions and grant only allowlisted job p
 	}
 });
 
-test("R2 secrets are available only to R2 upload steps", async () => {
-	const releaseWorkflow = await readFile(new URL("build-binaries.yml", workflowsDirectory), "utf8");
-	const publishJob = getJobBlocks(releaseWorkflow).find((job) => job.name === "publish");
-	assert.ok(publishJob, "release workflow must define the publish job");
-
-	const steps = getNamedSteps(publishJob.source);
-	const allowedSecretSteps = new Set([
-		"Publish production channel to R2",
-		"Publish immutable beta artifacts to R2",
-		"Advance beta channel in R2",
-	]);
-
-	for (const [name, source] of steps) {
-		if (!source.includes("secrets.R2_")) continue;
-		assert.ok(allowedSecretSteps.has(name), `${name} must not receive R2 secrets`);
-		assert.match(source, /\baws s3 cp\b/, `${name} must upload to R2`);
-		assert.doesNotMatch(source, /\bgh (?:api|release)\b/, `${name} must not mix R2 and GitHub publication`);
-	}
-
-	for (const name of allowedSecretSteps) {
-		const source = steps.get(name);
-		assert.ok(source, `release workflow must define ${name}`);
-		for (const secret of ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET", "R2_ENDPOINT_URL"]) {
-			assert.match(source, new RegExp(`secrets\\.${secret}\\b`), `${name} must scope ${secret} locally`);
+test("R2 credentials are scoped to R2-only mutation steps", async () => {
+	const allowedByWorkflow = {
+		"build-binaries.yml": new Set([
+			"Publish production immutable objects to R2",
+			"Publish production installers to R2",
+			"Promote production channel in R2",
+			"Publish beta immutable objects to R2",
+			"Advance beta installers in R2",
+			"Advance beta channel in R2",
+		]),
+		"rollback-release.yml": new Set(["Promote verified stable pointers in R2"]),
+	};
+	for (const [workflowName, allowedSecretSteps] of Object.entries(allowedByWorkflow)) {
+		const source = await readFile(new URL(workflowName, workflowsDirectory), "utf8");
+		const allSteps = new Map();
+		for (const job of getJobBlocks(source)) {
+			for (const [name, step] of getNamedSteps(job.source)) allSteps.set(name, step);
+			const jobPrefix = job.source.slice(0, job.source.indexOf("    steps:"));
+			assert.doesNotMatch(jobPrefix, /secrets\.R2_/, `${workflowName}/${job.name} must not expose R2 secrets at job scope`);
+		}
+		for (const [name, step] of allSteps) {
+			if (!step.includes("secrets.R2_")) continue;
+			assert.ok(allowedSecretSteps.has(name), `${workflowName}/${name} must not receive R2 secrets`);
+			assert.match(step, /publish-release\.mjs [a-z0-9-]*r2[a-z0-9-]*/, `${name} must invoke an R2 phase`);
+			assert.doesNotMatch(step, /secrets\.GITHUB_TOKEN|\bGH_TOKEN\b|\bgh (?:api|release)\b/);
+		}
+		for (const name of allowedSecretSteps) {
+			const step = allSteps.get(name);
+			assert.ok(step, `${workflowName} must define ${name}`);
+			for (const secret of ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET", "R2_ENDPOINT_URL"]) {
+				assert.match(step, new RegExp(`secrets\\.${secret}\\b`), `${name} must scope ${secret} locally`);
+			}
 		}
 	}
-
-	const publishPrefix = publishJob.source.slice(0, publishJob.source.indexOf("    steps:"));
-	assert.doesNotMatch(publishPrefix, /secrets\.R2_/, "publish job must not expose R2 secrets at job scope");
 });
 
-test("beta pointer updates preserve the latest-main guard without sharing R2 credentials", async () => {
+test("every mutable beta phase has a fresh main guard without R2 credentials", async () => {
 	const releaseWorkflow = await readFile(new URL("build-binaries.yml", workflowsDirectory), "utf8");
 	const publishJob = getJobBlocks(releaseWorkflow).find((job) => job.name === "publish");
 	assert.ok(publishJob, "release workflow must define the publish job");
 	const steps = getNamedSteps(publishJob.source);
-
-	const guard = steps.get("Check whether beta should advance");
-	assert.ok(guard, "beta publication must check the latest main commit");
-	assert.match(guard, /id: beta_context/);
-	assert.match(guard, /should_advance=(?:false|true)/);
-	assert.doesNotMatch(guard, /secrets\.R2_/);
-
-	const condition = /steps\.beta_context\.outputs\.should_advance == 'true'/;
-	assert.match(steps.get("Advance beta channel in R2") ?? "", condition);
-	assert.match(steps.get("Advance beta GitHub release") ?? "", condition);
-	assert.doesNotMatch(steps.get("Advance beta GitHub release") ?? "", /secrets\.R2_/);
+	const phases = [
+		["Check beta freshness before GitHub mirror", "beta_github", "Advance beta GitHub release"],
+		["Check beta freshness before installers", "beta_installers", "Advance beta installers in R2"],
+		["Check beta freshness before channel promotion", "beta_promotion", "Advance beta channel in R2"],
+	];
+	for (const [guardName, outputId, mutationName] of phases) {
+		const guard = steps.get(guardName);
+		assert.ok(guard, `beta publication must define ${guardName}`);
+		assert.match(guard, new RegExp(`id: ${outputId}`));
+		assert.match(guard, /commits\/\$\{DEFAULT_BRANCH\}/);
+		assert.match(guard, /test "\$latest_main_sha" = "\$BUILD_SHA"/);
+		assert.doesNotMatch(guard, /secrets\.R2_/);
+		assert.match(
+			steps.get(mutationName) ?? "",
+			new RegExp(`steps\\.${outputId}\\.outputs\\.current == 'true'`),
+		);
+	}
 });
 
 test("Dependabot continues updating pinned GitHub Actions", async () => {

@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { validateReleaseRepository, validateRollbackRequest, verifyReleaseArtifacts } from "./lib/release-lifecycle.mjs";
 import {
 	promoteChannel,
-	publishChannel,
+	publishImmutableArtifacts,
+	publishInstallers,
 	validatePromotion,
 	verifyRemoteRelease,
 } from "./lib/release-publication.mjs";
@@ -17,8 +18,21 @@ const sourceRoot = resolve(process.env.PRIME_AGENT_RELEASE_SOURCE_ROOT || proces
 
 function parseArgs(args) {
 	const operation = args[0];
-	if (!["beta", "production", "rollback"].includes(operation)) {
-		throw new Error("Usage: node scripts/publish-release.mjs <production|beta|rollback> [options]");
+	const operations = new Set([
+		"beta-github",
+		"beta-r2-installers",
+		"beta-r2-immutable",
+		"beta-r2-promote",
+		"production-github-assets",
+		"production-github-prepare",
+		"production-r2-installers",
+		"production-r2-immutable",
+		"production-r2-promote",
+		"rollback-github-verify",
+		"rollback-r2-promote",
+	]);
+	if (!operations.has(operation)) {
+		throw new Error(`Unsupported release publication phase: ${operation ?? "missing"}`);
 	}
 	const options = { operation };
 	for (let index = 1; index < args.length; index += 1) {
@@ -347,12 +361,6 @@ function requireOption(options, name) {
 	return options[name];
 }
 
-function releaseFilesForRemoteVerification(artifactsDir) {
-	return readdirSync(artifactsDir)
-		.filter((file) => file === "SHA256SUMS" || file.endsWith(".tgz"))
-		.sort();
-}
-
 function installers(options) {
 	return [
 		{ key: "install.sh", path: resolve(requireOption(options, "stableInstaller")) },
@@ -360,79 +368,125 @@ function installers(options) {
 	];
 }
 
-function publishProduction(options, store, github, baseUrl) {
+function validatePhaseArtifacts(options, baseUrl, channel) {
 	const version = requireOption(options, "version");
 	const buildRef = requireOption(options, "buildRef");
+	const sourceSha = requireOption(options, "sourceSha");
+	if (!/^[0-9a-f]{40}$/.test(buildRef) || sourceSha !== buildRef) {
+		throw new Error(`Release build ref and source SHA must be the same full commit SHA: ${buildRef}/${sourceSha}`);
+	}
 	const artifactsDir = resolve(requireOption(options, "artifactsDir"));
-	validateReleaseRepository(sourceRoot, { requireChangelogs: true, version });
-	verifyReleaseArtifacts(artifactsDir, { baseUrl, channel: "stable", version });
+	validateReleaseRepository(sourceRoot, {
+		requireChangelogs: channel === "stable",
+		version: channel === "beta" ? version.split("-", 1)[0] : version,
+	});
+	verifyReleaseArtifacts(artifactsDir, { baseUrl, channel, sourceSha, version });
+	return { artifactsDir, buildRef, sourceSha, version };
+}
+
+function prepareProductionGitHub(options, github, baseUrl) {
+	const { buildRef, version } = validatePhaseArtifacts(options, baseUrl, "stable");
+	github.ensureProductionRelease(`v${version}`, buildRef, resolve(requireOption(options, "notesFile")));
+}
+
+function publishProductionR2Immutable(options, store, baseUrl) {
+	const { artifactsDir, version } = validatePhaseArtifacts(options, baseUrl, "stable");
 	validatePromotion(artifactsDir, "stable", store);
+	const result = publishImmutableArtifacts(artifactsDir, version, store);
+	verifyRemoteRelease(artifactsDir, version, store);
+	console.log(`Published production immutable objects: ${result.created} created, ${result.reused} reused.`);
+}
+
+function publishProductionGitHubAssets(options, github, baseUrl) {
+	const { artifactsDir, buildRef, version } = validatePhaseArtifacts(options, baseUrl, "stable");
 	const tag = `v${version}`;
 	github.ensureProductionRelease(tag, buildRef, resolve(requireOption(options, "notesFile")));
-	const result = publishChannel({
-		artifactsDir,
-		channel: "stable",
-		installers: installers(options),
-		mirror: () => github.ensureProductionAssets(tag, artifactsDir),
-		store,
-		version,
-	});
-	console.log(`Published production ${tag}: ${result.created} immutable objects created, ${result.reused} reused.`);
+	github.ensureProductionAssets(tag, artifactsDir);
 }
 
-function publishBeta(options, store, github, baseUrl) {
-	const version = requireOption(options, "version");
-	const buildRef = requireOption(options, "buildRef");
+function promoteProductionR2(options, store, baseUrl) {
+	const { artifactsDir, version } = validatePhaseArtifacts(options, baseUrl, "stable");
+	validatePromotion(artifactsDir, "stable", store);
+	verifyRemoteRelease(artifactsDir, version, store);
+	promoteChannel(artifactsDir, "stable", store);
+	console.log(`Promoted production v${version}.`);
+}
+
+function publishBetaR2Immutable(options, store, baseUrl) {
+	const { artifactsDir, version } = validatePhaseArtifacts(options, baseUrl, "beta");
+	const result = publishImmutableArtifacts(artifactsDir, version, store);
+	verifyRemoteRelease(artifactsDir, version, store);
+	console.log(`Published beta immutable objects: ${result.created} created, ${result.reused} reused.`);
+}
+
+function publishBetaGitHub(options, github, baseUrl) {
+	const { artifactsDir, buildRef, version } = validatePhaseArtifacts(options, baseUrl, "beta");
 	const defaultBranch = requireOption(options, "defaultBranch");
-	const artifactsDir = resolve(requireOption(options, "artifactsDir"));
 	if (github.latestDefaultBranchSha(defaultBranch) !== buildRef) {
-		console.log("A newer default-branch commit exists; leaving beta release state unchanged.");
-		return;
+		throw new Error("A newer default-branch commit exists; refusing stale GitHub beta update");
 	}
-	const requireCurrentBuild = () => {
-		if (github.latestDefaultBranchSha(defaultBranch) !== buildRef) {
-			throw new Error("A newer default-branch commit exists; refusing stale mutable beta updates");
-		}
-	};
-	validateReleaseRepository(sourceRoot, { requireChangelogs: false, version: version.split("-", 1)[0] });
-	verifyReleaseArtifacts(artifactsDir, { baseUrl, channel: "beta", version });
-	const result = publishChannel({
-		artifactsDir,
-		beforeMutable: requireCurrentBuild,
-		channel: "beta",
-		installers: installers(options),
-		mirror: () => github.replaceBetaRelease(buildRef, version, artifactsDir, defaultBranch),
-		store,
-		version,
-	});
-	console.log(`Published beta v${version}: ${result.created} immutable objects created, ${result.reused} reused.`);
+	github.replaceBetaRelease(buildRef, version, artifactsDir, defaultBranch);
 }
 
-function rollbackProduction(options, store, github, baseUrl) {
+function publishR2Installers(options, store, baseUrl, channel) {
+	const { artifactsDir, version } = validatePhaseArtifacts(options, baseUrl, channel);
+	verifyRemoteRelease(artifactsDir, version, store);
+	publishInstallers(installers(options), store);
+	console.log(`Published ${channel} installers for v${version}.`);
+}
+
+function promoteBetaR2(options, store, baseUrl) {
+	const { artifactsDir, version } = validatePhaseArtifacts(options, baseUrl, "beta");
+	verifyRemoteRelease(artifactsDir, version, store);
+	promoteChannel(artifactsDir, "beta", store);
+	console.log(`Promoted beta v${version}.`);
+}
+
+function verifyRollbackGitHub(options, github, baseUrl) {
 	const releaseTag = requireOption(options, "releaseTag");
 	validateRollbackRequest(releaseTag, requireOption(options, "confirmation"));
-	const artifactsDir = mkdtempSync(join(tmpdir(), "prime-agent-rollback-assets-"));
-	try {
-		const tagTarget = github.verifyExistingRelease(releaseTag, artifactsDir);
-		const defaultBranch = requireOption(options, "defaultBranch");
-		if (
-			run("git", ["merge-base", "--is-ancestor", tagTarget, `origin/${defaultBranch}`], {
-				allowFailure: true,
-				cwd: sourceRoot,
-			}) === undefined
-		) {
-			throw new Error(`Rollback tag ${releaseTag} is not on the default branch`);
-		}
-		const version = releaseTag.slice(1);
-		verifyReleaseArtifacts(artifactsDir, { baseUrl, channel: "stable", version });
-		verifyRemoteRelease(artifactsDir, version, store, {
-			files: releaseFilesForRemoteVerification(artifactsDir),
-		});
-		promoteChannel(artifactsDir, "stable", store, { allowRegression: true });
-		console.log(`Rolled back stable pointers to ${releaseTag}. Installed newer clients were not downgraded.`);
-	} finally {
-		rmSync(artifactsDir, { force: true, recursive: true });
+	const artifactsDir = resolve(requireOption(options, "artifactsDir"));
+	mkdirSync(artifactsDir, { recursive: true });
+	if (readdirSync(artifactsDir).length > 0) {
+		throw new Error(`Rollback artifact directory must be empty: ${artifactsDir}`);
 	}
+	const tagTarget = github.verifyExistingRelease(releaseTag, artifactsDir);
+	const defaultBranch = requireOption(options, "defaultBranch");
+	if (
+		run("git", ["merge-base", "--is-ancestor", tagTarget, `origin/${defaultBranch}`], {
+			allowFailure: true,
+			cwd: sourceRoot,
+		}) === undefined
+	) {
+		throw new Error(`Rollback tag ${releaseTag} is not on the default branch`);
+	}
+	verifyReleaseArtifacts(artifactsDir, {
+		allowMissingProvenance: true,
+		baseUrl,
+		channel: "stable",
+		sourceSha: tagTarget,
+		version: releaseTag.slice(1),
+	});
+	if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `source_sha=${tagTarget}\n`);
+	console.log(`Verified rollback release ${releaseTag} at ${tagTarget}.`);
+}
+
+function promoteRollbackR2(options, store, baseUrl) {
+	const releaseTag = requireOption(options, "releaseTag");
+	validateRollbackRequest(releaseTag, requireOption(options, "confirmation"));
+	const artifactsDir = resolve(requireOption(options, "artifactsDir"));
+	const sourceSha = requireOption(options, "sourceSha");
+	const version = releaseTag.slice(1);
+	verifyReleaseArtifacts(artifactsDir, {
+		allowMissingProvenance: true,
+		baseUrl,
+		channel: "stable",
+		sourceSha,
+		version,
+	});
+	verifyRemoteRelease(artifactsDir, version, store);
+	promoteChannel(artifactsDir, "stable", store, { allowRegression: true });
+	console.log(`Rolled back stable pointers to ${releaseTag}. Installed newer clients were not downgraded.`);
 }
 
 let store;
@@ -440,11 +494,23 @@ try {
 	const options = parseArgs(process.argv.slice(2));
 	const baseUrl = (process.env.R2_PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 	if (!baseUrl) throw new Error("R2_PUBLIC_BASE_URL is required");
-	store = new AwsR2Store(process.env.R2_BUCKET, process.env.R2_ENDPOINT_URL);
-	const github = new GitHubReleaseMirror(process.env.GITHUB_REPOSITORY);
-	if (options.operation === "production") publishProduction(options, store, github, baseUrl);
-	else if (options.operation === "beta") publishBeta(options, store, github, baseUrl);
-	else rollbackProduction(options, store, github, baseUrl);
+	if (options.operation.includes("-r2-")) {
+		store = new AwsR2Store(process.env.R2_BUCKET, process.env.R2_ENDPOINT_URL);
+	}
+	const github = options.operation.includes("github")
+		? new GitHubReleaseMirror(process.env.GITHUB_REPOSITORY)
+		: undefined;
+	if (options.operation === "production-github-prepare") prepareProductionGitHub(options, github, baseUrl);
+	else if (options.operation === "production-r2-immutable") publishProductionR2Immutable(options, store, baseUrl);
+	else if (options.operation === "production-github-assets") publishProductionGitHubAssets(options, github, baseUrl);
+	else if (options.operation === "production-r2-installers") publishR2Installers(options, store, baseUrl, "stable");
+	else if (options.operation === "production-r2-promote") promoteProductionR2(options, store, baseUrl);
+	else if (options.operation === "beta-r2-immutable") publishBetaR2Immutable(options, store, baseUrl);
+	else if (options.operation === "beta-github") publishBetaGitHub(options, github, baseUrl);
+	else if (options.operation === "beta-r2-installers") publishR2Installers(options, store, baseUrl, "beta");
+	else if (options.operation === "beta-r2-promote") promoteBetaR2(options, store, baseUrl);
+	else if (options.operation === "rollback-github-verify") verifyRollbackGitHub(options, github, baseUrl);
+	else promoteRollbackR2(options, store, baseUrl);
 } catch (error) {
 	console.error(error instanceof Error ? error.message : String(error));
 	process.exitCode = 1;

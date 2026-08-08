@@ -2,13 +2,14 @@
 
 The protected GitHub Actions workflows are the only release authority. Local commands may prepare and validate release files, but they never publish packages, create or move tags, push branches, upload artifacts, or promote a release channel.
 
-Prime Agent's supported distribution is the branded R2 tarball bundle installed by `install.sh`. The inherited npm workspace names are source-level implementation details. Direct SDK and library distribution is tracked separately in issue #949.
+Prime Agent's supported distribution is the branded R2 tarball bundle installed by `install.sh`. Every release also provides immutable `prime-agent`, `prime-agent-ai`, `prime-agent-core`, and `prime-agent-tui` tarballs for direct SDK and library use. The inherited npm workspace names are source-level implementation details.
 
 ## Release Contract
 
 A stable version consists of:
 
 - immutable objects under `releases/vX.Y.Z/`;
+- an immutable `release-provenance.json` binding the channel, source SHA, artifact names, and SHA-256 values;
 - an immutable `vX.Y.Z` Git tag and matching GitHub Release assets;
 - the `/stable` text pointer used by existing installers;
 - `/latest.json`, the stable commit marker used by update checks.
@@ -46,27 +47,29 @@ npm run release:test
 npm run check
 ```
 
-`release:dry-run` packages into a temporary directory, validates tarball names and manifests, verifies every SHA-256 digest and internal R2 URL, and removes its output. It has no npm, GitHub Release, Git tag, Git push, or R2 publication path.
+`release:dry-run` packages into a temporary directory, validates tarball names, compatibility manifests, and the source-SHA provenance manifest, verifies every SHA-256 digest and internal R2 URL, and removes its output. It has no npm, GitHub Release, Git tag, Git push, or R2 publication path.
 
 Open and review the release-preparation pull request. Merging the exact version-preparation commit to the protected default branch is the only way to introduce a new production candidate.
 
 ## CI Publication
 
-For each default-branch push, the Release Prime Agent workflow builds a beta. It additionally publishes production only when the root version changed to a strictly newer validated version.
+The Release Prime Agent workflow starts only after the canonical `CI` workflow completes successfully for a same-repository push to the protected default branch. It binds every checkout, workflow artifact, manifest, checksum, and publication phase to that CI run's complete source SHA. Each successful default-branch commit builds a beta; production is additionally published only when the root version changed to a strictly newer validated version.
+
+The upstream CI result already covers the complete Node and locked Python suites. A protected production retry invokes the same reusable CI workflow against the immutable tag SHA before rebuilding or publishing. Failed, cancelled, skipped, fork-originated, wrong-branch, wrong-workflow, and wrong-SHA results cannot reach publication.
 
 The production transaction is ordered as follows:
 
 1. Resolve and validate the exact version, commit, lockfile, package manifests, changelogs, and existing tag state using the protected workflow commit's release tooling.
 2. Build, check, run the release lifecycle tests, pack once, and validate the workflow artifacts without publication credentials.
-3. Create or verify the immutable version tag and GitHub Release target.
-4. Create missing versioned R2 objects using conditional writes. Existing objects must be byte-identical.
-5. Upload missing GitHub Release assets. Existing assets must be byte-identical and are never clobbered.
+3. Create or verify the immutable version tag and GitHub Release target using only GitHub credentials.
+4. Create missing versioned R2 objects using conditional writes in a separate R2-only phase. Existing objects must be byte-identical.
+5. Upload missing GitHub Release assets in a GitHub-only phase. Existing assets must be byte-identical and are never clobbered.
 6. Verify all versioned R2 and GitHub Release objects.
 7. Upload and verify the stable and beta installer scripts.
 8. Write and verify `/stable`.
 9. Write and verify `/latest.json` last.
 
-The workflow serializes publication and refuses to move either stable surface backward: the effective monotonic floor is the higher version named by `/stable` or `/latest.json`. Only the protected rollback workflow may lower both surfaces. Issue #927 separately owns the full exact-commit Node and Python suite gate; do not treat the focused release tests as that broader gate.
+The workflow serializes publication and refuses to move either stable surface backward: the effective monotonic floor is the higher version named by `/stable` or `/latest.json`. Only the protected rollback workflow may lower both surfaces. GitHub and R2 mutation steps never receive each other's credentials. Beta freshness is rechecked against the default-branch head before each mutable GitHub, installer, and pointer phase.
 
 ## Retry
 
@@ -76,7 +79,7 @@ After the immutable `vX.Y.Z` tag exists, a maintainer with repository `admin` or
 /prime-agent release retry vX.Y.Z
 ```
 
-The `issue_comment` event always loads workflow code from the protected default branch; branch-selectable release dispatches are not supported. The workflow derives both the version and commit from the tag, verifies that it belongs to the default branch, and rebuilds the exact tagged source. Release policy and publication scripts come from the protected workflow commit in a separate checkout, so tags created before this lifecycle was introduced remain retryable. A free-form version paired with current `main` is not supported.
+The `issue_comment` event always loads workflow code from the protected default branch; branch-selectable release dispatches and tag-push publication are not supported. The workflow derives both the version and commit from the tag, verifies that it belongs to the default branch, reruns the complete reusable CI suite at that SHA, and rebuilds the exact tagged source. Release policy, the locked Python test environment, and publication scripts come from the protected workflow commit in separate checkouts, so tags created before this lifecycle was introduced remain retryable. A free-form version paired with current `main` is not supported.
 
 If the original production run failed before creating the version tag, rerun that exact failed workflow run instead. Do not use a later default-branch run or create the tag locally. Once the immutable tag exists, use the issue-comment retry command for subsequent recovery attempts.
 
@@ -85,6 +88,7 @@ Retries are idempotent:
 - a failure before tag creation has no release state;
 - an empty release or partially uploaded immutable set can be completed by retry;
 - identical existing R2 and GitHub Release objects are reused;
+- a missing provenance manifest on a pre-migration release may be added without rewriting its existing compatibility manifest or artifacts;
 - any existing object with different bytes hard-fails;
 - if `/stable` advanced but `/latest.json` did not, retry completes the JSON commit marker.
 
@@ -99,7 +103,7 @@ Prefer a forward fix. If stable must be restored immediately, a maintainer with 
 ROLLBACK vX.Y.Z
 ```
 
-The default-branch workflow and an API-derived maintainer permission are the repository-enforced authorization boundary. Authorization and exact command parsing complete in an ungated preflight job before the workflow can acquire the shared release lock or enter the `production` environment, so an unauthorized comment cannot block publication. The mutation job targets the `production` environment, so configured environment reviewers provide an additional gate but are not assumed to exist. It verifies the immutable tag, GitHub Release assets, manifest, checksums, and every referenced R2 tarball before writing `/stable` and then `/latest.json`. It does not create or move tags, rewrite immutable objects, or change GitHub Releases.
+The default-branch workflow and an API-derived maintainer permission are the repository-enforced authorization boundary. Authorization, exact command parsing, tag resolution, and default-branch ancestry checks complete in an ungated preflight job before the workflow can acquire the shared release lock or enter the `production` environment, so an unauthorized comment cannot block publication. The mutation job targets the `production` environment, so configured environment reviewers provide an additional gate but are not assumed to exist. A GitHub-read-only phase downloads and validates the immutable Release assets; a separate R2-only phase verifies the matching remote objects before writing `/stable` and then `/latest.json`. It does not create or move tags, rewrite immutable objects, or change GitHub Releases.
 
 Rollback changes what fresh installations and future update checks select. It does not force already-installed newer clients to downgrade.
 

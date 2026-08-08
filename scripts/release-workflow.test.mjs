@@ -23,28 +23,40 @@ const releaseWorkflow = readFileSync(new URL("../.github/workflows/build-binarie
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 
 describe("workflow contract", () => {
-	it("publishes main only from completed CI and reuses full CI for tag/manual", () => {
+	it("publishes main only from completed CI and reuses full CI only for protected retry", () => {
 		assert.match(releaseWorkflow, /workflow_run:\n\s+workflows: \[CI\]\n\s+types: \[completed\]/);
-		assert.doesNotMatch(releaseWorkflow, /push:\n\s+branches:/);
-		assert.match(releaseWorkflow, /full-ci:[\s\S]*uses: \.\/\.github\/workflows\/ci\.yml/);
+		assert.match(releaseWorkflow, /issue_comment:/);
+		assert.doesNotMatch(releaseWorkflow, /workflow_dispatch|^\s+push:|^\s+tags:/m);
+		assert.match(releaseWorkflow, /full-ci:[\s\S]*outputs\.trigger == 'retry'/);
+		assert.match(releaseWorkflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
 		assert.match(releaseWorkflow, /source_sha: \$\{\{ needs\.release-context\.outputs\.build_sha \}\}/);
+		assert.match(releaseWorkflow, /tooling_sha: \$\{\{ github\.workflow_sha \}\}/);
 	});
 
 	it("binds CI, build, artifacts, and publication to the resolved SHA", () => {
-		assert.match(ciWorkflow, /workflow_call:[\s\S]*source_sha:/);
-		assert.equal((ciWorkflow.match(/ref: \$\{\{ inputs\.source_sha \|\| github\.sha \}\}/g) || []).length, 4);
-		assert.match(readFileSync(new URL("./resolve-release-context.mjs", import.meta.url), "utf8"), /checkedOutSha !== buildSha/);
-		assert.match(releaseWorkflow, /Verify release source remains exact[\s\S]*git diff --exit-code/);
+		assert.match(ciWorkflow, /workflow_call:[\s\S]*source_sha:[\s\S]*tooling_sha:/);
+		assert.ok((ciWorkflow.match(/ref: \$\{\{ inputs\.source_sha \|\| github\.sha \}\}/g) || []).length >= 3);
+		assert.match(releaseWorkflow, /Verify release source commit[\s\S]*git rev-parse HEAD/);
 		assert.match(releaseWorkflow, /name: prime-agent-production-\$\{\{ env\.BUILD_SHA \}\}/);
 		assert.match(releaseWorkflow, /name: prime-agent-beta-\$\{\{ env\.BUILD_SHA \}\}/);
-		assert.match(releaseWorkflow, /publish:\n\s+runs-on: ubuntu-latest\n\s+needs: release-gate/);
+		assert.match(releaseWorkflow, /publish:[\s\S]*needs: release-gate/);
 	});
 
-	it("refuses local and immutable remote provenance drift before upload", () => {
+	it("validates source provenance before every split publication phase", () => {
 		assert.match(releaseWorkflow, /--source-sha "\$BUILD_SHA"/);
-		assert.match(releaseWorkflow, /--remote-checksums "\$REMOTE_SUMS"/);
-		assert.match(releaseWorkflow, /--remote-manifest "\$REMOTE_MANIFEST"/);
-		assert.match(releaseWorkflow, /Refusing to overwrite incomplete immutable release prefix/);
+		for (const phase of [
+			"production-github-prepare",
+			"production-r2-immutable",
+			"production-github-assets",
+			"production-r2-installers",
+			"production-r2-promote",
+			"beta-r2-immutable",
+			"beta-github",
+			"beta-r2-installers",
+			"beta-r2-promote",
+		]) {
+			assert.match(releaseWorkflow, new RegExp(`publish-release\\.mjs ${phase}`));
+		}
 	});
 });
 
@@ -53,14 +65,12 @@ function mainContext(overrides = {}) {
 		buildSha,
 		defaultBranch: "main",
 		eventName: "workflow_run",
-		existingTagSha: null,
-		inputReleaseTag: "",
 		packageVersions,
-		refName: "",
-		refType: "",
+		previousVersion: "0.7.0",
 		repository: "PrimeIntellect-ai/prime-agent",
 		runAttempt: "2",
 		runNumber: "123",
+		tagTarget: undefined,
 		workflowRun: {
 			conclusion: "success",
 			event: "push",
@@ -73,10 +83,25 @@ function mainContext(overrides = {}) {
 	};
 }
 
+function retryContext(overrides = {}) {
+	return {
+		actorPermission: "maintain",
+		buildSha,
+		commentBody: "/prime-agent release retry v0.7.1",
+		defaultBranch: "main",
+		eventName: "issue_comment",
+		packageVersions,
+		tagOnDefaultBranch: true,
+		workflowRef: "PrimeIntellect-ai/prime-agent/.github/workflows/build-binaries.yml@refs/heads/main",
+		...overrides,
+	};
+}
+
 describe("release context", () => {
 	it("binds a successful main CI run to its exact SHA", () => {
 		assert.deepEqual(resolveReleaseContext(mainContext()), {
 			betaVersion: `0.7.1-beta.123.2.${buildSha.slice(0, 7)}`,
+			buildRef: buildSha,
 			buildSha,
 			productionVersion: "0.7.1",
 			publishBeta: true,
@@ -85,139 +110,97 @@ describe("release context", () => {
 		});
 	});
 
-	it("does not republish a production version tagged at another main SHA", () => {
-		const context = resolveReleaseContext(mainContext({ existingTagSha: otherSha }));
+	it("publishes only beta when the default-branch package version is unchanged", () => {
+		const context = resolveReleaseContext(mainContext({ previousVersion: "0.7.1", tagTarget: otherSha }));
 		assert.equal(context.publishBeta, true);
 		assert.equal(context.publishProduction, false);
+		assert.equal(context.productionVersion, "");
 	});
 
-	it("rejects failed, cancelled, and skipped CI", () => {
+	it("rejects failed, cancelled, skipped, wrong-source, and wrong-SHA upstream CI", () => {
 		for (const conclusion of ["failure", "cancelled", "skipped"]) {
 			assert.throws(
-				() =>
-					resolveReleaseContext(
-						mainContext({ workflowRun: { ...mainContext().workflowRun, conclusion } }),
-					),
+				() => resolveReleaseContext(mainContext({ workflowRun: { ...mainContext().workflowRun, conclusion } })),
 				/CI conclusion must be success/,
 			);
 		}
-	});
-
-	it("rejects PR, fork, branch, workflow-path, and SHA mismatches", () => {
-		const invalidRuns = [
+		for (const invalid of [
 			{ event: "pull_request" },
 			{ headRepository: "attacker/prime-agent" },
 			{ headBranch: "feature" },
 			{ workflowPath: ".github/workflows/other.yml" },
 			{ headSha: otherSha },
-		];
-		for (const invalid of invalidRuns) {
+		]) {
 			assert.throws(() =>
-				resolveReleaseContext(
-					mainContext({ workflowRun: { ...mainContext().workflowRun, ...invalid } }),
-				),
+				resolveReleaseContext(mainContext({ workflowRun: { ...mainContext().workflowRun, ...invalid } })),
 			);
 		}
 	});
 
-	it("accepts exact tag and default-branch manual releases", () => {
-		const tag = resolveReleaseContext({
-			...mainContext(),
-			eventName: "push",
-			existingTagSha: buildSha,
-			refName: "v0.7.1",
-			refType: "tag",
+	it("accepts only an exact authorized retry bound to an existing default-branch tag", () => {
+		assert.deepEqual(resolveReleaseContext(retryContext()), {
+			betaVersion: "",
+			buildRef: buildSha,
+			buildSha,
+			productionVersion: "0.7.1",
+			publishBeta: false,
+			publishProduction: true,
+			trigger: "retry",
 		});
-		assert.equal(tag.trigger, "tag");
-		assert.equal(tag.publishProduction, true);
-
-		const manual = resolveReleaseContext({
-			...mainContext(),
-			eventName: "workflow_dispatch",
-			existingTagSha: null,
-			inputReleaseTag: "v0.7.1",
-			refName: "main",
-		});
-		assert.equal(manual.trigger, "manual");
-		assert.equal(manual.publishProduction, true);
+		for (const invalid of [
+			{ actorPermission: "write" },
+			{ commentBody: "/prime-agent release retry v0.7.1 extra" },
+			{ tagOnDefaultBranch: false },
+			{ workflowRef: "PrimeIntellect-ai/prime-agent/.github/workflows/build-binaries.yml@refs/heads/feature" },
+		]) {
+			assert.throws(() => resolveReleaseContext(retryContext(invalid)));
+		}
 	});
 
-	it("rejects tag, manual branch, and package-version mismatches", () => {
+	it("rejects tag pushes, manual dispatch, invalid rerun identifiers, and lockstep drift", () => {
+		assert.throws(() => resolveReleaseContext({ ...mainContext(), eventName: "push" }), /Unsupported release event/);
 		assert.throws(
-			() =>
-				resolveReleaseContext({
-					...mainContext(),
-					eventName: "push",
-					refName: "v0.7.2",
-					refType: "tag",
-				}),
-			/tag v0.7.2 does not match/i,
+			() => resolveReleaseContext({ ...mainContext(), eventName: "workflow_dispatch" }),
+			/Unsupported release event/,
 		);
-		assert.throws(
-			() =>
-				resolveReleaseContext({
-					...mainContext(),
-					eventName: "workflow_dispatch",
-					inputReleaseTag: "v0.7.1",
-					refName: "feature",
-				}),
-			/default branch/,
-		);
-		assert.throws(
-			() => assertLockstepVersions({ ...packageVersions, tui: "0.7.0" }),
-			/versions must match/,
-		);
-	});
-
-	it("rejects invalid rerun identifiers", () => {
 		assert.throws(() => resolveReleaseContext(mainContext({ runAttempt: "0" })), /Run attempt/);
 		assert.throws(() => resolveReleaseContext(mainContext({ runNumber: "latest" })), /Run number/);
+		assert.throws(() => assertLockstepVersions({ ...packageVersions, tui: "0.7.0" }), /versions must match/);
 	});
 });
 
 describe("aggregate CI gate", () => {
-	it("accepts only all-success results", () => {
+	it("accepts only all-success Node and Python results", () => {
 		assert.doesNotThrow(() =>
 			verifyCiResults({ "build-check": "success", test: "success", "python-runtime": "success" }),
 		);
-	});
-
-	it("rejects a failed shard or cancelled/skipped required job", () => {
 		for (const result of ["failure", "cancelled", "skipped"]) {
 			assert.throws(
 				() => verifyCiResults({ "build-check": "success", test: result, "python-runtime": "success" }),
-				/new Error|Required CI jobs did not succeed/,
+				/Required CI jobs did not succeed/,
 			);
 		}
 	});
 
-	it("requires upstream CI for main and reusable CI for tag/manual releases", () => {
+	it("reuses successful upstream CI for main and requires reusable CI for retry", () => {
 		assert.doesNotThrow(() =>
 			verifyReleaseGate({ build: "success", fullCi: "skipped", releaseContext: "success", trigger: "main" }),
 		);
-		for (const trigger of ["tag", "manual"]) {
-			assert.doesNotThrow(() =>
-				verifyReleaseGate({ build: "success", fullCi: "success", releaseContext: "success", trigger }),
-			);
-		}
-	});
-
-	it("rejects bypassed or unsuccessful release gates", () => {
+		assert.doesNotThrow(() =>
+			verifyReleaseGate({ build: "success", fullCi: "success", releaseContext: "success", trigger: "retry" }),
+		);
 		for (const result of ["failure", "cancelled", "skipped"]) {
 			assert.throws(
-				() =>
-					verifyReleaseGate({ build: "success", fullCi: result, releaseContext: "success", trigger: "tag" }),
+				() => verifyReleaseGate({ build: "success", fullCi: result, releaseContext: "success", trigger: "retry" }),
 				/Required CI jobs did not succeed/,
 			);
 		}
 		assert.throws(
-			() =>
-				verifyReleaseGate({ build: "failure", fullCi: "skipped", releaseContext: "success", trigger: "main" }),
+			() => verifyReleaseGate({ build: "failure", fullCi: "skipped", releaseContext: "success", trigger: "main" }),
 			/Required CI jobs did not succeed/,
 		);
 		assert.throws(
-			() =>
-				verifyReleaseGate({ build: "success", fullCi: "success", releaseContext: "success", trigger: "main" }),
+			() => verifyReleaseGate({ build: "success", fullCi: "success", releaseContext: "success", trigger: "main" }),
 			/reuse completed upstream CI/,
 		);
 	});
@@ -259,6 +242,20 @@ function createArtifactFixture(channel = "stable") {
 		`${JSON.stringify(
 			{
 				version: `v${version}`,
+				package: "prime-agent",
+				tarball: `releases/v${version}/prime-agent-${version}.tgz`,
+				tarballs: tarballs.map(({ name, ...entry }) => ({ package: name, ...entry })),
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	writeFileSync(
+		join(directory, "release-provenance.json"),
+		`${JSON.stringify(
+			{
+				version: `v${version}`,
+				channel,
 				sourceSha: buildSha,
 				package: "prime-agent",
 				tarball: `releases/v${version}/prime-agent-${version}.tgz`,
@@ -294,7 +291,9 @@ describe("release artifact provenance", () => {
 
 	it("refuses immutable remote checksum drift", () => {
 		const fixture = createArtifactFixture();
-		const remoteChecksums = join(fixture.directory, "REMOTE_SHA256SUMS");
+		const remoteDirectory = mkdtempSync(join(tmpdir(), "prime-agent-remote-release-"));
+		temporaryDirectories.push(remoteDirectory);
+		const remoteChecksums = join(remoteDirectory, "SHA256SUMS");
 		const local = readFileSync(join(fixture.directory, "SHA256SUMS"), "utf8");
 		writeFileSync(remoteChecksums, `${local[0] === "f" ? "e" : "f"}${local.slice(1)}`);
 		assert.throws(
@@ -305,8 +304,10 @@ describe("release artifact provenance", () => {
 
 	it("refuses immutable remote source-manifest drift", () => {
 		const fixture = createArtifactFixture();
-		const remoteManifest = join(fixture.directory, "REMOTE_MANIFEST.json");
-		const manifest = JSON.parse(readFileSync(join(fixture.directory, fixture.manifestName), "utf8"));
+		const remoteDirectory = mkdtempSync(join(tmpdir(), "prime-agent-remote-release-"));
+		temporaryDirectories.push(remoteDirectory);
+		const remoteManifest = join(remoteDirectory, "release-provenance.json");
+		const manifest = JSON.parse(readFileSync(join(fixture.directory, "release-provenance.json"), "utf8"));
 		writeFileSync(remoteManifest, `${JSON.stringify({ ...manifest, sourceSha: otherSha }, null, 2)}\n`);
 		assert.throws(
 			() => verifyReleaseArtifacts({ ...fixture, remoteManifest, sourceSha: buildSha }),

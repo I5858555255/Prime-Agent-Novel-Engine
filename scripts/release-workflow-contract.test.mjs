@@ -10,6 +10,7 @@ const releaseWorkflow = readFileSync(new URL("../.github/workflows/build-binarie
 const rollbackWorkflow = readFileSync(new URL("../.github/workflows/rollback-release.yml", import.meta.url), "utf8");
 const rollbackResolver = readFileSync(new URL("resolve-rollback-context.mjs", import.meta.url), "utf8");
 const publisher = readFileSync(new URL("publish-release.mjs", import.meta.url), "utf8");
+const packageContract = readFileSync(new URL("check-release-package-contract.mjs", import.meta.url), "utf8");
 
 test("legacy local release and publish commands are non-mutating tombstones", () => {
 	for (const scriptName of [
@@ -32,56 +33,79 @@ test("legacy local release and publish commands are non-mutating tombstones", ()
 	assert.doesNotMatch(dryRun, /npm publish|git (?:commit|tag|push)|\bgh\b|\baws\b/);
 });
 
-test("release workflow publishes from main or an immutable retry tag, never a tag push", () => {
-	assert.doesNotMatch(releaseWorkflow, /^\s+tags:/m);
-	assert.doesNotMatch(releaseWorkflow, /workflow_dispatch/);
+test("release authority is successful canonical CI or an authorized immutable retry", () => {
+	assert.match(releaseWorkflow, /workflow_run:\n\s+workflows: \[CI\]\n\s+types: \[completed\]/);
 	assert.match(releaseWorkflow, /issue_comment:/);
+	assert.doesNotMatch(releaseWorkflow, /workflow_dispatch|^\s+push:|^\s+tags:/m);
 	assert.match(releaseWorkflow, /\/prime-agent release retry/);
 	assert.match(releaseWorkflow, /collaborators\/\$\{ACTOR\}\/permission/);
-	assert.match(releaseWorkflow, /node scripts\/resolve-release-context\.mjs/);
-	assert.doesNotMatch(releaseWorkflow, /Production release tag to create or update/);
 	assert.match(releaseWorkflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
 	assert.match(releaseWorkflow, /path: release-tooling/);
 	assert.match(releaseWorkflow, /path: release-source/);
-	assert.match(releaseWorkflow, /PRIME_AGENT_RELEASE_SOURCE_ROOT:/);
-	assert.match(releaseWorkflow, /node \.\.\/release-tooling\/scripts\/publish-release\.mjs production/);
+	assert.match(releaseWorkflow, /full-ci:[\s\S]*outputs\.trigger == 'retry'/);
+	assert.match(releaseWorkflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
 });
 
-test("production publication compares immutable assets and commits latest.json last", () => {
-	assert.match(releaseWorkflow, /node \.\.\/release-tooling\/scripts\/publish-release\.mjs production/);
+test("release artifacts, verification, and publication use one exact source SHA", () => {
+	assert.match(releaseWorkflow, /--source-sha "\$BUILD_SHA"/);
+	assert.match(packageContract, /--source-sha["'],\s*contractSourceSha/);
+	assert.match(releaseWorkflow, /prime-agent-production-\$\{\{ env\.BUILD_SHA \}\}/);
+	assert.match(releaseWorkflow, /prime-agent-beta-\$\{\{ env\.BUILD_SHA \}\}/);
+	assert.match(releaseWorkflow, /Verify release source commit[\s\S]*git rev-parse HEAD/);
+	assert.match(releaseWorkflow, /release-gate:[\s\S]*needs: \[release-context, full-ci, build\]/);
+	assert.match(releaseWorkflow, /publish:[\s\S]*needs: release-gate/);
+});
+
+test("production and beta mutation phases preserve ordering and credential separation", () => {
+	const orderedNames = [
+		"Prepare production GitHub release",
+		"Publish production immutable objects to R2",
+		"Publish production GitHub assets",
+		"Publish production installers to R2",
+		"Promote production channel in R2",
+		"Publish beta immutable objects to R2",
+		"Check beta freshness before GitHub mirror",
+		"Advance beta GitHub release",
+		"Check beta freshness before installers",
+		"Advance beta installers in R2",
+		"Check beta freshness before channel promotion",
+		"Advance beta channel in R2",
+	];
+	let previous = -1;
+	for (const name of orderedNames) {
+		const index = releaseWorkflow.indexOf(`- name: ${name}`);
+		assert.ok(index > previous, `${name} must follow the preceding publication phase`);
+		previous = index;
+	}
 	assert.doesNotMatch(releaseWorkflow, /gh release upload[^\n]*--clobber/);
-	const productionStep = releaseWorkflow.indexOf("node ../release-tooling/scripts/publish-release.mjs production");
-	const betaStep = releaseWorkflow.indexOf("node ../release-tooling/scripts/publish-release.mjs beta");
-	assert.ok(productionStep > -1);
-	assert.ok(betaStep > productionStep);
-	assert.match(publisher, /beforeMutable: requireCurrentBuild/);
+	assert.match(publisher, /putImmutable/);
+	assert.match(publisher, /ensureProductionAssets/);
+	assert.match(publisher, /promoteChannel\(artifactsDir, "stable"/);
 });
 
-test("rollback is a separately protected pointer-only workflow", () => {
+test("rollback authorizes before protected resources and splits GitHub verification from R2 promotion", () => {
 	assert.match(rollbackWorkflow, /^name: Rollback Prime Agent stable channel$/m);
 	assert.doesNotMatch(rollbackWorkflow, /workflow_dispatch/);
-	assert.match(rollbackWorkflow, /issue_comment:/);
 	assert.match(rollbackWorkflow, /\/prime-agent release rollback/);
 	assert.match(rollbackWorkflow, /collaborators\/\$\{ACTOR\}\/permission/);
-	assert.match(rollbackResolver, /confirmation/);
-	assert.match(rollbackWorkflow, /node scripts\/resolve-rollback-context\.mjs/);
-	assert.match(rollbackWorkflow, /node scripts\/publish-release\.mjs rollback/);
-	assert.doesNotMatch(rollbackWorkflow, /gh release (?:create|edit|upload)|git (?:tag|push)|npm publish/);
-
+	assert.match(rollbackResolver, /source_sha/);
 	const authorizationJob = rollbackWorkflow.indexOf("  authorize:");
 	const rollbackJob = rollbackWorkflow.indexOf("  rollback:");
 	assert.ok(authorizationJob > -1);
 	assert.ok(rollbackJob > authorizationJob);
-
 	const authorization = rollbackWorkflow.slice(authorizationJob, rollbackJob);
-	assert.doesNotMatch(authorization, /environment: production/);
-	assert.doesNotMatch(authorization, /group: release-prime-agent/);
-	assert.doesNotMatch(authorization, /R2_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|BUCKET|ENDPOINT_URL)/);
-
+	assert.doesNotMatch(authorization, /environment: production|group: release-prime-agent|secrets\.R2_/);
 	const mutation = rollbackWorkflow.slice(rollbackJob);
 	assert.match(mutation, /needs: authorize/);
 	assert.match(mutation, /environment: production/);
 	assert.match(mutation, /group: release-prime-agent/);
-	assert.match(mutation, /CONFIRMATION: \$\{\{ needs\.authorize\.outputs\.confirmation \}\}/);
-	assert.match(mutation, /RELEASE_TAG: \$\{\{ needs\.authorize\.outputs\.release_tag \}\}/);
+	assert.match(mutation, /rollback-github-verify/);
+	assert.match(mutation, /rollback-r2-promote/);
+	const githubStep = mutation.slice(
+		mutation.indexOf("- name: Verify rollback GitHub release"),
+		mutation.indexOf("- name: Promote verified stable pointers in R2"),
+	);
+	assert.doesNotMatch(githubStep, /secrets\.R2_/);
+	const r2Step = mutation.slice(mutation.indexOf("- name: Promote verified stable pointers in R2"));
+	assert.doesNotMatch(r2Step, /GH_TOKEN|secrets\.GITHUB_TOKEN/);
 });

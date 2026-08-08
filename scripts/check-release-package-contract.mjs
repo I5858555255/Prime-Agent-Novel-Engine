@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const releaseRoot = join(repoRoot, "packages", "coding-agent", "release");
 const contractVersion = "0.0.0-contract";
+const contractSourceSha = "0".repeat(40);
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const typeScriptCli = join(repoRoot, "node_modules", "typescript", "bin", "tsc");
 
@@ -270,6 +271,8 @@ async function main() {
 			"stable",
 			"--version",
 			contractVersion,
+			"--source-sha",
+			contractSourceSha,
 			"--base-url",
 			baseUrl,
 			"--out-dir",

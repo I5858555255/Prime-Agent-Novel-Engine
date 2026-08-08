@@ -113,6 +113,7 @@ Creates private npm tarballs for R2 distribution:
   <out-dir>/artifacts/prime-agent-core-<version>.tgz
   <out-dir>/artifacts/prime-agent-tui-<version>.tgz
   <out-dir>/artifacts/SHA256SUMS
+  <out-dir>/artifacts/release-provenance.json
   <out-dir>/artifacts/<channel>
   <out-dir>/artifacts/latest.json (stable) or beta.json (beta)
 `);
@@ -342,6 +343,17 @@ function main() {
 	const manifestName = args.channel === "stable" ? "latest.json" : "beta.json";
 	writeJson(join(artifactsDir, manifestName), {
 		version: `v${releaseVersion}`,
+		package: publicPackageName,
+		tarball: `releases/v${releaseVersion}/${artifactFiles.get("coding-agent")}`,
+		tarballs: tarballs.map((tarball) => ({
+			package: tarball.name,
+			file: tarball.file,
+			sha256: tarball.sha256,
+		})),
+	});
+	writeJson(join(artifactsDir, "release-provenance.json"), {
+		version: `v${releaseVersion}`,
+		channel: args.channel,
 		sourceSha: args.sourceSha,
 		package: publicPackageName,
 		tarball: `releases/v${releaseVersion}/${artifactFiles.get("coding-agent")}`,

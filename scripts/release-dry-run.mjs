@@ -16,23 +16,25 @@ function parseArgs(args) {
 		artifactsDir: undefined,
 		baseUrl: defaultBaseUrl,
 		channel: "stable",
+		sourceSha: process.env.PRIME_AGENT_SOURCE_SHA,
 		version: undefined,
 	};
 	for (let index = 0; index < args.length; index += 1) {
 		const argument = args[index];
 		if (argument === "--help" || argument === "-h") {
 			console.log(
-				"Usage: npm run release:dry-run -- [--channel stable|beta] [--version version] [--base-url url] [--artifacts-dir path]",
+				"Usage: npm run release:dry-run -- [--channel stable|beta] [--version version] [--source-sha sha] [--base-url url] [--artifacts-dir path]",
 			);
 			process.exit(0);
 		}
-		if (!["--artifacts-dir", "--base-url", "--channel", "--version"].includes(argument)) {
+		if (!["--artifacts-dir", "--base-url", "--channel", "--source-sha", "--version"].includes(argument)) {
 			throw new Error(`Unknown argument: ${argument}`);
 		}
 		const key = {
 			"--artifacts-dir": "artifactsDir",
 			"--base-url": "baseUrl",
 			"--channel": "channel",
+			"--source-sha": "sourceSha",
 			"--version": "version",
 		}[argument];
 		const value = args[index + 1];
@@ -42,6 +44,14 @@ function parseArgs(args) {
 	}
 	if (parsed.channel !== "stable" && parsed.channel !== "beta") {
 		throw new Error("--channel must be stable or beta");
+	}
+	if (!parsed.sourceSha) {
+		const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: "pipe" });
+		if (result.status !== 0) throw new Error(result.stderr.trim() || "Unable to resolve release source SHA");
+		parsed.sourceSha = result.stdout.trim();
+	}
+	if (!/^[0-9a-f]{40}$/.test(parsed.sourceSha)) {
+		throw new Error(`--source-sha must be a full 40-character commit SHA: ${parsed.sourceSha}`);
 	}
 	return parsed;
 }
@@ -57,6 +67,8 @@ function runPacker(options, outDir) {
 			options.version,
 			"--base-url",
 			options.baseUrl,
+			"--source-sha",
+			options.sourceSha,
 			"--out-dir",
 			outDir,
 		],

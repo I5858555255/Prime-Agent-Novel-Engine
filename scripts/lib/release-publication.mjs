@@ -99,20 +99,24 @@ export function promoteChannel(artifactsDir, channel, store, options = {}) {
 	return { manifestKey, pointerKey };
 }
 
+export function publishInstallers(installers, store) {
+	for (const installer of installers) {
+		const local = readFileSync(installer.path);
+		store.putMutable(installer.key, installer.path, {
+			cacheControl: "no-cache",
+			contentType: "text/x-shellscript",
+		});
+		requireRemoteMatch(store, installer.key, local);
+	}
+}
+
 export function publishChannel(options) {
 	const immutable = publishImmutableArtifacts(options.artifactsDir, options.version, options.store);
 	options.beforeMutable?.("mirror");
 	options.mirror?.();
 	verifyRemoteRelease(options.artifactsDir, options.version, options.store);
 	options.beforeMutable?.("installers");
-	for (const installer of options.installers ?? []) {
-		const local = readFileSync(installer.path);
-		options.store.putMutable(installer.key, installer.path, {
-			cacheControl: "no-cache",
-			contentType: "text/x-shellscript",
-		});
-		requireRemoteMatch(options.store, installer.key, local);
-	}
+	publishInstallers(options.installers ?? [], options.store);
 	options.beforeMutable?.("promotion");
 	const promotion = promoteChannel(options.artifactsDir, options.channel, options.store, {
 		allowRegression: options.allowRegression,

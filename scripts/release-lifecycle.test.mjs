@@ -26,6 +26,7 @@ const packageNames = {
 	"coding-agent": "@earendil-works/pi-coding-agent",
 	tui: "@earendil-works/pi-tui",
 };
+const sourceSha = "a".repeat(40);
 
 function writeJson(path, value) {
 	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -118,6 +119,14 @@ function createArtifactFixture(version = "0.7.2", channel = "stable", options = 
 	writeFileSync(join(artifactsDir, pointerName), `v${version}\n`);
 	writeJson(join(artifactsDir, manifestName), {
 		version: `v${version}`,
+		package: "prime-agent",
+		tarball: `releases/v${version}/prime-agent-${version}.tgz`,
+		tarballs,
+	});
+	writeJson(join(artifactsDir, "release-provenance.json"), {
+		version: `v${version}`,
+		channel,
+		sourceSha,
 		package: "prime-agent",
 		tarball: `releases/v${version}/prime-agent-${version}.tgz`,
 		tarballs,
@@ -382,6 +391,7 @@ test("artifact verification checks branded manifests, internal URLs, and every c
 		const result = verifyReleaseArtifacts(artifactsDir, {
 			baseUrl: "https://release.invalid",
 			channel: "stable",
+			sourceSha,
 			version: "0.7.2",
 		});
 		assert.equal(result.tarballs.length, 4);
@@ -391,6 +401,7 @@ test("artifact verification checks branded manifests, internal URLs, and every c
 				verifyReleaseArtifacts(artifactsDir, {
 					baseUrl: "https://release.invalid",
 					channel: "stable",
+					sourceSha,
 					version: "0.7.2",
 				}),
 			/checksum mismatch/i,
@@ -407,6 +418,7 @@ test("artifact verification accepts only workflow-shaped beta versions", () => {
 			verifyReleaseArtifacts(artifactsDir, {
 				baseUrl: "https://release.invalid",
 				channel: "beta",
+				sourceSha,
 				version: "0.7.2-beta.42.1.0123456",
 			}).version,
 			"v0.7.2-beta.42.1.0123456",
@@ -416,6 +428,7 @@ test("artifact verification accepts only workflow-shaped beta versions", () => {
 				verifyReleaseArtifacts(artifactsDir, {
 					baseUrl: "https://release.invalid",
 					channel: "beta",
+					sourceSha,
 					version: "0.7.2-custom",
 				}),
 			/workflow beta version/i,
@@ -435,9 +448,38 @@ test("artifact verification rejects a packed CLI missing required internal R2 de
 				verifyReleaseArtifacts(artifactsDir, {
 					baseUrl: "https://release.invalid",
 					channel: "stable",
+					sourceSha,
 					version: "0.7.2",
 				}),
 			/missing the required internal dependency/i,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("legacy release assets remain verifiable for retry and rollback without provenance", () => {
+	const { artifactsDir, root } = createArtifactFixture();
+	try {
+		rmSync(join(artifactsDir, "release-provenance.json"));
+		assert.throws(
+			() =>
+				verifyReleaseArtifacts(artifactsDir, {
+					baseUrl: "https://release.invalid",
+					channel: "stable",
+					sourceSha,
+					version: "0.7.2",
+				}),
+			/release-provenance\.json/,
+		);
+		assert.doesNotThrow(() =>
+			verifyReleaseArtifacts(artifactsDir, {
+				allowMissingProvenance: true,
+				baseUrl: "https://release.invalid",
+				channel: "stable",
+				sourceSha,
+				version: "0.7.2",
+			}),
 		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -458,6 +500,8 @@ test("current dry-run tooling validates a pre-migration source tree without rele
 				"0.7.1",
 				"--base-url",
 				"https://release.invalid",
+				"--source-sha",
+				sourceSha,
 				"--artifacts-dir",
 				artifactsDir,
 			],

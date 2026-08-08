@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { verifyCiResults } from "./verify-ci-results.mjs";
 
-const releaseTriggers = new Set(["main", "manual", "tag"]);
+const releaseTriggers = new Set(["main", "retry"]);
 
 export function verifyReleaseGate({ build, fullCi, releaseContext, trigger }) {
 	if (!releaseTriggers.has(trigger)) throw new Error(`Unsupported release trigger: ${trigger || "missing"}`);

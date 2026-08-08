@@ -1,19 +1,15 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
+
+import { RELEASE_ARTIFACTS } from "./lib/release-lifecycle.mjs";
 
 const commitShaPattern = /^[0-9a-f]{40}$/;
 const releaseChannels = new Set(["stable", "beta"]);
-const releasePackages = [
-	{ filePrefix: "prime-agent", name: "prime-agent" },
-	{ filePrefix: "prime-agent-ai", name: "prime-agent-ai" },
-	{ filePrefix: "prime-agent-core", name: "prime-agent-core" },
-	{ filePrefix: "prime-agent-tui", name: "prime-agent-tui" },
-];
-
 function sha256File(path) {
 	const hash = createHash("sha256");
 	hash.update(readFileSync(path));
@@ -21,8 +17,8 @@ function sha256File(path) {
 }
 
 function expectedTarballs(version) {
-	return releasePackages
-		.map((entry) => ({ ...entry, file: `${entry.filePrefix}-${version}.tgz` }))
+	return RELEASE_ARTIFACTS
+		.map((entry) => ({ file: `${entry.filePrefix}-${version}.tgz`, name: entry.packageName }))
 		.sort((left, right) => left.file.localeCompare(right.file));
 }
 
@@ -43,8 +39,9 @@ function readChecksums(path, expectedFiles) {
 	return entries;
 }
 
-function verifyManifest({ checksums, manifest, manifestName, sourceSha, tarballs, version }) {
+function verifyManifest({ channel, checksums, manifest, manifestName, sourceSha, tarballs, version }) {
 	if (manifest.version !== `v${version}`) throw new Error(`${manifestName} version does not match v${version}`);
+	if (manifest.channel !== channel) throw new Error(`${manifestName} channel does not match ${channel}`);
 	if (manifest.sourceSha !== sourceSha) throw new Error(`${manifestName} source SHA does not match ${sourceSha}`);
 	if (manifest.package !== "prime-agent") throw new Error(`${manifestName} package must be prime-agent`);
 	if (manifest.tarball !== `releases/v${version}/prime-agent-${version}.tgz`) {
@@ -74,6 +71,18 @@ export function verifyReleaseArtifacts({ channel, directory, remoteChecksums, re
 
 	const tarballs = expectedTarballs(version);
 	const expectedFiles = tarballs.map((entry) => entry.file);
+	const manifestName = channel === "stable" ? "latest.json" : "beta.json";
+	const expectedDirectoryFiles = [
+		...expectedFiles,
+		"SHA256SUMS",
+		channel,
+		manifestName,
+		"release-provenance.json",
+	].sort();
+	const actualDirectoryFiles = readdirSync(directory).sort();
+	if (!isDeepStrictEqual(actualDirectoryFiles, expectedDirectoryFiles)) {
+		throw new Error(`Release artifact file set mismatch: ${actualDirectoryFiles.join(", ")}`);
+	}
 	const checksumsPath = join(directory, "SHA256SUMS");
 	const checksums = readChecksums(checksumsPath, expectedFiles);
 	for (const tarball of tarballs) {
@@ -92,15 +101,29 @@ export function verifyReleaseArtifacts({ channel, directory, remoteChecksums, re
 
 	const pointer = readFileSync(join(directory, channel), "utf8");
 	if (pointer !== `v${version}\n`) throw new Error(`${channel} pointer does not match v${version}`);
-	const manifestName = channel === "stable" ? "latest.json" : "beta.json";
 	const manifestContent = readFileSync(join(directory, manifestName), "utf8");
 	const manifest = JSON.parse(manifestContent);
-	verifyManifest({ checksums, manifest, manifestName, sourceSha, tarballs, version });
+	const provenanceContent = readFileSync(join(directory, "release-provenance.json"), "utf8");
+	const provenance = JSON.parse(provenanceContent);
+	verifyManifest({
+		channel,
+		checksums,
+		manifest: provenance,
+		manifestName: "release-provenance.json",
+		sourceSha,
+		tarballs,
+		version,
+	});
+	const { channel: _channel, sourceSha: _sourceSha, ...compatibilityManifest } = provenance;
+	if (!isDeepStrictEqual(manifest, compatibilityManifest)) {
+		throw new Error(`${manifestName} does not match the compatibility release manifest`);
+	}
 	if (remoteManifest) {
 		try {
 			const remoteManifestContent = readFileSync(remoteManifest, "utf8");
-			if (remoteManifestContent !== manifestContent) throw new Error("content does not match local manifest");
+			if (remoteManifestContent !== provenanceContent) throw new Error("content does not match local provenance");
 			verifyManifest({
+				channel,
 				checksums,
 				manifest: JSON.parse(remoteManifestContent),
 				manifestName: "Remote immutable manifest",

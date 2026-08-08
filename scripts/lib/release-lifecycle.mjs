@@ -35,7 +35,7 @@ const EXPECTED_INTERNAL_DEPENDENCIES = new Map([
 ]);
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const BETA_VERSION_PATTERN = /^0\.\d+\.\d+-beta\.\d+\.\d+\.[0-9a-f]{7}$/;
-const RELEASE_ARTIFACTS = [
+export const RELEASE_ARTIFACTS = [
 	{ filePrefix: "prime-agent-ai", packageName: "prime-agent-ai", sourceName: "@earendil-works/pi-ai" },
 	{ filePrefix: "prime-agent-core", packageName: "prime-agent-core", sourceName: "@earendil-works/pi-agent-core" },
 	{ filePrefix: "prime-agent-tui", packageName: "prime-agent-tui", sourceName: "@earendil-works/pi-tui" },
@@ -473,6 +473,9 @@ function validatePackedPackage(packageJson, artifact, version, baseUrl, artifact
 
 export function verifyReleaseArtifacts(artifactsDir, options) {
 	const version = options.version;
+	if (!/^[0-9a-f]{40}$/.test(options.sourceSha ?? "")) {
+		throw new Error(`Artifact source SHA must be a full 40-character commit SHA: ${options.sourceSha ?? ""}`);
+	}
 	if (options.channel !== "stable" && options.channel !== "beta") {
 		throw new Error(`Artifact channel must be stable or beta: ${options.channel}`);
 	}
@@ -492,7 +495,11 @@ export function verifyReleaseArtifacts(artifactsDir, options) {
 		"SHA256SUMS",
 		options.channel,
 		manifestName,
-	].sort();
+	];
+	const provenancePath = join(artifactsDir, "release-provenance.json");
+	const hasProvenance = existsSync(provenancePath);
+	if (hasProvenance || !options.allowMissingProvenance) expectedFiles.push("release-provenance.json");
+	expectedFiles.sort();
 	assertSameFiles(readdirSync(artifactsDir).sort(), expectedFiles);
 
 	const checksums = parseChecksums(readFileSync(join(artifactsDir, "SHA256SUMS"), "utf8"));
@@ -527,7 +534,18 @@ export function verifyReleaseArtifacts(artifactsDir, options) {
 	if (!isDeepStrictEqual(manifest, expectedManifest)) {
 		throw new Error(`${manifestName} does not match the verified release artifacts`);
 	}
-	return expectedManifest;
+	const expectedProvenance = {
+		version: `v${version}`,
+		channel: options.channel,
+		sourceSha: options.sourceSha,
+		package: "prime-agent",
+		tarball: `releases/v${version}/${artifactFiles.get("prime-agent")}`,
+		tarballs,
+	};
+	if (hasProvenance && !isDeepStrictEqual(readJson(provenancePath), expectedProvenance)) {
+		throw new Error("release-provenance.json does not match the verified source and release artifacts");
+	}
+	return expectedProvenance;
 }
 
 function assertSameFiles(actual, expected) {
