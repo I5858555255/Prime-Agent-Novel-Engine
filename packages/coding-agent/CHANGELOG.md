@@ -5,6 +5,9 @@
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+- Fixed concurrent first-time `settings.json` writes losing each other's changes, and crash-interrupted writes leaving a truncated file that silently reset all settings; updates now hold the file lock before reading and write through a temp file and rename ([#983](https://github.com/PrimeIntellect-ai/prime-agent/issues/983))
+- Fixed crash-interrupted `auth.json` writes risking loss of all stored API keys and OAuth tokens; writes now go through a `0600` temp file and atomic rename ([#983](https://github.com/PrimeIntellect-ai/prime-agent/issues/983))
+- Fixed the legacy credential migration removing `oauth.json` and `settings.json` apiKeys before `auth.json` was safely written, which let a crash mid-migration destroy all credentials ([#983](https://github.com/PrimeIntellect-ai/prime-agent/issues/983))
 
 ## [0.7.1] - 2026-08-07
 
