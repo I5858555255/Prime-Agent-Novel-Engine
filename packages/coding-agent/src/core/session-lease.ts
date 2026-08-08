@@ -110,12 +110,17 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
-type ProcessQuery = (command: string, args: string[]) => string;
+interface ProcessQueryOptions {
+	env?: NodeJS.ProcessEnv;
+}
 
-function runProcessQuery(command: string, args: string[]): string {
+type ProcessQuery = (command: string, args: string[], options?: ProcessQueryOptions) => string;
+
+function runProcessQuery(command: string, args: string[], options?: ProcessQueryOptions): string {
 	return execFileSync(command, args, {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
+		env: options?.env,
 	});
 }
 
@@ -132,6 +137,20 @@ export function getWindowsProcessStartId(pid: number, query: ProcessQuery = runP
 			`([System.Diagnostics.Process]::GetProcessById(${pid})).StartTime.ToUniversalTime().Ticks`,
 		]).trim();
 		return /^\d+$/.test(startTicks) ? `win:${startTicks}` : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function getPsProcessStartId(pid: number, query: ProcessQuery = runProcessQuery): string | undefined {
+	if (!Number.isInteger(pid) || pid <= 0) {
+		return undefined;
+	}
+	try {
+		const startTime = query("ps", ["-p", String(pid), "-o", "lstart="], {
+			env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
+		}).trim();
+		return startTime ? `ps:${startTime}` : undefined;
 	} catch {
 		return undefined;
 	}
@@ -155,12 +174,7 @@ export function getProcessStartId(pid: number): string | undefined {
 	} catch {
 		// Fall through to the portable process listing used on macOS and BSD.
 	}
-	try {
-		const startTime = runProcessQuery("ps", ["-p", String(pid), "-o", "lstart="]).trim();
-		return startTime ? `ps:${startTime}` : undefined;
-	} catch {
-		return undefined;
-	}
+	return getPsProcessStartId(pid);
 }
 
 let currentProcessStartId: string | undefined;
