@@ -4,6 +4,8 @@ Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.prime
 
 ## Table of Contents
 
+- [Selecting a custom model](#selecting-a-custom-model)
+- [Common setups](#common-setups)
 - [Minimal Example](#minimal-example)
 - [Full Example](#full-example)
 - [Supported APIs](#supported-apis)
@@ -13,6 +15,90 @@ Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.prime
 - [Per-model Overrides](#per-model-overrides)
 - [Anthropic Messages Compatibility](#anthropic-messages-compatibility)
 - [OpenAI Compatibility](#openai-compatibility)
+
+## Selecting a custom model
+
+After you add a provider to `models.json`, pick it with `/model` (or Ctrl+L), or from the CLI:
+
+```bash
+prime-agent --model ollama/llama3.1:8b
+prime-agent --provider ollama --model llama3.1:8b
+prime-agent --model ollama/llama3.1:8b "Summarize this repository"
+```
+
+The `provider/model` form does not need a separate `--provider` flag. Use `/model` during a session to switch without restarting; `models.json` reloads each time you open `/model`.
+
+If a custom provider entry includes an `apiKey` field, that provider also appears in the `/login` selector so you can store the key in `~/.prime/agent/auth.json` instead of keeping a secret in `models.json`.
+
+## Common setups
+
+Copy one of these into `~/.prime/agent/models.json`, then select the model as shown above.
+
+### Ollama
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        { "id": "llama3.1:8b" },
+        { "id": "qwen2.5-coder:7b" }
+      ]
+    }
+  }
+}
+```
+
+### vLLM
+
+```json
+{
+  "providers": {
+    "vllm": {
+      "baseUrl": "http://localhost:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "vllm",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        { "id": "meta-llama/Meta-Llama-3.1-8B-Instruct" }
+      ]
+    }
+  }
+}
+```
+
+### Generic OpenAI-compatible proxy
+
+```json
+{
+  "providers": {
+    "my-proxy": {
+      "baseUrl": "https://proxy.example.com/v1",
+      "api": "openai-completions",
+      "apiKey": "MY_PROXY_API_KEY",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        { "id": "my-model" }
+      ]
+    }
+  }
+}
+```
+
+If the server rejects the `developer` role or `reasoning_effort`, keep those `compat` flags set to `false`. See [OpenAI Compatibility](#openai-compatibility) for the full flag reference.
 
 ## Minimal Example
 
