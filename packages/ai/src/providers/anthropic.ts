@@ -490,6 +490,10 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 		};
 
 		try {
+			// Fast mode: explicit speed="fast" or serviceTier="priority" on a supported model
+			const isFastModeActive =
+				supportsAnthropicFastMode(model) && (options?.speed === "fast" || options?.serviceTier === "priority");
+
 			let client: Anthropic;
 			let isOAuth: boolean;
 
@@ -515,7 +519,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					shouldUseFineGrainedToolStreamingBeta(model, context),
 					options?.headers,
 					copilotDynamicHeaders,
-					options?.speed === "fast" && supportsAnthropicFastMode(model),
+					isFastModeActive,
 				);
 				client = created.client;
 				isOAuth = created.isOAuthToken;
@@ -526,7 +530,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				cacheControl && usesAnthropicCachePricing
 					? getAnthropicCacheWriteCost(model.cost.input, cacheControl.ttl === "1h" ? "1h" : "5m")
 					: undefined;
-			let params = buildParams(model, context, isOAuth, options, cacheControl);
+			let params = buildParams(model, context, isOAuth, options, cacheControl, isFastModeActive);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
@@ -537,10 +541,9 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
 			};
 			// beta.messages.create accepts a superset of params; cast to match the non-beta overload signature
-			const createFn =
-				options?.speed === "fast" && supportsAnthropicFastMode(model)
-					? (client.beta.messages.create.bind(client.beta.messages) as typeof client.messages.create)
-					: client.messages.create.bind(client.messages);
+			const createFn = isFastModeActive
+				? (client.beta.messages.create.bind(client.beta.messages) as typeof client.messages.create)
+				: client.messages.create.bind(client.messages);
 			const response = await createFn({ ...params, stream: true }, requestOptions).asResponse();
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			const requestId = response.headers.get("request-id") ?? undefined;
@@ -573,6 +576,13 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						output.usage,
 						cacheWriteCost === undefined ? undefined : { cacheWrite: cacheWriteCost },
 					);
+					if (isFastModeActive) {
+						output.usage.cost.input *= 2;
+						output.usage.cost.output *= 2;
+						output.usage.cost.cacheRead *= 2;
+						output.usage.cost.cacheWrite *= 2;
+						output.usage.cost.total *= 2;
+					}
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "text") {
 						const block: Block = {
@@ -722,6 +732,13 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						output.usage,
 						cacheWriteCost === undefined ? undefined : { cacheWrite: cacheWriteCost },
 					);
+					if (isFastModeActive) {
+						output.usage.cost.input *= 2;
+						output.usage.cost.output *= 2;
+						output.usage.cost.cacheRead *= 2;
+						output.usage.cost.cacheWrite *= 2;
+						output.usage.cost.total *= 2;
+					}
 				}
 			}
 
@@ -976,6 +993,7 @@ function buildParams(
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
 	cacheControl?: CacheControlEphemeral,
+	isFastMode?: boolean,
 ): MessageCreateParamsStreaming {
 	const params: MessageCreateParamsStreaming = {
 		model: model.id,
@@ -1073,7 +1091,7 @@ function buildParams(
 		}
 	}
 
-	if (options?.speed === "fast" && supportsAnthropicFastMode(model)) {
+	if (isFastMode) {
 		// speed is in the beta MessageCreateParamsStreaming but not yet in the base type
 		(params as MessageCreateParamsStreaming & { speed?: "fast" }).speed = "fast";
 	}
