@@ -30,6 +30,8 @@ export type {
 	OAuthAuthInfo,
 	OAuthCredentials,
 	OAuthLoginCallbacks,
+	OAuthLoginErrorCode,
+	OAuthLoginErrorSource,
 	OAuthPrompt,
 	OAuthProvider,
 	OAuthProviderId,
@@ -38,6 +40,7 @@ export type {
 	OAuthSelectOption,
 	OAuthSelectPrompt,
 } from "./utils/oauth/types.js";
+export { OAuthLoginError } from "./utils/oauth/types.js";
 export * from "./utils/overflow.js";
 export * from "./utils/stream-failure.js";
 export * from "./utils/typebox-helpers.js";

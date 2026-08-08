@@ -4,7 +4,18 @@
 import type { Server } from "node:http";
 import { oauthErrorHtml, oauthSuccessHtml } from "../utils/oauth/oauth-page.js";
 import { generatePKCE } from "../utils/oauth/pkce.js";
-import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "../utils/oauth/types.js";
+import {
+	connectOAuthManualInput,
+	createOAuthTerminalWaiter,
+	type OAuthTerminalWaiter,
+	toOAuthLoginError,
+} from "../utils/oauth/terminal-waiter.js";
+import {
+	type OAuthCredentials,
+	type OAuthLoginCallbacks,
+	OAuthLoginError,
+	type OAuthProviderInterface,
+} from "../utils/oauth/types.js";
 
 const CALLBACK_HOST = process.env.PI_OAUTH_CALLBACK_HOST || "127.0.0.1";
 // A range (not one port) so a leaked/concurrent login can't wedge all logins with EADDRINUSE.
@@ -107,25 +118,19 @@ async function registerClient(registrationEndpoint: string, label: string): Prom
 	return data.client_id;
 }
 
-type CallbackResult = { code: string; state: string } | null;
+type CallbackResult = { code: string; state: string };
 
-async function startCallbackServer(label: string): Promise<{
+async function startCallbackServer(
+	label: string,
+	expectedState: string,
+	options?: { callbackTimeoutMs?: number; signal?: AbortSignal },
+): Promise<{
 	server: Server;
 	redirectUri: string;
-	cancel: () => void;
-	waitForCode: () => Promise<CallbackResult>;
+	waiter: OAuthTerminalWaiter<CallbackResult>;
 }> {
 	const { createServer } = await import("node:http");
-	let settle: ((value: CallbackResult) => void) | undefined;
-	const waitPromise = new Promise<CallbackResult>((resolve) => {
-		let settled = false;
-		settle = (value) => {
-			if (!settled) {
-				settled = true;
-				resolve(value);
-			}
-		};
-	});
+	let waiter: OAuthTerminalWaiter<CallbackResult> | undefined;
 
 	const handler = (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => {
 		const url = new URL(req.url || "", "http://localhost");
@@ -137,19 +142,26 @@ async function startCallbackServer(label: string): Promise<{
 		const error = url.searchParams.get("error");
 		const code = url.searchParams.get("code");
 		const state = url.searchParams.get("state");
-		res.writeHead(error || !code ? 400 : 200, { "Content-Type": "text/html; charset=utf-8" });
+		res.writeHead(error || !code || !state || state !== expectedState ? 400 : 200, {
+			"Content-Type": "text/html; charset=utf-8",
+		});
 		if (error) {
 			res.end(oauthErrorHtml(`${label} authentication failed.`, `Error: ${error}`));
-			settle?.(null);
+			waiter?.fail(new OAuthLoginError("authorization_error", "browser", `${label} authorization failed: ${error}`));
 			return;
 		}
 		if (!code || !state) {
 			res.end(oauthErrorHtml("Missing code or state parameter."));
-			settle?.(null);
+			waiter?.fail(new OAuthLoginError("invalid_callback", "browser", "Missing code or state parameter"));
+			return;
+		}
+		if (state !== expectedState) {
+			res.end(oauthErrorHtml("State mismatch."));
+			waiter?.fail(new OAuthLoginError("state_mismatch", "browser", "OAuth state mismatch"));
 			return;
 		}
 		res.end(oauthSuccessHtml(`${label} authentication completed. You can close this window.`));
-		settle?.({ code, state });
+		waiter?.succeed({ code, state });
 	};
 
 	// Try each candidate port with a FRESH server (a server that failed to listen
@@ -159,7 +171,13 @@ async function startCallbackServer(label: string): Promise<{
 		const server = createServer(handler);
 		// Persistent handler so a post-bind 'error' is never an unhandled crash.
 		let bindErr: ((err: unknown) => void) | undefined;
-		server.on("error", (err) => bindErr?.(err));
+		server.on("error", (err) => {
+			if (bindErr) {
+				bindErr(err);
+				return;
+			}
+			waiter?.fail(toOAuthLoginError(err, "callback_server_error", "server"));
+		});
 		try {
 			const bound = await new Promise<boolean>((resolve) => {
 				bindErr = () => resolve(false);
@@ -169,11 +187,14 @@ async function startCallbackServer(label: string): Promise<{
 				});
 			});
 			if (bound) {
+				waiter = createOAuthTerminalWaiter<CallbackResult>({
+					timeoutMs: options?.callbackTimeoutMs,
+					signal: options?.signal,
+				});
 				return {
 					server,
 					redirectUri: redirectUriFor(port),
-					cancel: () => settle?.(null),
-					waitForCode: () => waitPromise,
+					waiter,
 				};
 			}
 			lastError = `port ${port} in use`;
@@ -194,20 +215,26 @@ function parseRedirectInput(input: string, expectedState: string): { code: strin
 	const value = input.trim();
 	let code: string | undefined;
 	let state: string | undefined;
+	let error: string | undefined;
 	try {
 		const url = new URL(value);
 		code = url.searchParams.get("code") ?? undefined;
 		state = url.searchParams.get("state") ?? undefined;
+		error = url.searchParams.get("error") ?? undefined;
 	} catch {
 		const params = new URLSearchParams(value);
 		code = params.get("code") ?? value;
 		state = params.get("state") ?? undefined;
+		error = params.get("error") ?? undefined;
+	}
+	if (error) {
+		throw new OAuthLoginError("authorization_error", "manual", `${error}`);
 	}
 	if (state && state !== expectedState) {
-		throw new Error("OAuth state mismatch");
+		throw new OAuthLoginError("state_mismatch", "manual", "OAuth state mismatch");
 	}
 	if (!code) {
-		throw new Error("Missing authorization code");
+		throw new OAuthLoginError("invalid_callback", "manual", "Missing authorization code");
 	}
 	return { code, state: state ?? expectedState };
 }
@@ -251,6 +278,9 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 	const label = config.label ?? config.server;
 
 	async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+		if (callbacks.signal?.aborted) {
+			throw new OAuthLoginError("cancelled", "signal", "Login cancelled");
+		}
 		const meta = await discover(config.url);
 		callbacks.onProgress?.(`Discovered ${meta.issuer ?? new URL(config.url).origin}`);
 
@@ -271,7 +301,7 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 		// secret used at token exchange, while `state` is echoed on the redirect URL.
 		const state = randomState();
 		const scope = config.scopes ?? meta.scopes_supported?.join(" ");
-		const cb = await startCallbackServer(label);
+		const cb = await startCallbackServer(label, state, callbacks);
 		try {
 			const authParams = new URLSearchParams({
 				client_id: clientId,
@@ -289,55 +319,15 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 					"Complete login in your browser. If the browser is on another machine, paste the final redirect URL here.",
 			});
 
-			// Race the local callback server against a manual paste (browser on
-			// another machine). The login dialog supplies onManualCodeInput; when
-			// absent we fall back to a blocking prompt after the callback resolves.
-			let result: { code: string; state: string } | null;
-			let manualCancelled = false;
-			let manualError: Error | undefined;
+			// Race the local callback server against a manual paste from another machine.
 			if (callbacks.onManualCodeInput) {
-				// Manual paste races the browser callback. A real paste cancels the
-				// callback waiter (we're done). On manual cancellation we still settle
-				// the waiter to avoid hanging when no redirect arrives — but only after
-				// a short grace period so an in-flight browser redirect can win first.
-				const manual = callbacks
-					.onManualCodeInput()
-					.then((input) => {
-						const parsed = parseRedirectInput(input, state); // may throw a validation error
-						cb.cancel();
-						return parsed;
-					})
-					.catch(async (err) => {
-						// A validation error on a real paste (bad state / no code) is a genuine
-						// failure to surface; a UI cancellation is not. .catch also prevents an
-						// unhandled rejection when the callback wins the race.
-						if (err instanceof Error && /state mismatch|authorization code/i.test(err.message)) {
-							manualError = err;
-						} else {
-							manualCancelled = true;
-						}
-						await new Promise((r) => setTimeout(r, 500));
-						cb.cancel();
-						return null;
-					});
-				const fromCallback = await cb.waitForCode();
-				result = fromCallback ?? (await manual);
-				if (!result && manualError) throw manualError;
-			} else {
-				result = await cb.waitForCode();
-				if (!result) {
-					const input = await callbacks.onPrompt({
-						message: "Paste the authorization code or full redirect URL:",
-						placeholder: cb.redirectUri,
-					});
-					result = parseRedirectInput(input, state);
-				}
+				connectOAuthManualInput(cb.waiter, callbacks.onManualCodeInput, (input) =>
+					parseRedirectInput(input, state),
+				);
 			}
-			if (!result) {
-				throw new Error(manualCancelled ? "Login cancelled" : "Missing authorization code");
-			}
+			const result = await cb.waiter.wait();
 			if (result.state !== state) {
-				throw new Error("OAuth state mismatch");
+				throw new OAuthLoginError("state_mismatch", "browser", "OAuth state mismatch");
 			}
 
 			callbacks.onProgress?.("Exchanging authorization code for tokens…");
@@ -350,6 +340,7 @@ export function createMcpOAuthProvider(config: McpOAuthConfig): OAuthProviderInt
 			});
 			return toCredentials(token, meta.token_endpoint, clientId);
 		} finally {
+			cb.waiter.fail(new OAuthLoginError("cancelled", "server", "OAuth callback wait closed"));
 			cb.server.close();
 		}
 	}

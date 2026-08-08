@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMcpOAuthProvider } from "../src/mcp/oauth.js";
+import type { OAuthLoginError } from "../src/utils/oauth/types.js";
+
+const fetchFromNetwork = globalThis.fetch.bind(globalThis);
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -114,6 +117,152 @@ describe.sequential("MCP OAuth provider", () => {
 		} finally {
 			if (blockerBound) await new Promise<void>((resolve) => blocker.close(() => resolve()));
 		}
+	});
+
+	it.each([
+		{
+			name: "authorization error",
+			query: (state: string) => `error=access_denied&state=${encodeURIComponent(state)}`,
+			code: "authorization_error",
+		},
+		{
+			name: "missing code",
+			query: (state: string) => `state=${encodeURIComponent(state)}`,
+			code: "invalid_callback",
+		},
+		{
+			name: "state mismatch",
+			query: () => "code=browser-code&state=wrong-state",
+			code: "state_mismatch",
+		},
+	])("settles the $name browser callback with a typed error", async ({ query, code }) => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				const url = urlOf(input);
+				if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(META);
+				throw new Error(`unexpected fetch: ${url}`);
+			}),
+		);
+		let callbackRequest: Promise<Response> | undefined;
+		const provider = createMcpOAuthProvider({ server: "demo", url: "https://srv.test/mcp", clientId: "client" });
+		const loginPromise = provider.login({
+			onAuth: ({ url }) => {
+				const authUrl = new URL(url);
+				const state = authUrl.searchParams.get("state") ?? "";
+				const redirectUri = authUrl.searchParams.get("redirect_uri") ?? "";
+				callbackRequest = fetchFromNetwork(`${redirectUri}?${query(state)}`);
+			},
+			onPrompt: async () => "",
+			onManualCodeInput: () => new Promise<string>(() => {}),
+		});
+
+		await expect(loginPromise).rejects.toMatchObject({
+			name: "OAuthLoginError",
+			code,
+			source: "browser",
+		});
+		expect((await callbackRequest)?.status).toBe(400);
+	});
+
+	it("uses the browser result when it settles before manual input", async () => {
+		let callbackRequest: Promise<Response> | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
+				const url = urlOf(input);
+				if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(META);
+				if (url === META.token_endpoint) {
+					expect(new URLSearchParams(String(init?.body)).get("code")).toBe("browser-code");
+					return jsonResponse({ access_token: "access", refresh_token: "refresh", expires_in: 3600 });
+				}
+				throw new Error(`unexpected fetch: ${url}`);
+			}),
+		);
+		const provider = createMcpOAuthProvider({ server: "demo", url: "https://srv.test/mcp", clientId: "client" });
+
+		const credentials = await provider.login({
+			onAuth: ({ url }) => {
+				const authUrl = new URL(url);
+				const state = authUrl.searchParams.get("state") ?? "";
+				const redirectUri = authUrl.searchParams.get("redirect_uri") ?? "";
+				callbackRequest = fetchFromNetwork(`${redirectUri}?code=browser-code&state=${encodeURIComponent(state)}`);
+			},
+			onPrompt: async () => "",
+			onManualCodeInput: () => new Promise<string>(() => {}),
+		});
+
+		expect(credentials.access).toBe("access");
+		expect((await callbackRequest)?.status).toBe(200);
+	});
+
+	it("settles a manual authorization error with a typed error", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				const url = urlOf(input);
+				if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(META);
+				throw new Error(`unexpected fetch: ${url}`);
+			}),
+		);
+		let authUrl = "";
+		const provider = createMcpOAuthProvider({ server: "demo", url: "https://srv.test/mcp", clientId: "client" });
+		const loginPromise = provider.login({
+			onAuth: ({ url }) => {
+				authUrl = url;
+			},
+			onPrompt: async () => "",
+			onManualCodeInput: async () => {
+				const url = new URL(authUrl);
+				const state = url.searchParams.get("state") ?? "";
+				const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+				return `${redirectUri}?error=access_denied&state=${encodeURIComponent(state)}`;
+			},
+		});
+
+		await expect(loginPromise).rejects.toMatchObject({
+			code: "authorization_error",
+			source: "manual",
+		});
+	});
+
+	it("rejects with a typed error after the callback timeout", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				const url = urlOf(input);
+				if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(META);
+				throw new Error(`unexpected fetch: ${url}`);
+			}),
+		);
+		const onPrompt = vi.fn(async () => "unused");
+		const provider = createMcpOAuthProvider({ server: "demo", url: "https://srv.test/mcp", clientId: "client" });
+		const loginPromise = provider.login({ onAuth: () => {}, onPrompt, callbackTimeoutMs: 5 });
+
+		await expect(loginPromise).rejects.toMatchObject({ code: "timeout", source: "timeout" });
+		expect(onPrompt).not.toHaveBeenCalled();
+	});
+
+	it("rejects with a typed cancellation when aborted during the callback wait", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				const url = urlOf(input);
+				if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(META);
+				throw new Error(`unexpected fetch: ${url}`);
+			}),
+		);
+		const controller = new AbortController();
+		const provider = createMcpOAuthProvider({ server: "demo", url: "https://srv.test/mcp", clientId: "client" });
+		const loginPromise = provider.login({
+			onAuth: () => controller.abort(),
+			onPrompt: async () => "",
+			signal: controller.signal,
+		});
+
+		await expect(loginPromise).rejects.toEqual(
+			expect.objectContaining<Partial<OAuthLoginError>>({ code: "cancelled", source: "signal" }),
+		);
 	});
 
 	it("refreshes tokens, keeping the prior refresh token when omitted", async () => {

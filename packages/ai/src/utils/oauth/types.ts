@@ -23,6 +23,28 @@ export type OAuthAuthInfo = {
 	instructions?: string;
 };
 
+export type OAuthLoginErrorCode =
+	| "authorization_error"
+	| "invalid_callback"
+	| "callback_server_error"
+	| "state_mismatch"
+	| "timeout"
+	| "cancelled";
+
+export type OAuthLoginErrorSource = "browser" | "manual" | "server" | "signal" | "timeout";
+
+export class OAuthLoginError extends Error {
+	readonly code: OAuthLoginErrorCode;
+	readonly source: OAuthLoginErrorSource;
+
+	constructor(code: OAuthLoginErrorCode, source: OAuthLoginErrorSource, message: string) {
+		super(message);
+		this.name = "OAuthLoginError";
+		this.code = code;
+		this.source = source;
+	}
+}
+
 export type OAuthSelectOption = {
 	id: string;
 	label: string;
@@ -41,6 +63,8 @@ export interface OAuthLoginCallbacks {
 	/** Show an interactive selector and return the selected option id, or undefined on cancel. */
 	onSelect?: (prompt: OAuthSelectPrompt) => Promise<string | undefined>;
 	signal?: AbortSignal;
+	/** Maximum time to wait for a browser or manual callback. */
+	callbackTimeoutMs?: number;
 }
 
 export interface OAuthProviderInterface {

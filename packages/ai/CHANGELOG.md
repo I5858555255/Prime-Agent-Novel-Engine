@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed OAuth login callback waits hanging on terminal errors and leaking abort listeners during GitHub Copilot polling ([#938](https://github.com/PrimeIntellect-ai/prime-agent/issues/938))
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
