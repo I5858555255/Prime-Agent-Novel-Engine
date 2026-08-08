@@ -100,7 +100,11 @@ import {
 } from "../../core/cron-jobs.js";
 import { ORPHAN_PROCESS_JOURNAL_ENV } from "../../core/orphan-process-journal.js";
 import { PromptAdmissionCancelledError, waitForPromptAdmission } from "../../core/prompt-admission.js";
-import type { CreateRlmSubagentRuntimeOptions, SubagentRuntimeHost } from "../../core/rlm-runtime.js";
+import {
+	type CreateRlmSubagentRuntimeOptions,
+	type SubagentRuntimeHost,
+	seedRlmSubagentHarness,
+} from "../../core/rlm-runtime.js";
 import {
 	canPassivateSession,
 	type IdleEvictionMinutes,
@@ -2309,6 +2313,7 @@ export class AgentDaemon {
 			parentSession: options.parentSession.sessionFile,
 			rlmDepth: options.rlmDepth,
 		});
+		seedRlmSubagentHarness(options, sessionManager);
 		let stateRef: ActiveSessionState | undefined;
 		// Subagents inherit the parent's client env (e.g. herdr pane identity).
 		const runtime = await withClientEnv(parentState.clientEnv, () =>

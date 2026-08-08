@@ -162,11 +162,13 @@ Unknown options fail instead of being ignored. Model search is bounded to active
 1. Check `RLM_DEPTH < RLM_MAX_DEPTH`.
 2. Resolve the requested model or inherit the parent model.
 3. Create a `sub-xxxxxxxx` child directory under the parent artifact directory.
-4. Admit the task into the parent registry and return its `RLMSpawnHandle`.
-5. In detached work, create a child `SessionManager`, `Agent`, and `AgentSession`.
-6. Reuse provider hooks, resource loader, model registry, tools, transport, retry settings, and thinking configuration.
-7. Run the child prompt, retain its session, and update lifecycle state independently of the admission call.
-8. Attribute child usage to the parent assistant turn and persist the attribution.
+4. Capture the parent's session-local continual harness as an admission-time snapshot.
+5. Admit the task into the parent registry and return its `RLMSpawnHandle`.
+6. In detached work, create a child `SessionManager` and seed the snapshot into its artifact directory.
+7. Create the child `Agent` and `AgentSession`.
+8. Reuse provider hooks, resource loader, model registry, tools, transport, retry settings, and thinking configuration.
+9. Run the child prompt, retain its session, and update lifecycle state independently of the admission call.
+10. Attribute child usage to the parent assistant turn and persist the attribution.
 
 Children receive incremented `RLM_DEPTH`, the inherited maximum depth, and their own `RLM_SESSION_DIR`. The default maximum depth is 1, so root sessions may create children and those children may not create grandchildren unless the limit is configured higher.
 
@@ -209,6 +211,8 @@ On reload, the aggregate is reapplied to the parent message. Context-tree report
 `rlm.harness` is a persisted state ledger for prompt notes, memories, reusable skill descriptions, sub-agent specifications, and refinement events. It is not a second execution engine.
 
 Session-local state lives in the session artifact directory under `harness/harness_state.json`. Explicitly global entries live under `~/.prime/agent/harness/`. The Python store reloads after external modification so host-side `/refine` writes and kernel writes do not overwrite each other.
+
+An RLM child starts with a snapshot of its parent's local prompt notes, memories, skills, and sub-agent specifications. Inheritance metadata records the original source session, immediate parent, inheritance time, and source version. Refinement history is not copied. The child owns the snapshot and can refine it without changing its parent or siblings. Parent changes made after spawn do not alter an existing child, while children spawned later receive the newer state. Nested delegation carries the resulting local state forward again.
 
 `/refine` runs a dedicated review over the current trajectory and applies small create/update/delete edits. Rollback uses recorded before/after snapshots. The base system prompt remains immutable; refinements are supplemental state.
 
