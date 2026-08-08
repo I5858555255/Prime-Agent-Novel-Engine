@@ -1,20 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import {
-	cpSync,
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-	rmSync,
-	statSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +10,11 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const installedRepositoryRoot = dirname(realpathSync(join(repositoryRoot, "node_modules")));
 const publicPackageName = "prime-agent-tui";
+const tsgoCli = resolve(
+	dirname(fileURLToPath(import.meta.resolve("@typescript/native-preview/package.json"))),
+	"bin/tsgo.js",
+);
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 interface PackageManifest {
 	dependencies?: Record<string, string>;
@@ -43,6 +36,11 @@ function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEn
 		maxBuffer: 10 * 1024 * 1024,
 	});
 
+	if (result.error) {
+		throw new Error(`${command} ${args.join(" ")} could not start: ${result.error.message}`, {
+			cause: result.error,
+		});
+	}
 	if (result.status !== 0) {
 		throw new Error(
 			`${command} ${args.join(" ")} failed with exit ${result.status}\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`,
@@ -53,13 +51,12 @@ function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEn
 }
 
 function stagePackageFiles(source: string, target: string): void {
-	mkdirSync(target, { recursive: true });
-	for (const entry of readdirSync(source, { withFileTypes: true })) {
-		if (entry.name === "node_modules") continue;
-		const entrySource = join(source, entry.name);
-		const entryTarget = join(target, entry.name);
-		symlinkSync(entrySource, entryTarget, statSync(entrySource).isDirectory() ? "junction" : "file");
-	}
+	mkdirSync(dirname(target), { recursive: true });
+	cpSync(source, target, {
+		dereference: true,
+		filter: (entry) => basename(entry) !== "node_modules",
+		recursive: true,
+	});
 }
 
 function resolveInstalledPackage(name: string, issuer: string): string | undefined {
@@ -132,19 +129,28 @@ function extractQuickStart(readme: string): string {
 	return `${codeBlock[1]}\n`;
 }
 
-function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number, output: () => string): Promise<ProcessResult> {
+function waitForClose(child: ReturnType<typeof spawn>): Promise<ProcessResult> {
 	return new Promise((resolveExit, rejectExit) => {
-		const timeout = setTimeout(() => {
-			rejectExit(new Error(`Quick Start did not exit within ${timeoutMs}ms\nOUTPUT:\n${output()}`));
-		}, timeoutMs);
-		child.once("error", (error) => {
-			clearTimeout(timeout);
-			rejectExit(error);
-		});
-		child.once("exit", (code, signal) => {
-			clearTimeout(timeout);
+		child.once("error", rejectExit);
+		child.once("close", (code, signal) => {
 			resolveExit({ code, signal });
 		});
+	});
+}
+
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: () => string): Promise<T> {
+	return new Promise((resolveOperation, rejectOperation) => {
+		const timeout = setTimeout(() => rejectOperation(new Error(message())), timeoutMs);
+		operation.then(
+			(value) => {
+				clearTimeout(timeout);
+				resolveOperation(value);
+			},
+			(error: unknown) => {
+				clearTimeout(timeout);
+				rejectOperation(error);
+			},
+		);
 	});
 }
 
@@ -165,35 +171,40 @@ async function runQuickStart(consumerDir: string): Promise<void> {
 		stderr += chunk;
 	});
 	const output = () => `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`;
-	const exitPromise = waitForExit(child, 10_000, output);
+	const closePromise = waitForClose(child);
 
 	try {
-		await new Promise<void>((resolveRender, rejectRender) => {
-			const timeout = setTimeout(() => {
-				rejectRender(new Error(`Quick Start did not render within 5000ms\n${output()}`));
-			}, 5000);
+		const renderPromise = new Promise<void>((resolveRender) => {
 			const inspectOutput = () => {
 				if (!stdout.includes("Welcome to my app!")) return;
-				clearTimeout(timeout);
 				resolveRender();
 			};
 			child.stdout.on("data", inspectOutput);
-			child.once("exit", (code, signal) => {
-				clearTimeout(timeout);
-				rejectRender(
-					new Error(`Quick Start exited before rendering (code=${code}, signal=${signal})\n${output()}`),
-				);
-			});
 		});
+		await withTimeout(
+			Promise.race([
+				renderPromise,
+				closePromise.then(({ code, signal }) => {
+					throw new Error(`Quick Start exited before rendering (code=${code}, signal=${signal})\n${output()}`);
+				}),
+			]),
+			5000,
+			() => `Quick Start did not render within 5000ms\n${output()}`,
+		);
 
 		child.stdin.write("\x03");
 		child.stdin.end();
-		const result = await exitPromise;
+		const result = await withTimeout(closePromise, 5000, () => `Quick Start did not exit within 5000ms\n${output()}`);
 		assert.equal(result.signal, null, output());
 		assert.equal(result.code, 0, output());
 		assert.match(stdout, /Welcome to my app!/);
 	} finally {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await withTimeout(
+			closePromise,
+			2000,
+			() => `Quick Start did not close within 2000ms after termination\n${output()}`,
+		);
 	}
 }
 
@@ -213,8 +224,9 @@ test("issue #952: packed Quick Start compiles, renders, and stops on Ctrl+C", { 
 		cpSync(join(packageRoot, "package.json"), join(stagingDir, "package.json"));
 		cpSync(join(packageRoot, "README.md"), join(stagingDir, "README.md"));
 		run(
-			resolve(repositoryRoot, "node_modules/.bin/tsgo"),
+			process.execPath,
 			[
+				tsgoCli,
 				"-p",
 				join(packageRoot, "tsconfig.build.json"),
 				"--outDir",
@@ -225,7 +237,7 @@ test("issue #952: packed Quick Start compiles, renders, and stops on Ctrl+C", { 
 			packageRoot,
 		);
 		const tarballName = run(
-			"npm",
+			npmCommand,
 			["pack", stagingDir, "--ignore-scripts", "--silent", "--pack-destination", artifactDir],
 			repositoryRoot,
 			{ npm_config_cache: npmCacheDir },
@@ -273,7 +285,7 @@ test("issue #952: packed Quick Start compiles, renders, and stops on Ctrl+C", { 
 				2,
 			)}\n`,
 		);
-		run(resolve(repositoryRoot, "node_modules/.bin/tsgo"), ["-p", "tsconfig.json"], consumerDir);
+		run(process.execPath, [tsgoCli, "-p", "tsconfig.json"], consumerDir);
 		await runQuickStart(consumerDir);
 	} finally {
 		rmSync(tempRoot, { recursive: true, force: true });
