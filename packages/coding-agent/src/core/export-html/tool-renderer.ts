@@ -141,7 +141,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 
 				const component = toolDef.renderCall(
 					args,
-					theme as unknown as Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
+					theme,
 					createRenderContext(toolCallId, renderedCallComponents.get(toolCallId), false, true, false),
 				);
 				renderedCallComponents.set(toolCallId, component);
@@ -179,7 +179,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 				const collapsedComponent = toolDef.renderResult(
 					agentToolResult,
 					{ expanded: false, isPartial: false },
-					theme as unknown as Parameters<NonNullable<ToolDefinition["renderResult"]>>[2],
+					theme,
 					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), false, false, isError),
 				);
 				renderedResultComponents.set(toolCallId, collapsedComponent);
@@ -189,7 +189,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 				const expandedComponent = toolDef.renderResult(
 					agentToolResult,
 					{ expanded: true, isPartial: false },
-					theme as unknown as Parameters<NonNullable<ToolDefinition["renderResult"]>>[2],
+					theme,
 					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), true, false, isError),
 				);
 				renderedResultComponents.set(toolCallId, expandedComponent);
