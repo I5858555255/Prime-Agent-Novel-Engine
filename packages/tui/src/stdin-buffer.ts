@@ -237,6 +237,12 @@ export type StdinBufferOptions = {
 	 * After this time, the buffer is flushed even if incomplete
 	 */
 	timeout?: number;
+	/**
+	 * Maximum time to wait for the bracketed paste end marker (default: 5000ms).
+	 * After this time, paste mode is exited and the buffered content is
+	 * flushed through the normal input path
+	 */
+	pasteTimeout?: number;
 };
 
 export type StdinBufferEventMap = {
@@ -254,11 +260,14 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	private readonly timeoutMs: number;
 	private pasteMode: boolean = false;
 	private pasteBuffer: string = "";
+	private pasteTimeout: ReturnType<typeof setTimeout> | null = null;
+	private readonly pasteTimeoutMs: number;
 	private pendingKittyPrintableCodepoint: number | undefined;
 
 	constructor(options: StdinBufferOptions = {}) {
 		super();
 		this.timeoutMs = options.timeout ?? 10;
+		this.pasteTimeoutMs = options.pasteTimeout ?? 5000;
 	}
 
 	public process(data: string | Buffer): void {
@@ -301,12 +310,15 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				this.pasteMode = false;
 				this.pasteBuffer = "";
 				this.pendingKittyPrintableCodepoint = undefined;
+				this.clearPasteTimeout();
 
 				this.emit("paste", pastedContent);
 
 				if (remaining.length > 0) {
 					this.process(remaining);
 				}
+			} else {
+				this.armPasteTimeout();
 			}
 			return;
 		}
@@ -335,12 +347,15 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				this.pasteMode = false;
 				this.pasteBuffer = "";
 				this.pendingKittyPrintableCodepoint = undefined;
+				this.clearPasteTimeout();
 
 				this.emit("paste", pastedContent);
 
 				if (remaining.length > 0) {
 					this.process(remaining);
 				}
+			} else {
+				this.armPasteTimeout();
 			}
 			return;
 		}
@@ -374,6 +389,34 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.emit("data", sequence);
 	}
 
+	private armPasteTimeout(): void {
+		this.clearPasteTimeout();
+		this.pasteTimeout = setTimeout(() => {
+			this.pasteTimeout = null;
+			if (!this.pasteMode) {
+				return;
+			}
+			// The end marker never arrived (e.g. mangled over tmux/SSH).
+			// Exit paste mode and flush the buffered content through the
+			// normal input path so the user keeps typing.
+			const buffered = this.pasteBuffer;
+			this.pasteMode = false;
+			this.pasteBuffer = "";
+			this.pendingKittyPrintableCodepoint = undefined;
+			if (buffered.length > 0) {
+				this.process(buffered);
+			}
+		}, this.pasteTimeoutMs);
+		this.pasteTimeout.unref?.();
+	}
+
+	private clearPasteTimeout(): void {
+		if (this.pasteTimeout) {
+			clearTimeout(this.pasteTimeout);
+			this.pasteTimeout = null;
+		}
+	}
+
 	flush(): string[] {
 		if (this.timeout) {
 			clearTimeout(this.timeout);
@@ -395,6 +438,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			clearTimeout(this.timeout);
 			this.timeout = null;
 		}
+		this.clearPasteTimeout();
 		this.buffer = "";
 		this.pasteMode = false;
 		this.pasteBuffer = "";

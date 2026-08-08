@@ -173,7 +173,7 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 			wrapOppIndex = -1;
 		}
 
-		if (gWidth > maxWidth) {
+		if (gWidth > maxWidth && isAtomicMarker(grapheme)) {
 			// Single atomic segment wider than maxWidth (e.g. paste marker
 			// in a narrow terminal). Re-wrap it at grapheme granularity.
 
@@ -187,6 +187,15 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 			const last = subChunks[subChunks.length - 1]!;
 			chunkStart = charIndex + last.startIndex;
 			currentWidth = visibleWidth(last.text);
+			wrapOppIndex = -1;
+			continue;
+		}
+
+		if (gWidth > maxWidth) {
+			// Single grapheme wider than maxWidth (e.g. emoji or CJK in a
+			// very narrow terminal). It cannot be split; keep it as its own
+			// chunk and let it overflow visually instead of recursing.
+			currentWidth = gWidth;
 			wrapOppIndex = -1;
 			continue;
 		}
