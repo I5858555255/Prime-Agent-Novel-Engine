@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Changed builds to compile the committed model snapshot offline and made explicit catalog refreshes transactional, deterministic, and provenance-tracked ([#930](https://github.com/PrimeIntellect-ai/prime-agent/issues/930)).
+- Updated the built-in model catalog snapshot to reflect current provider availability and metadata ([#930](https://github.com/PrimeIntellect-ai/prime-agent/issues/930)).
 
 ## [0.7.1] - 2026-08-07
 

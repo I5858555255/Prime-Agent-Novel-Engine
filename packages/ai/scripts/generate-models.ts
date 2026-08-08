@@ -4,6 +4,7 @@ import { createHash } from "crypto";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import ts from "typescript";
 import { fileURLToPath } from "url";
 import { getAnthropicCacheCosts } from "../src/cache-pricing.js";
 import {
@@ -27,6 +28,30 @@ const packageRoot = join(__dirname, "..");
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+const MODELS_DEV_PROVIDER_IDS = [
+	"amazon-bedrock",
+	"anthropic",
+	"google",
+	"openai",
+	"groq",
+	"cerebras",
+	"cloudflare-workers-ai",
+	"cloudflare-ai-gateway",
+	"xai",
+	"zai-coding-plan",
+	"mistral",
+	"huggingface",
+	"fireworks-ai",
+	"opencode",
+	"opencode-go",
+	"github-copilot",
+	"minimax",
+	"minimax-cn",
+	"kimi-for-coding",
+	"moonshotai",
+	"moonshotai-cn",
+	"xiaomi",
+] as const;
 
 type CatalogFetch = typeof fetch;
 
@@ -39,7 +64,7 @@ interface CatalogProvenance {
 interface GenerationContext {
 	fetch: CatalogFetch;
 	provenance: Map<string, CatalogProvenance>;
-	openRouterCatalogPromise?: Promise<unknown[]>;
+	openRouterCatalogPromise?: Promise<OpenRouterCatalogModel[]>;
 }
 
 export interface RefreshModelsOptions {
@@ -48,10 +73,10 @@ export interface RefreshModelsOptions {
 }
 
 interface ModelsDevModel {
-	id: string;
-	name: string;
+	name?: string;
 	tool_call?: boolean;
 	reasoning?: boolean;
+	status?: string;
 	limit?: {
 		context?: number;
 		output?: number;
@@ -72,6 +97,27 @@ interface ModelsDevModel {
 }
 
 type ModelsDevCatalog = Record<string, { models: Record<string, unknown> }>;
+
+interface OpenRouterCatalogModel {
+	id: string;
+	name?: string;
+	supported_parameters?: string[];
+	architecture?: {
+		modality?: string;
+		input_modalities?: string[];
+	};
+	pricing?: {
+		prompt?: string | number;
+		completion?: string | number;
+		input_cache_read?: string | number;
+		input_cache_write?: string | number;
+	};
+	context_length?: number;
+	top_provider?: {
+		context_length?: number;
+		max_completion_tokens?: number;
+	};
+}
 
 interface AiGatewayModel {
 	id: string;
@@ -389,9 +435,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
+function compareStrings(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function canonicalizeJson(value: unknown): unknown {
 	if (Array.isArray(value)) {
-		return value.map(canonicalizeJson);
+		return value
+			.map(canonicalizeJson)
+			.sort((a, b) => compareStrings(JSON.stringify(a) ?? "undefined", JSON.stringify(b) ?? "undefined"));
 	}
 	if (!isRecord(value)) {
 		return value;
@@ -402,6 +454,332 @@ function canonicalizeJson(value: unknown): unknown {
 		sorted[key] = canonicalizeJson(value[key]);
 	}
 	return sorted;
+}
+
+function catalogValidationError(source: string, path: string, expected: string): never {
+	throw new Error(`Required model source ${source} has invalid ${path}: expected ${expected}`);
+}
+
+function requireCatalogRecord(source: string, path: string, value: unknown): Record<string, unknown> {
+	if (!isRecord(value) || Array.isArray(value)) {
+		catalogValidationError(source, path, "an object");
+	}
+	return value;
+}
+
+function requireCatalogArray(source: string, path: string, value: unknown): unknown[] {
+	if (!Array.isArray(value)) {
+		catalogValidationError(source, path, "an array");
+	}
+	return value;
+}
+
+function requireNonEmptyCatalogString(source: string, path: string, value: unknown): string {
+	if (typeof value !== "string" || value.length === 0) {
+		catalogValidationError(source, path, "a non-empty string");
+	}
+	return value;
+}
+
+function readOptionalCatalogString(source: string, path: string, value: unknown): string | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	return requireNonEmptyCatalogString(source, path, value);
+}
+
+function readOptionalCatalogBoolean(source: string, path: string, value: unknown): boolean | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (typeof value !== "boolean") {
+		catalogValidationError(source, path, "a boolean");
+	}
+	return value;
+}
+
+function readOptionalCatalogStringArray(source: string, path: string, value: unknown): string[] | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	const items = requireCatalogArray(source, path, value);
+	return items.map((item, index) => requireNonEmptyCatalogString(source, `${path}[${index}]`, item));
+}
+
+function readOptionalCatalogNumber(
+	source: string,
+	path: string,
+	value: unknown,
+	options: { allowString?: boolean; minimum?: number; positive?: boolean } = {},
+): number | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	let number: number;
+	if (typeof value === "number") {
+		number = value;
+	} else if (options.allowString && typeof value === "string" && value.trim().length > 0) {
+		number = Number(value);
+	} else {
+		catalogValidationError(source, path, options.allowString ? "a finite number or numeric string" : "a finite number");
+	}
+	if (!Number.isFinite(number)) {
+		catalogValidationError(source, path, "a finite number");
+	}
+	if (options.positive && number <= 0) {
+		catalogValidationError(source, path, "a positive finite number");
+	}
+	if (options.minimum !== undefined && number < options.minimum) {
+		catalogValidationError(source, path, `a finite number greater than or equal to ${options.minimum}`);
+	}
+	return number;
+}
+
+function requireCatalogNumber(
+	source: string,
+	path: string,
+	value: unknown,
+	options: { allowString?: boolean; minimum?: number; positive?: boolean } = {},
+): number {
+	const number = readOptionalCatalogNumber(source, path, value, options);
+	if (number === undefined) {
+		catalogValidationError(source, path, options.allowString ? "a finite number or numeric string" : "a finite number");
+	}
+	return number;
+}
+
+function sortCatalogEntries<T>(items: T[]): T[] {
+	return [...items].sort((a, b) =>
+		compareStrings(
+			JSON.stringify(canonicalizeJson(a)) ?? "undefined",
+			JSON.stringify(canonicalizeJson(b)) ?? "undefined",
+		),
+	);
+}
+
+function parseModelsDevModel(path: string, value: unknown): ModelsDevModel {
+	const source = "models.dev";
+	const model = requireCatalogRecord(source, path, value);
+	const limitValue = model.limit;
+	const costValue = model.cost;
+	const modalitiesValue = model.modalities;
+	const providerValue = model.provider;
+	const limit =
+		limitValue === undefined || limitValue === null
+			? undefined
+			: (() => {
+					const record = requireCatalogRecord(source, `${path}.limit`, limitValue);
+					return {
+						context: readOptionalCatalogNumber(source, `${path}.limit.context`, record.context, { minimum: 0 }),
+						output: readOptionalCatalogNumber(source, `${path}.limit.output`, record.output, { minimum: 0 }),
+					};
+				})();
+	const cost =
+		costValue === undefined || costValue === null
+			? undefined
+			: (() => {
+					const record = requireCatalogRecord(source, `${path}.cost`, costValue);
+					return {
+						input: readOptionalCatalogNumber(source, `${path}.cost.input`, record.input, { minimum: 0 }),
+						output: readOptionalCatalogNumber(source, `${path}.cost.output`, record.output, { minimum: 0 }),
+						cache_read: readOptionalCatalogNumber(source, `${path}.cost.cache_read`, record.cache_read, {
+							minimum: 0,
+						}),
+						cache_write: readOptionalCatalogNumber(source, `${path}.cost.cache_write`, record.cache_write, {
+							minimum: 0,
+						}),
+					};
+				})();
+	const modalities =
+		modalitiesValue === undefined || modalitiesValue === null
+			? undefined
+			: (() => {
+					const record = requireCatalogRecord(source, `${path}.modalities`, modalitiesValue);
+					return {
+						input: readOptionalCatalogStringArray(source, `${path}.modalities.input`, record.input),
+						output: readOptionalCatalogStringArray(source, `${path}.modalities.output`, record.output),
+					};
+				})();
+	const provider =
+		providerValue === undefined || providerValue === null
+			? undefined
+			: (() => {
+					const record = requireCatalogRecord(source, `${path}.provider`, providerValue);
+					return { npm: readOptionalCatalogString(source, `${path}.provider.npm`, record.npm) };
+				})();
+
+	return {
+		name: readOptionalCatalogString(source, `${path}.name`, model.name),
+		tool_call: readOptionalCatalogBoolean(source, `${path}.tool_call`, model.tool_call),
+		reasoning: readOptionalCatalogBoolean(source, `${path}.reasoning`, model.reasoning),
+		status: readOptionalCatalogString(source, `${path}.status`, model.status),
+		limit,
+		cost,
+		modalities,
+		provider,
+	};
+}
+
+function parseModelsDevCatalog(data: unknown): ModelsDevCatalog {
+	const source = "models.dev";
+	const root = requireCatalogRecord(source, "response", data);
+	const catalog: ModelsDevCatalog = {};
+	for (const providerId of MODELS_DEV_PROVIDER_IDS) {
+		const providerValue = root[providerId];
+		if (providerValue === undefined || providerValue === null) continue;
+		const provider = requireCatalogRecord(source, providerId, providerValue);
+		const models = requireCatalogRecord(source, `${providerId}.models`, provider.models);
+		const parsedModels: Record<string, unknown> = {};
+		for (const modelId of Object.keys(models).sort(compareStrings)) {
+			requireNonEmptyCatalogString(source, `${providerId}.models key`, modelId);
+			parsedModels[modelId] = parseModelsDevModel(`${providerId}.models[${JSON.stringify(modelId)}]`, models[modelId]);
+		}
+		catalog[providerId] = { models: parsedModels };
+	}
+	return catalog;
+}
+
+function parseOpenRouterCatalog(data: unknown): OpenRouterCatalogModel[] {
+	const source = "openrouter";
+	const root = requireCatalogRecord(source, "response", data);
+	const items = requireCatalogArray(source, "response.data", root.data);
+	if (items.length === 0) {
+		throw new Error("Required model source openrouter returned an empty catalog");
+	}
+	const models = items.map((value, index): OpenRouterCatalogModel => {
+		const path = `response.data[${index}]`;
+		const model = requireCatalogRecord(source, path, value);
+		const architectureValue = model.architecture;
+		const pricingValue = model.pricing;
+		const topProviderValue = model.top_provider;
+		const architecture =
+			architectureValue === undefined || architectureValue === null
+				? undefined
+				: (() => {
+						const record = requireCatalogRecord(source, `${path}.architecture`, architectureValue);
+						return {
+							modality: readOptionalCatalogString(source, `${path}.architecture.modality`, record.modality),
+							input_modalities: readOptionalCatalogStringArray(
+								source,
+								`${path}.architecture.input_modalities`,
+								record.input_modalities,
+							),
+						};
+					})();
+		const pricing =
+			pricingValue === undefined || pricingValue === null
+				? undefined
+				: (() => {
+						const record = requireCatalogRecord(source, `${path}.pricing`, pricingValue);
+						return {
+							prompt: readOptionalCatalogNumber(source, `${path}.pricing.prompt`, record.prompt, {
+								allowString: true,
+							}),
+							completion: readOptionalCatalogNumber(source, `${path}.pricing.completion`, record.completion, {
+								allowString: true,
+							}),
+							input_cache_read: readOptionalCatalogNumber(
+								source,
+								`${path}.pricing.input_cache_read`,
+								record.input_cache_read,
+								{ allowString: true },
+							),
+							input_cache_write: readOptionalCatalogNumber(
+								source,
+								`${path}.pricing.input_cache_write`,
+								record.input_cache_write,
+								{ allowString: true },
+							),
+						};
+					})();
+		const topProvider =
+			topProviderValue === undefined || topProviderValue === null
+				? undefined
+				: (() => {
+						const record = requireCatalogRecord(source, `${path}.top_provider`, topProviderValue);
+						return {
+							context_length: readOptionalCatalogNumber(
+								source,
+								`${path}.top_provider.context_length`,
+								record.context_length,
+								{ positive: true },
+							),
+							max_completion_tokens: readOptionalCatalogNumber(
+								source,
+								`${path}.top_provider.max_completion_tokens`,
+								record.max_completion_tokens,
+								{ positive: true },
+							),
+						};
+					})();
+
+		return {
+			id: requireNonEmptyCatalogString(source, `${path}.id`, model.id),
+			name: readOptionalCatalogString(source, `${path}.name`, model.name),
+			supported_parameters: readOptionalCatalogStringArray(
+				source,
+				`${path}.supported_parameters`,
+				model.supported_parameters,
+			),
+			architecture,
+			pricing,
+			context_length: readOptionalCatalogNumber(source, `${path}.context_length`, model.context_length, {
+				positive: true,
+			}),
+			top_provider: topProvider,
+		};
+	});
+	return sortCatalogEntries(models);
+}
+
+function parseAiGatewayCatalog(data: unknown): AiGatewayModel[] {
+	const source = "vercel-ai-gateway";
+	const root = requireCatalogRecord(source, "response", data);
+	const items = requireCatalogArray(source, "response.data", root.data);
+	if (items.length === 0) {
+		throw new Error("Required model source vercel-ai-gateway returned an empty catalog");
+	}
+	const models = items.map((value, index): AiGatewayModel => {
+		const path = `response.data[${index}]`;
+		const model = requireCatalogRecord(source, path, value);
+		const pricingValue = model.pricing;
+		const pricing =
+			pricingValue === undefined || pricingValue === null
+				? undefined
+				: (() => {
+						const record = requireCatalogRecord(source, `${path}.pricing`, pricingValue);
+						return {
+							input: readOptionalCatalogNumber(source, `${path}.pricing.input`, record.input, { allowString: true }),
+							output: readOptionalCatalogNumber(source, `${path}.pricing.output`, record.output, {
+								allowString: true,
+							}),
+							input_cache_read: readOptionalCatalogNumber(
+								source,
+								`${path}.pricing.input_cache_read`,
+								record.input_cache_read,
+								{ allowString: true },
+							),
+							input_cache_write: readOptionalCatalogNumber(
+								source,
+								`${path}.pricing.input_cache_write`,
+								record.input_cache_write,
+								{ allowString: true },
+							),
+						};
+					})();
+
+		return {
+			id: requireNonEmptyCatalogString(source, `${path}.id`, model.id),
+			name: readOptionalCatalogString(source, `${path}.name`, model.name),
+			context_window: readOptionalCatalogNumber(source, `${path}.context_window`, model.context_window, {
+				minimum: 0,
+			}),
+			max_tokens: readOptionalCatalogNumber(source, `${path}.max_tokens`, model.max_tokens, { minimum: 0 }),
+			tags: readOptionalCatalogStringArray(source, `${path}.tags`, model.tags),
+			pricing,
+		};
+	});
+	return sortCatalogEntries(models);
 }
 
 async function fetchRequiredJson(
@@ -441,10 +819,6 @@ function requireNonEmptyModels(source: string, count: number): void {
 	if (count === 0) {
 		throw new Error(`Required model source ${source} produced zero usable models`);
 	}
-}
-
-function getOptionalNumber(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function getOptionalBoolean(value: unknown): boolean | undefined {
@@ -635,34 +1009,72 @@ function getPrimeInferenceCompat(modelId: string): OpenAICompletionsCompat {
 }
 
 function parsePrimeInferenceCatalog(data: unknown): PrimeInferenceCatalogEntry[] {
-	if (!isRecord(data) || !Array.isArray(data.data)) {
-		return [];
+	const source = "prime-inference";
+	const root = requireCatalogRecord(source, "response", data);
+	const items = requireCatalogArray(source, "response.data", root.data);
+	if (items.length === 0) {
+		throw new Error("Required model source prime-inference returned an empty catalog");
 	}
+	const entries = items.map((value, index): PrimeInferenceCatalogEntry => {
+		const path = `response.data[${index}]`;
+		const item = requireCatalogRecord(source, path, value);
+		const pricing = requireCatalogRecord(source, `${path}.pricing`, item.pricing);
+		const limitValue = item.limit;
+		const metadataValue = item.metadata;
+		const limit =
+			limitValue === undefined || limitValue === null
+				? undefined
+				: requireCatalogRecord(source, `${path}.limit`, limitValue);
+		const metadata =
+			metadataValue === undefined || metadataValue === null
+				? undefined
+				: requireCatalogRecord(source, `${path}.metadata`, metadataValue);
 
-	return data.data.flatMap((item): PrimeInferenceCatalogEntry[] => {
-		if (!isRecord(item) || typeof item.id !== "string") {
-			return [];
+		for (const key of ["reasoning", "supports_reasoning", "supportsReasoning"] as const) {
+			readOptionalCatalogBoolean(source, `${path}.${key}`, item[key]);
+			if (metadata) {
+				readOptionalCatalogBoolean(source, `${path}.metadata.${key}`, metadata[key]);
+			}
 		}
-
-		const pricing = isRecord(item.pricing) ? item.pricing : {};
-		const input = getOptionalNumber(pricing.input_usd_per_mtok);
-		const output = getOptionalNumber(pricing.output_usd_per_mtok);
-		if (input === undefined || output === undefined) {
-			return [];
+		for (const key of ["supported_parameters", "capabilities", "tags"] as const) {
+			readOptionalCatalogStringArray(source, `${path}.${key}`, item[key]);
+			if (metadata) {
+				readOptionalCatalogStringArray(source, `${path}.metadata.${key}`, metadata[key]);
+			}
 		}
+		const contextWindow = readOptionalCatalogNumber(source, `${path}.context_window`, item.context_window, {
+			positive: true,
+		});
+		const contextWindowCamel = readOptionalCatalogNumber(source, `${path}.contextWindow`, item.contextWindow, {
+			positive: true,
+		});
+		const limitContext = readOptionalCatalogNumber(source, `${path}.limit.context`, limit?.context, {
+			positive: true,
+		});
+		const maxTokens = readOptionalCatalogNumber(source, `${path}.max_tokens`, item.max_tokens, {
+			positive: true,
+		});
+		const maxTokensCamel = readOptionalCatalogNumber(source, `${path}.maxTokens`, item.maxTokens, {
+			positive: true,
+		});
+		const limitOutput = readOptionalCatalogNumber(source, `${path}.limit.output`, limit?.output, {
+			positive: true,
+		});
 
-		const limit = isRecord(item.limit) ? item.limit : {};
-		return [
-			{
-				id: item.id,
-				input,
-				output,
-				contextWindow: getOptionalNumber(item.context_window ?? item.contextWindow ?? limit.context),
-				maxTokens: getOptionalNumber(item.max_tokens ?? item.maxTokens ?? limit.output),
-				reasoning: getPrimeInferenceCatalogReasoning(item),
-			},
-		];
+		return {
+			id: requireNonEmptyCatalogString(source, `${path}.id`, item.id),
+			input: requireCatalogNumber(source, `${path}.pricing.input_usd_per_mtok`, pricing.input_usd_per_mtok, {
+				minimum: 0,
+			}),
+			output: requireCatalogNumber(source, `${path}.pricing.output_usd_per_mtok`, pricing.output_usd_per_mtok, {
+				minimum: 0,
+			}),
+			contextWindow: contextWindow ?? contextWindowCamel ?? limitContext,
+			maxTokens: maxTokens ?? maxTokensCamel ?? limitOutput,
+			reasoning: getPrimeInferenceCatalogReasoning(item),
+		};
 	});
+	return sortCatalogEntries(entries);
 }
 
 interface PrimeInferenceOpenRouterMetadata {
@@ -672,19 +1084,16 @@ interface PrimeInferenceOpenRouterMetadata {
 	reasoning: boolean;
 }
 
-function buildPrimeInferenceOpenRouterIndex(catalog: unknown[]): Map<string, PrimeInferenceOpenRouterMetadata> {
+function buildPrimeInferenceOpenRouterIndex(catalog: OpenRouterCatalogModel[]): Map<string, PrimeInferenceOpenRouterMetadata> {
 	const index = new Map<string, PrimeInferenceOpenRouterMetadata>();
 	for (const item of catalog) {
-		if (!isRecord(item) || typeof item.id !== "string") {
-			continue;
-		}
-		const topProvider = isRecord(item.top_provider) ? item.top_provider : {};
-		const architecture = isRecord(item.architecture) ? item.architecture : {};
-		const modalities = Array.isArray(architecture.input_modalities) ? architecture.input_modalities : [];
-		const supportedParameters = Array.isArray(item.supported_parameters) ? item.supported_parameters : [];
+		const topProvider = item.top_provider ?? {};
+		const architecture = item.architecture ?? {};
+		const modalities = architecture.input_modalities ?? [];
+		const supportedParameters = item.supported_parameters ?? [];
 		index.set(item.id.toLowerCase(), {
-			contextWindow: getOptionalNumber(item.context_length) ?? getOptionalNumber(topProvider.context_length),
-			maxTokens: getOptionalNumber(topProvider.max_completion_tokens),
+			contextWindow: item.context_length ?? topProvider.context_length,
+			maxTokens: topProvider.max_completion_tokens,
 			vision: modalities.includes("image"),
 			// Same signal the OpenRouter provider path uses; the top-level
 			// `reasoning` object over-reports (e.g. qwen3-max carries one despite
@@ -779,14 +1188,11 @@ function createPrimeInferenceModel(
 	};
 }
 
-function fetchOpenRouterCatalog(context: GenerationContext): Promise<unknown[]> {
+function fetchOpenRouterCatalog(context: GenerationContext): Promise<OpenRouterCatalogModel[]> {
 	context.openRouterCatalogPromise ??= (async () => {
 		console.log("Fetching models from OpenRouter API...");
 		const data = await fetchRequiredJson(context, "openrouter", OPENROUTER_MODELS_URL);
-		if (!isRecord(data) || !Array.isArray(data.data) || data.data.length === 0) {
-			throw new Error("Required model source openrouter returned an empty or invalid catalog");
-		}
-		return data.data;
+		return parseOpenRouterCatalog(data);
 	})();
 	return context.openRouterCatalogPromise;
 }
@@ -794,13 +1200,11 @@ function fetchOpenRouterCatalog(context: GenerationContext): Promise<unknown[]> 
 async function fetchOpenRouterModels(context: GenerationContext): Promise<Model<any>[]> {
 	const models: Model<any>[] = [];
 
-		for (const item of await fetchOpenRouterCatalog(context)) {
-			if (!isRecord(item)) continue;
-			const model = item;
+		for (const model of await fetchOpenRouterCatalog(context)) {
 			// Only include models that support tools
-			if (!Array.isArray(model.supported_parameters) || !model.supported_parameters.includes("tools")) continue;
+			if (!model.supported_parameters?.includes("tools")) continue;
 			// :batch routes are asynchronous batch variants, not streaming models
-			if (typeof model.id !== "string" || model.id.endsWith(":batch")) continue;
+			if (model.id.endsWith(":batch")) continue;
 
 			// Parse provider from model ID
 			let provider: KnownProvider = "openrouter";
@@ -810,23 +1214,23 @@ async function fetchOpenRouterModels(context: GenerationContext): Promise<Model<
 
 			// Parse input modalities
 			const input: ("text" | "image")[] = ["text"];
-			const architecture = isRecord(model.architecture) ? model.architecture : {};
+			const architecture = model.architecture ?? {};
 			if (typeof architecture.modality === "string" && architecture.modality.includes("image")) {
 				input.push("image");
 			}
 
 			// Convert pricing from $/token to $/million tokens. OpenRouter uses
 			// negative values as a placeholder for unknown pricing (e.g. auto-beta).
-			const pricing = isRecord(model.pricing) ? model.pricing : {};
+			const pricing = model.pricing ?? {};
 			const inputCost = Math.max(0, parseFloat(String(pricing.prompt ?? "0"))) * 1_000_000;
 			const outputCost = Math.max(0, parseFloat(String(pricing.completion ?? "0"))) * 1_000_000;
 			const cacheReadCost = Math.max(0, parseFloat(String(pricing.input_cache_read ?? "0"))) * 1_000_000;
 			const cacheWriteCost = Math.max(0, parseFloat(String(pricing.input_cache_write ?? "0"))) * 1_000_000;
-			const topProvider = isRecord(model.top_provider) ? model.top_provider : {};
+			const topProvider = model.top_provider ?? {};
 
 			const normalizedModel: Model<any> = {
 				id: modelKey,
-				name: typeof model.name === "string" ? model.name : modelKey,
+				name: model.name ?? modelKey,
 				api: "openai-completions",
 				baseUrl: "https://openrouter.ai/api/v1",
 				provider,
@@ -838,8 +1242,8 @@ async function fetchOpenRouterModels(context: GenerationContext): Promise<Model<
 					cacheRead: cacheReadCost,
 					cacheWrite: cacheWriteCost,
 				},
-				contextWindow: getOptionalNumber(model.context_length) ?? 4096,
-				maxTokens: getOptionalNumber(topProvider.max_completion_tokens) ?? 4096,
+				contextWindow: model.context_length ?? 4096,
+				maxTokens: topProvider.max_completion_tokens ?? 4096,
 			};
 			models.push(normalizedModel);
 		}
@@ -852,9 +1256,7 @@ async function fetchOpenRouterModels(context: GenerationContext): Promise<Model<
 async function fetchAiGatewayModels(context: GenerationContext): Promise<Model<any>[]> {
 	console.log("Fetching models from Vercel AI Gateway API...");
 	const data = await fetchRequiredJson(context, "vercel-ai-gateway", `${AI_GATEWAY_MODELS_URL}/models`);
-	if (!isRecord(data) || !Array.isArray(data.data) || data.data.length === 0) {
-		throw new Error("Required model source vercel-ai-gateway returned an empty or invalid catalog");
-	}
+	const items = parseAiGatewayCatalog(data);
 	const models: Model<any>[] = [];
 
 	const toNumber = (value: string | number | undefined): number => {
@@ -865,7 +1267,6 @@ async function fetchAiGatewayModels(context: GenerationContext): Promise<Model<a
 		return Number.isFinite(parsed) ? parsed : 0;
 	};
 
-	const items = data.data as AiGatewayModel[];
 	for (const model of items) {
 			const tags = Array.isArray(model.tags) ? model.tags : [];
 			// Only include models that support tools
@@ -909,10 +1310,7 @@ async function fetchAiGatewayModels(context: GenerationContext): Promise<Model<a
 async function loadModelsDevData(context: GenerationContext): Promise<Model<any>[]> {
 	console.log("Fetching models from models.dev API...");
 	const data = await fetchRequiredJson(context, "models.dev", MODELS_DEV_URL);
-	if (!isRecord(data)) {
-		throw new Error("Required model source models.dev returned an invalid catalog");
-	}
-	const catalog = data as ModelsDevCatalog;
+	const catalog = parseModelsDevCatalog(data);
 
 	const models: Model<any>[] = [];
 
@@ -1491,8 +1889,17 @@ async function loadModelsDevData(context: GenerationContext): Promise<Model<any>
 			const hasCanonicalModel = Object.prototype.hasOwnProperty.call(kimiModels, "kimi-for-coding");
 
 			const kimiAliases = new Set(["k2p5", "k2p6"]);
+			const kimiPrecedence = new Map([
+				["kimi-for-coding", 0],
+				["k2p6", 1],
+				["k2p5", 2],
+			]);
+			const sortedKimiModels = Object.entries(kimiModels).sort(([a], [b]) => {
+				const precedence = (kimiPrecedence.get(a) ?? 3) - (kimiPrecedence.get(b) ?? 3);
+				return precedence || compareStrings(a, b);
+			});
 
-			for (const [modelId, model] of Object.entries(kimiModels)) {
+			for (const [modelId, model] of sortedKimiModels) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 				// models.dev may expose versioned aliases (e.g. k2p5/k2p6).
@@ -1606,6 +2013,94 @@ async function loadModelsDevData(context: GenerationContext): Promise<Model<any>
 	requireNonEmptyModels("models.dev", models.length);
 	console.log(`Loaded ${models.length} tool-capable models from models.dev`);
 	return models;
+}
+
+function serializeGeneratedValue(value: unknown, path: string): string {
+	let serialized: string | undefined;
+	try {
+		serialized = JSON.stringify(value);
+	} catch (error) {
+		throw new Error(`Generated model snapshot has non-serializable ${path}`, { cause: error });
+	}
+	if (serialized === undefined) {
+		throw new Error(`Generated model snapshot has non-serializable ${path}`);
+	}
+	return serialized;
+}
+
+function validateGeneratedString(value: unknown, path: string, allowEmpty = false): asserts value is string {
+	if (typeof value !== "string" || (!allowEmpty && value.length === 0)) {
+		throw new Error(`Generated model snapshot has invalid ${path}: expected ${allowEmpty ? "a string" : "a non-empty string"}`);
+	}
+}
+
+function validateGeneratedNumber(value: unknown, path: string, positive = false): asserts value is number {
+	if (typeof value !== "number" || !Number.isFinite(value) || (positive ? value <= 0 : value < 0)) {
+		throw new Error(
+			`Generated model snapshot has invalid ${path}: expected ${positive ? "a positive" : "a non-negative"} finite number`,
+		);
+	}
+}
+
+function validateGeneratedModel(model: Model<Api>): void {
+	const path = `${model.provider}/${model.id}`;
+	validateGeneratedString(model.id, `${path}.id`);
+	validateGeneratedString(model.name, `${path}.name`);
+	validateGeneratedString(model.api, `${path}.api`);
+	validateGeneratedString(model.provider, `${path}.provider`);
+	if (model.baseUrl !== undefined) {
+		validateGeneratedString(model.baseUrl, `${path}.baseUrl`, true);
+	}
+	if (typeof model.reasoning !== "boolean") {
+		throw new Error(`Generated model snapshot has invalid ${path}.reasoning: expected a boolean`);
+	}
+	if (!Array.isArray(model.input) || model.input.length === 0) {
+		throw new Error(`Generated model snapshot has invalid ${path}.input: expected a non-empty array`);
+	}
+	for (const [index, input] of model.input.entries()) {
+		if (input !== "text" && input !== "image") {
+			throw new Error(`Generated model snapshot has invalid ${path}.input[${index}]: expected text or image`);
+		}
+	}
+	validateGeneratedNumber(model.cost.input, `${path}.cost.input`);
+	validateGeneratedNumber(model.cost.output, `${path}.cost.output`);
+	validateGeneratedNumber(model.cost.cacheRead, `${path}.cost.cacheRead`);
+	validateGeneratedNumber(model.cost.cacheWrite, `${path}.cost.cacheWrite`);
+	validateGeneratedNumber(model.contextWindow, `${path}.contextWindow`, true);
+	validateGeneratedNumber(model.maxTokens, `${path}.maxTokens`, true);
+	if (model.headers !== undefined) {
+		for (const [key, value] of Object.entries(model.headers)) {
+			validateGeneratedString(key, `${path}.headers key`);
+			validateGeneratedString(value, `${path}.headers.${key}`);
+		}
+	}
+	if (model.thinkingLevelMap !== undefined) {
+		for (const [key, value] of Object.entries(model.thinkingLevelMap)) {
+			validateGeneratedString(key, `${path}.thinkingLevelMap key`);
+			if (value !== null) {
+				validateGeneratedString(value, `${path}.thinkingLevelMap.${key}`);
+			}
+		}
+	}
+	if (model.compat !== undefined) {
+		serializeGeneratedValue(model.compat, `${path}.compat`);
+	}
+}
+
+function validateGeneratedTypeScript(output: string): void {
+	const result = ts.transpileModule(output, {
+		fileName: "models.generated.ts",
+		reportDiagnostics: true,
+		compilerOptions: {
+			module: ts.ModuleKind.ESNext,
+			target: ts.ScriptTarget.ES2022,
+		},
+	});
+	const errors = (result.diagnostics ?? []).filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+	if (errors.length > 0) {
+		const details = errors.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")).join("; ");
+		throw new Error(`Generated model snapshot is not valid TypeScript: ${details}`);
+	}
 }
 
 export async function refreshModels(options: RefreshModelsOptions = {}): Promise<void> {
@@ -2393,6 +2888,7 @@ export async function refreshModels(options: RefreshModelsOptions = {}): Promise
 
 	for (const model of allModels) {
 		applyThinkingLevelMetadata(model);
+		validateGeneratedModel(model);
 	}
 
 	// Group by provider and deduplicate by model ID
@@ -2432,31 +2928,36 @@ export const MODELS = {
 	const sortedProviderIds = Object.keys(providers).sort();
 	for (const providerId of sortedProviderIds) {
 		const models = providers[providerId];
-		output += `\t${JSON.stringify(providerId)}: {\n`;
+		output += `\t${serializeGeneratedValue(providerId, "provider ID")}: {\n`;
 
 		const sortedModelIds = Object.keys(models).sort();
 		for (const modelId of sortedModelIds) {
 			const model = models[modelId];
-			output += `\t\t"${model.id}": {\n`;
-			output += `\t\t\tid: "${model.id}",\n`;
-			output += `\t\t\tname: "${model.name}",\n`;
-			output += `\t\t\tapi: "${model.api}",\n`;
-			output += `\t\t\tprovider: "${model.provider}",\n`;
+			const modelPath = `${providerId}/${modelId}`;
+			const serializedId = serializeGeneratedValue(model.id, `${modelPath}.id`);
+			const serializedApi = serializeGeneratedValue(model.api, `${modelPath}.api`);
+			output += `\t\t${serializedId}: {\n`;
+			output += `\t\t\tid: ${serializedId},\n`;
+			output += `\t\t\tname: ${serializeGeneratedValue(model.name, `${modelPath}.name`)},\n`;
+			output += `\t\t\tapi: ${serializedApi},\n`;
+			output += `\t\t\tprovider: ${serializeGeneratedValue(model.provider, `${modelPath}.provider`)},\n`;
 			if (model.baseUrl !== undefined) {
-				output += `\t\t\tbaseUrl: "${model.baseUrl}",\n`;
+				output += `\t\t\tbaseUrl: ${serializeGeneratedValue(model.baseUrl, `${modelPath}.baseUrl`)},\n`;
 			}
 			if (model.headers) {
-				output += `\t\t\theaders: ${JSON.stringify(model.headers)},\n`;
+				output += `\t\t\theaders: ${serializeGeneratedValue(model.headers, `${modelPath}.headers`)},\n`;
 			}
 			if (model.compat) {
-				output += `			compat: ${JSON.stringify(model.compat)},
-`;
+				output += `\t\t\tcompat: ${serializeGeneratedValue(model.compat, `${modelPath}.compat`)},\n`;
 			}
 			output += `\t\t\treasoning: ${model.reasoning},\n`;
 			if (model.thinkingLevelMap) {
-				output += `\t\t\tthinkingLevelMap: ${JSON.stringify(model.thinkingLevelMap)},\n`;
+				output += `\t\t\tthinkingLevelMap: ${serializeGeneratedValue(model.thinkingLevelMap, `${modelPath}.thinkingLevelMap`)},\n`;
 			}
-			output += `\t\t\tinput: [${model.input.map(i => `"${i}"`).join(", ")}],\n`;
+			const serializedInput = model.input
+				.map((input, index) => serializeGeneratedValue(input, `${modelPath}.input[${index}]`))
+				.join(", ");
+			output += `\t\t\tinput: [${serializedInput}],\n`;
 			output += `\t\t\tcost: {\n`;
 			output += `\t\t\t\tinput: ${model.cost.input},\n`;
 			output += `\t\t\t\toutput: ${model.cost.output},\n`;
@@ -2468,7 +2969,7 @@ export const MODELS = {
 			if (model.featured) {
 				output += `\t\t\tfeatured: true,\n`;
 			}
-			output += `\t\t} satisfies Model<"${model.api}">,\n`;
+			output += `\t\t} satisfies Model<${serializedApi}>,\n`;
 		}
 
 		output += `\t},\n`;
@@ -2481,6 +2982,8 @@ export const MODELS = {
 	const temporaryPath = `${outputPath}.${process.pid}.tmp`;
 	try {
 		writeFileSync(temporaryPath, output, { flag: "wx" });
+		const temporaryOutput = readFileSync(temporaryPath, "utf8");
+		validateGeneratedTypeScript(temporaryOutput);
 		renameSync(temporaryPath, outputPath);
 	} catch (error) {
 		rmSync(temporaryPath, { force: true });
