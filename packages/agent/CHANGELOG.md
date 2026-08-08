@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed unbounded tool-update buffering during long-running streaming tool calls by replacing the retained-promise chain with a bounded, serialized `ToolUpdateEmitter` (P3-04).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

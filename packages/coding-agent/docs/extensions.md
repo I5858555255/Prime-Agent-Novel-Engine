@@ -572,6 +572,12 @@ In parallel tool mode:
 - `tool_execution_end` is emitted in tool completion order after each tool is finalized
 - final `toolResult` message events are still emitted later in assistant source order
 
+For a single tool call, `tool_execution_update` delivery is serialized and ordered: at most one handler call is in flight at a time, in emission order. The pending queue per tool call is capped at 32 updates — on overflow the oldest queued update is dropped, so **a handler must not assume it sees every update**. This matters because some tools emit cumulative snapshots (their handler can safely treat each update as the current state) while others, like the IPython tool, emit one update per incremental chunk (a handler accumulating deltas can lose data under sustained backpressure). The cap is only reached when a handler is persistently slower than the tool producing updates.
+
+All of a tool's updates are delivered before its `tool_execution_end`, including when the tool fails without the run being aborted. If a handler throws or rejects, that tool call fails and its result becomes an error result carrying the handler's message.
+
+On abort, any queued updates are discarded without being delivered. A handler call already in flight when the abort happens cannot be cancelled and may still run after `tool_execution_end` fires.
+
 ```typescript
 pi.on("tool_execution_start", async (event, ctx) => {
   // event.toolCallId, event.toolName, event.args
