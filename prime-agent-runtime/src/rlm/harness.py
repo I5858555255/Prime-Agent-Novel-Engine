@@ -5,20 +5,25 @@ skills, subagent specs, and refinement events in the global agent harness
 directory by default. Execution still belongs to Prime Agent's TypeScript host
 and the existing ``rlm.run`` recursion bridge.
 
-Cross-language commits use the same protocol as the TypeScript host: atomically
-create ``<state>.lock`` with owner metadata, reload under that lock, advance the
-document's monotonic revision, fsync a same-directory temporary file, atomically
-replace the state document, and remove only a lock with the writer's owner token.
-Direct stale saves fail explicitly; ordinary Python mutations reload and merge.
+Cross-language commits use the same protocol as the TypeScript host: populate a
+private candidate lock before atomically installing it as ``<state>.lock``, reload
+under that lock, advance the document's monotonic revision, fsync a same-directory
+temporary file, atomically replace the state document, and fence every operation
+by the exact owner fingerprint. Direct stale saves fail explicitly; ordinary
+Python mutations reload and merge.
 """
 
 from __future__ import annotations
 
 import ctypes
+import errno
+import hashlib
 import json
 import os
 import shutil
 import socket
+import subprocess
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -86,39 +91,111 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _read_lock_owner(lock_path: Path) -> dict[str, Any] | None:
+def _run_process_query(command: list[str]) -> str:
+    result = subprocess.run(command, capture_output=True, check=True, text=True, timeout=2)
+    return result.stdout.strip()
+
+
+def _get_process_start_id(
+    pid: int,
+    *,
+    platform: str = sys.platform,
+    query: Callable[[list[str]], str] = _run_process_query,
+    read_text: Callable[[Path], str] = lambda path: path.read_text(encoding="utf-8"),
+) -> str | None:
     try:
-        owner = json.loads((lock_path / _LOCK_OWNER_FILE_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if platform == "win32":
+            script = (
+                f"$p = Get-Process -Id {pid} -ErrorAction Stop; "
+                "[Console]::Write($p.StartTime.ToUniversalTime().Ticks)"
+            )
+            value = query(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script])
+            return f"win:{value}" if value else None
+        if platform.startswith("linux"):
+            contents = read_text(Path(f"/proc/{pid}/stat"))
+            fields_after_name = contents.rsplit(")", 1)[1].strip().split()
+            return f"proc:{fields_after_name[19]}" if len(fields_after_name) > 19 else None
+        value = query(["ps", "-p", str(pid), "-o", "lstart="])
+        return f"ps:{value}" if value else None
+    except (IndexError, OSError, subprocess.SubprocessError):
         return None
+
+
+@dataclass(frozen=True)
+class _LockObservation:
+    owner: dict[str, Any] | None
+    fingerprint: str
+
+
+def _lock_fingerprint(contents: str) -> str:
+    return hashlib.sha256(contents.encode("utf-8")).hexdigest()
+
+
+def _read_lock_observation(lock_path: Path) -> _LockObservation | None:
+    try:
+        raw_owner = (lock_path / _LOCK_OWNER_FILE_NAME).read_text(encoding="utf-8")
+    except OSError:
+        try:
+            stat = lock_path.stat()
+        except FileNotFoundError:
+            return None
+        fingerprint = _lock_fingerprint(f"missing:{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}")
+        return _LockObservation(owner=None, fingerprint=fingerprint)
+    try:
+        owner = json.loads(raw_owner)
+    except ValueError:
+        owner = None
     if not isinstance(owner, dict):
-        return None
-    if type(owner.get("pid")) is not int or owner["pid"] <= 0:
-        return None
-    if not isinstance(owner.get("hostname"), str):
-        return None
-    if not isinstance(owner.get("token"), str):
-        return None
-    return owner
+        owner = None
+    elif (
+        type(owner.get("pid")) is not int
+        or owner["pid"] <= 0
+        or not isinstance(owner.get("hostname"), str)
+        or not isinstance(owner.get("token"), str)
+        or ("process_start_id" in owner and not isinstance(owner["process_start_id"], str))
+    ):
+        owner = None
+    return _LockObservation(owner=owner, fingerprint=_lock_fingerprint(raw_owner))
 
 
-def _lock_is_stale(lock_path: Path, stale_lock_seconds: float) -> bool:
-    owner = _read_lock_owner(lock_path)
+def _lock_is_stale(
+    lock_path: Path,
+    observation: _LockObservation | None,
+    stale_lock_seconds: float,
+) -> bool:
+    owner = observation.owner if observation else None
     if owner and owner["hostname"] == _hostname():
-        return not _pid_alive(owner["pid"])
+        if not _pid_alive(owner["pid"]):
+            return True
+        if process_start_id := owner.get("process_start_id"):
+            current_start_id = _get_process_start_id(owner["pid"])
+            return current_start_id is not None and current_start_id != process_start_id
+        return False
     try:
         return time.time() - lock_path.stat().st_mtime >= stale_lock_seconds
     except FileNotFoundError:
         return False
 
 
-def _reclaim_lock(lock_path: Path) -> bool:
-    stale_path = Path(f"{lock_path}.stale.{os.getpid()}.{uuid.uuid4()}")
+def _restore_moved_lock(moved_path: Path, lock_path: Path) -> None:
     try:
-        lock_path.rename(stale_path)
+        moved_path.rename(lock_path)
+    except OSError as error:
+        if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+            raise
+
+
+def _remove_observed_lock(lock_path: Path, observed: _LockObservation) -> bool:
+    moved_path = Path(f"{lock_path}.moved.{os.getpid()}.{uuid.uuid4()}")
+    try:
+        lock_path.rename(moved_path)
     except FileNotFoundError:
         return False
-    shutil.rmtree(stale_path, ignore_errors=True)
+    moved = _read_lock_observation(moved_path)
+    if moved is None or moved.fingerprint != observed.fingerprint:
+        _restore_moved_lock(moved_path, lock_path)
+        return False
+    shutil.rmtree(moved_path)
     return True
 
 
@@ -128,7 +205,7 @@ def _state_lock(
     *,
     timeout_seconds: float = _DEFAULT_LOCK_TIMEOUT_SECONDS,
     stale_lock_seconds: float = _DEFAULT_STALE_LOCK_SECONDS,
-) -> Iterator[None]:
+) -> Iterator[Callable[[], None]]:
     lock_path = _lock_path(file_path)
     token = str(uuid.uuid4())
     owner = {
@@ -137,32 +214,78 @@ def _state_lock(
         "token": token,
         "created_at": _now(),
     }
+    if process_start_id := _get_process_start_id(os.getpid()):
+        owner["process_start_id"] = process_start_id
+    owner_contents = f"{json.dumps(owner)}\n"
+    owner_fingerprint = _lock_fingerprint(owner_contents)
     deadline = time.monotonic() + timeout_seconds
     file_path.parent.mkdir(parents=True, exist_ok=True)
     while True:
+        candidate_path = Path(f"{lock_path}.candidate.{os.getpid()}.{uuid.uuid4()}")
         try:
-            lock_path.mkdir(mode=0o700)
+            candidate_path.mkdir(mode=0o700)
             try:
-                (lock_path / _LOCK_OWNER_FILE_NAME).write_text(
-                    f"{json.dumps(owner)}\n",
+                (candidate_path / _LOCK_OWNER_FILE_NAME).write_text(
+                    owner_contents,
                     encoding="utf-8",
                 )
+                candidate_path.rename(lock_path)
             except OSError:
-                shutil.rmtree(lock_path, ignore_errors=True)
+                shutil.rmtree(candidate_path, ignore_errors=True)
                 raise
             break
-        except FileExistsError:
-            pass
-        if _lock_is_stale(lock_path, stale_lock_seconds) and _reclaim_lock(lock_path):
+        except OSError as error:
+            if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                raise
+        observation = _read_lock_observation(lock_path)
+        if observation and _lock_is_stale(lock_path, observation, stale_lock_seconds):
+            _remove_observed_lock(lock_path, observation)
             continue
         if time.monotonic() >= deadline:
             raise TimeoutError(f"Timed out waiting for harness-state lock {lock_path}")
         time.sleep(min(_LOCK_POLL_SECONDS, max(0.001, deadline - time.monotonic())))
+
+    def assert_owned() -> None:
+        observation = _read_lock_observation(lock_path)
+        if observation is None or observation.fingerprint != owner_fingerprint:
+            raise RuntimeError(f"Lost harness-state lock ownership for {lock_path}")
+
+    assert_owned()
     try:
-        yield
+        yield assert_owned
     finally:
-        if (_read_lock_owner(lock_path) or {}).get("token") == token:
-            shutil.rmtree(lock_path, ignore_errors=True)
+        observation = _read_lock_observation(lock_path)
+        if observation and observation.fingerprint == owner_fingerprint:
+            _remove_observed_lock(lock_path, observation)
+
+
+_UNSUPPORTED_WINDOWS_DIRECTORY_FSYNC = {
+    errno.EACCES,
+    errno.EBADF,
+    errno.EINVAL,
+    errno.EISDIR,
+    errno.EPERM,
+}
+
+
+def _fsync_directory(
+    directory: Path,
+    *,
+    platform: str = os.name,
+    open_fn: Callable[[Path, int], int] = os.open,
+    fsync_fn: Callable[[int], None] = os.fsync,
+    close_fn: Callable[[int], None] = os.close,
+) -> None:
+    descriptor: int | None = None
+    try:
+        descriptor = open_fn(directory, os.O_RDONLY)
+        fsync_fn(descriptor)
+    except OSError as error:
+        if platform != "nt" or error.errno not in _UNSUPPORTED_WINDOWS_DIRECTORY_FSYNC:
+            raise
+    finally:
+        if descriptor is not None:
+            close_fn(descriptor)
 
 
 def _slug(raw: str, fallback: str) -> str:
@@ -338,8 +461,12 @@ class HarnessState:
             self.load()
 
     def load(self) -> "HarnessState":
-        if self.file_path is None or not self.file_path.exists():
+        if self.file_path is None:
+            return self
+        if not self.file_path.exists():
             self.revision = 0
+            self.entries = {kind: {} for kind in _KINDS}
+            self.refinements = []
             self._loaded_mtime = None
             return self
         mtime = self._disk_mtime()
@@ -456,9 +583,10 @@ class HarnessState:
             )
         return revision
 
-    def _write_atomic(self, data: dict[str, Any]) -> None:
+    def _write_atomic(self, data: dict[str, Any], assert_lock_owned: Callable[[], None]) -> None:
         if self.file_path is None:
             return
+        assert_lock_owned()
         mode = self.file_path.stat().st_mode & 0o777 if self.file_path.exists() else 0o600
         temp_path = Path(f"{self.file_path}.{os.getpid()}.{uuid.uuid4()}.tmp")
         descriptor: int | None = None
@@ -470,17 +598,9 @@ class HarnessState:
                 file.write("\n")
                 file.flush()
                 os.fsync(file.fileno())
+            assert_lock_owned()
             os.replace(temp_path, self.file_path)
-            directory_descriptor: int | None = None
-            try:
-                directory_descriptor = os.open(self.file_path.parent, os.O_RDONLY)
-                os.fsync(directory_descriptor)
-            except OSError:
-                # Windows does not support opening directories for fsync.
-                pass
-            finally:
-                if directory_descriptor is not None:
-                    os.close(directory_descriptor)
+            _fsync_directory(self.file_path.parent)
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -489,9 +609,9 @@ class HarnessState:
             except FileNotFoundError:
                 pass
 
-    def _save_locked(self) -> "HarnessState":
+    def _save_locked(self, assert_lock_owned: Callable[[], None]) -> "HarnessState":
         next_revision = self.revision + 1
-        self._write_atomic(self._document(next_revision))
+        self._write_atomic(self._document(next_revision), assert_lock_owned)
         self.revision = next_revision
         self._loaded_mtime = self._disk_mtime()
         return self
@@ -503,14 +623,15 @@ class HarnessState:
             self.file_path,
             timeout_seconds=self._lock_timeout_seconds,
             stale_lock_seconds=self._stale_lock_seconds,
-        ):
+        ) as assert_lock_owned:
             # load() reads the document unconditionally. Do not replace it with
             # _sync_from_disk(): equal/coarse mtimes must not preserve stale state.
+            assert_lock_owned()
             self._disk_revision()
             self.load()
             result = mutation()
             if result is not False:
-                self._save_locked()
+                self._save_locked(assert_lock_owned)
             return result
 
     def save(self) -> "HarnessState":
@@ -521,14 +642,15 @@ class HarnessState:
             self.file_path,
             timeout_seconds=self._lock_timeout_seconds,
             stale_lock_seconds=self._stale_lock_seconds,
-        ):
+        ) as assert_lock_owned:
+            assert_lock_owned()
             disk_revision = self._disk_revision()
             if disk_revision != self.revision:
                 raise RuntimeError(
                     f"Harness-state revision conflict at {self.file_path}: "
                     f"expected {self.revision}, found {disk_revision}"
                 )
-            return self._save_locked()
+            return self._save_locked(assert_lock_owned)
 
     def upsert(
         self,

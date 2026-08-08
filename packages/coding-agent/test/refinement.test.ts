@@ -1,15 +1,20 @@
+import { spawn } from "node:child_process";
 import {
 	appendFileSync,
 	chmodSync,
+	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type * as PiAi from "@earendil-works/pi-ai";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
@@ -18,7 +23,9 @@ import {
 	appendGlobalRefinement,
 	applyRefinementProposal,
 	formatHarnessStateForPrompt,
+	fsyncHarnessDirectory,
 	getGlobalHarnessStateDir,
+	getHarnessStateLockPath,
 	getHarnessStatePath,
 	getLocalHarnessStateDir,
 	getRefinementHistory,
@@ -37,6 +44,7 @@ import {
 	refineHarness,
 	saveHarnessState,
 } from "../src/core/refinement/index.js";
+import { getProcessStartId } from "../src/core/session-lease.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
 
 const { completeSimpleMock } = vi.hoisted(() => ({
@@ -67,6 +75,71 @@ afterEach(() => {
 function makeTempDir(): string {
 	tempDir = mkdtempSync(join(tmpdir(), "prime-agent-refinement-test-"));
 	return tempDir;
+}
+
+const runtimeSrc = fileURLToPath(new URL("../../../prime-agent-runtime/src/", import.meta.url));
+const refinementSourcePath = fileURLToPath(new URL("../src/core/refinement/refinement.ts", import.meta.url));
+const python = process.env.PRIME_AGENT_KERNEL_PYTHON ?? "python3";
+const tsxCli = fileURLToPath(import.meta.resolve("tsx/cli"));
+
+function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const deadline = Date.now() + timeoutMs;
+		const poll = (): void => {
+			if (existsSync(path)) {
+				resolve();
+				return;
+			}
+			if (Date.now() >= deadline) {
+				reject(new Error(`Timed out waiting for ${path}`));
+				return;
+			}
+			setTimeout(poll, 10);
+		};
+		poll();
+	});
+}
+
+function runChild(command: string, args: string[], env: Record<string, string>): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, {
+			env: { ...process.env, ...env },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stderr = "";
+		child.stderr.setEncoding("utf8");
+		child.stderr.on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		child.on("error", reject);
+		child.on("exit", (code) => {
+			if (code === 0) resolve();
+			else reject(new Error(`${command} exited ${code}: ${stderr}`));
+		});
+	});
+}
+
+function runPython(script: string, env: Record<string, string>): Promise<void> {
+	return runChild(python, ["-c", script], { PYTHONPATH: runtimeSrc, ...env });
+}
+
+function transactionMemoryEntry(id: string, content: string): HarnessState["entries"]["memory"][string] {
+	const timestamp = new Date().toISOString();
+	return {
+		id,
+		kind: "memory",
+		title: id,
+		content,
+		path: "general",
+		scope: "local",
+		reference: {},
+		arguments: {},
+		metadata: {},
+		source: "refine",
+		created_at: timestamp,
+		updated_at: timestamp,
+		version: 1,
+	};
 }
 
 const kinds = ["prompt", "memory", "skill", "subagent"] as const satisfies readonly RefinementKind[];
@@ -677,7 +750,7 @@ describe("harness refinement", () => {
 	});
 
 	it.each(["not json at all", "null", "[]", '"a string"', "123", '{"revision":"bad"}'])(
-		"loads empty harness state but refuses to overwrite an invalid file (%s)",
+		"loads an empty view but preserves syntactically invalid, non-object, or invalid-revision state (%s)",
 		(payload) => {
 			const dir = makeTempDir();
 			writeFileSync(getHarnessStatePath(dir), payload, "utf8");
@@ -687,7 +760,7 @@ describe("harness refinement", () => {
 			expect(state.entries).toEqual({ prompt: {}, memory: {}, skill: {}, subagent: {} });
 			expect(state.refinements).toEqual([]);
 			// Planning can continue from an empty view, but persistence must preserve
-			// invalid evidence instead of treating it as revision zero.
+			// This evidence is not a CAS-compatible document and must not be treated as revision zero.
 			applyRefinementProposal(
 				state,
 				proposal("Recover", [
@@ -1203,6 +1276,225 @@ describe("harness refinement", () => {
 		await expect(
 			refineHarness([], state, [], {} as never, "api-key", { rollbackId: "missing_refinement" }),
 		).rejects.toThrow("Refinement missing_refinement not found");
+	});
+});
+
+describe("transactional harness-state persistence", () => {
+	it("blocks a TypeScript commit until the Python lock owner releases", async () => {
+		const root = makeTempDir();
+		const statePath = getHarnessStatePath(root);
+		const lockPath = getHarnessStateLockPath(root);
+		const acquiredPath = join(root, "python-acquired");
+		const releasePath = join(root, "release-python");
+		const releasedPath = join(root, "python-released");
+		const blockedPath = join(root, "typescript-blocked");
+		const committedPath = join(root, "typescript-committed");
+		const baseline = loadHarnessState(root, "local");
+		saveHarnessState(root, baseline);
+
+		const pythonHolder = runPython(
+			[
+				"import os, time",
+				"from pathlib import Path",
+				"from rlm.harness import _state_lock",
+				"with _state_lock(Path(os.environ['STATE_PATH'])) as assert_owned:",
+				"    Path(os.environ['ACQUIRED_PATH']).write_text('acquired', encoding='utf-8')",
+				"    while not Path(os.environ['RELEASE_PATH']).exists(): time.sleep(0.01)",
+				"    assert_owned()",
+				"Path(os.environ['RELEASED_PATH']).write_text('released', encoding='utf-8')",
+			].join("\n"),
+			{
+				ACQUIRED_PATH: acquiredPath,
+				RELEASED_PATH: releasedPath,
+				RELEASE_PATH: releasePath,
+				STATE_PATH: statePath,
+			},
+		);
+		await waitForFile(acquiredPath);
+
+		const writerScript = join(root, "typescript-writer.ts");
+		writeFileSync(
+			writerScript,
+			[
+				'import { existsSync, writeFileSync } from "node:fs";',
+				`import { loadHarnessState, saveHarnessState } from ${JSON.stringify(refinementSourcePath)};`,
+				"const root = process.env.ROOT_PATH!;",
+				"const lockPath = process.env.LOCK_PATH!;",
+				"if (!existsSync(lockPath)) throw new Error('expected Python lock');",
+				"writeFileSync(process.env.BLOCKED_PATH!, 'acquisition attempted');",
+				"const state = loadHarnessState(root, 'local');",
+				"const timestamp = new Date().toISOString();",
+				"state.entries.memory.typescript = { id: 'typescript', kind: 'memory', title: 'typescript', content: 'host update', path: 'general', scope: 'local', reference: {}, arguments: {}, metadata: {}, source: 'refine', created_at: timestamp, updated_at: timestamp, version: 1 };",
+				"saveHarnessState(root, state);",
+				"writeFileSync(process.env.COMMITTED_PATH!, 'committed');",
+			].join("\n"),
+			"utf8",
+		);
+		const typescriptWriter = runChild(process.execPath, [tsxCli, writerScript], {
+			BLOCKED_PATH: blockedPath,
+			COMMITTED_PATH: committedPath,
+			LOCK_PATH: lockPath,
+			ROOT_PATH: root,
+		});
+		await waitForFile(blockedPath);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(existsSync(committedPath)).toBe(false);
+		expect(existsSync(lockPath)).toBe(true);
+
+		writeFileSync(releasePath, "release", "utf8");
+		await Promise.all([pythonHolder, typescriptWriter]);
+		expect(existsSync(releasedPath)).toBe(true);
+		expect(existsSync(committedPath)).toBe(true);
+		const committed = JSON.parse(readFileSync(statePath, "utf8"));
+		expect(committed.revision).toBe(2);
+		expect(committed.entries.memory.typescript.content).toBe("host update");
+	});
+
+	it("merges a Python mutation after both runtimes read the same revision", async () => {
+		const root = makeTempDir();
+		const statePath = getHarnessStatePath(root);
+		const readyPath = join(root, "python-loaded");
+		const continuePath = join(root, "continue-python");
+		const host = loadHarnessState(root, "local");
+		saveHarnessState(root, host);
+		const hostSnapshot = loadHarnessState(root, "local");
+		const pythonWrite = runPython(
+			[
+				"import os, time",
+				"from pathlib import Path",
+				"from rlm.harness import HarnessState",
+				"state = HarnessState(os.environ['STATE_PATH'])",
+				"Path(os.environ['READY_PATH']).write_text('loaded', encoding='utf-8')",
+				"while not Path(os.environ['CONTINUE_PATH']).exists(): time.sleep(0.01)",
+				"state.create_memory('Python', 'merged kernel update', id='python')",
+			].join("\n"),
+			{ CONTINUE_PATH: continuePath, READY_PATH: readyPath, STATE_PATH: statePath },
+		);
+		await waitForFile(readyPath);
+
+		hostSnapshot.entries.memory.typescript = transactionMemoryEntry("typescript", "committed host update");
+		saveHarnessState(root, hostSnapshot);
+		writeFileSync(continuePath, "continue", "utf8");
+		await pythonWrite;
+
+		const committed = JSON.parse(readFileSync(statePath, "utf8"));
+		expect(committed.revision).toBe(3);
+		expect(committed.entries.memory.typescript.content).toBe("committed host update");
+		expect(committed.entries.memory.python.content).toBe("merged kernel update");
+	});
+
+	it("rejects a stale TypeScript writer after a Python commit", async () => {
+		const root = makeTempDir();
+		const statePath = getHarnessStatePath(root);
+		const baseline = loadHarnessState(root, "local");
+		saveHarnessState(root, baseline);
+		const stale = loadHarnessState(root, "local");
+
+		await runPython(
+			[
+				"import os",
+				"from rlm.harness import HarnessState",
+				"HarnessState(os.environ['STATE_PATH']).create_memory('Python', 'kernel update', id='python')",
+			].join("\n"),
+			{ STATE_PATH: statePath },
+		);
+
+		stale.entries.memory.typescript = transactionMemoryEntry("typescript", "stale host update");
+		expect(() => saveHarnessState(root, stale)).toThrow(/revision conflict/);
+		const committed = JSON.parse(readFileSync(statePath, "utf8"));
+		expect(committed.revision).toBe(2);
+		expect(committed.entries.memory.python.content).toBe("kernel update");
+		expect(committed.entries.memory.typescript).toBeUndefined();
+	});
+
+	it("reclaims a lock left by a crashed Python process instance", async () => {
+		const root = makeTempDir();
+		const statePath = getHarnessStatePath(root);
+		const lockPath = getHarnessStateLockPath(root);
+		await runPython(
+			[
+				"import os",
+				"from pathlib import Path",
+				"from rlm.harness import _state_lock",
+				"with _state_lock(Path(os.environ['STATE_PATH'])):",
+				"    os._exit(0)",
+			].join("\n"),
+			{ STATE_PATH: statePath },
+		);
+
+		const state = loadHarnessState(root, "local");
+		expect(() => saveHarnessState(root, state)).not.toThrow();
+		expect(existsSync(lockPath)).toBe(false);
+		expect(JSON.parse(readFileSync(statePath, "utf8")).revision).toBe(1);
+	});
+
+	it("does not age-reclaim a live process instance", () => {
+		const root = makeTempDir();
+		const lockPath = getHarnessStateLockPath(root);
+		mkdirSync(lockPath);
+		writeFileSync(
+			join(lockPath, "owner.json"),
+			JSON.stringify({
+				pid: process.pid,
+				hostname: hostname(),
+				token: "live-test-owner",
+				process_start_id: getProcessStartId(process.pid),
+				created_at: new Date().toISOString(),
+			}),
+		);
+		utimesSync(lockPath, 0, 0);
+
+		const state = loadHarnessState(root, "local");
+		expect(() => saveHarnessState(root, state, { lockTimeoutMs: 20, staleLockMs: 0 })).toThrow(
+			/Timed out waiting for harness-state lock/,
+		);
+		expect(existsSync(lockPath)).toBe(true);
+	});
+
+	it("reclaims a live PID whose process-start identity no longer matches", () => {
+		const root = makeTempDir();
+		const lockPath = getHarnessStateLockPath(root);
+		mkdirSync(lockPath);
+		writeFileSync(
+			join(lockPath, "owner.json"),
+			JSON.stringify({
+				pid: process.pid,
+				hostname: hostname(),
+				token: "reused-pid-owner",
+				process_start_id: "not-this-process-instance",
+				created_at: new Date().toISOString(),
+			}),
+		);
+
+		const state = loadHarnessState(root, "local");
+		expect(() => saveHarnessState(root, state, { lockTimeoutMs: 100 })).not.toThrow();
+		expect(existsSync(lockPath)).toBe(false);
+	});
+
+	it.each([
+		["linux", "EIO", true],
+		["darwin", "EINVAL", true],
+		["win32", "EIO", true],
+		["win32", "EINVAL", false],
+	] as const)("handles directory fsync on %s with %s (throws=%s)", (platform, code, shouldThrow) => {
+		const closed: number[] = [];
+		const error = Object.assign(new Error(`${platform} ${code}`), { code });
+		const fsync = (): void => {
+			throw error;
+		};
+		const invoke = (): void =>
+			fsyncHarnessDirectory("/unused", platform, {
+				open: () => 37,
+				fsync,
+				close: (descriptor) => closed.push(descriptor),
+			});
+
+		if (shouldThrow) {
+			expect(invoke).toThrow(error);
+		} else {
+			expect(invoke).not.toThrow();
+		}
+		expect(closed).toEqual([37]);
 	});
 });
 
