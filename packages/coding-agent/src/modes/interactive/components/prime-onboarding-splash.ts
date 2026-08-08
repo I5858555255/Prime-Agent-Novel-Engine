@@ -123,6 +123,14 @@ export class PrimeOnboardingSplashComponent implements Component {
 		];
 	}
 
+	private formatSkipHint(): PanelTextLine {
+		return [
+			{ text: "Press ", tone: "muted" },
+			{ text: "ESC", tone: "accent", bold: true },
+			{ text: " to skip", tone: "muted" },
+		];
+	}
+
 	private formatBrandLine(): PanelTextLine {
 		return [
 			{ text: "Welcome to ", tone: "text" },
@@ -142,6 +150,9 @@ export class PrimeOnboardingSplashComponent implements Component {
 		lines.push({ left: 0, parts: [] });
 		lines.push(this.centerParts(this.formatBrandLine(), width));
 		lines.push(this.centerParts(this.formatContinueHint(), width));
+		if (!this.progressMessage) {
+			lines.push(this.centerParts(this.formatSkipHint(), width));
+		}
 
 		return lines;
 	}

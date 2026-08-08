@@ -31,6 +31,7 @@ describe("PrimeOnboardingSplashComponent", () => {
 		expect(lines).toHaveLength(36);
 		expect(output).toContain("Welcome to PRIME Agent");
 		expect(output).toContain("Press Enter to login with Prime Intellect");
+		expect(output).toContain("Press ESC to skip");
 		expect(output).toContain("·");
 		expect(output).not.toContain("prime agent");
 		expect(output).not.toContain("Research and infrastructure assistant for high-context work.");
@@ -88,6 +89,7 @@ describe("PrimeOnboardingSplashComponent", () => {
 		const output = stripAnsi(component.render(100).join("\n"));
 
 		expect(output).toContain("Press Enter to choose a model");
+		expect(output).toContain("Press ESC to skip");
 		expect(output).not.toContain("Press Enter to login with Prime Intellect");
 	});
 
@@ -103,6 +105,7 @@ describe("PrimeOnboardingSplashComponent", () => {
 		const output = stripAnsi(component.render(100).join("\n"));
 		expect(output).toContain("Preparing models...");
 		expect(output).not.toContain("Press Enter");
+		expect(output).not.toContain("Press ESC");
 		expect(onSelect).not.toHaveBeenCalled();
 		expect(onCancel).not.toHaveBeenCalled();
 	});
@@ -131,6 +134,7 @@ describe("PrimeOnboardingSplashComponent", () => {
 		expect(secondRender).not.toBe(firstRender);
 		expect(secondRender).toContain("Welcome to PRIME Agent");
 		expect(secondRender).toContain("Press Enter to login with Prime Intellect");
+		expect(secondRender).toContain("Press ESC to skip");
 	});
 
 	it("centers stacked content in narrow terminals", () => {
@@ -143,9 +147,11 @@ describe("PrimeOnboardingSplashComponent", () => {
 		const logoLine = rendered.find((line) => line.includes(PRIME_BUTTERFLY_LOGO.split("\n")[0].trim()));
 		const brandLine = rendered.find((line) => line.includes("Welcome to PRIME Agent"));
 		const hintLine = rendered.find((line) => line.includes("Press Enter to login with Prime Intellect"));
+		const skipHintLine = rendered.find((line) => line.includes("Press ESC to skip"));
 
 		expect(logoLine?.search(/\S/)).toBeGreaterThan(0);
 		expect(brandLine?.search(/\S/)).toBeGreaterThan(0);
 		expect(hintLine?.search(/\S/)).toBeGreaterThan(0);
+		expect(skipHintLine?.search(/\S/)).toBeGreaterThan(0);
 	});
 });
