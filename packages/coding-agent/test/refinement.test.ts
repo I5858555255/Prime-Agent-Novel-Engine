@@ -23,10 +23,12 @@ import {
 	planRefinement,
 	type RefinementAction,
 	type RefinementKind,
+	type RefinementPlan,
 	type RefinementProposal,
 	type RefinementResult,
 	refineHarness,
 	saveHarnessState,
+	serializeRefinementPlan,
 } from "../src/core/refinement/index.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
 
@@ -1515,5 +1517,56 @@ describe("global refinement history", () => {
 		});
 
 		expect(plan.rollbackScope).toBe("global");
+	});
+});
+
+describe("serializeRefinementPlan", () => {
+	it("serializes a plan to a snake_case kernel payload", () => {
+		const plan: RefinementPlan = {
+			id: "refine_20260807120000000",
+			proposal: {
+				summary: "Add a memory about build flags",
+				rationale: "Repeated discovery of the same flag",
+				expectedOutcome: "Future sessions skip rediscovery",
+				edits: [
+					{
+						action: "create",
+						kind: "memory",
+						title: "Build flags",
+						content: "Use -j8 for parallel builds",
+						reason: "Observed twice",
+					},
+					{ action: "delete", kind: "skill", id: "skill_1" },
+				],
+			},
+		};
+		const payload = serializeRefinementPlan(plan, "local");
+		expect(payload).toEqual({
+			plan_id: "refine_20260807120000000",
+			summary: "Add a memory about build flags",
+			rationale: "Repeated discovery of the same flag",
+			expected_outcome: "Future sessions skip rediscovery",
+			scope: "local",
+			edits: [
+				{
+					action: "create",
+					kind: "memory",
+					id: null,
+					title: "Build flags",
+					content: "Use -j8 for parallel builds",
+					reason: "Observed twice",
+				},
+				{ action: "delete", kind: "skill", id: "skill_1", title: null, content: null, reason: null },
+			],
+		});
+	});
+
+	it("serializes an empty-edits plan", () => {
+		const plan: RefinementPlan = {
+			id: "refine_x",
+			proposal: { summary: "s", rationale: "nothing to change", expectedOutcome: "none", edits: [] },
+		};
+		expect(serializeRefinementPlan(plan, "global").edits).toEqual([]);
+		expect(serializeRefinementPlan(plan, "global").scope).toBe("global");
 	});
 });
