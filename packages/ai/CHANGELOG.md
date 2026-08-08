@@ -2,7 +2,8 @@
 
 ## [Unreleased]
 
-- Fixed OpenAI Responses incomplete events dropping final usage and response IDs ([#914](https://github.com/PrimeIntellect-ai/prime-agent/pull/914) by [@paulbrav](https://github.com/paulbrav)).
+- Fixed OpenAI Responses turns that end in `response.incomplete` reporting a fake success. The event was ignored, so the turn kept zero usage, zero cost, and the initialized stop reason `stop`. Such a turn now records its final usage and cost ([#914](https://github.com/PrimeIntellect-ai/prime-agent/pull/914) by [@paulbrav](https://github.com/paulbrav)).
+- Changed the stop reason of an incomplete OpenAI Responses turn from `stop` to `length`, or to `error` with `stopReasonRaw` `content_filter` when `incomplete_details.reason` says the response was blocked. That is the mapping `openai-completions` already gives its `content_filter` finish reason. An `error` turn also carries an `errorMessage` naming the block, so a transport that pushes the message straight through instead of throwing does not report it as an unnamed failure. An `error` turn ends the agent loop with a classified provider failure and is dropped from replay, where the old `stop` let the loop continue as if the turn had finished ([#914](https://github.com/PrimeIntellect-ai/prime-agent/pull/914) by [@paulbrav](https://github.com/paulbrav)).
 
 ## [0.7.1] - 2026-08-07
 
