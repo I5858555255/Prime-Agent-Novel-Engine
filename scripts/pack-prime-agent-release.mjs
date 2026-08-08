@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-// TODO: Remove this R2 tarball packer once prime-agent and its internal workspace
-// dependencies are published through a real npm release flow.
+// This is the non-publishing packer for the CI-authoritative R2 release lifecycle.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -18,7 +17,8 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const toolingRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const root = resolve(process.env.PRIME_AGENT_RELEASE_SOURCE_ROOT || toolingRoot);
 const defaultOutputDir = join(root, "packages", "coding-agent", "release");
 const defaultBaseUrl = process.env.PRIME_AGENT_DOWNLOAD_BASE_URL;
 const publicPackageName = process.env.PRIME_AGENT_PACKAGE_NAME || "prime-agent";

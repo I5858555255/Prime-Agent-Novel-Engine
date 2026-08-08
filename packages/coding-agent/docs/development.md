@@ -26,6 +26,8 @@ Prime Agent is the product, public CLI, release artifact, and repository name. T
 
 Public releases are currently versioned tarball artifacts installed by the stable and beta installer scripts. `scripts/pack-prime-agent-release.mjs` rewrites the coding-agent package name, executable, config metadata, and internal dependency URLs for that distribution. Do not document the inherited npm workspace package as the public Prime Agent install path.
 
+Maintainers should follow the repository [`RELEASING.md`](../../../RELEASING.md) for version preparation, non-publishing validation, CI publication, retry, and rollback. No supported local command publishes a release or pushes the default branch.
+
 ## Local Configuration
 
 User configuration lives under `~/.prime/agent/`. Project-local settings, prompts, themes, extensions, skills, and system-prompt files live under `.prime/agent/` in the project root. Override the user config directory with `PRIME_AGENT_CODING_AGENT_DIR` and the session directory with `PRIME_AGENT_SESSION_DIR`.

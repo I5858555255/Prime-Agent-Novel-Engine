@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Changed Prime Agent releases to use an idempotent CI/R2 lifecycle with local preparation and validation commands that cannot publish or push ([#934](https://github.com/PrimeIntellect-ai/prime-agent/issues/934)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

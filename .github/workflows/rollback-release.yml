@@ -1,0 +1,93 @@
+name: Rollback Prime Agent stable channel
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    if: startsWith(github.event.comment.body, '/prime-agent release rollback ')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      confirmation: ${{ steps.context.outputs.confirmation }}
+      release_tag: ${{ steps.context.outputs.release_tag }}
+    steps:
+      - name: Checkout protected release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Authorize rollback comment
+        id: authorization
+        env:
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq .permission)
+          case "$permission" in
+            admin|maintain) ;;
+            *) echo "Release commands require admin or maintain permission." >&2; exit 1 ;;
+          esac
+          echo "permission=$permission" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Parse /prime-agent release rollback vX.Y.Z command
+        id: context
+        env:
+          ACTOR_PERMISSION: ${{ steps.authorization.outputs.permission }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: node scripts/resolve-rollback-context.mjs
+
+  rollback:
+    needs: authorize
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: release-prime-agent
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release tooling and tags
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Verify target and roll back stable pointers
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_DEFAULT_REGION: auto
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CONFIRMATION: ${{ needs.authorize.outputs.confirmation }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: |
+          node scripts/publish-release.mjs rollback \
+            --release-tag "$RELEASE_TAG" \
+            --confirmation "$CONFIRMATION" \
+            --default-branch "$DEFAULT_BRANCH"
