@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertInstallerMinimumIsCurrent, renderInstallerMinimum } from "./render-installer.mjs";
+import { assertInstallerMinimumIsCurrent, renderInstaller, renderInstallerMinimum } from "./render-installer.mjs";
 
 const installerTemplate = readFileSync("install.sh", "utf-8");
 assertInstallerMinimumIsCurrent(installerTemplate);
@@ -115,6 +115,22 @@ node_version_case() {
 	printf '__NODE_VERSION__ %s\t%s\n' "$version" "$supported"
 }
 
+package_manager_candidate_case() {
+	manager="$1"
+	PRIME_AGENT_TEST_NODE_VERSION="$2"
+	export PRIME_AGENT_TEST_NODE_VERSION
+	case "$manager" in
+		apt) candidate_check=apt_node_candidate_is_new_enough ;;
+		apk) candidate_check=apk_node_candidate_is_new_enough ;;
+	esac
+	if "$candidate_check"; then
+		supported=1
+	else
+		supported=0
+	fi
+	printf '__NODE_CANDIDATE__ %s\t%s\t%s\n' "$manager" "$PRIME_AGENT_TEST_NODE_VERSION" "$supported"
+}
+
 render_case "$@"
 screen_case "$@"
 progress_case
@@ -129,13 +145,44 @@ node_version_case 23.0.0-experimental
 node_version_case 22.8.0+dfsg-1ubuntu1
 node_version_case 22.8.0-1nodesource1
 node_version_case 22.8.0-r0
+node_version_case 22.8
+node_version_case 22.8.0.1
+node_version_case 22.8.0.
+node_version_case 22.8.0+
+node_version_case 22.8.0-r0junk
+
+for candidate_version in \
+	20.6.0 \
+	22.7.0 \
+	22.8.0 \
+	23.0.0 \
+	22.8.0-experimental \
+	22.8.0+dfsg-1ubuntu1 \
+	22.8.0-1nodesource1 \
+	22.8.0-r0 \
+	22.8 \
+	22.8.0.1 \
+	22.8.0. \
+	22.8.0+ \
+	22.8.0-r0junk; do
+	package_manager_candidate_case apt "$candidate_version"
+	package_manager_candidate_case apk "$candidate_version"
+done
 `;
 
 const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-installer-render-"));
 const harnessPath = join(tempDir, "harness.sh");
+const commandStubDir = join(tempDir, "commands");
 
 try {
+	mkdirSync(commandStubDir);
 	writeFileSync(harnessPath, harnessSource, "utf-8");
+	writeCommandStub(
+		join(commandStubDir, "apt-cache"),
+		'printf "  Candidate: %s\\n" "$PRIME_AGENT_TEST_NODE_VERSION"',
+	);
+	writeCommandStub(join(commandStubDir, "apk"), 'printf "nodejs-%s\\n" "$PRIME_AGENT_TEST_NODE_VERSION"');
+	assertInstallerRendering(tempDir);
 
 	const stableVisible = runCase("stable visible logo", 100, 30, 90, 30);
 	check(stableVisible.meta.first.visible === "1", "expected the initial large render to show the logo");
@@ -146,6 +193,7 @@ try {
 	);
 	assertInstallerProgress(stableVisible.progress);
 	assertNodeVersions(stableVisible.nodeVersions);
+	assertPackageManagerCandidates(stableVisible.candidateVersions);
 
 	const stableExpand = runCase("stable expanded logo", 60, 24, 120, 32);
 	check(stableExpand.meta.first.visible === "1", "expected the initial medium render to show the logo");
@@ -188,10 +236,102 @@ if (failures.length > 0) {
 
 console.log("Installer render check passed.");
 
+function writeCommandStub(path, command) {
+	writeFileSync(path, `#!/bin/sh\n${command}\n`, "utf8");
+	chmodSync(path, 0o755);
+}
+
+function assertInstallerRendering(outputDir) {
+	const rendered = renderInstaller(installerTemplate, {
+		baseUrl: " https://downloads.example.test/// ",
+		channel: "stable",
+	});
+	check(rendered.includes("https://downloads.example.test"), "expected direct rendering to normalize the base URL");
+	check(rendered.includes('prime_agent_default_release_channel="stable"'), "expected direct rendering to set the channel");
+	check(!/__PRIME_AGENT_[A-Z0-9_]+__/.test(rendered), "expected direct rendering to resolve all placeholders");
+
+	assertRenderFails(
+		"missing base URL placeholder",
+		installerTemplate.replace("__PRIME_AGENT_DOWNLOAD_BASE_URL__", ""),
+		{ baseUrl: "https://downloads.example.test", channel: "stable" },
+	);
+	assertRenderFails(
+		"duplicate base URL placeholder",
+		`${installerTemplate}\n__PRIME_AGENT_DOWNLOAD_BASE_URL__\n`,
+		{ baseUrl: "https://downloads.example.test", channel: "stable" },
+	);
+	assertRenderFails(
+		"renamed base URL placeholder",
+		installerTemplate.replace("__PRIME_AGENT_DOWNLOAD_BASE_URL__", "__PRIME_AGENT_DOWNLOAD_URL__"),
+		{ baseUrl: "https://downloads.example.test", channel: "stable" },
+	);
+	assertRenderFails(
+		"missing release channel placeholder",
+		installerTemplate.replace("__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__", ""),
+		{ baseUrl: "https://downloads.example.test", channel: "stable" },
+	);
+	assertRenderFails(
+		"duplicate release channel placeholder",
+		`${installerTemplate}\n__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__\n`,
+		{ baseUrl: "https://downloads.example.test", channel: "stable" },
+	);
+	assertRenderFails(
+		"renamed release channel placeholder",
+		installerTemplate.replace(
+			"__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__",
+			"__PRIME_AGENT_RELEASE_CHANNEL__",
+		),
+		{ baseUrl: "https://downloads.example.test", channel: "stable" },
+	);
+	assertRenderFails(
+		"unresolved installer placeholder",
+		`${installerTemplate}\n__PRIME_AGENT_UNKNOWN__\n`,
+		{ baseUrl: "https://downloads.example.test", channel: "stable" },
+	);
+	assertRenderFails("root-only base URL", installerTemplate, { baseUrl: " /// ", channel: "stable" });
+
+	const cliOutput = join(outputDir, "install.rendered.sh");
+	const cliResult = spawnSync(
+		process.execPath,
+		[
+			"scripts/render-installer.mjs",
+			"--base-url",
+			"https://downloads.example.test///",
+			"--channel",
+			"beta",
+			"--output",
+			cliOutput,
+		],
+		{ encoding: "utf8" },
+	);
+	check(cliResult.status === 0, `expected installer renderer CLI to succeed: ${cliResult.stderr}`);
+	if (cliResult.status === 0) {
+		const cliRendered = readFileSync(cliOutput, "utf8");
+		check(cliRendered.includes("https://downloads.example.test"), "expected CLI rendering to set the base URL");
+		check(cliRendered.includes('prime_agent_default_release_channel="beta"'), "expected CLI rendering to set beta");
+		check(!/__PRIME_AGENT_[A-Z0-9_]+__/.test(cliRendered), "expected CLI rendering to resolve all placeholders");
+		const syntax = spawnSync("dash", ["-n", cliOutput], { encoding: "utf8" });
+		check(syntax.status === 0, `expected CLI-rendered installer to pass dash syntax validation: ${syntax.stderr}`);
+	}
+}
+
+function assertRenderFails(name, source, options) {
+	try {
+		renderInstaller(source, options);
+		failures.push(`${name}: expected rendering to fail`);
+	} catch {
+		// Expected.
+	}
+}
+
 function runCase(name, initialCols, initialRows, resizedCols, resizedRows) {
-	const result = spawnSync("sh", [harnessPath, String(initialCols), String(initialRows), String(resizedCols), String(resizedRows)], {
+	const result = spawnSync("dash", [harnessPath, String(initialCols), String(initialRows), String(resizedCols), String(resizedRows)], {
 		detached: true,
 		encoding: "utf-8",
+		env: {
+			...process.env,
+			PATH: `${commandStubDir}:${process.env.PATH ?? ""}`,
+		},
 	});
 	if (result.status !== 0) {
 		failures.push(`${name}: harness exited with ${result.status ?? "unknown"}\n${result.stderr}${result.stdout}`);
@@ -237,6 +377,11 @@ function parseRenderOutput(output) {
 			parsed.nodeVersions[version] = supported === "1";
 			continue;
 		}
+		if (line.startsWith("__NODE_CANDIDATE__ ")) {
+			const [manager, version, supported] = line.slice("__NODE_CANDIDATE__ ".length).split("\t");
+			parsed.candidateVersions[`${manager}:${version}`] = supported === "1";
+			continue;
+		}
 		if (activeRender) {
 			parsed.renders[activeRender].push(line.replace(ansiPattern, ""));
 		}
@@ -258,9 +403,40 @@ function assertNodeVersions(versions) {
 		"22.8.0+dfsg-1ubuntu1": true,
 		"22.8.0-1nodesource1": true,
 		"22.8.0-r0": true,
+		"22.8": false,
+		"22.8.0.1": false,
+		"22.8.0.": false,
+		"22.8.0+": false,
+		"22.8.0-r0junk": false,
 	};
 	for (const [version, supported] of Object.entries(expected)) {
 		check(versions[version] === supported, `expected Node ${version} support to be ${supported}`);
+	}
+}
+
+function assertPackageManagerCandidates(versions) {
+	const expected = {
+		"20.6.0": false,
+		"22.7.0": false,
+		"22.8.0": true,
+		"23.0.0": true,
+		"22.8.0-experimental": false,
+		"22.8.0+dfsg-1ubuntu1": true,
+		"22.8.0-1nodesource1": true,
+		"22.8.0-r0": true,
+		"22.8": false,
+		"22.8.0.1": false,
+		"22.8.0.": false,
+		"22.8.0+": false,
+		"22.8.0-r0junk": false,
+	};
+	for (const manager of ["apt", "apk"]) {
+		for (const [version, supported] of Object.entries(expected)) {
+			check(
+				versions[`${manager}:${version}`] === supported,
+				`expected ${manager} Node ${version} candidate support to be ${supported}`,
+			);
+		}
 	}
 }
 
@@ -361,5 +537,6 @@ function emptyParsedCase() {
 		screens: {},
 		progress: [],
 		nodeVersions: {},
+		candidateVersions: {},
 	};
 }

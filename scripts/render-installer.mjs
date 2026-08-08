@@ -10,6 +10,9 @@ const rootPackagePath = resolve(root, "package.json");
 const codingAgentPackagePath = resolve(root, "packages/coding-agent/package.json");
 const runtimeVersionGuardPath = resolve(root, "packages/coding-agent/src/cli/node-version-check.ts");
 const generatedMinimumPattern = /^prime_agent_min_node_version="([^"]+)" # generated from packages\/coding-agent\/package\.json engines\.node$/m;
+const baseUrlPlaceholder = "__PRIME_AGENT_DOWNLOAD_BASE_URL__";
+const releaseChannelPlaceholder = "__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__";
+const unresolvedPlaceholderPattern = /__PRIME_AGENT_[A-Z0-9_]+__/;
 
 function readJson(path) {
 	return JSON.parse(readFileSync(path, "utf8"));
@@ -64,13 +67,27 @@ export function renderInstallerMinimum(source) {
 	);
 }
 
+function replaceUniquePlaceholder(source, placeholder, value) {
+	const count = source.split(placeholder).length - 1;
+	if (count !== 1) {
+		throw new Error(`install.sh must contain exactly one ${placeholder} placeholder; found ${count}`);
+	}
+	return source.replace(placeholder, value);
+}
+
 export function renderInstaller(source, { baseUrl, channel }) {
-	if (!baseUrl) throw new Error("--base-url is required");
+	const normalizedBaseUrl = typeof baseUrl === "string" ? baseUrl.trim().replace(/\/+$/, "") : "";
+	if (!normalizedBaseUrl) throw new Error("--base-url must contain a non-root URL");
 	if (channel !== "stable" && channel !== "beta") throw new Error("--channel must be stable or beta");
 
-	return renderInstallerMinimum(source)
-		.replaceAll("__PRIME_AGENT_DOWNLOAD_BASE_URL__", baseUrl.replace(/\/+$/, ""))
-		.replaceAll("__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__", channel);
+	let rendered = renderInstallerMinimum(source);
+	rendered = replaceUniquePlaceholder(rendered, baseUrlPlaceholder, normalizedBaseUrl);
+	rendered = replaceUniquePlaceholder(rendered, releaseChannelPlaceholder, channel);
+	const unresolved = unresolvedPlaceholderPattern.exec(rendered);
+	if (unresolved) {
+		throw new Error(`Rendered installer contains unresolved placeholder ${unresolved[0]}`);
+	}
+	return rendered;
 }
 
 function parseArgs(args) {

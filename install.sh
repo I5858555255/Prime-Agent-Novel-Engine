@@ -1048,8 +1048,40 @@ apt_node_candidate_is_new_enough() {
 }
 
 apk_node_candidate_is_new_enough() {
-	version=$(apk search -x nodejs 2>/dev/null | awk -F- '/^nodejs-/ { print $2; exit }')
+	version=$(apk search -x nodejs 2>/dev/null | awk '/^nodejs-/ { sub(/^nodejs-/, ""); print; exit }')
 	[ -n "$version" ] && node_version_string_is_new_enough "$version"
+}
+
+node_version_string_is_digits() {
+	case "$1" in
+		""|*[!0-9]*) return 1 ;;
+	esac
+}
+
+node_version_suffix_is_stable() {
+	suffix="$1"
+	case "$suffix" in
+		"") return 0 ;;
+		+*)
+			metadata="${suffix#+}"
+			case "$metadata" in
+				""|.*|*.|*..*|*[!0-9A-Za-z.-]*) return 1 ;;
+			esac
+			return 0
+			;;
+		-r*)
+			node_version_string_is_digits "${suffix#-r}"
+			return
+			;;
+		-*nodesource*)
+			revision="${suffix#-}"
+			distro_revision="${revision%%nodesource*}"
+			node_revision="${revision#*nodesource}"
+			node_version_string_is_digits "$distro_revision" && node_version_string_is_digits "$node_revision"
+			return
+			;;
+		*) return 1 ;;
+	esac
 }
 
 node_version_string_is_new_enough() {
@@ -1060,20 +1092,19 @@ node_version_string_is_new_enough() {
 	esac
 	numeric_version="${version%%[!0-9.]*}"
 	suffix="${version#"$numeric_version"}"
-	case "$suffix" in
-		""|+*|-[0-9]*nodesource*|-r[0-9]*) ;;
-		*) return 1 ;;
-	esac
+	node_version_suffix_is_stable "$suffix" || return 1
 	version_ifs=${IFS- }
 	IFS=.
 	set -- $numeric_version
 	IFS=$version_ifs
+	[ "$#" -eq 3 ] || return 1
 	major="${1:-}"
-	minor="${2:-0}"
-	patch="${3:-0}"
-	case "$major" in ''|*[!0-9]*) return 1 ;; esac
-	case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
-	case "$patch" in ''|*[!0-9]*) patch=0 ;; esac
+	minor="${2:-}"
+	patch="${3:-}"
+	node_version_string_is_digits "$major" || return 1
+	node_version_string_is_digits "$minor" || return 1
+	node_version_string_is_digits "$patch" || return 1
+	[ "$numeric_version" = "$major.$minor.$patch" ] || return 1
 
 	IFS=.
 	set -- $prime_agent_min_node_version
