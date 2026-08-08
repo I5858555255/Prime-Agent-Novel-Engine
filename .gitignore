@@ -40,6 +40,7 @@ plans/
 collect.sh
 .kernel-venv/
 .worktrees/
+.superpowers/
 
 __pycache__/
 *.pyc
