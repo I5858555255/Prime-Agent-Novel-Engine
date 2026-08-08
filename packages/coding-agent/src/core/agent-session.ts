@@ -538,6 +538,42 @@ export type SerializedBackgroundPlanResult =
 export type AutoRefineReviewer = (request: AutoRefineReviewRequest, signal?: AbortSignal) => Promise<AutoRefineReview>;
 
 /** Options for AgentSession.prompt() */
+
+/**
+ * A terminal assistant message with stopReason "length" and non-empty text means the
+ * response was cut off by the provider's output-token limit (max_tokens). Without
+ * handling, the truncated text is delivered as if it were the complete answer.
+ */
+const MAX_LENGTH_CONTINUATIONS = 3;
+const LENGTH_CONTINUATION_PROMPT =
+	"Your previous response was truncated by the output token limit. Continue from exactly where you left off; do not repeat content you already produced.";
+
+/**
+ * Whether a terminal assistant message warrants an automatic continuation because
+ * the provider's output-token limit cut the response off mid-generation.
+ *
+ * A "length" stop with non-empty text is a truncation; a "length" stop with no
+ * output is the context-overflow case (handled separately by overflow recovery),
+ * and a response whose only content is tool calls is actionable as-is (the loop
+ * already continues after executing them).
+ */
+export function shouldAutoContinueTruncatedResponse(
+	message: AssistantMessage,
+	continuationCount: number,
+	maxContinuations: number = MAX_LENGTH_CONTINUATIONS,
+): boolean {
+	if (message.stopReason !== "length") {
+		return false;
+	}
+	if (continuationCount >= maxContinuations) {
+		return false;
+	}
+	if (message.content.some((content) => content.type === "toolCall")) {
+		return false;
+	}
+	return message.content.some((content) => content.type === "text" && content.text.length > 0);
+}
+
 export interface PromptOptions {
 	/** Whether to expand file-based prompt templates (default: true) */
 	expandPromptTemplates?: boolean;
@@ -1134,6 +1170,10 @@ export class AgentSession {
 	private _compactionOperation: Promise<void> | undefined = undefined;
 	/** One recovery attempt per overflow; "reported" dedups the failure notice. */
 	private _overflowRecovery: "idle" | "attempted" | "reported" = "idle";
+	/** Consecutive auto-continuations for output-token-truncated responses. */
+	private _lengthContinuations = 0;
+	/** True between queueing a truncation continuation and its steer prompt start. */
+	private _lengthContinuationPending = false;
 	private _continueAfterThresholdCompaction = false;
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 	private _pendingRequestedRefine: { instructions?: string; global?: boolean } | undefined;
@@ -2193,9 +2233,31 @@ export class AgentSession {
 		if (await this._shouldStopForThresholdCompaction(context)) {
 			return true;
 		}
+		// Auto-continue responses truncated by the model's output-token limit.
+		// stopReason "length" with non-empty text means the reply was cut off
+		// mid-generation (the output==0 context-overflow case is handled
+		// separately); queue a bounded follow-up so the model finishes where it
+		// left off instead of silently delivering a partial answer.
+		if (!this._steeringStopPending && this._shouldAutoContinueTruncation(context.message)) {
+			this._lengthContinuations++;
+			this._lengthContinuationPending = true;
+			await this._queuePreparedPrompt("steer", LENGTH_CONTINUATION_PROMPT, undefined, {
+				source: "internal",
+				resumeIfIdle: true,
+				suppressAutonomousContinuation: true,
+			});
+			return false;
+		}
 		// Steering stops continuation only after mandatory serialized checkpoints.
 		// Returning true here still prevents the agent loop from starting another turn.
 		return this._steeringStopPending;
+	}
+
+	private _shouldAutoContinueTruncation(message: AssistantMessage): boolean {
+		if (this._disposed || this._disposing) {
+			return false;
+		}
+		return shouldAutoContinueTruncatedResponse(message, this._lengthContinuations);
 	}
 
 	private async _shouldStopForThresholdCompaction(context: ShouldStopAfterTurnContext): Promise<boolean> {
@@ -3458,8 +3520,15 @@ export class AgentSession {
 			}
 		}
 
-		if (event.type === "message_start" && this._isPromptTurnStartMessage(event.message)) {
-			this._overflowRecovery = "idle";
+		if (event.type === "message_start") {
+			if (this._lengthContinuationPending) {
+				// This is the steer prompt we injected to continue a truncated
+				// response; keep the per-run continuation budget intact.
+				this._lengthContinuationPending = false;
+			} else if (this._isPromptTurnStartMessage(event.message)) {
+				this._overflowRecovery = "idle";
+				this._lengthContinuations = 0;
+			}
 		}
 
 		// Emit to extensions first
@@ -3518,6 +3587,11 @@ export class AgentSession {
 				}
 				if (assistantMsg.stopReason !== "error") {
 					this._overflowRecovery = "idle";
+				}
+				if (assistantMsg.stopReason === "stop" || assistantMsg.stopReason === "toolUse") {
+					// A naturally completed response resets the truncation
+					// continuation budget for the next run.
+					this._lengthContinuations = 0;
 				}
 				if (this._isConcreteProviderAuthFailure(assistantMsg)) {
 					this._captureRetryAuthFailureSource(assistantMsg);
