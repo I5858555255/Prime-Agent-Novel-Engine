@@ -15,6 +15,7 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	readdirSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
@@ -107,8 +108,15 @@ import {
 	type SessionPassivationSnapshot,
 } from "../../core/session-action-store.js";
 import { deleteSessionFile } from "../../core/session-file-actions.js";
-import { acquireSessionLease, canonicalSessionPath, type SessionLease } from "../../core/session-lease.js";
 import {
+	acquireSessionLease,
+	canonicalSessionPath,
+	hasActiveSessionLease,
+	type SessionLease,
+} from "../../core/session-lease.js";
+import {
+	getDefaultSessionDir,
+	loadEntriesFromFile,
 	readSessionInfo,
 	resolveSessionRlmDepth,
 	type SessionInfo,
@@ -406,6 +414,19 @@ type PassiveRlmSubagent = PassiveRlmRoot & {
 class RuntimeOpenCancelledError extends Error {}
 class BoundSessionUnavailableError extends Error {}
 
+
+// Entry types a session file can hold without any real user content.
+const SESSION_BOOKKEEPING_ENTRY_TYPES = new Set([
+	"session",
+	"model_change",
+	"thinking_level_change",
+	"service_tier_change",
+	"session_state",
+	"agent_status",
+	"git_state",
+	"child_usage_attributed",
+]);
+
 export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
 	const daemon = new AgentDaemon(socketPath, options);
@@ -582,6 +603,7 @@ export class AgentDaemon {
 		}
 		this.installCrashHandlers();
 		await prepareDaemonSocketPath(this.socketPath);
+		await this.reapOrphanedEmptySessions();
 
 		this.server = createServer((socket) => this.handleConnection(socket));
 
@@ -623,6 +645,32 @@ export class AgentDaemon {
 			this.cronScheduler.start();
 		}
 		this.startSupervisorMonitor();
+	}
+
+	/** Delete session files left by crashed daemons that never captured a user turn. */
+	private async reapOrphanedEmptySessions(): Promise<void> {
+		const sessionDir =
+			this.options.defaultSessionConfig.sessionDir ??
+			getDefaultSessionDir(this.options.defaultSessionConfig.cwd ?? process.cwd(), this.agentDir);
+		let files: string[];
+		try {
+			files = readdirSync(sessionDir).filter((name) => name.endsWith(".jsonl"));
+		} catch {
+			return;
+		}
+		for (const file of files) {
+			const sessionPath = join(sessionDir, file);
+			if (hasActiveSessionLease(sessionPath, this.agentDir)) continue;
+			let empty: boolean;
+			try {
+				empty = loadEntriesFromFile(sessionPath).every((entry) =>
+					SESSION_BOOKKEEPING_ENTRY_TYPES.has(entry.type),
+				);
+			} catch {
+				continue; // corrupt/unreadable — leave it for the user
+			}
+			await deleteSessionFile(sessionPath);
+		}
 	}
 
 	private startSupervisorMonitor(): void {
