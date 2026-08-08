@@ -43,6 +43,12 @@ jobs:
       - name: Check
         run: npm run check
 
+      - name: Test validation workflow
+        run: npm run test:check-workflow
+
+      - name: Verify validation did not modify tracked files
+        run: git diff --exit-code
+
   test:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
