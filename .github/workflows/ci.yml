@@ -40,6 +40,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Snapshot tracked files before validation
+        run: |
+          git diff --binary --full-index > "$RUNNER_TEMP/tracked-before-check.diff"
+          git diff --cached --binary --full-index > "$RUNNER_TEMP/staged-before-check.diff"
+
       - name: Check
         run: npm run check
 
@@ -47,7 +52,17 @@ jobs:
         run: npm run test:check-workflow
 
       - name: Verify validation did not modify tracked files
-        run: git diff --exit-code
+        run: |
+          git diff --binary --full-index > "$RUNNER_TEMP/tracked-after-check.diff"
+          git diff --cached --binary --full-index > "$RUNNER_TEMP/staged-after-check.diff"
+          if ! cmp "$RUNNER_TEMP/tracked-before-check.diff" "$RUNNER_TEMP/tracked-after-check.diff"; then
+            diff -u "$RUNNER_TEMP/tracked-before-check.diff" "$RUNNER_TEMP/tracked-after-check.diff" || true
+            exit 1
+          fi
+          if ! cmp "$RUNNER_TEMP/staged-before-check.diff" "$RUNNER_TEMP/staged-after-check.diff"; then
+            diff -u "$RUNNER_TEMP/staged-before-check.diff" "$RUNNER_TEMP/staged-after-check.diff" || true
+            exit 1
+          fi
 
   test:
     name: Test (${{ matrix.name }})

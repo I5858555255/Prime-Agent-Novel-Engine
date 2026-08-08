@@ -111,7 +111,15 @@ describe("non-mutating validation workflow", () => {
 		expect(packageJson.scripts["check:format"]).toBe("biome check --error-on-warnings .");
 		expect(packageJson.scripts.check).not.toContain("--write");
 		expect(packageJson.scripts.format).toBe("biome check --write .");
-		expect(workflow).toMatch(/run: npm run check[\s\S]*run: git diff --exit-code/);
+		expect(workflow).toMatch(
+			/name: Snapshot tracked files before validation[\s\S]*name: Check[\s\S]*name: Verify validation did not modify tracked files/,
+		);
+		expect(workflow).toContain('git diff --binary --full-index > "$RUNNER_TEMP/tracked-before-check.diff"');
+		expect(workflow).toContain('git diff --cached --binary --full-index > "$RUNNER_TEMP/staged-before-check.diff"');
+		expect(workflow).toContain(
+			'cmp "$RUNNER_TEMP/tracked-before-check.diff" "$RUNNER_TEMP/tracked-after-check.diff"',
+		);
+		expect(workflow).toContain('cmp "$RUNNER_TEMP/staged-before-check.diff" "$RUNNER_TEMP/staged-after-check.diff"');
 		expect(workflow).not.toContain("npm run format");
 	});
 });
