@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type * as NodeFs from "node:fs";
 import {
 	appendFileSync,
 	chmodSync,
@@ -47,9 +48,21 @@ import {
 import { getProcessStartId } from "../src/core/session-lease.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
 
-const { completeSimpleMock } = vi.hoisted(() => ({
+const { completeSimpleMock, lockOwnerReadFailure } = vi.hoisted(() => ({
 	completeSimpleMock: vi.fn(),
+	lockOwnerReadFailure: { path: undefined, error: undefined } as { path?: string; error?: Error },
 }));
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof NodeFs>();
+	const readFileSyncWithFailure = ((path: unknown, ...args: unknown[]): unknown => {
+		if (path === lockOwnerReadFailure.path && lockOwnerReadFailure.error) {
+			throw lockOwnerReadFailure.error;
+		}
+		return Reflect.apply(actual.readFileSync, undefined, [path, ...args]);
+	}) as typeof actual.readFileSync;
+	return { ...actual, readFileSync: readFileSyncWithFailure };
+});
 
 vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
 	const actual = await importOriginal<typeof PiAi>();
@@ -1488,6 +1501,42 @@ describe("transactional harness-state persistence", () => {
 		const state = loadHarnessState(root, "local");
 		expect(() => saveHarnessState(root, state, { lockTimeoutMs: 100, staleLockMs: 0 })).not.toThrow();
 		expect(existsSync(lockPath)).toBe(false);
+	});
+
+	it("does not reclaim or mutate state when owner metadata fails with EIO", () => {
+		const root = makeTempDir();
+		const statePath = getHarnessStatePath(root);
+		const lockPath = getHarnessStateLockPath(root);
+		const ownerPath = join(lockPath, "owner.json");
+		const baseline = loadHarnessState(root, "local");
+		saveHarnessState(root, baseline);
+		const persistedBefore = readFileSync(statePath, "utf8");
+		const ownerBefore = JSON.stringify({
+			pid: 42,
+			hostname: "foreign-host.example.invalid",
+			token: "unreadable-owner",
+		});
+		mkdirSync(lockPath);
+		writeFileSync(ownerPath, ownerBefore, "utf8");
+		utimesSync(lockPath, 0, 0);
+		const blocked = loadHarnessState(root, "local");
+		blocked.entries.memory.blocked = transactionMemoryEntry("blocked", "must not persist");
+		lockOwnerReadFailure.path = ownerPath;
+		lockOwnerReadFailure.error = Object.assign(new Error("simulated owner read failure"), { code: "EIO" });
+
+		try {
+			expect(() => saveHarnessState(root, blocked, { lockTimeoutMs: 20, staleLockMs: 0 })).toThrow(
+				/Cannot inspect harness-state lock owner.*refusing to reclaim.*simulated owner read failure/,
+			);
+		} finally {
+			lockOwnerReadFailure.path = undefined;
+			lockOwnerReadFailure.error = undefined;
+		}
+		expect(readFileSync(statePath, "utf8")).toBe(persistedBefore);
+		expect(readFileSync(ownerPath, "utf8")).toBe(ownerBefore);
+		expect(readdirSync(root).filter((name) => name.startsWith("harness_state.json.lock"))).toEqual([
+			"harness_state.json.lock",
+		]);
 	});
 
 	it("reclaims a live PID whose process-start identity no longer matches", () => {

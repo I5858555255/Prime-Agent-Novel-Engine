@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from rlm import harness as package_harness
@@ -252,6 +253,67 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertFalse(lock_path.exists())
             self.assertEqual(HarnessState(state_path).get("memory", "recovered").content, "malformed owner reclaimed")
+
+    def test_owner_eacces_does_not_reclaim_lock_or_mutate_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir).resolve() / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            owner_path = lock_path / "owner.json"
+            HarnessState(state_path).create_memory("Baseline", "preserve", id="baseline")
+            persisted_before = state_path.read_text(encoding="utf-8")
+            owner_before = json.dumps(
+                {"pid": 42, "hostname": "foreign-host.example.invalid", "token": "unreadable-owner"}
+            )
+            lock_path.mkdir()
+            owner_path.write_text(owner_before, encoding="utf-8")
+            os.utime(lock_path, (0, 0))
+            state = HarnessState(state_path, lock_timeout_seconds=0.02, stale_lock_seconds=0)
+            real_read_text = Path.read_text
+
+            def fail_owner_read(path: Path, *args: Any, **kwargs: Any) -> str:
+                if path == owner_path:
+                    raise PermissionError(errno.EACCES, "simulated owner permission failure")
+                return real_read_text(path, *args, **kwargs)
+
+            with mock.patch("pathlib.Path.read_text", autospec=True, side_effect=fail_owner_read):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    r"Cannot inspect harness-state lock owner.*refusing to reclaim",
+                ):
+                    state.create_memory("Blocked", "must not persist", id="blocked")
+
+            self.assertNotIn("blocked", state.entries["memory"])
+            self.assertEqual(state_path.read_text(encoding="utf-8"), persisted_before)
+            self.assertEqual(owner_path.read_text(encoding="utf-8"), owner_before)
+            self.assertEqual(
+                [path.resolve() for path in Path(temp_dir).glob("harness_state.json.lock*")],
+                [lock_path],
+            )
+
+    def test_owner_eio_after_move_restores_lock_before_propagating(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            owner_path = lock_path / "owner.json"
+            owner_before = json.dumps({"pid": 42, "hostname": socket.gethostname(), "token": "owner"})
+            lock_path.mkdir()
+            owner_path.write_text(owner_before, encoding="utf-8")
+            observation = _read_lock_observation(lock_path)
+            self.assertIsNotNone(observation)
+            real_read_text = Path.read_text
+
+            def fail_moved_owner_read(path: Path, *args: Any, **kwargs: Any) -> str:
+                if ".moved." in str(path):
+                    raise OSError(errno.EIO, "simulated moved-owner I/O failure")
+                return real_read_text(path, *args, **kwargs)
+
+            with mock.patch("pathlib.Path.read_text", autospec=True, side_effect=fail_moved_owner_read):
+                with self.assertRaisesRegex(OSError, r"Cannot inspect harness-state lock owner.*refusing to reclaim"):
+                    _remove_observed_lock(lock_path, observation)
+
+            self.assertTrue(lock_path.exists())
+            self.assertEqual(owner_path.read_text(encoding="utf-8"), owner_before)
+            self.assertEqual(list(Path(temp_dir).glob("harness_state.json.lock*")), [lock_path])
 
     def test_process_start_identity_reclaims_reused_live_pid(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

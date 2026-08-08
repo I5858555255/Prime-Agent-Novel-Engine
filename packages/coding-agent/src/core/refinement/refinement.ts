@@ -50,6 +50,8 @@ const HARNESS_LOCK_OWNER_FILE_NAME = "owner.json";
  *    owner fingerprint. A moved successor is restored or quarantined, never deleted.
  * 5. Treat valid foreign-host owners as live until operator cleanup. This is a
  *    same-host protocol; it is not a renewable distributed filesystem lease.
+ * 6. Treat only ENOENT as missing owner metadata. Other owner-read failures abort
+ *    without moving the lock or touching state.
  */
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
@@ -429,7 +431,13 @@ function readHarnessLockObservation(lockPath: string): HarnessLockObservation | 
 	let rawOwner: string;
 	try {
 		rawOwner = readFileSync(join(lockPath, HARNESS_LOCK_OWNER_FILE_NAME), "utf8");
-	} catch {
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			throw new Error(
+				`Cannot inspect harness-state lock owner at ${lockPath}; refusing to reclaim the lock: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			);
+		}
 		try {
 			const lockStat = statSync(lockPath);
 			return {
@@ -551,7 +559,13 @@ function removeObservedHarnessLock(lockPath: string, observed: HarnessLockObserv
 		}
 		throw error;
 	}
-	const moved = readHarnessLockObservation(movedPath);
+	let moved: HarnessLockObservation | undefined;
+	try {
+		moved = readHarnessLockObservation(movedPath);
+	} catch (error) {
+		restoreMovedHarnessLock(movedPath, lockPath);
+		throw error;
+	}
 	if (moved?.fingerprint !== observed.fingerprint) {
 		restoreMovedHarnessLock(movedPath, lockPath);
 		return false;

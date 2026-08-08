@@ -12,6 +12,8 @@ temporary file, atomically replace the state document, and fence every operation
 by the exact owner fingerprint. Direct stale saves fail explicitly; ordinary
 Python mutations reload and merge. Valid foreign-host owners are never reclaimed
 automatically: this is a same-host protocol, not a renewable distributed lease.
+Only genuinely absent owner metadata is eligible for missing-owner reclamation;
+other owner-read failures abort without moving the lock or touching state.
 """
 
 from __future__ import annotations
@@ -135,13 +137,18 @@ def _lock_fingerprint(contents: str) -> str:
 def _read_lock_observation(lock_path: Path) -> _LockObservation | None:
     try:
         raw_owner = (lock_path / _LOCK_OWNER_FILE_NAME).read_text(encoding="utf-8")
-    except OSError:
+    except FileNotFoundError:
         try:
             stat = lock_path.stat()
         except FileNotFoundError:
             return None
         fingerprint = _lock_fingerprint(f"missing:{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}")
         return _LockObservation(owner=None, fingerprint=fingerprint)
+    except OSError as error:
+        raise OSError(
+            error.errno,
+            f"Cannot inspect harness-state lock owner at {lock_path}; refusing to reclaim the lock",
+        ) from error
     try:
         owner = json.loads(raw_owner)
     except ValueError:
@@ -206,7 +213,11 @@ def _remove_observed_lock(lock_path: Path, observed: _LockObservation) -> bool:
         lock_path.rename(moved_path)
     except FileNotFoundError:
         return False
-    moved = _read_lock_observation(moved_path)
+    try:
+        moved = _read_lock_observation(moved_path)
+    except OSError:
+        _restore_moved_lock(moved_path, lock_path)
+        raise
     if moved is None or moved.fingerprint != observed.fingerprint:
         _restore_moved_lock(moved_path, lock_path)
         return False
