@@ -71,16 +71,25 @@ jobs:
     env:
       BETA_VERSION: ${{ needs.release-context.outputs.beta_version }}
       BUILD_REF: ${{ needs.release-context.outputs.build_ref }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
       PRODUCTION_VERSION: ${{ needs.release-context.outputs.production_version }}
       PUBLISH_BETA: ${{ needs.release-context.outputs.publish_beta }}
       PUBLISH_PRODUCTION: ${{ needs.release-context.outputs.publish_production }}
     steps:
-      - name: Checkout validated release commit
+      - name: Checkout protected release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tooling
+          persist-credentials: false
+
+      - name: Checkout validated release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ env.BUILD_REF }}
+          path: release-source
           persist-credentials: false
 
       - name: Setup Node.js
@@ -90,24 +99,29 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
+        working-directory: release-source
         run: npm ci
 
       - name: Build
+        working-directory: release-source
         run: npm run build
 
       - name: Check
+        working-directory: release-source
         run: npm run check
 
       - name: Test release lifecycle
-        run: npm run release:test
+        working-directory: release-source
+        run: node --test ../release-tooling/scripts/release-lifecycle.test.mjs ../release-tooling/scripts/release-publication.test.mjs ../release-tooling/scripts/release-workflow-contract.test.mjs
 
       - name: Pack production release
         if: env.PUBLISH_PRODUCTION == 'true'
         env:
           PRIME_AGENT_DOWNLOAD_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        working-directory: release-source
         run: |
           test -n "$PRIME_AGENT_DOWNLOAD_BASE_URL"
-          npm run release:pack -- \
+          node ../release-tooling/scripts/pack-prime-agent-release.mjs \
             --channel stable \
             --version "$PRODUCTION_VERSION" \
             --base-url "$PRIME_AGENT_DOWNLOAD_BASE_URL" \
@@ -117,8 +131,9 @@ jobs:
         if: env.PUBLISH_PRODUCTION == 'true'
         env:
           PRIME_AGENT_DOWNLOAD_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        working-directory: release-source
         run: |
-          npm run release:dry-run -- \
+          node ../release-tooling/scripts/release-dry-run.mjs \
             --channel stable \
             --version "$PRODUCTION_VERSION" \
             --base-url "$PRIME_AGENT_DOWNLOAD_BASE_URL" \
@@ -128,9 +143,10 @@ jobs:
         if: env.PUBLISH_BETA == 'true'
         env:
           PRIME_AGENT_DOWNLOAD_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        working-directory: release-source
         run: |
           test -n "$PRIME_AGENT_DOWNLOAD_BASE_URL"
-          npm run release:pack -- \
+          node ../release-tooling/scripts/pack-prime-agent-release.mjs \
             --channel beta \
             --version "$BETA_VERSION" \
             --base-url "$PRIME_AGENT_DOWNLOAD_BASE_URL" \
@@ -140,8 +156,9 @@ jobs:
         if: env.PUBLISH_BETA == 'true'
         env:
           PRIME_AGENT_DOWNLOAD_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        working-directory: release-source
         run: |
-          npm run release:dry-run -- \
+          node ../release-tooling/scripts/release-dry-run.mjs \
             --channel beta \
             --version "$BETA_VERSION" \
             --base-url "$PRIME_AGENT_DOWNLOAD_BASE_URL" \
@@ -152,7 +169,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: prime-agent-production
-          path: packages/coding-agent/release/production/artifacts/*
+          path: release-source/packages/coding-agent/release/production/artifacts/*
           if-no-files-found: error
 
       - name: Upload beta artifacts
@@ -160,7 +177,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: prime-agent-beta
-          path: packages/coding-agent/release/beta/artifacts/*
+          path: release-source/packages/coding-agent/release/beta/artifacts/*
           if-no-files-found: error
 
   publish:
@@ -175,6 +192,7 @@ jobs:
       BETA_VERSION: ${{ needs.release-context.outputs.beta_version }}
       BUILD_REF: ${{ needs.release-context.outputs.build_ref }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PRIME_AGENT_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/release-source
       PRODUCTION_VERSION: ${{ needs.release-context.outputs.production_version }}
       PUBLISH_BETA: ${{ needs.release-context.outputs.publish_beta }}
       PUBLISH_PRODUCTION: ${{ needs.release-context.outputs.publish_production }}
@@ -182,12 +200,20 @@ jobs:
       R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
       R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
     steps:
-      - name: Checkout validated release commit
+      - name: Checkout protected release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tooling
+          persist-credentials: false
+
+      - name: Checkout validated release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ env.BUILD_REF }}
+          path: release-source
           persist-credentials: false
 
       - name: Download production artifacts
@@ -205,16 +231,18 @@ jobs:
           path: release-artifacts/beta
 
       - name: Prepare installers
+        working-directory: release-source
         run: |
           INSTALL_BASE_URL="${R2_PUBLIC_BASE_URL%/}"
           test -n "$INSTALL_BASE_URL"
-          node scripts/render-release-installers.mjs \
+          node ../release-tooling/scripts/render-release-installers.mjs \
             "$INSTALL_BASE_URL" \
             /tmp/prime-agent-install.sh \
             /tmp/prime-agent-install-beta.sh
 
       - name: Extract production release notes
         if: env.PUBLISH_PRODUCTION == 'true'
+        working-directory: release-source
         run: |
           awk "/^## \[${PRODUCTION_VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" packages/coding-agent/CHANGELOG.md > /tmp/release-notes.md
           if [ ! -s /tmp/release-notes.md ]; then
@@ -225,9 +253,10 @@ jobs:
         if: env.PUBLISH_PRODUCTION == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: release-source
         run: |
-          node scripts/publish-release.mjs production \
-            --artifacts-dir release-artifacts/production \
+          node ../release-tooling/scripts/publish-release.mjs production \
+            --artifacts-dir ../release-artifacts/production \
             --version "$PRODUCTION_VERSION" \
             --build-ref "$BUILD_REF" \
             --notes-file /tmp/release-notes.md \
@@ -238,9 +267,10 @@ jobs:
         if: env.PUBLISH_BETA == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: release-source
         run: |
-          node scripts/publish-release.mjs beta \
-            --artifacts-dir release-artifacts/beta \
+          node ../release-tooling/scripts/publish-release.mjs beta \
+            --artifacts-dir ../release-artifacts/beta \
             --version "$BETA_VERSION" \
             --build-ref "$BUILD_REF" \
             --default-branch "$DEFAULT_BRANCH" \

@@ -56,15 +56,30 @@ export function validatePromotion(artifactsDir, channel, store, options = {}) {
 	const manifestPath = join(artifactsDir, manifestKey);
 	const manifest = readFileSync(manifestPath);
 	const candidateVersion = JSON.parse(manifest).version.replace(/^v/, "");
-	const currentManifest = store.read(manifestKey);
-	if (channel === "stable" && currentManifest) {
-		const currentVersion = JSON.parse(currentManifest).version?.replace(/^v/, "");
-		const comparison = compareVersions(candidateVersion, currentVersion);
-		if (comparison < 0 && !options.allowRegression) {
-			throw new Error(`Stable promotion to ${candidateVersion} would regress the current ${currentVersion} release`);
+	if (channel === "stable") {
+		const currentPointer = store.read(pointerKey);
+		const currentManifest = store.read(manifestKey);
+		const currentSurfaces = [];
+		if (currentPointer) {
+			const pointerMatch = currentPointer.toString().match(/^v(0\.\d+\.\d+)\n$/);
+			if (!pointerMatch) throw new Error(`${pointerKey} contains an invalid stable release pointer`);
+			currentSurfaces.push({ key: pointerKey, version: pointerMatch[1] });
 		}
-		if (comparison === 0 && sha256(currentManifest) !== sha256(manifest)) {
-			throw new Error(`Stable manifest for ${candidateVersion} differs from the current manifest`);
+		if (currentManifest) {
+			const currentVersion = JSON.parse(currentManifest).version?.replace(/^v/, "");
+			currentSurfaces.push({ key: manifestKey, version: currentVersion });
+			if (compareVersions(candidateVersion, currentVersion) === 0 && sha256(currentManifest) !== sha256(manifest)) {
+				throw new Error(`Stable manifest for ${candidateVersion} differs from the current manifest`);
+			}
+		}
+		if (!options.allowRegression) {
+			for (const current of currentSurfaces) {
+				if (compareVersions(candidateVersion, current.version) < 0) {
+					throw new Error(
+						`Stable promotion to ${candidateVersion} would regress ${current.key} from ${current.version}`,
+					);
+				}
+			}
 		}
 	}
 	return { manifestKey, pointerKey };

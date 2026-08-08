@@ -34,7 +34,7 @@ npm run release:prepare -- minor
 npm run release:prepare -- 0.8.1
 ```
 
-The command updates only the root release-control manifest, the four packaged manifests, internal dependency ranges, corresponding lockfile metadata, and those four changelogs. It does not stage or commit the result.
+The command updates only the root release-control manifest, the four packaged manifests, internal dependency ranges, corresponding lockfile metadata, and those four changelogs. It restores every original file if any replacement fails, and it does not stage or commit the result.
 
 Review the complete diff. Confirm that each changelog release section is accurate, private/example manifests did not change, and the lockfile contains only expected version and internal-range changes.
 
@@ -56,7 +56,7 @@ For each default-branch push, the Release Prime Agent workflow builds a beta. It
 
 The production transaction is ordered as follows:
 
-1. Resolve and validate the exact version, commit, lockfile, package manifests, changelogs, and existing tag state.
+1. Resolve and validate the exact version, commit, lockfile, package manifests, changelogs, and existing tag state using the protected workflow commit's release tooling.
 2. Build, check, run the release lifecycle tests, pack once, and validate the workflow artifacts without publication credentials.
 3. Create or verify the immutable version tag and GitHub Release target.
 4. Create missing versioned R2 objects using conditional writes. Existing objects must be byte-identical.
@@ -66,11 +66,11 @@ The production transaction is ordered as follows:
 8. Write and verify `/stable`.
 9. Write and verify `/latest.json` last.
 
-The workflow serializes publication and refuses to move stable pointers backward. Issue #927 separately owns the full exact-commit Node and Python suite gate; do not treat the focused release tests as that broader gate.
+The workflow serializes publication and refuses to move either stable surface backward: the effective monotonic floor is the higher version named by `/stable` or `/latest.json`. Only the protected rollback workflow may lower both surfaces. Issue #927 separately owns the full exact-commit Node and Python suite gate; do not treat the focused release tests as that broader gate.
 
 ## Retry
 
-Use the Release Prime Agent workflow's `retry-production` dispatch only after the immutable `vX.Y.Z` tag exists. The workflow derives both the version and commit from that tag, verifies that it belongs to the default branch, and rebuilds the exact tagged commit. A free-form version paired with current `main` is not supported.
+Use the Release Prime Agent workflow's `retry-production` dispatch only after the immutable `vX.Y.Z` tag exists. The workflow derives both the version and commit from that tag, verifies that it belongs to the default branch, and rebuilds the exact tagged source. Release policy and publication scripts come from the protected workflow commit in a separate checkout, so tags created before this lifecycle was introduced remain retryable. A free-form version paired with current `main` is not supported.
 
 If the original production run failed before creating the version tag, rerun that exact failed workflow run instead. Do not use a later default-branch run or create the tag locally. Once the immutable tag exists, use `retry-production` for subsequent recovery attempts.
 

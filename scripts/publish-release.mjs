@@ -13,6 +13,8 @@ import {
 	verifyRemoteRelease,
 } from "./lib/release-publication.mjs";
 
+const sourceRoot = resolve(process.env.PRIME_AGENT_RELEASE_SOURCE_ROOT || process.cwd());
+
 function parseArgs(args) {
 	const operation = args[0];
 	if (!["beta", "production", "rollback"].includes(operation)) {
@@ -362,7 +364,7 @@ function publishProduction(options, store, github, baseUrl) {
 	const version = requireOption(options, "version");
 	const buildRef = requireOption(options, "buildRef");
 	const artifactsDir = resolve(requireOption(options, "artifactsDir"));
-	validateReleaseRepository(process.cwd(), { requireChangelogs: true, version });
+	validateReleaseRepository(sourceRoot, { requireChangelogs: true, version });
 	verifyReleaseArtifacts(artifactsDir, { baseUrl, channel: "stable", version });
 	validatePromotion(artifactsDir, "stable", store);
 	const tag = `v${version}`;
@@ -387,7 +389,7 @@ function publishBeta(options, store, github, baseUrl) {
 		console.log("A newer default-branch commit exists; leaving beta release state unchanged.");
 		return;
 	}
-	validateReleaseRepository(process.cwd(), { requireChangelogs: false, version: version.split("-", 1)[0] });
+	validateReleaseRepository(sourceRoot, { requireChangelogs: false, version: version.split("-", 1)[0] });
 	verifyReleaseArtifacts(artifactsDir, { baseUrl, channel: "beta", version });
 	const result = publishChannel({
 		artifactsDir,
@@ -410,7 +412,7 @@ function rollbackProduction(options, store, github, baseUrl) {
 		if (
 			run("git", ["merge-base", "--is-ancestor", tagTarget, `origin/${defaultBranch}`], {
 				allowFailure: true,
-				cwd: process.cwd(),
+				cwd: sourceRoot,
 			}) === undefined
 		) {
 			throw new Error(`Rollback tag ${releaseTag} is not on the default branch`);

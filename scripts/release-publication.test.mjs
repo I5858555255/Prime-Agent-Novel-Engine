@@ -122,6 +122,33 @@ test("stable promotion is monotonic unless an explicit rollback allows regressio
 	}
 });
 
+test("stable promotion uses the highest version across split pointer surfaces", () => {
+	const { artifactsDir, root } = createPublicationFixture();
+	try {
+		const pointerAhead = new MemoryStore({
+			"latest.json": readFileSync(join(artifactsDir, "latest.json")),
+			stable: "v0.7.3\n",
+		});
+		assert.throws(() => promoteChannel(artifactsDir, "stable", pointerAhead), /stable.*0\.7\.3/i);
+
+		const manifestAhead = new MemoryStore({
+			"latest.json": `${JSON.stringify({ version: "v0.7.3" })}\n`,
+			stable: "v0.7.1\n",
+		});
+		assert.throws(() => promoteChannel(artifactsDir, "stable", manifestAhead), /latest\.json.*0\.7\.3/i);
+
+		const rollback = new MemoryStore({
+			"latest.json": `${JSON.stringify({ version: "v0.7.3" })}\n`,
+			stable: "v0.7.4\n",
+		});
+		promoteChannel(artifactsDir, "stable", rollback, { allowRegression: true });
+		assert.equal(rollback.objects.get("stable").toString(), "v0.7.2\n");
+		assert.match(rollback.objects.get("latest.json").toString(), /v0\.7\.2/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("remote verification proves every saved release object before rollback", () => {
 	const { artifactsDir, root } = createPublicationFixture();
 	const store = new MemoryStore();

@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { validateReleaseRepository, verifyReleaseArtifacts } from "./lib/release-lifecycle.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const toolingRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const root = resolve(process.env.PRIME_AGENT_RELEASE_SOURCE_ROOT || toolingRoot);
 const defaultBaseUrl = "https://release.invalid";
 
 function parseArgs(args) {
@@ -49,7 +50,7 @@ function runPacker(options, outDir) {
 	const result = spawnSync(
 		process.execPath,
 		[
-			join(root, "scripts/pack-prime-agent-release.mjs"),
+			join(toolingRoot, "scripts/pack-prime-agent-release.mjs"),
 			"--channel",
 			options.channel,
 			"--version",
@@ -59,7 +60,12 @@ function runPacker(options, outDir) {
 			"--out-dir",
 			outDir,
 		],
-		{ cwd: root, encoding: "utf8", stdio: "pipe" },
+		{
+			cwd: root,
+			encoding: "utf8",
+			env: { ...process.env, PRIME_AGENT_RELEASE_SOURCE_ROOT: root },
+			stdio: "pipe",
+		},
 	);
 	if (result.status !== 0) {
 		throw new Error(result.stderr.trim() || result.stdout.trim() || "Release packer failed");

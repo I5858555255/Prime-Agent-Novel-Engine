@@ -32,11 +32,11 @@ A merged release-preparation commit on the protected default branch is the only 
 
 Every default-branch commit may produce a beta. A production release is additionally planned only when the root release-control version changes to a valid higher version. Tag pushes do not independently publish.
 
-A manual production retry accepts only an existing immutable `vX.Y.Z` tag. CI derives both the version and commit from that tag, verifies that the tag is on the default branch and that repository metadata at the tagged commit agrees, and then reruns the same publication transaction.
+A manual production retry accepts only an existing immutable `vX.Y.Z` tag. CI derives both the version and commit from that tag, verifies that the tag is on the default branch and that repository metadata at the tagged commit agrees, and then reruns the same publication transaction. The protected workflow commit supplies release tooling from a separate checkout while the tagged checkout supplies source and lockfiles, preserving retries for tags created before this lifecycle existed.
 
 ## Local Commands
 
-`release:prepare` is the only supported version mutation command. It updates the root release-control manifest, the four R2-packaged workspaces, their internal dependency ranges, the matching lockfile entries, and their changelog headings. It never stages, commits, tags, pushes, publishes, or invokes a release workflow. Private and example workspaces remain untouched.
+`release:prepare` is the only supported version mutation command. It updates the root release-control manifest, the four R2-packaged workspaces, their internal dependency ranges, the matching lockfile entries, and their changelog headings. All replacement files are staged before the first rename, and a failed replacement restores every original file. It never stages, commits, tags, pushes, publishes, or invokes a release workflow. Private and example workspaces remain untouched.
 
 `release:dry-run` performs repository and artifact validation without publication credentials or remote mutation. It writes packaging output only to a temporary release directory and removes that directory on success or failure. The dry run verifies:
 
@@ -75,7 +75,7 @@ The production transaction is:
 3. For each versioned R2 object and GitHub Release asset, create it if absent; if present, compare its hash and fail on any mismatch. Never overwrite a different object.
 4. Verify all versioned objects and GitHub Release assets.
 5. Upload and verify the stable and beta installer scripts.
-6. Write and verify the legacy `/stable` text pointer.
+6. Confirm the candidate does not regress either existing stable surface, then write and verify the legacy `/stable` text pointer.
 7. Write and verify `/latest.json` last. This JSON manifest is the stable commit marker.
 
 If a failure occurs before step 6, stable clients do not observe the candidate. If step 6 succeeds but step 7 fails, fresh installs may resolve the new complete release while update checks still see the previous release; rerunning the same tagged release converges safely. Repeating any completed step with identical content is a no-op.
@@ -84,7 +84,7 @@ Beta publication keeps its stale-default-branch guard. It applies the same compa
 
 ## Rollback
 
-Rollback is a separate manually dispatched workflow using the protected production environment. It requires an existing stable `vX.Y.Z` tag and exact confirmation text.
+Rollback is a separate manually dispatched workflow using the protected production environment. It requires an existing stable `vX.Y.Z` tag and exact confirmation text. Normal publication treats the higher version from `/stable` and `/latest.json` as the monotonic floor; only this rollback path may lower both.
 
 The rollback workflow verifies the tag target, GitHub Release, saved release manifest, checksums, and every referenced R2 artifact before changing channel state. It changes only `/stable` and `/latest.json`, in that order. It never creates or moves an immutable version tag and never deletes or overwrites a versioned object.
 
