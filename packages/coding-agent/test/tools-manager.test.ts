@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const toolState = vi.hoisted(() => ({
-	toolsDir: `/tmp/prime-agent-tools-manager-${process.pid}`,
+	// The OS temp dir, resolved without an import so it works inside vi.hoisted.
+	toolsDir: `${process.env.TMPDIR ?? process.env.TEMP ?? "/tmp"}/prime-agent-tools-manager-${process.pid}`,
 	platform: "linux",
 	architecture: "x64",
 	extractZip: async (_source: string, _options: { dir: string }): Promise<void> => {},
@@ -34,6 +35,11 @@ import { removeTempDirSync } from "./utils/temp-fs.js";
 const originalPath = process.env.PATH;
 const originalOffline = process.env.PI_OFFLINE;
 const pathDir = join(toolState.toolsDir, "path");
+
+// The stub tools are POSIX shell scripts, which Windows cannot spawn; the tests
+// that actually run one are skipped there. They simulate a Linux target anyway,
+// so nothing Windows-specific goes uncovered.
+const itWithStubExecutables = process.platform === "win32" ? it.skip : it;
 
 function writeExecutable(filePath: string, exitCode = 0): void {
 	writeFileSync(filePath, `#!/bin/sh\nexit ${exitCode}\n`, "utf8");
@@ -67,7 +73,7 @@ describe("tools manager", () => {
 		removeTempDirSync(toolState.toolsDir);
 	});
 
-	it("accepts managed and PATH tools only when their version check succeeds", () => {
+	itWithStubExecutables("accepts managed and PATH tools only when their version check succeeds", () => {
 		const managedPath = join(toolState.toolsDir, "rg");
 		writeExecutable(managedPath);
 		expect(getToolPath("rg")).toBe(managedPath);
@@ -117,7 +123,7 @@ describe("tools manager", () => {
 		});
 	});
 
-	it("validates a downloaded binary before reporting it available", async () => {
+	itWithStubExecutables("validates a downloaded binary before reporting it available", async () => {
 		toolState.platform = "win32";
 		writeExecutable(join(toolState.toolsDir, "rg.exe"), 1);
 		const fetchMock = vi
@@ -141,7 +147,7 @@ describe("tools manager", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("removes a downloaded binary that fails its version check", async () => {
+	itWithStubExecutables("removes a downloaded binary that fails its version check", async () => {
 		toolState.platform = "win32";
 		vi.stubGlobal(
 			"fetch",

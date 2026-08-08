@@ -9,6 +9,7 @@ import {
 	parseAgentsViewCommand,
 } from "../src/modes/agents-view/agents-view-mode.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
+import { absolutePathFixture, fileIdentityFixture } from "./utils/fixture-paths.js";
 
 function summary(overrides: Partial<SessionSummary>): SessionSummary {
 	return {
@@ -51,7 +52,7 @@ describe("agents view reply on inactive sessions", () => {
 	});
 
 	const savedSummary = summary({
-		sessionFile: "/tmp/sessions/saved-1.jsonl",
+		sessionFile: absolutePathFixture("/tmp/sessions/saved-1.jsonl"),
 		cwd: process.cwd(),
 		summary: "Persisted recap text",
 		firstMessage: "opener",
@@ -62,7 +63,12 @@ describe("agents view reply on inactive sessions", () => {
 		const requestRender = vi.fn();
 		const self: Record<string, unknown> = {
 			rows: [
-				{ kind: "agent", selectable: true, identity: "file:/tmp/sessions/saved-1.jsonl", summary: savedSummary },
+				{
+					kind: "agent",
+					selectable: true,
+					identity: fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl")),
+					summary: savedSummary,
+				},
 			],
 			selectedIndex: 0,
 			pendingDeleteAgent: undefined,
@@ -111,7 +117,7 @@ describe("agents view reply on inactive sessions", () => {
 			// Stale pre-resume rows do not know the resumed session; scheduling must
 			// come from the resume response instead.
 			findSummaryByActiveSessionId: () => undefined,
-			inactiveAgentIdentities: new Set(["file:/tmp/sessions/saved-1.jsonl"]),
+			inactiveAgentIdentities: new Set([fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl"))]),
 			setStatusMessage: vi.fn(),
 			setReplyTarget: vi.fn(),
 			refreshSessions: vi.fn(async () => true),
@@ -126,7 +132,9 @@ describe("agents view reply on inactive sessions", () => {
 		);
 		expect(self.sendPrompt).toHaveBeenCalledWith("active-9", "wake up", "steer");
 		expect(self.selectSummary).toHaveBeenCalledWith(expect.objectContaining({ activeSessionId: "active-9" }));
-		expect(self.inactiveAgentIdentities).not.toContain("file:/tmp/sessions/saved-1.jsonl");
+		expect(self.inactiveAgentIdentities).not.toContain(
+			fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl")),
+		);
 		expect(self.setReplyTarget).not.toHaveBeenCalled();
 	});
 
@@ -148,7 +156,7 @@ describe("agents view reply on inactive sessions", () => {
 			options: { config: { cwd: process.cwd() } },
 			requireClient: () => ({ request }),
 			findSummaryByActiveSessionId: () => undefined,
-			inactiveAgentIdentities: new Set(["file:/tmp/sessions/saved-1.jsonl"]),
+			inactiveAgentIdentities: new Set([fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl"))]),
 			replyTarget: target,
 			setStatusMessage: vi.fn(),
 			selectSummary,
@@ -167,7 +175,9 @@ describe("agents view reply on inactive sessions", () => {
 		expect(selectSummary).not.toHaveBeenCalled();
 		expect(selection.activeSessionId).toBe("active-2");
 		expect(sendPrompt).toHaveBeenCalledWith("active-9", "wake up", undefined);
-		expect(self.inactiveAgentIdentities).not.toContain("file:/tmp/sessions/saved-1.jsonl");
+		expect(self.inactiveAgentIdentities).not.toContain(
+			fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl")),
+		);
 	});
 
 	it("preserves a replacement composer when an older reply succeeds", async () => {
@@ -232,7 +242,9 @@ describe("agents view reply on inactive sessions", () => {
 	] as const)("handles $name", async ({ failure, replacement, remainsInactive }) => {
 		const editor = editorWithText("wake up");
 		const target = { key: "saved-1", summary: savedSummary };
-		const inactiveAgentIdentities = new Set(["file:/tmp/sessions/saved-1.jsonl"]);
+		const inactiveAgentIdentities = new Set([
+			fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl")),
+		]);
 		const request = vi.fn(async () => {
 			if (failure === "resume") throw new Error("resume failed");
 			return {
@@ -263,7 +275,9 @@ describe("agents view reply on inactive sessions", () => {
 
 		expect(editor.setText).toHaveBeenNthCalledWith(1, "");
 		expect(editor.getText()).toBe(replacement ?? "wake up");
-		expect(inactiveAgentIdentities.has("file:/tmp/sessions/saved-1.jsonl")).toBe(remainsInactive);
+		expect(inactiveAgentIdentities.has(fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl")))).toBe(
+			remainsInactive,
+		);
 		expect(self.refreshSessions).toHaveBeenCalledTimes(remainsInactive ? 0 : 1);
 		if (!remainsInactive) {
 			expect(self.refreshSessions).toHaveBeenCalledWith({ preserveStatusOnError: true });
@@ -282,7 +296,7 @@ describe("agents view reply on inactive sessions", () => {
 			options: { config: { cwd: process.cwd() } },
 			requireClient: () => ({ request }),
 			findSummaryByActiveSessionId: () => undefined,
-			inactiveAgentIdentities: new Set(["file:/tmp/sessions/saved-1.jsonl"]),
+			inactiveAgentIdentities: new Set([fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl"))]),
 			setStatusMessage: vi.fn((message: string, options?: { sticky?: boolean }) => {
 				statuses.push([message, options]);
 			}),
@@ -316,8 +330,8 @@ describe("agents view reply on inactive sessions", () => {
 			unifiedRecords: [
 				{
 					daemon: currentSaved,
-					identity: "file:/tmp/sessions/saved-1.jsonl",
-					identityAliases: ["file:/tmp/sessions/saved-1.jsonl"],
+					identity: fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl")),
+					identityAliases: [fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl"))],
 					section: "inactive",
 					searchableText: "",
 				},
@@ -501,7 +515,7 @@ describe("agents view reply on inactive sessions", () => {
 		const typedHints = stripAnsi(invoke("renderReplyComposerHints", self) as string);
 		expect(typedHints).toContain("queue");
 
-		const saved = summary({ sessionFile: "/tmp/sessions/saved-1.jsonl" });
+		const saved = summary({ sessionFile: absolutePathFixture("/tmp/sessions/saved-1.jsonl") });
 		self.replyTarget = { key: "saved-1", summary: saved };
 		self.findSummaryByActiveSessionId = () => undefined;
 		const savedHints = stripAnsi(invoke("renderReplyComposerHints", self) as string);
@@ -557,7 +571,10 @@ describe("reply composer slash commands", () => {
 			rebuildRows: vi.fn(),
 			ui: { requestRender: vi.fn() },
 		};
-		const target = { key: "active-1", summary: summary({ activeSessionId: "active-1", cwd: "/tmp/elsewhere" }) };
+		const target = {
+			key: "active-1",
+			summary: summary({ activeSessionId: "active-1", cwd: absolutePathFixture("/tmp/elsewhere") }),
+		};
 		invoke("setReplyTarget", self, target);
 		expect(self.replyAutocomplete).toBeDefined();
 		invoke("setReplyTarget", self, undefined);
@@ -705,9 +722,9 @@ describe("agents view slash commands", () => {
 	});
 
 	it("re-resolves the armed target before dispatching a view command", async () => {
-		const stale = summary({ sessionFile: "/tmp/sessions/saved-1.jsonl" });
+		const stale = summary({ sessionFile: absolutePathFixture("/tmp/sessions/saved-1.jsonl") });
 		const liveNow = summary({
-			sessionFile: "/tmp/sessions/saved-1.jsonl",
+			sessionFile: absolutePathFixture("/tmp/sessions/saved-1.jsonl"),
 			activeSessionId: "active-9",
 			lifecycle: "live",
 		});
@@ -718,8 +735,8 @@ describe("agents view slash commands", () => {
 			unifiedRecords: [
 				{
 					daemon: liveNow,
-					identity: "file:/tmp/sessions/saved-1.jsonl",
-					identityAliases: ["file:/tmp/sessions/saved-1.jsonl"],
+					identity: fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl")),
+					identityAliases: [fileIdentityFixture(absolutePathFixture("/tmp/sessions/saved-1.jsonl"))],
 					section: "idle",
 					searchableText: "",
 				},
@@ -738,7 +755,7 @@ describe("agents view slash commands", () => {
 	});
 
 	it("refuses /kill on an inactive row", async () => {
-		const saved = summary({ sessionFile: "/tmp/sessions/saved-1.jsonl" });
+		const saved = summary({ sessionFile: absolutePathFixture("/tmp/sessions/saved-1.jsonl") });
 		const request = vi.fn();
 		const setStatusMessage = vi.fn();
 		const self: Record<string, unknown> = {

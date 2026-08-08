@@ -71,6 +71,24 @@ function createNpmPrefixInstall(template = "pi-prefix-"): { prefix: string; pack
 	return { prefix, packageDir };
 }
 
+/**
+ * Like {@link createNpmPrefixInstall}, but laid out the way a real `npm root -g`
+ * reports for this prefix: `<prefix>/lib/node_modules` on Unix and
+ * `<prefix>\node_modules` on Windows. The tests that pass an explicit npmCommand
+ * shell out to npm instead of inferring the root from the path, so their fixture
+ * has to match what npm will print.
+ */
+function createNpmPrefixInstallMatchingNpmRoot(): { prefix: string; packageDir: string } {
+	const prefix = mkdtempSync(join(tmpdir(), "pi-prefix-"));
+	const root = process.platform === "win32" ? join(prefix, "node_modules") : join(prefix, "lib", "node_modules");
+	const packageDir = join(root, "@earendil-works", "pi-coding-agent");
+	mkdirSync(packageDir, { recursive: true });
+	tempDir = prefix;
+	process.env.PI_PACKAGE_DIR = packageDir;
+	setExecPath(join(packageDir, "dist", "cli.js"));
+	return { prefix, packageDir };
+}
+
 function createPnpmGlobalInstall(): { root: string; packageDir: string } {
 	const temp = mkdtempSync(join(tmpdir(), "pi-pnpm-"));
 	const binDir = join(temp, "bin");
@@ -254,7 +272,7 @@ describe("detectInstallMethod", () => {
 	});
 
 	test("self-update respects configured npmCommand", () => {
-		const { prefix } = createNpmPrefixInstall();
+		const { prefix } = createNpmPrefixInstallMatchingNpmRoot();
 
 		const command = getSelfUpdateCommand("@earendil-works/pi-coding-agent", ["npm", "--prefix", prefix]);
 
@@ -380,7 +398,9 @@ describe("detectInstallMethod", () => {
 		});
 	});
 
-	test("does not self-update when npm install path is not writable", () => {
+	// Windows ignores the read-only attribute on directories for write access, so
+	// an unwritable install path cannot be simulated with chmod there.
+	test.skipIf(process.platform === "win32")("does not self-update when npm install path is not writable", () => {
 		const { packageDir } = createNpmPrefixInstall();
 		chmodSync(packageDir, 0o500);
 

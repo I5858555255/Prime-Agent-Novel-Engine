@@ -48,6 +48,7 @@ import {
 import { formatAgentDepthLabel } from "../src/modes/interactive/interactive-mode.js";
 import type { InteractiveModeUiServices } from "../src/modes/interactive/interactive-mode-services.js";
 import type { Theme } from "../src/modes/interactive/theme/theme.js";
+import { absolutePathFixture, fileIdentityFixture } from "./utils/fixture-paths.js";
 import { canCreateFileSymlinks, removeTempDirSync } from "./utils/temp-fs.js";
 
 // File symlinks need SeCreateSymbolicLinkPrivilege on Windows and have no
@@ -447,7 +448,7 @@ describe("agents view state", () => {
 				id: "child-active",
 				activeSessionId: "child-active",
 				sessionId: "child-session",
-				sessionFile: "/tmp/child.jsonl",
+				sessionFile: absolutePathFixture("/tmp/child.jsonl"),
 				sessionName: "Child",
 				runtimeKind: "subagent",
 				parentActiveSessionId: "parent-active",
@@ -458,7 +459,7 @@ describe("agents view state", () => {
 				id: "completed-child-active",
 				activeSessionId: "completed-child-active",
 				sessionId: "completed-child-session",
-				sessionFile: "/tmp/completed-child.jsonl",
+				sessionFile: absolutePathFixture("/tmp/completed-child.jsonl"),
 				sessionName: "Completed child",
 				runtimeKind: "subagent",
 				parentActiveSessionId: "parent-active",
@@ -470,7 +471,7 @@ describe("agents view state", () => {
 				id: "parent-active",
 				activeSessionId: "parent-active",
 				sessionId: "parent-session",
-				sessionFile: "/tmp/parent.jsonl",
+				sessionFile: absolutePathFixture("/tmp/parent.jsonl"),
 				sessionName: "Parent",
 				isStreaming: true,
 				activity: "working",
@@ -549,7 +550,7 @@ describe("agents view state", () => {
 				id: "done-child",
 				activeSessionId: "done-child",
 				sessionId: "done-child-session",
-				sessionFile: "/tmp/done-child.jsonl",
+				sessionFile: absolutePathFixture("/tmp/done-child.jsonl"),
 				sessionName: "Done child",
 				runtimeKind: "subagent",
 				parentActiveSessionId: "parent-active",
@@ -560,7 +561,7 @@ describe("agents view state", () => {
 				id: "parent-active",
 				activeSessionId: "parent-active",
 				sessionId: "parent-session",
-				sessionFile: "/tmp/parent.jsonl",
+				sessionFile: absolutePathFixture("/tmp/parent.jsonl"),
 				sessionName: "Parent",
 				activity: "idle",
 				messageCount: 4,
@@ -761,25 +762,25 @@ describe("agents view state", () => {
 
 	test("does not override saved session cwd when reopening inactive agents", () => {
 		const config: AgentSessionRuntimeConfig = {
-			cwd: "/tmp/dashboard",
-			agentDir: "/tmp/agents",
-			sessionDir: "/tmp/sessions",
+			cwd: absolutePathFixture("/tmp/dashboard"),
+			agentDir: absolutePathFixture("/tmp/agents"),
+			sessionDir: absolutePathFixture("/tmp/sessions"),
 			model: "openai/gpt-5",
 		};
 
 		const resumeConfig = createAgentsViewResumeConfig(config);
 
 		expect("cwd" in resumeConfig).toBe(false);
-		expect(resumeConfig.agentDir).toBe("/tmp/agents");
-		expect(resumeConfig.sessionDir).toBe("/tmp/sessions");
+		expect(resumeConfig.agentDir).toBe(absolutePathFixture("/tmp/agents"));
+		expect(resumeConfig.sessionDir).toBe(absolutePathFixture("/tmp/sessions"));
 		expect(resumeConfig.model).toBe("openai/gpt-5");
-		expect(config.cwd).toBe("/tmp/dashboard");
+		expect(config.cwd).toBe(absolutePathFixture("/tmp/dashboard"));
 	});
 
 	test("opens an existing-cwd session in its own directory with no override or notice", () => {
 		const dir = mkdtempSync(join(tmpdir(), "agents-view-cwd-"));
 		try {
-			expect(resolveAgentsViewOpenCwd(makeSummary({ cwd: dir }), "/tmp/launch")).toEqual({});
+			expect(resolveAgentsViewOpenCwd(makeSummary({ cwd: dir }), absolutePathFixture("/tmp/launch"))).toEqual({});
 		} finally {
 			removeTempDirSync(dir);
 		}
@@ -787,10 +788,13 @@ describe("agents view state", () => {
 
 	test("falls back to the launch cwd and explains it when the stored cwd is gone", () => {
 		const missing = join(tmpdir(), "agents-view-missing-worktree-does-not-exist");
-		const { overrideCwd, notice } = resolveAgentsViewOpenCwd(makeSummary({ cwd: missing }), "/tmp/launch");
-		expect(overrideCwd).toBe("/tmp/launch");
+		const { overrideCwd, notice } = resolveAgentsViewOpenCwd(
+			makeSummary({ cwd: missing }),
+			absolutePathFixture("/tmp/launch"),
+		);
+		expect(overrideCwd).toBe(absolutePathFixture("/tmp/launch"));
 		expect(notice).toContain(missing);
-		expect(notice).toContain("/tmp/launch");
+		expect(notice).toContain(absolutePathFixture("/tmp/launch"));
 	});
 
 	test("does not override when there is no fallback cwd to use", () => {
@@ -799,9 +803,12 @@ describe("agents view state", () => {
 	});
 
 	test("passes the override cwd through the resume config when the stored cwd is missing", () => {
-		const config: AgentSessionRuntimeConfig = { cwd: "/tmp/launch", agentDir: "/tmp/agents" };
-		const resumeConfig = createAgentsViewResumeConfig(config, "/tmp/launch");
-		expect(resumeConfig.cwd).toBe("/tmp/launch");
+		const config: AgentSessionRuntimeConfig = {
+			cwd: absolutePathFixture("/tmp/launch"),
+			agentDir: absolutePathFixture("/tmp/agents"),
+		};
+		const resumeConfig = createAgentsViewResumeConfig(config, absolutePathFixture("/tmp/launch"));
+		expect(resumeConfig.cwd).toBe(absolutePathFixture("/tmp/launch"));
 	});
 
 	test("requests only daemon-resident sessions for the agents view refresh", () => {
@@ -813,20 +820,25 @@ describe("agents view state", () => {
 			id: "active-runtime",
 			activeSessionId: "active-runtime",
 			sessionId: "saved-active",
-			sessionFile: "/tmp/sessions/active.jsonl",
+			sessionFile: absolutePathFixture("/tmp/sessions/active.jsonl"),
 			sessionName: "Running",
 		});
 		const inactiveSummary = makeSummary({
 			id: "inactive",
 			activeSessionId: undefined,
 			sessionId: "inactive",
-			sessionFile: "/tmp/sessions/inactive.jsonl",
+			sessionFile: absolutePathFixture("/tmp/sessions/inactive.jsonl"),
 		});
 
 		expect(
-			resolveAgentsViewActiveSummaryForPath("/tmp/sessions/active.jsonl", [inactiveSummary, activeSummary]),
+			resolveAgentsViewActiveSummaryForPath(absolutePathFixture("/tmp/sessions/active.jsonl"), [
+				inactiveSummary,
+				activeSummary,
+			]),
 		).toBe(activeSummary);
-		expect(resolveAgentsViewActiveSummaryForPath("/tmp/sessions/inactive.jsonl", [inactiveSummary])).toBeUndefined();
+		expect(
+			resolveAgentsViewActiveSummaryForPath(absolutePathFixture("/tmp/sessions/inactive.jsonl"), [inactiveSummary]),
+		).toBeUndefined();
 	});
 
 	test("derives the reply headline from the first line of the latest assistant text", () => {
@@ -864,9 +876,12 @@ describe("agents view state", () => {
 	});
 
 	test("uses session-specific UI services when opening an agent", async () => {
-		const dashboardServices = makeUiServices("/tmp/dashboard");
-		const sessionServices = makeUiServices("/tmp/project");
-		const summary = makeSummary({ cwd: "/tmp/project", sessionFile: "/tmp/project/session.jsonl" });
+		const dashboardServices = makeUiServices(absolutePathFixture("/tmp/dashboard"));
+		const sessionServices = makeUiServices(absolutePathFixture("/tmp/project"));
+		const summary = makeSummary({
+			cwd: absolutePathFixture("/tmp/project"),
+			sessionFile: absolutePathFixture("/tmp/project/session.jsonl"),
+		});
 		const createUiServicesForSession = vi.fn(async () => sessionServices);
 
 		await expect(
@@ -883,7 +898,7 @@ describe("agents view state", () => {
 
 	test("reconciles canonical paths and session ids while retaining saved search text", () => {
 		const saved = makeSessionInfo({
-			path: "/tmp/sessions/../sessions/merged.jsonl",
+			path: absolutePathFixture("/tmp/sessions/../sessions/merged.jsonl"),
 			id: "merged-session",
 			name: "Durable name",
 			allMessagesText: "a uniquely searchable transcript",
@@ -893,12 +908,17 @@ describe("agents view state", () => {
 			id: "runtime",
 			activeSessionId: "runtime",
 			sessionId: "merged-session",
-			sessionFile: "/tmp/sessions/merged.jsonl",
+			sessionFile: absolutePathFixture("/tmp/sessions/merged.jsonl"),
 			sessionName: "Live name",
 		});
 
 		const [record] = reconcileUnifiedSessions([daemon], [saved]);
-		expect(record).toMatchObject({ daemon, saved, identity: "file:/tmp/sessions/merged.jsonl", section: "idle" });
+		expect(record).toMatchObject({
+			daemon,
+			saved,
+			identity: fileIdentityFixture(absolutePathFixture("/tmp/sessions/merged.jsonl")),
+			section: "idle",
+		});
 		expect(record?.searchableText).toContain("uniquely searchable transcript");
 		expect(record?.searchableText).toContain("lunar regression");
 		expect(buildAgentsViewRows([record!])[0]).toMatchObject({
@@ -1012,7 +1032,11 @@ describe("agents view state", () => {
 	});
 
 	test("preserves live identity and row state when saved metadata adds a file alias", () => {
-		const saved = makeSessionInfo({ path: "/tmp/saved.jsonl", id: "saved", allMessagesText: "transcript" });
+		const saved = makeSessionInfo({
+			path: absolutePathFixture("/tmp/saved.jsonl"),
+			id: "saved",
+			allMessagesText: "transcript",
+		});
 		const parent = makeSummary({
 			id: "parent",
 			activeSessionId: "parent",
@@ -1033,9 +1057,12 @@ describe("agents view state", () => {
 		const enriched = enrichedRecords.find((record) => record.daemon?.sessionId === parent.sessionId);
 		const expanded = buildAgentsViewRows(enrichedRecords, new Set([live!.identity]), new Set([live!.identity]));
 
-		expect(inactive).toMatchObject({ identity: "file:/tmp/saved.jsonl", section: "inactive" });
+		expect(inactive).toMatchObject({
+			identity: fileIdentityFixture(absolutePathFixture("/tmp/saved.jsonl")),
+			section: "inactive",
+		});
 		expect(enriched).toMatchObject({ identity: live?.identity, section: "idle", saved });
-		expect(enriched?.identityAliases).toContain("file:/tmp/saved.jsonl");
+		expect(enriched?.identityAliases).toContain(fileIdentityFixture(absolutePathFixture("/tmp/saved.jsonl")));
 		expect(expanded.map((row) => row.kind)).toContain("subagent-code");
 		expect(expanded.some((row) => row.kind === "subagent" && row.summary.sessionId === "child-session")).toBe(true);
 	});
@@ -1093,14 +1120,14 @@ describe("agents view state", () => {
 			id: "active-open",
 			activeSessionId: "active-open",
 			sessionId: "session-open",
-			sessionFile: "/tmp/project/open.jsonl",
+			sessionFile: absolutePathFixture("/tmp/project/open.jsonl"),
 			sessionName: "open",
 		});
 		const other = makeSummary({
 			id: "active-other",
 			activeSessionId: "active-other",
 			sessionId: "session-other",
-			sessionFile: "/tmp/project/other.jsonl",
+			sessionFile: absolutePathFixture("/tmp/project/other.jsonl"),
 			sessionName: "other",
 		});
 		const identity = `file:${opened.sessionFile}`;
@@ -1126,7 +1153,7 @@ describe("agents view state", () => {
 			const switched = {
 				...opened,
 				sessionId: "session-switched",
-				sessionFile: "/tmp/project/switched.jsonl",
+				sessionFile: absolutePathFixture("/tmp/project/switched.jsonl"),
 			};
 			const staleSaved = makeSummary({
 				id: "session-open",
@@ -1168,7 +1195,7 @@ describe("agents view state", () => {
 				id: "child-active",
 				activeSessionId: "child-active",
 				sessionId: "child-session",
-				sessionFile: "/tmp/project/child.jsonl",
+				sessionFile: absolutePathFixture("/tmp/project/child.jsonl"),
 				runtimeKind: "subagent",
 				parentActiveSessionId: opened.activeSessionId,
 				parentSessionId: opened.sessionId,
@@ -1366,8 +1393,8 @@ describe("agents view state", () => {
 				[
 					makeSessionInfo({
 						id: "saved-child",
-						path: "/tmp/project/saved-child.jsonl",
-						parentSessionPath: "/tmp/project/missing-parent.jsonl",
+						path: absolutePathFixture("/tmp/project/saved-child.jsonl"),
+						parentSessionPath: absolutePathFixture("/tmp/project/missing-parent.jsonl"),
 					}),
 				],
 			);
@@ -1423,7 +1450,7 @@ describe("agents view state", () => {
 			expect(scopeToSessionSubtree(records, { sessionId: "missing" }, index)).toEqual([]);
 		});
 		test("includes registry-backed and saved-only passive descendants", () => {
-			const rootPath = "/tmp/project/root.jsonl";
+			const rootPath = absolutePathFixture("/tmp/project/root.jsonl");
 			const root = makeSummary({
 				id: "root-active",
 				activeSessionId: "root-active",
@@ -1435,7 +1462,7 @@ describe("agents view state", () => {
 				id: "registry-child",
 				activeSessionId: undefined,
 				sessionId: "registry-child",
-				sessionFile: "/tmp/project/registry-child.jsonl",
+				sessionFile: absolutePathFixture("/tmp/project/registry-child.jsonl"),
 				runtimeKind: "subagent",
 				parentSessionId: "root-session",
 				rlmDepth: 1,
@@ -1445,7 +1472,7 @@ describe("agents view state", () => {
 				[
 					makeSessionInfo({ path: rootPath, id: "root-session", rlmDepth: 0 }),
 					makeSessionInfo({
-						path: "/tmp/project/saved-child.jsonl",
+						path: absolutePathFixture("/tmp/project/saved-child.jsonl"),
 						id: "saved-child",
 						parentSessionPath: rootPath,
 						rlmDepth: 1,
@@ -1515,7 +1542,7 @@ function makeSummary(overrides: Partial<SessionSummary>): SessionSummary {
 		activity: "idle",
 		isSessionActive: false,
 		sessionId: "session-1",
-		cwd: "/tmp/project",
+		cwd: absolutePathFixture("/tmp/project"),
 		isStreaming: false,
 		isCompacting: false,
 		attachedClients: 0,
@@ -1529,7 +1556,7 @@ function makeSessionInfo(overrides: Partial<SessionInfo> & { path: string; id: s
 	return {
 		path: overrides.path,
 		id: overrides.id,
-		cwd: overrides.cwd ?? "/tmp/project",
+		cwd: overrides.cwd ?? absolutePathFixture("/tmp/project"),
 		name: overrides.name,
 		state: overrides.state,
 		parentSessionPath: overrides.parentSessionPath,

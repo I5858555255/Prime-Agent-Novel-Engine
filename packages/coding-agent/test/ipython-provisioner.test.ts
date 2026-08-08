@@ -22,6 +22,12 @@ afterAll(() => {
 	else process.env.PRIME_AGENT_KERNEL_FORKSERVER = savedForkFlag;
 });
 
+// The stub interpreter is a POSIX shell script. Windows cannot spawn one, and a
+// .cmd shim is rejected by Node without a shell, so the tests that count real
+// spawns of it run on POSIX only. The memoization logic they cover has no
+// platform-specific branch.
+const itWithStubInterpreter = process.platform === "win32" ? it.skip : it;
+
 function writeFakePython(opts: { sleepSeconds?: number } = {}): { python: string; countRuns: () => number } {
 	const python = join(tempDir, "python");
 	const countFile = join(tempDir, "runs");
@@ -84,7 +90,7 @@ describe("IpythonKernelProvisioner", () => {
 		}
 	});
 
-	it("memoizes concurrent ensure() calls into one startup", async () => {
+	itWithStubInterpreter("memoizes concurrent ensure() calls into one startup", async () => {
 		const { python, countRuns } = writeFakePython();
 		const provisioner = new IpythonKernelProvisioner(tempDir, { python });
 
@@ -94,7 +100,7 @@ describe("IpythonKernelProvisioner", () => {
 		expect(countRuns()).toBe(1);
 	});
 
-	it("retries after a failed startup instead of caching the rejection", async () => {
+	itWithStubInterpreter("retries after a failed startup instead of caching the rejection", async () => {
 		const { python, countRuns } = writeFakePython();
 		const provisioner = new IpythonKernelProvisioner(tempDir, { python });
 
@@ -103,7 +109,7 @@ describe("IpythonKernelProvisioner", () => {
 		expect(countRuns()).toBe(2);
 	});
 
-	it("prewarm() swallows the failure and the next ensure() starts fresh", async () => {
+	itWithStubInterpreter("prewarm() swallows the failure and the next ensure() starts fresh", async () => {
 		const { python, countRuns } = writeFakePython();
 		const provisioner = new IpythonKernelProvisioner(tempDir, { python });
 
@@ -117,7 +123,7 @@ describe("IpythonKernelProvisioner", () => {
 		});
 	});
 
-	it("replays the current startup stage to listeners attaching mid-flight", async () => {
+	itWithStubInterpreter("replays the current startup stage to listeners attaching mid-flight", async () => {
 		const { python } = writeFakePython({ sleepSeconds: 1 });
 		const provisioner = new IpythonKernelProvisioner(tempDir, { python });
 
@@ -128,7 +134,7 @@ describe("IpythonKernelProvisioner", () => {
 		await expect(joined).rejects.toThrow();
 	});
 
-	it("dispose() settles a startup that is still in flight", async () => {
+	itWithStubInterpreter("dispose() settles a startup that is still in flight", async () => {
 		const { python } = writeFakePython();
 		const provisioner = new IpythonKernelProvisioner(tempDir, { python });
 
@@ -137,7 +143,7 @@ describe("IpythonKernelProvisioner", () => {
 		expect(provisioner.manager).toBeUndefined();
 	});
 
-	it("dispose() before the boot slot prevents the kernel from spawning", async () => {
+	itWithStubInterpreter("dispose() before the boot slot prevents the kernel from spawning", async () => {
 		const { python, countRuns } = writeFakePython();
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => {
@@ -152,26 +158,29 @@ describe("IpythonKernelProvisioner", () => {
 		expect(countRuns()).toBe(0); // disposed boot must never spawn a kernel
 	});
 
-	it("aborting the startup owner before the boot slot prevents the kernel from spawning", async () => {
-		const { python, countRuns } = writeFakePython();
-		let release: () => void = () => {};
-		const gate = new Promise<void>((r) => {
-			release = r;
-		});
-		const provisioner = new IpythonKernelProvisioner(tempDir, { python, readyGate: gate });
-		const controller = new AbortController();
+	itWithStubInterpreter(
+		"aborting the startup owner before the boot slot prevents the kernel from spawning",
+		async () => {
+			const { python, countRuns } = writeFakePython();
+			let release: () => void = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			const provisioner = new IpythonKernelProvisioner(tempDir, { python, readyGate: gate });
+			const controller = new AbortController();
 
-		const started = provisioner.ensure(undefined, controller.signal);
-		controller.abort();
-		await expect(started).rejects.toThrow("IPython execution aborted");
-		release();
-		await new Promise((r) => setTimeout(r, 50));
+			const started = provisioner.ensure(undefined, controller.signal);
+			controller.abort();
+			await expect(started).rejects.toThrow("IPython execution aborted");
+			release();
+			await new Promise((r) => setTimeout(r, 50));
 
-		expect(countRuns()).toBe(0);
-		expect(provisioner.manager).toBeUndefined();
-	});
+			expect(countRuns()).toBe(0);
+			expect(provisioner.manager).toBeUndefined();
+		},
+	);
 
-	it("waits for readyGate before starting the kernel", async () => {
+	itWithStubInterpreter("waits for readyGate before starting the kernel", async () => {
 		const { python, countRuns } = writeFakePython();
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => {
