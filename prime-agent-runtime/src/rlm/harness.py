@@ -4,16 +4,29 @@ The state model is intentionally small: it records prompt notes, memory,
 skills, subagent specs, and refinement events in the global agent harness
 directory by default. Execution still belongs to Prime Agent's TypeScript host
 and the existing ``rlm.run`` recursion bridge.
+
+Cross-language commits use the same protocol as the TypeScript host: atomically
+create ``<state>.lock`` with owner metadata, reload under that lock, advance the
+document's monotonic revision, fsync a same-directory temporary file, atomically
+replace the state document, and remove only a lock with the writer's owner token.
+Direct stale saves fail explicitly; ordinary Python mutations reload and merge.
 """
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
+import shutil
+import socket
+import time
+import uuid
+from contextlib import contextmanager
+from ctypes import wintypes
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Iterator, Literal, TypeVar
 
 HarnessKind = Literal["prompt", "memory", "skill", "subagent"]
 HarnessScope = Literal["local", "global"]
@@ -21,11 +34,135 @@ HarnessScope = Literal["local", "global"]
 _DEFAULT_FILE_NAME = "harness_state.json"
 _DEFAULT_HARNESS_DIR_NAME = "harness"
 _KINDS: tuple[HarnessKind, ...] = ("prompt", "memory", "skill", "subagent")
+_DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0
+_DEFAULT_STALE_LOCK_SECONDS = 60.0
+_LOCK_POLL_SECONDS = 0.01
+_LOCK_OWNER_FILE_NAME = "owner.json"
 _state_cache: dict[tuple[Path, HarnessScope], "HarnessState"] = {}
+_MutationResult = TypeVar("_MutationResult")
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _hostname() -> str:
+    return socket.gethostname()
+
+
+def _lock_path(file_path: Path) -> Path:
+    return Path(f"{file_path}.lock")
+
+
+def _pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _read_lock_owner(lock_path: Path) -> dict[str, Any] | None:
+    try:
+        owner = json.loads((lock_path / _LOCK_OWNER_FILE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(owner, dict):
+        return None
+    if type(owner.get("pid")) is not int or owner["pid"] <= 0:
+        return None
+    if not isinstance(owner.get("hostname"), str):
+        return None
+    if not isinstance(owner.get("token"), str):
+        return None
+    return owner
+
+
+def _lock_is_stale(lock_path: Path, stale_lock_seconds: float) -> bool:
+    owner = _read_lock_owner(lock_path)
+    if owner and owner["hostname"] == _hostname():
+        return not _pid_alive(owner["pid"])
+    try:
+        return time.time() - lock_path.stat().st_mtime >= stale_lock_seconds
+    except FileNotFoundError:
+        return False
+
+
+def _reclaim_lock(lock_path: Path) -> bool:
+    stale_path = Path(f"{lock_path}.stale.{os.getpid()}.{uuid.uuid4()}")
+    try:
+        lock_path.rename(stale_path)
+    except FileNotFoundError:
+        return False
+    shutil.rmtree(stale_path, ignore_errors=True)
+    return True
+
+
+@contextmanager
+def _state_lock(
+    file_path: Path,
+    *,
+    timeout_seconds: float = _DEFAULT_LOCK_TIMEOUT_SECONDS,
+    stale_lock_seconds: float = _DEFAULT_STALE_LOCK_SECONDS,
+) -> Iterator[None]:
+    lock_path = _lock_path(file_path)
+    token = str(uuid.uuid4())
+    owner = {
+        "pid": os.getpid(),
+        "hostname": _hostname(),
+        "token": token,
+        "created_at": _now(),
+    }
+    deadline = time.monotonic() + timeout_seconds
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            lock_path.mkdir(mode=0o700)
+            try:
+                (lock_path / _LOCK_OWNER_FILE_NAME).write_text(
+                    f"{json.dumps(owner)}\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                shutil.rmtree(lock_path, ignore_errors=True)
+                raise
+            break
+        except FileExistsError:
+            pass
+        if _lock_is_stale(lock_path, stale_lock_seconds) and _reclaim_lock(lock_path):
+            continue
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Timed out waiting for harness-state lock {lock_path}")
+        time.sleep(min(_LOCK_POLL_SECONDS, max(0.001, deadline - time.monotonic())))
+    try:
+        yield
+    finally:
+        if (_read_lock_owner(lock_path) or {}).get("token") == token:
+            shutil.rmtree(lock_path, ignore_errors=True)
 
 
 def _slug(raw: str, fallback: str) -> str:
@@ -148,6 +285,8 @@ class HarnessState:
         in_memory: bool = False,
         scope: HarnessScope = "local",
         local_write_error: str | None = None,
+        lock_timeout_seconds: float = _DEFAULT_LOCK_TIMEOUT_SECONDS,
+        stale_lock_seconds: float = _DEFAULT_STALE_LOCK_SECONDS,
     ):
         # in_memory mode never resolves or touches a path. It is the safe fallback when
         # path resolution itself fails, so constructing it cannot re-raise that error.
@@ -163,6 +302,9 @@ class HarnessState:
         # When set, local mutations raise instead of vanishing into a volatile
         # store; reads and global_=True delegation keep working.
         self._local_write_error = local_write_error
+        self._lock_timeout_seconds = lock_timeout_seconds
+        self._stale_lock_seconds = stale_lock_seconds
+        self.revision = 0
         self.entries: dict[HarnessKind, dict[str, HarnessEntry]] = {kind: {} for kind in _KINDS}
         self.refinements: list[RefinementEvent] = []
         self._global_target_state_dir: Path | None = None
@@ -197,6 +339,7 @@ class HarnessState:
 
     def load(self) -> "HarnessState":
         if self.file_path is None or not self.file_path.exists():
+            self.revision = 0
             self._loaded_mtime = None
             return self
         mtime = self._disk_mtime()
@@ -204,13 +347,16 @@ class HarnessState:
             with self.file_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
         except (OSError, ValueError):
-            # A corrupt or unreadable state file must not crash the kernel or block
-            # refinement. Treat it as empty; the next save() rewrites it cleanly.
+            # A corrupt or unreadable file must not crash read-only kernel access.
+            # Mutations validate strictly under the lock and refuse to overwrite it.
             data = {}
         # json.load returns non-dict types for valid JSON like `null`, `[]`, or a bare
         # string; coerce those to an empty object before attribute access.
         if not isinstance(data, dict):
             data = {}
+
+        revision = data.get("revision", 0)
+        self.revision = revision if type(revision) is int and revision >= 0 else 0
 
         entries: dict[HarnessKind, dict[str, HarnessEntry]] = {kind: {} for kind in _KINDS}
         raw_entries = data.get("entries", {})
@@ -281,23 +427,108 @@ class HarnessState:
             return None
         return target
 
-    def save(self) -> "HarnessState":
-        if self.file_path is None:
-            # in_memory fallback: nothing to persist.
-            return self
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
+    def _document(self, revision: int) -> dict[str, Any]:
+        return {
             "schema": 1,
+            "revision": revision,
             "entries": {
                 kind: {entry_id: asdict(entry) for entry_id, entry in records.items()}
                 for kind, records in self.entries.items()
             },
             "refinements": [asdict(event) for event in self.refinements],
         }
-        with self.file_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    def _disk_revision(self) -> int:
+        if self.file_path is None or not self.file_path.exists():
+            return 0
+        try:
+            data = json.loads(self.file_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise RuntimeError(
+                f"Harness state at {self.file_path} is invalid; refusing to overwrite it"
+            ) from error
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Harness state at {self.file_path} is invalid; refusing to overwrite it")
+        revision = data.get("revision", 0)
+        if type(revision) is not int or revision < 0:
+            raise RuntimeError(
+                f"Harness state at {self.file_path} has an invalid revision; refusing to overwrite it"
+            )
+        return revision
+
+    def _write_atomic(self, data: dict[str, Any]) -> None:
+        if self.file_path is None:
+            return
+        mode = self.file_path.stat().st_mode & 0o777 if self.file_path.exists() else 0o600
+        temp_path = Path(f"{self.file_path}.{os.getpid()}.{uuid.uuid4()}.tmp")
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                descriptor = None
+                json.dump(data, file, indent=2, ensure_ascii=False)
+                file.write("\n")
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temp_path, self.file_path)
+            directory_descriptor: int | None = None
+            try:
+                directory_descriptor = os.open(self.file_path.parent, os.O_RDONLY)
+                os.fsync(directory_descriptor)
+            except OSError:
+                # Windows does not support opening directories for fsync.
+                pass
+            finally:
+                if directory_descriptor is not None:
+                    os.close(directory_descriptor)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _save_locked(self) -> "HarnessState":
+        next_revision = self.revision + 1
+        self._write_atomic(self._document(next_revision))
+        self.revision = next_revision
         self._loaded_mtime = self._disk_mtime()
         return self
+
+    def _mutate(self, mutation: Callable[[], _MutationResult]) -> _MutationResult:
+        if self.file_path is None:
+            return mutation()
+        with _state_lock(
+            self.file_path,
+            timeout_seconds=self._lock_timeout_seconds,
+            stale_lock_seconds=self._stale_lock_seconds,
+        ):
+            # load() reads the document unconditionally. Do not replace it with
+            # _sync_from_disk(): equal/coarse mtimes must not preserve stale state.
+            self._disk_revision()
+            self.load()
+            result = mutation()
+            if result is not False:
+                self._save_locked()
+            return result
+
+    def save(self) -> "HarnessState":
+        if self.file_path is None:
+            # in_memory fallback: nothing to persist.
+            return self
+        with _state_lock(
+            self.file_path,
+            timeout_seconds=self._lock_timeout_seconds,
+            stale_lock_seconds=self._stale_lock_seconds,
+        ):
+            disk_revision = self._disk_revision()
+            if disk_revision != self.revision:
+                raise RuntimeError(
+                    f"Harness-state revision conflict at {self.file_path}: "
+                    f"expected {self.revision}, found {disk_revision}"
+                )
+            return self._save_locked()
 
     def upsert(
         self,
@@ -328,17 +559,18 @@ class HarnessState:
                 source=source,
             )
         self._ensure_local_writable()
-        self._sync_from_disk()
-        return self._upsert(
-            kind,
-            title,
-            content,
-            id=id,
-            path=path,
-            reference=reference,
-            arguments=arguments,
-            metadata=metadata,
-            source=source,
+        return self._mutate(
+            lambda: self._upsert(
+                kind,
+                title,
+                content,
+                id=id,
+                path=path,
+                reference=reference,
+                arguments=arguments,
+                metadata=metadata,
+                source=source,
+            )
         )
 
     def _upsert(
@@ -354,10 +586,7 @@ class HarnessState:
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
     ) -> HarnessEntry:
-        # Caller is responsible for syncing from disk first. create()/update() sync
-        # once and then call this directly so their existence check and the write are
-        # not separated by a second reload (which could turn create-or-fail into a
-        # silent update).
+        # Caller is responsible for loading under the cross-process lock first.
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
 
@@ -396,7 +625,6 @@ class HarnessState:
                 source=source,
             )
             self.entries[kind][entry_id] = entry
-        self.save()
         return entry
 
     def get(self, kind: HarnessKind, id: str, *, global_: bool = False, **kwargs: Any) -> HarnessEntry | None:
@@ -413,13 +641,14 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.delete(kind, id)
         self._ensure_local_writable()
-        self._sync_from_disk()
+        return self._mutate(lambda: self._delete(kind, id))
+
+    def _delete(self, kind: HarnessKind, id: str) -> bool:
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         if id not in self.entries[kind]:
             return False
         del self.entries[kind][id]
-        self.save()
         return True
 
     def list(self, kind: HarnessKind | None = None, *, global_: bool = False, **kwargs: Any) -> list[HarnessEntry]:
@@ -463,7 +692,33 @@ class HarnessState:
                 source=source,
             )
         self._ensure_local_writable()
-        self._sync_from_disk()
+        return self._mutate(
+            lambda: self._create(
+                kind,
+                title,
+                content,
+                id=id,
+                path=path,
+                reference=reference,
+                arguments=arguments,
+                metadata=metadata,
+                source=source,
+            )
+        )
+
+    def _create(
+        self,
+        kind: HarnessKind,
+        title: str,
+        content: str,
+        *,
+        id: str | None,
+        path: str,
+        reference: dict[str, Any] | None,
+        arguments: dict[str, Any] | None,
+        metadata: dict[str, Any] | None,
+        source: str,
+    ) -> HarnessEntry:
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         entry_id = id or _slug(title, kind)
@@ -510,7 +765,33 @@ class HarnessState:
                 source=source,
             )
         self._ensure_local_writable()
-        self._sync_from_disk()
+        return self._mutate(
+            lambda: self._update(
+                kind,
+                id,
+                title,
+                content,
+                path=path,
+                reference=reference,
+                arguments=arguments,
+                metadata=metadata,
+                source=source,
+            )
+        )
+
+    def _update(
+        self,
+        kind: HarnessKind,
+        id: str,
+        title: str,
+        content: str,
+        *,
+        path: str | None,
+        reference: dict[str, Any] | None,
+        arguments: dict[str, Any] | None,
+        metadata: dict[str, Any] | None,
+        source: str,
+    ) -> HarnessEntry:
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         if id not in self.entries[kind]:
@@ -687,7 +968,25 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.record_refinement(trigger, changes, evidence=evidence, outcome=outcome, id=id)
         self._ensure_local_writable()
-        self._sync_from_disk()
+        return self._mutate(
+            lambda: self._record_refinement(
+                trigger,
+                changes,
+                evidence=evidence,
+                outcome=outcome,
+                id=id,
+            )
+        )
+
+    def _record_refinement(
+        self,
+        trigger: str,
+        changes: list[str] | str,
+        *,
+        evidence: str,
+        outcome: str,
+        id: str | None,
+    ) -> RefinementEvent:
         event_id = id or f"refine_{len(self.refinements) + 1:04d}"
         normalized_changes = [changes] if isinstance(changes, str) else list(changes)
         event = RefinementEvent(
@@ -698,7 +997,6 @@ class HarnessState:
             outcome=outcome,
         )
         self.refinements.append(event)
-        self.save()
         return event
 
     def plan_refinement(

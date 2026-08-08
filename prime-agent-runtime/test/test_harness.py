@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from rlm import harness as package_harness
 from rlm import rlm as callable_rlm
@@ -21,6 +23,74 @@ PYTHON_REFERENCE = {
 
 
 class HarnessStateTest(unittest.TestCase):
+    def test_mutations_merge_under_the_cross_process_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            first = HarnessState(state_path)
+            second = HarnessState(state_path)
+
+            first.create_memory("First", "written first", id="first")
+            second.create_memory("Second", "written second", id="second")
+
+            document = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(document["revision"], 2)
+            self.assertEqual(set(document["entries"]["memory"]), {"first", "second"})
+
+    def test_stale_direct_save_fails_instead_of_overwriting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            current = HarnessState(state_path)
+            current.create_memory("Initial", "baseline", id="initial")
+            stale = HarnessState(state_path)
+            current.create_memory("Concurrent", "newer", id="concurrent")
+
+            stale.entries["memory"]["stale"] = stale.entries["memory"]["initial"]
+
+            with self.assertRaisesRegex(RuntimeError, "revision conflict"):
+                stale.save()
+            reloaded = HarnessState(state_path)
+            self.assertIsNotNone(reloaded.get("memory", "concurrent"))
+            self.assertIsNone(reloaded.get("memory", "stale"))
+
+    def test_atomic_replace_never_exposes_a_partial_document(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            state = HarnessState(state_path)
+            state.create_memory("Initial", "baseline", id="initial")
+            real_replace = os.replace
+
+            def assert_valid_then_replace(source: str | bytes | Path, target: str | bytes | Path) -> None:
+                json.loads(Path(source).read_text(encoding="utf-8"))
+                json.loads(Path(target).read_text(encoding="utf-8"))
+                real_replace(source, target)
+
+            with mock.patch("rlm.harness.os.replace", side_effect=assert_valid_then_replace):
+                state.create_memory("Next", "replacement", id="next")
+
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["revision"], 2)
+
+    def test_live_lock_times_out_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            lock_path.mkdir()
+            (lock_path / "owner.json").write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "hostname": socket.gethostname(),
+                        "token": "live-test-owner",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = HarnessState(state_path, lock_timeout_seconds=0.02, stale_lock_seconds=0)
+
+            os.utime(lock_path, (0, 0))
+
+            with self.assertRaisesRegex(TimeoutError, "Timed out waiting for harness-state lock"):
+                state.create_memory("Blocked", "must time out", id="blocked")
+
     def test_crud_for_all_entry_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
@@ -265,8 +335,8 @@ class HarnessStateTest(unittest.TestCase):
                     arguments={},
                 )
 
-    def test_load_tolerates_corrupt_or_non_object_state(self) -> None:
-        for payload in ("not json at all", "null", "[]", '"a string"', "123"):
+    def test_load_tolerates_but_writes_preserve_invalid_state(self) -> None:
+        for payload in ("not json at all", "null", "[]", '"a string"', "123", '{"revision":"bad"}'):
             with tempfile.TemporaryDirectory() as temp_dir:
                 state_path = Path(temp_dir) / "harness_state.json"
                 state_path.write_text(payload, encoding="utf-8")
@@ -275,9 +345,11 @@ class HarnessStateTest(unittest.TestCase):
 
                 self.assertEqual(state.list(), [])
                 self.assertEqual(state.refinements, [])
-                # The store must remain usable and self-heal on the next write.
-                created = state.create_memory("Recovered", "Works after corruption.", id="recovered")
-                self.assertEqual(HarnessState(state_path).get("memory", "recovered").content, created.content)
+                with self.assertRaisesRegex(RuntimeError, "invalid.*refusing to overwrite"):
+                    state.create_memory("Blocked", "Must preserve invalid data.", id="blocked")
+                with self.assertRaisesRegex(RuntimeError, "invalid.*refusing to overwrite"):
+                    state.save()
+                self.assertEqual(state_path.read_text(encoding="utf-8"), payload)
 
     def test_update_skill_preserves_omitted_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -434,6 +506,23 @@ class HarnessStateTest(unittest.TestCase):
             self.assertIsNotNone(reloaded.get("memory", "kernel"))
             self.assertIsNotNone(reloaded.get("memory", "host"))
             self.assertIsNotNone(reloaded.get("memory", "kernel_2"))
+
+    def test_mutation_reloads_when_external_write_keeps_the_same_mtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            kernel_state = HarnessState(state_path)
+            kernel_state.create_memory("Kernel note", "Written first.", id="kernel")
+            original_stat = state_path.stat()
+
+            host_state = HarnessState(state_path)
+            host_state.create_memory("Host note", "Written concurrently.", id="host")
+            os.utime(state_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            self.assertEqual(state_path.stat().st_mtime_ns, kernel_state._loaded_mtime)
+
+            kernel_state.create_memory("Second kernel note", "Must merge.", id="kernel_2")
+
+            reloaded = HarnessState(state_path)
+            self.assertEqual(set(reloaded.entries["memory"]), {"kernel", "host", "kernel_2"})
 
     def test_create_detects_externally_written_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
