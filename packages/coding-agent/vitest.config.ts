@@ -11,7 +11,10 @@ export default defineConfig({
 	test: {
 		globals: true,
 		environment: "node",
-		testTimeout: 30000,
+		// Cases that boot a real kernel or spawn a daemon pay Windows process
+		// creation costs, which are several times the Unix ones before contention
+		// and worse under a fully parallel run.
+		testTimeout: process.platform === "win32" ? 60_000 : 30_000,
 		tags: [
 			{
 				name: "process-stress",
