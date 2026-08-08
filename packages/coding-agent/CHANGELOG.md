@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Documented Moonshot AI API-key auth and the Google Vertex AI API-key route in `providers.md`, and added a test that every built-in provider is documented ([#955](https://github.com/PrimeIntellect-ai/prime-agent/issues/955), [#987](https://github.com/PrimeIntellect-ai/prime-agent/pull/987) by [@himanshu231204](https://github.com/himanshu231204)).
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))

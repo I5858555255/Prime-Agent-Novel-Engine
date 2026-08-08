@@ -48,12 +48,14 @@ prime-agent
 
 | Provider | Environment Variable | `auth.json` key |
 |----------|----------------------|------------------|
-| Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |
+| Amazon Bedrock | (uses AWS credentials) | `amazon-bedrock` |
+| Anthropic | `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` | `anthropic` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 | OpenAI | `OPENAI_API_KEY` | `openai` |
 | Prime Inference | `PRIME_API_KEY` | `prime-inference` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
 | Google Gemini | `GEMINI_API_KEY` | `google` |
+| Google Vertex AI | `GOOGLE_CLOUD_API_KEY` | `google-vertex` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | Groq | `GROQ_API_KEY` | `groq` |
 | Cerebras | `CEREBRAS_API_KEY` | `cerebras` |
@@ -70,10 +72,13 @@ prime-agent
 | Kimi For Coding | `KIMI_API_KEY` | `kimi-coding` |
 | MiniMax | `MINIMAX_API_KEY` | `minimax` |
 | MiniMax (China) | `MINIMAX_CN_API_KEY` | `minimax-cn` |
+| Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
+| Moonshot AI (China) | `MOONSHOT_API_KEY` | `moonshotai-cn` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
+| GitHub Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` | `github-copilot` |
 
 Reference for environment variables and `auth.json` keys: [`env-api-keys.ts`](../../ai/src/env-api-keys.ts).
 
@@ -88,6 +93,8 @@ Store credentials in `~/.prime/agent/auth.json`:
   "prime-inference": { "type": "api_key", "key": "..." },
   "deepseek": { "type": "api_key", "key": "sk-..." },
   "google": { "type": "api_key", "key": "..." },
+  "moonshotai": { "type": "api_key", "key": "..." },
+  "moonshotai-cn": { "type": "api_key", "key": "..." },
   "opencode": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
   "xiaomi": { "type": "api_key", "key": "..." },
@@ -221,7 +228,15 @@ Prime Agent automatically sets `x-session-affinity` for [prefix caching](https:/
 
 ### Google Vertex AI
 
-Uses Application Default Credentials:
+Vertex AI supports two authentication routes: an API key or Application Default Credentials (ADC).
+
+**Option 1: API key** (only `GOOGLE_CLOUD_API_KEY` required)
+
+```bash
+export GOOGLE_CLOUD_API_KEY=...
+```
+
+**Option 2: Application Default Credentials** (requires project and location)
 
 ```bash
 gcloud auth application-default login
@@ -229,7 +244,7 @@ export GOOGLE_CLOUD_PROJECT=your-project
 export GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
-Or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file.
+Or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file (also requires project and location).
 
 ## Custom Providers
 
