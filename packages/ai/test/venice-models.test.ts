@@ -65,7 +65,13 @@ describe("Venice AI models", () => {
 	});
 
 	it("hides effort controls when Venice does not support them", () => {
-		for (const modelId of ["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"] as const) {
+		for (const modelId of [
+			"claude-opus-4-7",
+			"claude-opus-4-8",
+			"claude-opus-5",
+			"deepseek-v4-flash",
+			"deepseek-v4-pro",
+		] as const) {
 			const model = getModel("venice", modelId);
 
 			expect(model.reasoning).toBe(true);

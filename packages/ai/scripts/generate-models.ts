@@ -334,7 +334,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (supportsReasoningEffortMetadata && model.id.includes("mythos-preview")) {
 		mergeThinkingLevelMap(model, { off: null, max: "max" });
 	}
-	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
+	if (
+		supportsReasoningEffortMetadata &&
+		model.api === "openai-completions" &&
+		model.id.includes("deepseek-v4")
+	) {
 		mergeThinkingLevelMap(model, DEEPSEEK_V4_THINKING_LEVEL_MAP);
 	}
 	const kimiK3Id = model.id.toLowerCase();
@@ -2025,7 +2029,9 @@ async function generateModels() {
 						}
 					: DEEPSEEK_V4_COMPAT),
 			};
-			mergeThinkingLevelMap(candidate, DEEPSEEK_V4_THINKING_LEVEL_MAP);
+			if (candidate.compat.supportsReasoningEffort !== false) {
+				mergeThinkingLevelMap(candidate, DEEPSEEK_V4_THINKING_LEVEL_MAP);
+			}
 		}
 	}
 

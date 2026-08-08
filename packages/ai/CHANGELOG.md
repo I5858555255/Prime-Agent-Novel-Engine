@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added Venice AI models, authentication, and safe OpenAI-compatible request defaults.
+- Fixed unsupported Venice DeepSeek V4 models exposing reasoning-effort controls.
 
 ## [0.7.1] - 2026-08-07
 
