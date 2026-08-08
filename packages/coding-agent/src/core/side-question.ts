@@ -1,5 +1,5 @@
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, UserMessage } from "@earendil-works/pi-ai";
 
 export type SideQuestionStatus = "running" | "complete" | "cancelled" | "error";
 
@@ -37,6 +37,39 @@ function readAssistantText(message: AgentMessage): string {
 		.filter((block) => block.type === "text")
 		.map((block) => block.text)
 		.join("");
+}
+
+function removeToolProtocol(messages: Message[]): Message[] {
+	const sanitized: Message[] = [];
+	for (const message of messages) {
+		if (message.role === "toolResult") {
+			continue;
+		}
+		const next =
+			message.role === "assistant"
+				? { ...message, content: message.content.filter((block) => block.type !== "toolCall") }
+				: message;
+		if (next.content.length === 0) {
+			continue;
+		}
+		const previous = sanitized.at(-1);
+		if (previous?.role === "assistant" && next.role === "assistant") {
+			sanitized[sanitized.length - 1] = { ...next, content: [...previous.content, ...next.content] };
+			continue;
+		}
+		if (previous?.role === "user" && next.role === "user") {
+			const previousContent =
+				typeof previous.content === "string"
+					? [{ type: "text" as const, text: previous.content }]
+					: previous.content;
+			const nextContent =
+				typeof next.content === "string" ? [{ type: "text" as const, text: next.content }] : next.content;
+			sanitized[sanitized.length - 1] = { ...next, content: [...previousContent, ...nextContent] };
+			continue;
+		}
+		sanitized.push(next);
+	}
+	return sanitized;
 }
 
 export function startSideQuestion(
@@ -87,7 +120,7 @@ export function startSideQuestion(
 			serviceTier: parent.state.serviceTier,
 			tools: [],
 		},
-		convertToLlm: parent.convertToLlm,
+		convertToLlm: async (messages) => removeToolProtocol(await parent.convertToLlm(messages)),
 		transformContext: parent.transformContext,
 		streamFn: parent.streamFn,
 		getApiKey: parent.getApiKey,

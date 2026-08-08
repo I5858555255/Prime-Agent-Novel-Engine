@@ -127,8 +127,7 @@ describe("ENG-4509 side questions", () => {
 				(context) => {
 					expect(context.tools).toEqual([]);
 					expect(context.messages.map(getMessageText)).toEqual([
-						"Run the main task.",
-						expect.stringContaining("Can I ask this concurrently?"),
+						expect.stringMatching(/Run the main task\.\n[\s\S]*Can I ask this concurrently\?/),
 					]);
 					return fauxAssistantMessage("yes");
 				},
