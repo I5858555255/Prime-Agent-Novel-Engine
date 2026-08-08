@@ -2,9 +2,10 @@
 
 Programmatic usage of the Prime Agent SDK via `createAgentSession()` and `createAgentSessionRuntime()`.
 
-The published TypeScript packages still use inherited `@earendil-works/pi-*`
-identifiers. Those identifiers are API names, not a dependency on the upstream
-Pi monorepo.
+These repository examples use inherited `@earendil-works/pi-*` workspace
+specifiers so they run directly from source. External consumers install and
+import the branded release artifacts documented in
+[SDK and library artifacts](../../docs/package-artifacts.md).
 
 The runtime example shows how to build a recreate function that closes over process-global fixed inputs and recreates cwd-bound services and sessions as the active session cwd changes.
 

@@ -13,7 +13,7 @@
   LLM provider toolkit.
 </p>
 
-Release docs use the Prime Agent package name. The source workspace manifest still keeps an inherited package name until the namespace migration is complete.
+External releases use the branded `prime-agent-ai` package name. The inherited source workspace name is not a supported npm registry install target.
 
 Unified LLM API with automatic model discovery, provider configuration, token and cost tracking, and simple context persistence and hand-off to other models mid-session.
 
@@ -91,8 +91,12 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 ## Installation
 
 ```bash
-npm install prime-agent-ai
+release_base=https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev
+release_version="$(curl -fsSL "$release_base/stable")"
+npm install "$release_base/releases/$release_version/prime-agent-ai-${release_version#v}.tgz"
 ```
+
+This installs the immutable artifact for the current stable release. See [SDK and library artifacts](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/package-artifacts.md) for beta releases, PowerShell, integrity verification, pinning, and updates.
 
 TypeBox exports are re-exported from `prime-agent-ai`: `Type`, `Static`, and `TSchema`.
 
@@ -116,7 +120,7 @@ const tools: Tool[] = [{
 // Build a conversation context (easily serializable and transferable between models)
 const context: Context = {
   systemPrompt: 'You are a helpful assistant.',
-  messages: [{ role: 'user', content: 'What time is it?' }],
+  messages: [{ role: 'user', content: 'What time is it?', timestamp: Date.now() }],
   tools
 };
 
