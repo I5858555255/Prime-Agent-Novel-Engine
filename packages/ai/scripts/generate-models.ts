@@ -1,8 +1,9 @@
 #!/usr/bin/env tsx
 
-import { readFileSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { getAnthropicCacheCosts } from "../src/cache-pricing.js";
 import {
@@ -23,6 +24,28 @@ import { MODELS as EXISTING_MODELS } from "../src/models.generated.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const packageRoot = join(__dirname, "..");
+
+const MODELS_DEV_URL = "https://models.dev/api.json";
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+
+type CatalogFetch = typeof fetch;
+
+interface CatalogProvenance {
+	source: string;
+	url: string;
+	sha256: string;
+}
+
+interface GenerationContext {
+	fetch: CatalogFetch;
+	provenance: Map<string, CatalogProvenance>;
+	openRouterCatalogPromise?: Promise<unknown[]>;
+}
+
+export interface RefreshModelsOptions {
+	fetch?: CatalogFetch;
+	outputPath?: string;
+}
 
 interface ModelsDevModel {
 	id: string;
@@ -47,6 +70,8 @@ interface ModelsDevModel {
 		npm?: string;
 	};
 }
+
+type ModelsDevCatalog = Record<string, { models: Record<string, unknown> }>;
 
 interface AiGatewayModel {
 	id: string;
@@ -364,6 +389,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
+function canonicalizeJson(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(canonicalizeJson);
+	}
+	if (!isRecord(value)) {
+		return value;
+	}
+
+	const sorted: Record<string, unknown> = {};
+	for (const key of Object.keys(value).sort()) {
+		sorted[key] = canonicalizeJson(value[key]);
+	}
+	return sorted;
+}
+
+async function fetchRequiredJson(
+	context: GenerationContext,
+	source: string,
+	url: string,
+	init?: RequestInit,
+): Promise<unknown> {
+	let response: Response;
+	try {
+		response = await context.fetch(url, init);
+	} catch (error) {
+		throw new Error(`Failed to fetch required model source ${source} (${url})`, { cause: error });
+	}
+
+	if (!response.ok) {
+		throw new Error(`Required model source ${source} returned HTTP ${response.status} (${url})`);
+	}
+
+	let data: unknown;
+	try {
+		data = await response.json();
+	} catch (error) {
+		throw new Error(`Required model source ${source} returned malformed JSON (${url})`, { cause: error });
+	}
+
+	const canonicalJson = JSON.stringify(canonicalizeJson(data));
+	context.provenance.set(source, {
+		source,
+		url,
+		sha256: createHash("sha256").update(canonicalJson).digest("hex"),
+	});
+	return data;
+}
+
+function requireNonEmptyModels(source: string, count: number): void {
+	if (count === 0) {
+		throw new Error(`Required model source ${source} produced zero usable models`);
+	}
+}
+
 function getOptionalNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -624,33 +703,21 @@ function getPrimeInferenceOpenRouterMetadata(
 	return index.get(PRIME_INFERENCE_OPENROUTER_ALIASES[id] ?? id);
 }
 
-async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[]> {
+async function fetchPrimeInferenceModels(context: GenerationContext): Promise<Model<"openai-completions">[]> {
 	const primeConfig = readPrimeCliConfig();
 	const apiKey = getPrimeInferenceConfigValue("PRIME_API_KEY", primeConfig, ["api_key", "apiKey"]);
 	const teamId = getPrimeInferenceConfigValue("PRIME_TEAM_ID", primeConfig, ["team_id", "teamId", "teamID"]);
-	let catalog: PrimeInferenceCatalogEntry[] = [];
-
-	try {
-		console.log("Fetching models from Prime Inference API...");
-		const response = await fetch(`${PRIME_INFERENCE_BASE_URL}/models`, {
+	console.log("Fetching models from Prime Inference API...");
+	const catalog = parsePrimeInferenceCatalog(
+		await fetchRequiredJson(context, "prime-inference", `${PRIME_INFERENCE_BASE_URL}/models`, {
 			headers: getPrimeInferenceHeaders(apiKey, teamId),
-		});
-		catalog = parsePrimeInferenceCatalog(await response.json());
-	} catch (error) {
-		console.error("Failed to fetch Prime Inference models:", error);
-	}
+		}),
+	);
+	requireNonEmptyModels("prime-inference", catalog.length);
 
-	let openRouterIndex = new Map<string, PrimeInferenceOpenRouterMetadata>();
-	try {
-		openRouterIndex = buildPrimeInferenceOpenRouterIndex(await fetchOpenRouterCatalog());
-	} catch (error) {
-		console.error("Failed to fetch OpenRouter catalog for Prime Inference metadata:", error);
-	}
+	const openRouterIndex = buildPrimeInferenceOpenRouterIndex(await fetchOpenRouterCatalog(context));
 	if (openRouterIndex.size === 0) {
-		// Without OpenRouter metadata every model would regress to the defaults;
-		// keep the previous snapshot instead.
-		console.error("OpenRouter catalog unavailable; keeping snapshot Prime Inference models");
-		return getExistingPrimeInferenceModels();
+		throw new Error("Required OpenRouter metadata for Prime Inference produced zero usable models");
 	}
 
 	const catalogModels = catalog
@@ -669,6 +736,7 @@ async function fetchPrimeInferenceModels(): Promise<Model<"openai-completions">[
 	}
 	snapshotModels = refreshPrimeInferenceAliasLimits(snapshotModels, catalogModels);
 	const models = mergePrimeInferenceModels(snapshotModels, catalogModels);
+	requireNonEmptyModels("prime-inference", models.length);
 	console.log(`Loaded ${models.length} Prime Inference models (${catalogModels.length} from the live catalog)`);
 	return models;
 }
@@ -711,27 +779,28 @@ function createPrimeInferenceModel(
 	};
 }
 
-let openRouterCatalogPromise: Promise<any[]> | undefined;
-
-function fetchOpenRouterCatalog(): Promise<any[]> {
-	openRouterCatalogPromise ??= (async () => {
+function fetchOpenRouterCatalog(context: GenerationContext): Promise<unknown[]> {
+	context.openRouterCatalogPromise ??= (async () => {
 		console.log("Fetching models from OpenRouter API...");
-		const response = await fetch("https://openrouter.ai/api/v1/models");
-		const data = await response.json();
-		return Array.isArray(data?.data) ? data.data : [];
+		const data = await fetchRequiredJson(context, "openrouter", OPENROUTER_MODELS_URL);
+		if (!isRecord(data) || !Array.isArray(data.data) || data.data.length === 0) {
+			throw new Error("Required model source openrouter returned an empty or invalid catalog");
+		}
+		return data.data;
 	})();
-	return openRouterCatalogPromise;
+	return context.openRouterCatalogPromise;
 }
 
-async function fetchOpenRouterModels(): Promise<Model<any>[]> {
-	try {
-		const models: Model<any>[] = [];
+async function fetchOpenRouterModels(context: GenerationContext): Promise<Model<any>[]> {
+	const models: Model<any>[] = [];
 
-		for (const model of await fetchOpenRouterCatalog()) {
+		for (const item of await fetchOpenRouterCatalog(context)) {
+			if (!isRecord(item)) continue;
+			const model = item;
 			// Only include models that support tools
-			if (!model.supported_parameters?.includes("tools")) continue;
+			if (!Array.isArray(model.supported_parameters) || !model.supported_parameters.includes("tools")) continue;
 			// :batch routes are asynchronous batch variants, not streaming models
-			if (model.id.endsWith(":batch")) continue;
+			if (typeof model.id !== "string" || model.id.endsWith(":batch")) continue;
 
 			// Parse provider from model ID
 			let provider: KnownProvider = "openrouter";
@@ -741,24 +810,27 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 
 			// Parse input modalities
 			const input: ("text" | "image")[] = ["text"];
-			if (model.architecture?.modality?.includes("image")) {
+			const architecture = isRecord(model.architecture) ? model.architecture : {};
+			if (typeof architecture.modality === "string" && architecture.modality.includes("image")) {
 				input.push("image");
 			}
 
 			// Convert pricing from $/token to $/million tokens. OpenRouter uses
 			// negative values as a placeholder for unknown pricing (e.g. auto-beta).
-			const inputCost = Math.max(0, parseFloat(model.pricing?.prompt || "0")) * 1_000_000;
-			const outputCost = Math.max(0, parseFloat(model.pricing?.completion || "0")) * 1_000_000;
-			const cacheReadCost = Math.max(0, parseFloat(model.pricing?.input_cache_read || "0")) * 1_000_000;
-			const cacheWriteCost = Math.max(0, parseFloat(model.pricing?.input_cache_write || "0")) * 1_000_000;
+			const pricing = isRecord(model.pricing) ? model.pricing : {};
+			const inputCost = Math.max(0, parseFloat(String(pricing.prompt ?? "0"))) * 1_000_000;
+			const outputCost = Math.max(0, parseFloat(String(pricing.completion ?? "0"))) * 1_000_000;
+			const cacheReadCost = Math.max(0, parseFloat(String(pricing.input_cache_read ?? "0"))) * 1_000_000;
+			const cacheWriteCost = Math.max(0, parseFloat(String(pricing.input_cache_write ?? "0"))) * 1_000_000;
+			const topProvider = isRecord(model.top_provider) ? model.top_provider : {};
 
 			const normalizedModel: Model<any> = {
 				id: modelKey,
-				name: model.name,
+				name: typeof model.name === "string" ? model.name : modelKey,
 				api: "openai-completions",
 				baseUrl: "https://openrouter.ai/api/v1",
 				provider,
-				reasoning: model.supported_parameters?.includes("reasoning") || false,
+				reasoning: model.supported_parameters.includes("reasoning"),
 				input,
 				cost: {
 					input: inputCost,
@@ -766,37 +838,35 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 					cacheRead: cacheReadCost,
 					cacheWrite: cacheWriteCost,
 				},
-				contextWindow: model.context_length || 4096,
-				maxTokens: model.top_provider?.max_completion_tokens || 4096,
+				contextWindow: getOptionalNumber(model.context_length) ?? 4096,
+				maxTokens: getOptionalNumber(topProvider.max_completion_tokens) ?? 4096,
 			};
 			models.push(normalizedModel);
 		}
 
-		console.log(`Fetched ${models.length} tool-capable models from OpenRouter`);
-		return models;
-	} catch (error) {
-		console.error("Failed to fetch OpenRouter models:", error);
-		return [];
-	}
+	requireNonEmptyModels("openrouter", models.length);
+	console.log(`Fetched ${models.length} tool-capable models from OpenRouter`);
+	return models;
 }
 
-async function fetchAiGatewayModels(): Promise<Model<any>[]> {
-	try {
-		console.log("Fetching models from Vercel AI Gateway API...");
-		const response = await fetch(`${AI_GATEWAY_MODELS_URL}/models`);
-		const data = await response.json();
-		const models: Model<any>[] = [];
+async function fetchAiGatewayModels(context: GenerationContext): Promise<Model<any>[]> {
+	console.log("Fetching models from Vercel AI Gateway API...");
+	const data = await fetchRequiredJson(context, "vercel-ai-gateway", `${AI_GATEWAY_MODELS_URL}/models`);
+	if (!isRecord(data) || !Array.isArray(data.data) || data.data.length === 0) {
+		throw new Error("Required model source vercel-ai-gateway returned an empty or invalid catalog");
+	}
+	const models: Model<any>[] = [];
 
-		const toNumber = (value: string | number | undefined): number => {
-			if (typeof value === "number") {
-				return Number.isFinite(value) ? value : 0;
-			}
-			const parsed = parseFloat(value ?? "0");
-			return Number.isFinite(parsed) ? parsed : 0;
-		};
+	const toNumber = (value: string | number | undefined): number => {
+		if (typeof value === "number") {
+			return Number.isFinite(value) ? value : 0;
+		}
+		const parsed = parseFloat(value ?? "0");
+		return Number.isFinite(parsed) ? parsed : 0;
+	};
 
-		const items = Array.isArray(data.data) ? (data.data as AiGatewayModel[]) : [];
-		for (const model of items) {
+	const items = data.data as AiGatewayModel[];
+	for (const model of items) {
 			const tags = Array.isArray(model.tags) ? model.tags : [];
 			// Only include models that support tools
 			if (!tags.includes("tool-use")) continue;
@@ -831,25 +901,24 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 			});
 		}
 
-		console.log(`Fetched ${models.length} tool-capable models from Vercel AI Gateway`);
-		return models;
-	} catch (error) {
-		console.error("Failed to fetch Vercel AI Gateway models:", error);
-		return [];
-	}
+	requireNonEmptyModels("vercel-ai-gateway", models.length);
+	console.log(`Fetched ${models.length} tool-capable models from Vercel AI Gateway`);
+	return models;
 }
 
-async function loadModelsDevData(): Promise<Model<any>[]> {
-	try {
-		console.log("Fetching models from models.dev API...");
-		const response = await fetch("https://models.dev/api.json");
-		const data = await response.json();
+async function loadModelsDevData(context: GenerationContext): Promise<Model<any>[]> {
+	console.log("Fetching models from models.dev API...");
+	const data = await fetchRequiredJson(context, "models.dev", MODELS_DEV_URL);
+	if (!isRecord(data)) {
+		throw new Error("Required model source models.dev returned an invalid catalog");
+	}
+	const catalog = data as ModelsDevCatalog;
 
-		const models: Model<any>[] = [];
+	const models: Model<any>[] = [];
 
 		// Process Amazon Bedrock models
-		if (data["amazon-bedrock"]?.models) {
-			for (const [modelId, model] of Object.entries(data["amazon-bedrock"].models)) {
+		if (catalog["amazon-bedrock"]?.models) {
+			for (const [modelId, model] of Object.entries(catalog["amazon-bedrock"].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -886,8 +955,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Anthropic models
-		if (data.anthropic?.models) {
-			for (const [modelId, model] of Object.entries(data.anthropic.models)) {
+		if (catalog.anthropic?.models) {
+			for (const [modelId, model] of Object.entries(catalog.anthropic.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -916,8 +985,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		// computer_use tool) are not usable through the GenerateContent API as plain
 		// chat models, so they are excluded.
 		const googleUnsupportedApiModelPattern = /(^|[-_.])(live|deep-research|computer-use)($|[-_.])/i;
-		if (data.google?.models) {
-			for (const [modelId, model] of Object.entries(data.google.models)) {
+		if (catalog.google?.models) {
+			for (const [modelId, model] of Object.entries(catalog.google.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 				if (googleUnsupportedApiModelPattern.test(modelId)) continue;
@@ -945,8 +1014,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process OpenAI models
-		if (data.openai?.models) {
-			for (const [modelId, model] of Object.entries(data.openai.models)) {
+		if (catalog.openai?.models) {
+			for (const [modelId, model] of Object.entries(catalog.openai.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -971,8 +1040,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Groq models
-		if (data.groq?.models) {
-			for (const [modelId, model] of Object.entries(data.groq.models)) {
+		if (catalog.groq?.models) {
+			for (const [modelId, model] of Object.entries(catalog.groq.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -997,8 +1066,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Cerebras models
-		if (data.cerebras?.models) {
-			for (const [modelId, model] of Object.entries(data.cerebras.models)) {
+		if (catalog.cerebras?.models) {
+			for (const [modelId, model] of Object.entries(catalog.cerebras.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1023,8 +1092,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Cloudflare Workers AI models
-		if (data["cloudflare-workers-ai"]?.models) {
-			for (const [modelId, model] of Object.entries(data["cloudflare-workers-ai"].models)) {
+		if (catalog["cloudflare-workers-ai"]?.models) {
+			for (const [modelId, model] of Object.entries(catalog["cloudflare-workers-ai"].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1050,8 +1119,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Cloudflare AI Gateway models
-		if (data["cloudflare-ai-gateway"]?.models) {
-			for (const [prefixedId, model] of Object.entries(data["cloudflare-ai-gateway"].models)) {
+		if (catalog["cloudflare-ai-gateway"]?.models) {
+			for (const [prefixedId, model] of Object.entries(catalog["cloudflare-ai-gateway"].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1105,8 +1174,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process xAi models
-		if (data.xai?.models) {
-			for (const [modelId, model] of Object.entries(data.xai.models)) {
+		if (catalog.xai?.models) {
+			for (const [modelId, model] of Object.entries(catalog.xai.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1131,8 +1200,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process zAi models
-		if (data["zai-coding-plan"]?.models) {
-			for (const [modelId, model] of Object.entries(data["zai-coding-plan"].models)) {
+		if (catalog["zai-coding-plan"]?.models) {
+			for (const [modelId, model] of Object.entries(catalog["zai-coding-plan"].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 				const supportsImage = m.modalities?.input?.includes("image");
@@ -1163,8 +1232,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Mistral models
-		if (data.mistral?.models) {
-			for (const [modelId, model] of Object.entries(data.mistral.models)) {
+		if (catalog.mistral?.models) {
+			for (const [modelId, model] of Object.entries(catalog.mistral.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1189,8 +1258,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Hugging Face models
-		if (data.huggingface?.models) {
-			for (const [modelId, model] of Object.entries(data.huggingface.models)) {
+		if (catalog.huggingface?.models) {
+			for (const [modelId, model] of Object.entries(catalog.huggingface.models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1218,8 +1287,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Fireworks models
-		if (data["fireworks-ai"]?.models) {
-			for (const [modelId, model] of Object.entries(data["fireworks-ai"].models)) {
+		if (catalog["fireworks-ai"]?.models) {
+			for (const [modelId, model] of Object.entries(catalog["fireworks-ai"].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1256,9 +1325,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		] as const;
 
 		for (const variant of opencodeVariants) {
-			if (!data[variant.key]?.models) continue;
+			if (!catalog[variant.key]?.models) continue;
 
-			for (const [modelId, model] of Object.entries(data[variant.key].models)) {
+			for (const [modelId, model] of Object.entries(catalog[variant.key].models)) {
 				const m = model as ModelsDevModel & { status?: string };
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
@@ -1330,8 +1399,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process GitHub Copilot models
-		if (data["github-copilot"]?.models) {
-			for (const [modelId, model] of Object.entries(data["github-copilot"].models)) {
+		if (catalog["github-copilot"]?.models) {
+			for (const [modelId, model] of Object.entries(catalog["github-copilot"].models)) {
 				const m = model as ModelsDevModel & { status?: string };
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
@@ -1389,8 +1458,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		] as const;
 
 		for (const { key, provider, baseUrl } of minimaxVariants) {
-			if (data[key]?.models) {
-				for (const [modelId, model] of Object.entries(data[key].models)) {
+			if (catalog[key]?.models) {
+				for (const [modelId, model] of Object.entries(catalog[key].models)) {
 					const m = model as ModelsDevModel;
 					if (m.tool_call !== true) continue;
 
@@ -1417,8 +1486,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Kimi For Coding models
-		if (data["kimi-for-coding"]?.models) {
-			const kimiModels = data["kimi-for-coding"].models as Record<string, ModelsDevModel>;
+		if (catalog["kimi-for-coding"]?.models) {
+			const kimiModels = catalog["kimi-for-coding"].models as Record<string, ModelsDevModel>;
 			const hasCanonicalModel = Object.prototype.hasOwnProperty.call(kimiModels, "kimi-for-coding");
 
 			const kimiAliases = new Set(["k2p5", "k2p6"]);
@@ -1469,9 +1538,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		};
 
 		for (const { key, provider, baseUrl } of moonshotVariants) {
-			if (!data[key]?.models) continue;
+			if (!catalog[key]?.models) continue;
 
-			for (const [modelId, model] of Object.entries(data[key].models)) {
+			for (const [modelId, model] of Object.entries(catalog[key].models)) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 
@@ -1507,9 +1576,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			{ provider: "xiaomi-token-plan-sgp", baseUrl: "https://token-plan-sgp.xiaomimimo.com/anthropic" },
 		] as const;
 
-		if (data.xiaomi?.models) {
+		if (catalog.xiaomi?.models) {
 			for (const { provider, baseUrl } of xiaomiVariants) {
-				for (const [modelId, model] of Object.entries(data.xiaomi.models)) {
+				for (const [modelId, model] of Object.entries(catalog.xiaomi.models)) {
 					const m = model as ModelsDevModel;
 					if (m.tool_call !== true) continue;
 
@@ -1534,22 +1603,23 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		console.log(`Loaded ${models.length} tool-capable models from models.dev`);
-		return models;
-	} catch (error) {
-		console.error("Failed to load models.dev data:", error);
-		return [];
-	}
+	requireNonEmptyModels("models.dev", models.length);
+	console.log(`Loaded ${models.length} tool-capable models from models.dev`);
+	return models;
 }
 
-async function generateModels() {
+export async function refreshModels(options: RefreshModelsOptions = {}): Promise<void> {
+	const context: GenerationContext = {
+		fetch: options.fetch ?? fetch,
+		provenance: new Map(),
+	};
 	// Fetch models from both sources
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras
 	// OpenRouter: xAI and other providers (excluding Anthropic, Google, OpenAI)
 	// AI Gateway: OpenAI-compatible catalog with tool-capable models
-	const modelsDevModels = await loadModelsDevData();
-	const openRouterModels = await fetchOpenRouterModels();
-	const aiGatewayModels = await fetchAiGatewayModels();
+	const modelsDevModels = await loadModelsDevData(context);
+	const openRouterModels = await fetchOpenRouterModels(context);
+	const aiGatewayModels = await fetchAiGatewayModels(context);
 
 	// Combine models (models.dev has priority)
 	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
@@ -2308,7 +2378,7 @@ async function generateModels() {
 	];
 	allModels.push(...vertexModels);
 
-	const primeInferenceModels = await fetchPrimeInferenceModels();
+	const primeInferenceModels = await fetchPrimeInferenceModels(context);
 	allModels.push(...primeInferenceModels);
 
 	const azureOpenAiModels: Model<Api>[] = allModels
@@ -2339,8 +2409,19 @@ async function generateModels() {
 	}
 
 	// Generate TypeScript file
+	const provenance = Array.from(context.provenance.values()).sort((a, b) =>
+		a.source < b.source ? -1 : a.source > b.source ? 1 : 0,
+	);
+	if (provenance.length !== 4) {
+		throw new Error(`Expected provenance for 4 required model sources, received ${provenance.length}`);
+	}
+	const provenanceHeader = provenance
+		.map(({ source, url, sha256 }) => `// - ${source}: ${url} sha256=${sha256}`)
+		.join("\n");
 	let output = `// This file is auto-generated by scripts/generate-models.ts
-// Do not edit manually - run 'npm run generate-models' to update
+// Do not edit manually - run 'npm run refresh-models' to update
+// Catalog provenance (SHA-256 of canonical JSON):
+${provenanceHeader}
 
 import type { Model } from "./types.js";
 
@@ -2396,9 +2477,16 @@ export const MODELS = {
 	output += `} as const;
 `;
 
-	// Write file
-	writeFileSync(join(packageRoot, "src/models.generated.ts"), output);
-	console.log("Generated src/models.generated.ts");
+	const outputPath = options.outputPath ?? join(packageRoot, "src/models.generated.ts");
+	const temporaryPath = `${outputPath}.${process.pid}.tmp`;
+	try {
+		writeFileSync(temporaryPath, output, { flag: "wx" });
+		renameSync(temporaryPath, outputPath);
+	} catch (error) {
+		rmSync(temporaryPath, { force: true });
+		throw error;
+	}
+	console.log(`Generated ${outputPath}`);
 
 	// Print statistics
 	const totalModels = allModels.length;
@@ -2413,5 +2501,18 @@ export const MODELS = {
 	}
 }
 
-// Run the generator
-generateModels().catch(console.error);
+export async function runRefreshModelsCli(options: RefreshModelsOptions = {}): Promise<number> {
+	try {
+		await refreshModels(options);
+		return 0;
+	} catch (error) {
+		console.error(error);
+		return 1;
+	}
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+	runRefreshModelsCli().then((exitCode) => {
+		process.exitCode = exitCode;
+	});
+}
