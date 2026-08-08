@@ -254,6 +254,20 @@ describe("builtin skills", () => {
 			expect(rlmHeartbeat?.kind === "python" && rlmHeartbeat.python.importName).toBe("rlm_heartbeat");
 		});
 
+		it("loads the bundled MCP adapter skills as Python skills", () => {
+			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
+
+			for (const [name, importName] of [
+				["jcodemunch", "jcodemunch"],
+				["context-mode", "context_mode"],
+			] as const) {
+				const skill = skills.find((candidate) => candidate.name === name);
+				expect(skill).toBeDefined();
+				expect(skill?.kind).toBe("python");
+				expect(skill?.kind === "python" && skill.python.importName).toBe(importName);
+			}
+		});
+
 		it("does not ship orchestration heartbeat as a built-in skill", () => {
 			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
 

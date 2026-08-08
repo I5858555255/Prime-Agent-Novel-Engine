@@ -233,6 +233,35 @@ Disable the built-in `websearch` skill while keeping normal skill discovery enab
 }
 ```
 
+### MCP integrations
+
+`jcodemunch` and `context-mode` are resolved as lazy host-managed stdio
+integrations by default, using the separately installed `jcodemunch-mcp` and
+`context-mode` commands. A matching `mcpServers` entry overrides that default
+and may change the transport, command, args, environment, cwd, tool filters,
+or enabled state. The host never installs or starts a default sidecar during
+discovery; it launches only when the first tool or health request needs it.
+
+```jsonc
+{
+  "mcpServers": {
+    "jcodemunch": {
+      "type": "stdio",
+      "command": "jcodemunch-mcp",
+      "enabled": false
+    },
+    "context-mode": {
+      "type": "http",
+      "url": "https://localhost.example/context-mode/mcp"
+    }
+  }
+}
+```
+
+Set `enabled` to `false` to disable a default reliably; it does not fall back
+to a skill environment URL. See [MCP integrations](mcp-integrations.md) for
+all HTTP/stdio fields and the separate-sidecar license boundary.
+
 #### packages
 
 String form loads all resources from a package:

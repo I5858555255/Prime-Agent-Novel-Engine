@@ -19,8 +19,11 @@ print([tool["name"] for tool in await context_mode.list_tools()])
 
 ## Setup
 
-Install and operate Context Mode separately. When the separately installed
-sidecar documents its stdio command, configure the host-managed transport:
+Install and operate Context Mode separately. The skill is bundled and
+available by default; when `mcpServers.context-mode` is absent, Prime Agent
+uses the separately installed `context-mode` command as a lazy host-managed
+stdio transport. Add an explicit entry when you need to override its command,
+args, environment, cwd, tool filters, or enabled state:
 
 ```jsonc
 {
@@ -35,8 +38,10 @@ sidecar documents its stdio command, configure the host-managed transport:
 
 The host launches configured stdio servers lazily and keeps command, args,
 environment, and cwd host-side. The Python skill uses the host bridge for
-`list_tools` and `call_tool`; it never launches a process itself. If a sidecar's
-CLI syntax is not documented, use a safe placeholder such as
+`list_tools` and `call_tool`; it never launches a process itself. Set
+`"enabled": false` to disable the default without falling back to an
+environment URL. If a sidecar's CLI syntax is not documented, use a safe
+placeholder such as
 `/path/to/separately-installed-mcp-server` rather than guessing flags or
 secrets.
 

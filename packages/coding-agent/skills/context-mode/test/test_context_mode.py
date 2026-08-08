@@ -59,6 +59,8 @@ class ContextModeTest(unittest.TestCase):
         self.assertTrue(diagnostic["configured"])
         self.assertEqual(diagnostic["transport"], "stdio")
         self.assertIsNone(diagnostic["endpoint"])
+        self.assertIsNone(diagnostic["executable"])
+        self.assertFalse(diagnostic["stdio_only"])
         self.assertNotIn("command", diagnostic)
         self.assertNotIn("env", diagnostic)
         self.assertNotIn("secret", repr(diagnostic))

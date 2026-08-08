@@ -250,15 +250,19 @@ the auth mode you configured:
 
 The bundled `jcodemunch` and `context-mode` skills target separately installed
 sidecars for structured code retrieval and bounded large-output processing.
-They are intentionally optional: importing either package never installs,
-launches, indexes, upgrades, or purges a sidecar. Each skill supports either a
-host-managed local stdio server or a streamable HTTP endpoint and reports a
-diagnostic from `available()` when neither is configured.
+The skills are available by default, while the sidecars remain separately
+installed and optional. When no user `mcpServers` entry overrides either name,
+Prime Agent resolves `jcodemunch` to the `jcodemunch-mcp` command and
+`context-mode` to the `context-mode` command as lazy host-managed stdio
+integrations. Importing either package never installs, launches, indexes,
+upgrades, or purges a sidecar; `available()` reports diagnostics when a command
+is missing.
 
 ### Host-managed stdio
 
-Install the sidecar separately and configure its documented stdio command in
-`mcpServers`. The command names for these two optional sidecars are known:
+Install the sidecar separately if you want to use it. The following explicit
+configuration is equivalent to Prime Agent's defaults and is useful when you
+need to add args, env, cwd, tool filters, or an explicit `enabled` setting:
 
 ```jsonc
 {
@@ -275,12 +279,31 @@ Install the sidecar separately and configure its documented stdio command in
 }
 ```
 
+To disable one default without disabling the other, keep its required command
+and set `enabled` to `false`:
+
+```jsonc
+{
+  "mcpServers": {
+    "jcodemunch": {
+      "type": "stdio",
+      "command": "jcodemunch-mcp",
+      "enabled": false
+    }
+  }
+}
+```
+
 The host launches configured stdio servers lazily and keeps their command,
 arguments, environment, and working directory host-side; the Python skill
-uses the host bridge for `list_tools` and `call_tool`. Do not add undocumented
-arguments or put secret values in a skill or diagnostic. For another sidecar
-whose CLI syntax is not known, use a safe placeholder and confirm its docs
-before enabling it:
+uses the host bridge for `list_tools` and `call_tool`. Implicit defaults enforce
+the same curated tool surfaces as the bundled skills for both operations. A user
+entry replaces the matching default, including its transport and tool filters;
+`{ "enabled": false }` disables it without falling back to an environment URL.
+Do not add undocumented arguments or put secret values in a skill or diagnostic.
+For another sidecar whose CLI
+syntax is not known, use a safe placeholder and confirm its docs before
+enabling it:
 
 ```jsonc
 {

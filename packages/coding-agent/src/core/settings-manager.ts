@@ -90,10 +90,12 @@ export type PackageSource =
 	  };
 
 /**
- * Remote/local MCP server an integration connects to. Built-in integrations
- * (Linear/Notion) are defined in the ai/mcp catalog; this is for user-declared
- * servers. HTTP integrations read creds from auth.json (`mcp:<name>`);
- * stdio integrations stay host-side and are launched lazily.
+ * Remote/local MCP server an integration connects to. Built-in HTTP integrations
+ * (Linear/Notion) are defined in the ai/mcp catalog; the bundled Python
+ * integrations (jCodeMunch/Context Mode) have host defaults, while this is for
+ * explicit overrides and additional user-declared servers. HTTP integrations
+ * read creds from auth.json (`mcp:<name>`); stdio integrations stay host-side
+ * and are launched lazily.
  */
 export type McpServerConfig =
 	| {
@@ -145,7 +147,7 @@ export interface Settings {
 	quietStartup?: boolean;
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
 	npmCommand?: string[]; // Command used for npm package lookup/install operations, argv-style (e.g., ["mise", "exec", "node@20", "--", "npm"])
-	mcpServers?: Record<string, McpServerConfig>; // User-declared MCP servers (name → config); built-ins are in the ai/mcp catalog
+	mcpServers?: Record<string, McpServerConfig>; // Explicit MCP overrides/additional servers (name → config); local Python defaults are implicit
 	packages?: PackageSource[]; // Array of npm/git package sources (string or object with filtering)
 	extensions?: string[]; // Array of local extension file paths or directories
 	skills?: string[]; // Array of local skill file paths or directories

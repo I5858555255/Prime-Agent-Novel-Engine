@@ -21,9 +21,11 @@ print([tool["name"] for tool in tools])
 ## Setup
 
 Install and operate jCodeMunch separately, and review the sidecar's license
-terms before use. This skill does not include or copy jCodeMunch. When the
-separately installed sidecar provides its documented stdio command, configure
-the host-managed transport:
+terms before use. This skill does not include or copy jCodeMunch. The skill is
+bundled and available by default; when `mcpServers.jcodemunch` is absent, Prime
+Agent uses the separately installed `jcodemunch-mcp` command as a lazy
+host-managed stdio transport. Add an explicit entry when you need to override
+its command, args, environment, cwd, tool filters, or enabled state:
 
 ```jsonc
 {
@@ -38,8 +40,10 @@ the host-managed transport:
 
 The host launches configured stdio servers lazily and keeps command, args,
 environment, and cwd host-side. The Python skill uses the host bridge for
-`list_tools` and `call_tool`; it never launches a process itself. If a sidecar's
-CLI syntax is not documented, use a safe placeholder such as
+`list_tools` and `call_tool`; it never launches a process itself. Set
+`"enabled": false` to disable the default without falling back to an
+environment URL. If a sidecar's CLI syntax is not documented, use a safe
+placeholder such as
 `/path/to/separately-installed-mcp-server` rather than guessing flags or
 secrets.
 

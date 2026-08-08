@@ -362,13 +362,13 @@ The base class uses the configured HTTP transport through the official `mcp` SDK
 
 See [docs/mcp-integrations.md](docs/mcp-integrations.md) for the full authoring guide (package layout, auth options, the `McpIntegration` API, and caveats).
 
-Optional bundled retrieval skills, `jcodemunch` and `context-mode`, connect to
-separately installed MCP sidecars over host-managed stdio or streamable HTTP
-for structured code retrieval and bounded large-output processing. They
-degrade cleanly when neither transport is configured; they never install,
-upgrade, purge, or otherwise manage sidecars. Configure the separately
-installed `jcodemunch-mcp` / `context-mode` commands or an HTTP endpoint as
-documented in [MCP integrations](docs/mcp-integrations.md#optional-local-sidecars).
+Bundled retrieval skills, `jcodemunch` and `context-mode`, are available by
+default and resolve to separately installed `jcodemunch-mcp` / `context-mode`
+commands over lazy host-managed stdio. User settings can override either
+transport or disable either skill; the skills also support streamable HTTP for
+structured code retrieval and bounded large-output processing. Missing
+sidecars produce diagnostics without installing, launching, upgrading,
+purging, or otherwise managing them. See [MCP integrations](docs/mcp-integrations.md#optional-local-sidecars).
 
 ### Extensions
 

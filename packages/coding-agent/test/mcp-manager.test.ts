@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
@@ -8,6 +8,36 @@ import { McpManager } from "../src/core/mcp/mcp-manager.js";
 import { StdioMcpClient } from "../src/core/mcp/stdio-mcp-client.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import type { McpServerConfig } from "../src/core/settings-manager.js";
+
+function writeMcpServerExecutable(path: string, toolNames: string[]): void {
+	writeFileSync(
+		path,
+		String.raw`#!/usr/bin/env node
+const toolNames = ${JSON.stringify(toolNames)};
+let input = "";
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+  while (input.includes("\n")) {
+    const index = input.indexOf("\n");
+    const line = input.slice(0, index).trim();
+    input = input.slice(index + 1);
+    if (!line) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      reply(message.id, { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "default", version: "1" } });
+    } else if (message.method === "tools/list") {
+      reply(message.id, { tools: toolNames.map((name) => ({ name, inputSchema: { type: "object" } })) });
+    } else if (message.method === "tools/call") {
+      reply(message.id, { content: [] });
+    }
+  }
+});
+`,
+	);
+	chmodSync(path, 0o755);
+}
 
 describe("McpManager", () => {
 	let tempDir: string;
@@ -29,6 +59,157 @@ describe("McpManager", () => {
 		const overrides = manager.getDisabledBuiltinSkillOverrides();
 		expect(overrides).toContain("-linear/SKILL.md");
 		expect(overrides).toContain("-notion/SKILL.md");
+	});
+
+	it("resolves bundled Python integrations as lazy stdio defaults", async () => {
+		const manager = new McpManager({ authStorage });
+		expect(manager.listStatus()).toEqual(
+			expect.arrayContaining([
+				{ server: "jcodemunch", label: "jCodeMunch", enabled: true, usesOAuth: false },
+				{ server: "context-mode", label: "Context Mode", enabled: true, usesOAuth: false },
+			]),
+		);
+		const handlers = manager.hostHandlers();
+		// Resolving the default config must not construct or launch either sidecar.
+		expect(await handlers["mcp.config"]({ server: "jcodemunch" })).toEqual({
+			type: "stdio",
+			bridge: "host",
+		});
+		expect(await handlers["mcp.config"]({ server: "context-mode" })).toEqual({
+			type: "stdio",
+			bridge: "host",
+		});
+		manager.disposeSync();
+	});
+
+	it("launches the default command only when its first tool is requested", async () => {
+		const marker = join(tempDir, "default-stdio-marker");
+		const executable = join(tempDir, "jcodemunch-mcp");
+		writeFileSync(
+			executable,
+			String.raw`#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const marker = process.env.MARKER;
+let input = "";
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+  while (input.includes("\n")) {
+    const index = input.indexOf("\n");
+    const line = input.slice(0, index).trim();
+    input = input.slice(index + 1);
+    if (!line) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      appendFileSync(marker, "started\n");
+      reply(message.id, { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "default", version: "1" } });
+    } else if (message.method === "tools/list") {
+      reply(message.id, { tools: [{ name: "search_symbols", inputSchema: { type: "object" } }] });
+    }
+  }
+});
+`,
+		);
+		chmodSync(executable, 0o755);
+		const previousPath = process.env.PATH;
+		const previousMarker = process.env.MARKER;
+		process.env.PATH = `${tempDir}:${previousPath ?? ""}`;
+		process.env.MARKER = marker;
+		const manager = new McpManager({ authStorage });
+		try {
+			expect(() => readFileSync(marker, "utf8")).toThrow();
+			expect(await manager.hostHandlers()["mcp.config"]({ server: "jcodemunch" })).toEqual({
+				type: "stdio",
+				bridge: "host",
+			});
+			expect(() => readFileSync(marker, "utf8")).toThrow();
+			expect((await manager.hostHandlers()["mcp.list_tools"]({ server: "jcodemunch" })).tools).toEqual([
+				expect.objectContaining({ name: "search_symbols" }),
+			]);
+			expect(readFileSync(marker, "utf8")).toBe("started\n");
+		} finally {
+			await manager.dispose();
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+			if (previousMarker === undefined) delete process.env.MARKER;
+			else process.env.MARKER = previousMarker;
+		}
+	});
+
+	it("enforces curated default tool surfaces for list and call", async () => {
+		const jcodemunchTools = [
+			"search_symbols",
+			"get_file_outline",
+			"get_symbol_source",
+			"get_context_bundle",
+			"get_ranked_context",
+			"find_references",
+			"find_importers",
+			"get_blast_radius",
+			"get_changed_symbols",
+			"plan_turn",
+			"assemble_task_context",
+		];
+		const contextModeTools = [
+			"ctx_execute",
+			"ctx_execute_file",
+			"ctx_index",
+			"ctx_search",
+			"ctx_fetch_and_index",
+			"ctx_batch_execute",
+		];
+		writeMcpServerExecutable(join(tempDir, "jcodemunch-mcp"), [...jcodemunchTools, "index_repo", "summarize_repo"]);
+		writeMcpServerExecutable(join(tempDir, "context-mode"), [...contextModeTools, "ctx_upgrade", "ctx_purge"]);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${tempDir}:${previousPath ?? ""}`;
+		const manager = new McpManager({ authStorage });
+		try {
+			const handlers = manager.hostHandlers();
+			for (const [server, allowedTools, blockedTools] of [
+				["jcodemunch", jcodemunchTools, ["index_repo", "summarize_repo"]],
+				["context-mode", contextModeTools, ["ctx_upgrade", "ctx_purge"]],
+			] as const) {
+				const result = await handlers["mcp.list_tools"]({ server });
+				const listedTools = (result.tools as Array<{ name: string }> | undefined)?.map((tool) => tool.name);
+				expect(listedTools).toEqual(allowedTools);
+				for (const tool of blockedTools) {
+					await expect(handlers["mcp.call_tool"]({ server, tool })).rejects.toThrow("not allowed");
+				}
+			}
+		} finally {
+			await manager.dispose();
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+		}
+	});
+
+	it("allows settings to override or disable bundled local integrations", async () => {
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({
+				jcodemunch: {
+					type: "http",
+					url: "https://proxy.test/jcodemunch",
+					enabledTools: ["search_symbols"],
+					disabledTools: ["get_blast_radius"],
+				},
+				"context-mode": {
+					type: "stdio",
+					command: process.execPath,
+					enabled: false,
+				},
+			}),
+		});
+		const handlers = manager.hostHandlers();
+		expect(await handlers["mcp.config"]({ server: "jcodemunch" })).toEqual({
+			url: "https://proxy.test/jcodemunch",
+			enabledTools: ["search_symbols"],
+			disabledTools: ["get_blast_radius"],
+		});
+		expect(await handlers["mcp.config"]({ server: "context-mode" })).toEqual({ enabled: false });
+		expect(manager.listStatus().find((status) => status.server === "context-mode")?.enabled).toBe(false);
+		manager.disposeSync();
 	});
 
 	it("enables an integration once credentials are stored", () => {

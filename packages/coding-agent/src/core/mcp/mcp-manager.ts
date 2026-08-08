@@ -44,6 +44,38 @@ interface ResolvedIntegration {
 	userDeclared?: boolean;
 }
 
+const DEFAULT_LOCAL_MCP_SERVERS = {
+	jcodemunch: {
+		label: "jCodeMunch",
+		command: "jcodemunch-mcp",
+		enabledTools: [
+			"search_symbols",
+			"get_file_outline",
+			"get_symbol_source",
+			"get_context_bundle",
+			"get_ranked_context",
+			"find_references",
+			"find_importers",
+			"get_blast_radius",
+			"get_changed_symbols",
+			"plan_turn",
+			"assemble_task_context",
+		],
+	},
+	"context-mode": {
+		label: "Context Mode",
+		command: "context-mode",
+		enabledTools: [
+			"ctx_execute",
+			"ctx_execute_file",
+			"ctx_index",
+			"ctx_search",
+			"ctx_fetch_and_index",
+			"ctx_batch_execute",
+		],
+	},
+} as const;
+
 const liveMcpManagers = new Set<McpManager>();
 let mcpExitCleanupInstalled = false;
 
@@ -118,6 +150,21 @@ export class McpManager {
 				type: "http",
 				url: entry.url,
 				usesOAuth: entry.oauth?.kind === "oauth",
+			});
+		}
+		// These bundled Python skills are available without a settings entry. The
+		// command is only passed to StdioMcpClient here; construction does not spawn.
+		for (const [server, { label, command, enabledTools }] of Object.entries(DEFAULT_LOCAL_MCP_SERVERS)) {
+			integrations.set(server, {
+				server,
+				label,
+				type: "stdio",
+				command,
+				args: [],
+				cwd: this.cwd,
+				env: {},
+				enabledTools: [...enabledTools],
+				usesOAuth: false,
 			});
 		}
 		for (const [server, config] of Object.entries(this.getUserServers() ?? {})) {
