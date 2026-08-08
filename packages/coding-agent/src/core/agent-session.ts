@@ -7906,7 +7906,8 @@ export class AgentSession {
 		compactionTimestamp: number | undefined,
 	): number | undefined {
 		const messages = this.agent.state.messages;
-		const estimate = estimateContextTokens(messages);
+		const estimate = estimateContextTokens(messages, this.model);
+		if (estimate.tokens === null) return undefined;
 		if (estimate.lastUsageIndex !== null) {
 			// Verify the usage source is post-compaction. Kept pre-compaction messages
 			// have stale usage reflecting the old (larger) context and would falsely
@@ -8902,8 +8903,7 @@ export class AgentSession {
 
 	/** Context size (tokens) of this session's latest assistant turn, for live subagent display. */
 	_contextTokensForCurrentMessages(): number | undefined {
-		const last = this._findLastAssistantMessage();
-		return last ? calculateContextTokens(last.usage) : undefined;
+		return estimateContextTokens(this.messages, this.model).tokens ?? undefined;
 	}
 
 	setCurrentRecap(recap: string | undefined): void {
@@ -11002,7 +11002,8 @@ export class AgentSession {
 			}
 		}
 
-		const estimate = estimateContextTokens(this.messages);
+		const estimate = estimateContextTokens(this.messages, model);
+		if (estimate.tokens === null) return { tokens: null, contextWindow, percent: null };
 		const percent = (estimate.tokens / contextWindow) * 100;
 
 		return {

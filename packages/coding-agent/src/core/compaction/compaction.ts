@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
@@ -175,41 +175,80 @@ export function getLastAssistantUsage(entries: SessionEntry[]): Usage | undefine
 }
 
 export interface ContextUsageEstimate {
-	tokens: number;
-	usageTokens: number;
+	tokens: number | null;
+	usageTokens: number | null;
 	trailingTokens: number;
 	lastUsageIndex: number | null;
 }
 
+interface ContextModel {
+	api?: Api;
+	provider: string;
+	id: string;
+	baseUrl?: string;
+}
+
+interface AssistantUsageInfo {
+	usage: Usage;
+	index: number;
+	contextTokens?: number | null;
+}
+
+function normalizeContextBaseUrl(baseUrl: string): string {
+	let end = baseUrl.length;
+	while (end > 0 && baseUrl[end - 1] === "/") end--;
+	return baseUrl.slice(0, end);
+}
+
 function getLastAssistantUsageInfo(
 	messages: AgentMessage[],
-): { usage: Usage; index: number; compactedTokens?: number } | undefined {
+	currentModel?: ContextModel,
+): AssistantUsageInfo | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i];
 		const usage = getAssistantUsage(message);
-		if (usage) {
-			const assistant = message as AssistantMessage;
-			const compactedTokens = assistant.openaiCompaction
-				? estimateTokens(message) + Math.ceil(assistant.openaiCompaction.encrypted_content.length / 4)
-				: undefined;
-			return { usage, index: i, compactedTokens };
+		if (!usage) continue;
+
+		const assistant = message as AssistantMessage;
+		if (currentModel) {
+			const isCurrentModel =
+				assistant.provider === currentModel.provider &&
+				assistant.model === currentModel.id &&
+				(currentModel.api === undefined || assistant.api === currentModel.api);
+			if (!isCurrentModel) continue;
 		}
+
+		const scope = assistant.contextTokenScope;
+		const scopeMatches =
+			scope !== undefined &&
+			(!currentModel ||
+				(scope.provider === currentModel.provider &&
+					scope.model === currentModel.id &&
+					(currentModel.api === undefined || scope.api === currentModel.api) &&
+					(currentModel.baseUrl === undefined ||
+						normalizeContextBaseUrl(scope.baseUrl) === normalizeContextBaseUrl(currentModel.baseUrl))));
+		if (scope && !scopeMatches) continue;
+		return { usage, index: i, contextTokens: assistant.contextTokens };
 	}
 	return undefined;
 }
 
+export function estimateMessageTokens(messages: AgentMessage[]): number {
+	let total = 0;
+	for (const message of messages) total += estimateTokens(message);
+	return total;
+}
+
 /**
- * Estimate context tokens from messages, using the last assistant usage when available.
- * If there are messages after the last usage, estimate their tokens with estimateTokens.
+ * Estimate context tokens from messages, using the latest successful response
+ * from the current model when available. A server checkpoint makes the count
+ * unknown until that model responds again.
  */
-export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEstimate {
-	const usageInfo = getLastAssistantUsageInfo(messages);
+export function estimateContextTokens(messages: AgentMessage[], currentModel?: ContextModel): ContextUsageEstimate {
+	const usageInfo = getLastAssistantUsageInfo(messages, currentModel);
 
 	if (!usageInfo) {
-		let estimated = 0;
-		for (const message of messages) {
-			estimated += estimateTokens(message);
-		}
+		const estimated = estimateMessageTokens(messages);
 		return {
 			tokens: estimated,
 			usageTokens: 0,
@@ -218,18 +257,25 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 		};
 	}
 
-	const usageTokens = usageInfo.compactedTokens ?? calculateContextTokens(usageInfo.usage);
+	const usageTokens =
+		usageInfo.contextTokens === null ? null : (usageInfo.contextTokens ?? calculateContextTokens(usageInfo.usage));
 	let trailingTokens = 0;
 	for (let i = usageInfo.index + 1; i < messages.length; i++) {
 		trailingTokens += estimateTokens(messages[i]);
 	}
 
 	return {
-		tokens: usageTokens + trailingTokens,
+		tokens: usageTokens === null ? null : usageTokens + trailingTokens,
 		usageTokens,
 		trailingTokens,
 		lastUsageIndex: usageInfo.index,
 	};
+}
+
+export function getServerCompactionThreshold(contextWindow: number, settings: CompactionSettings): number | undefined {
+	if (!settings.enabled) return undefined;
+	const threshold = contextWindow - settings.reserveTokens;
+	return Number.isSafeInteger(threshold) && threshold > 0 ? threshold : undefined;
 }
 
 /**
@@ -668,7 +714,9 @@ export function prepareCompaction(
 	}
 	const boundaryEnd = pathEntries.length;
 
-	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
+	const contextMessages = buildSessionContext(pathEntries).messages;
+	const contextEstimate = estimateContextTokens(contextMessages);
+	const tokensBefore = contextEstimate.tokens ?? estimateMessageTokens(contextMessages);
 
 	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
 

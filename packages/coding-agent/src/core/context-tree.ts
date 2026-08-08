@@ -144,7 +144,12 @@ function computeContextUsageFromEntries(
 		}
 	}
 
-	const estimate = estimateContextTokens(buildSessionContext(allEntries).messages);
+	const context = buildSessionContext(allEntries);
+	const currentModel = context.model ? { provider: context.model.provider, id: context.model.modelId } : undefined;
+	const estimate = estimateContextTokens(context.messages, currentModel);
+	if (estimate.tokens === null) {
+		return { tokens: null, contextWindow, percent: null };
+	}
 	if (estimate.tokens <= 0) {
 		return undefined;
 	}

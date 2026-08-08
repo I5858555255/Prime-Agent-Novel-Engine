@@ -86,6 +86,8 @@ export interface StreamOptions {
 	 */
 	transport?: Transport;
 	serviceTier?: ServiceTier;
+	/** Provider-managed compaction threshold. Ignored by providers that do not support it. */
+	serverCompactionThreshold?: number;
 	/**
 	 * Prompt cache retention preference. Providers map this to their supported values.
 	 * Default: "short".
@@ -220,6 +222,19 @@ export interface OpenAICompactionItem {
 	encrypted_content: string;
 }
 
+export interface ContextTokenScope {
+	api: Api;
+	provider: string;
+	model: string;
+	baseUrl: string;
+}
+
+export interface OpenAICompactionCheckpoint {
+	item: OpenAICompactionItem;
+	contentIndex: number;
+	sourceBaseUrl: string;
+}
+
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
 export interface UserMessage {
@@ -236,8 +251,11 @@ export interface AssistantMessage {
 	model: string;
 	responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
-	/** Replayed only to the same OpenAI provider and model that created it. */
-	openaiCompaction?: OpenAICompactionItem;
+	/** Replayed only to the same OpenAI provider, model, and endpoint that created it. */
+	openaiCompaction?: OpenAICompactionCheckpoint;
+	/** Context tokens represented by this message. null means the provider changed the context without reporting its new size. */
+	contextTokenScope?: ContextTokenScope;
+	contextTokens?: number | null;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
@@ -341,6 +359,13 @@ export interface OpenAIResponsesCompat {
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
 	supportsLongCacheRetention?: boolean;
+	/** Whether the endpoint supports server-side compaction. Defaults to true only for the official endpoint. */
+	supportsServerCompaction?: boolean;
+}
+
+export interface OpenAICodexResponsesCompat {
+	/** Whether the endpoint supports server-side compaction. Defaults to true only for the official endpoint. */
+	supportsServerCompaction?: boolean;
 }
 
 /** Compatibility settings for Anthropic Messages-compatible APIs. */
@@ -474,7 +499,9 @@ export interface Model<TApi extends Api> {
 		? OpenAICompletionsCompat
 		: TApi extends "openai-responses"
 			? OpenAIResponsesCompat
-			: TApi extends "anthropic-messages"
-				? AnthropicMessagesCompat
-				: never;
+			: TApi extends "openai-codex-responses"
+				? OpenAICodexResponsesCompat
+				: TApi extends "anthropic-messages"
+					? AnthropicMessagesCompat
+					: never;
 }

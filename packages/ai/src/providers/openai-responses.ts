@@ -23,7 +23,14 @@ import {
 } from "../utils/stream-failure.js";
 import { isCloudflareProvider, resolveCloudflareBaseUrl } from "./cloudflare.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
+import {
+	convertResponsesMessages,
+	convertResponsesTools,
+	getOpenAIContextTokenScope,
+	processResponsesStream,
+	supportsOpenAIServerCompaction,
+	usesOpenAICompactionCheckpoint,
+} from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
@@ -46,6 +53,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 	return {
 		sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+		supportsServerCompaction: supportsOpenAIServerCompaction(model),
 	};
 }
 
@@ -92,6 +100,9 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
+		if (usesOpenAICompactionCheckpoint(model, context)) {
+			output.contextTokenScope = getOpenAIContextTokenScope(model);
+		}
 
 		try {
 			// Create OpenAI client
@@ -235,6 +246,10 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		prompt_cache_retention: getPromptCacheRetention(compat, cacheRetention),
 		store: false,
 	};
+
+	if (options?.serverCompactionThreshold !== undefined && supportsOpenAIServerCompaction(model)) {
+		params.context_management = [{ type: "compaction", compact_threshold: options.serverCompactionThreshold }];
+	}
 
 	if (options?.maxTokens) {
 		params.max_output_tokens = options?.maxTokens;

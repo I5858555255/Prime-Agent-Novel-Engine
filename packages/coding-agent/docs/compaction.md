@@ -18,7 +18,7 @@ Prime Agent has three context-management mechanisms:
 | Mechanism | Trigger | Purpose |
 |-----------|---------|---------|
 | OpenAI server compaction | OpenAI context exceeds threshold | Replace old OpenAI input with an opaque encrypted checkpoint |
-| Local compaction | Non-OpenAI context exceeds threshold, overflow fallback, or `/compact` | Summarize old messages to free up context |
+| Local compaction | Context without a usable server checkpoint exceeds the threshold, overflow fallback, or `/compact` | Summarize old messages to free up context |
 | Branch summarization | `/tree` navigation | Preserve context when switching branches |
 
 Local compaction and branch summarization use the same structured summary format and track file operations cumulatively.
@@ -39,17 +39,17 @@ You can also trigger manually with `/compact [instructions]`, where optional ins
 
 ### OpenAI Server Compaction
 
-For the built-in `openai` Responses API and `openai-codex` subscription providers, auto-compaction uses OpenAI's server-side compaction. Prime Agent adds this request configuration:
+For the built-in `openai` Responses API and `openai-codex` subscription providers on their official endpoints, auto-compaction uses OpenAI's server-side compaction. Custom endpoints must explicitly set `compat.supportsServerCompaction` because checkpoints are endpoint-specific. Prime Agent adds this request configuration:
 
 ```json
 {
   "context_management": [
-    { "type": "compaction", "compact_threshold": "contextWindow - reserveTokens" }
+    { "type": "compaction", "compact_threshold": 255616 }
   ]
 }
 ```
 
-When OpenAI returns a compaction item, Prime Agent stores its opaque `encrypted_content` on the assistant message. The next request to the same provider and model starts with that item and omits earlier input. Prime Agent keeps the complete local session history, so switching models still has the original messages available instead of replaying an OpenAI checkpoint that another model cannot read.
+When OpenAI returns a compaction item, Prime Agent stores the opaque item together with its position in the response and the source endpoint. The next request to the same provider, model, and endpoint starts with that item, omits earlier input, and preserves any response content emitted after the item. Prime Agent keeps the complete local session history, so switching models still has the original messages available instead of replaying an OpenAI checkpoint that another model cannot read.
 
 Setting `compaction.enabled` to `false` disables this request configuration. Manual `/compact` remains the readable local summarizer. Local compaction also remains the recovery path if an OpenAI request reaches a context overflow without producing a usable compaction item.
 

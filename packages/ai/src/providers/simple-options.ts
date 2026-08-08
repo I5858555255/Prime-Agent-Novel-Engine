@@ -8,6 +8,7 @@ export function buildBaseOptions(model: Model<Api>, options?: SimpleStreamOption
 		apiKey: apiKey || options?.apiKey,
 		transport: options?.transport,
 		serviceTier: options?.serviceTier,
+		serverCompactionThreshold: options?.serverCompactionThreshold,
 		cacheRetention: options?.cacheRetention,
 		sessionId: options?.sessionId,
 		headers: options?.headers,

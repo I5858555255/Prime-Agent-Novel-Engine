@@ -1,7 +1,6 @@
 import type OpenAI from "openai";
 import type {
 	Tool as OpenAITool,
-	ResponseCompactionItem,
 	ResponseCreateParamsStreaming,
 	ResponseFunctionCallOutputItemList,
 	ResponseFunctionToolCall,
@@ -18,6 +17,7 @@ import type {
 	Api,
 	AssistantMessage,
 	Context,
+	ContextTokenScope,
 	ImageContent,
 	Model,
 	StopReason,
@@ -85,6 +85,52 @@ export interface ConvertResponsesToolsOptions {
 	strict?: boolean | null;
 }
 
+type ServerCompactionModel = Model<"openai-responses"> | Model<"openai-codex-responses">;
+
+function normalizeBaseUrl(baseUrl: string): string {
+	return baseUrl.replace(/\/+$/, "");
+}
+
+export function supportsOpenAIServerCompaction(model: ServerCompactionModel): boolean {
+	const configured = model.compat?.supportsServerCompaction;
+	if (configured !== undefined) return configured;
+
+	const baseUrl = normalizeBaseUrl(model.baseUrl);
+	if (model.api === "openai-responses") {
+		return model.provider === "openai" && baseUrl === "https://api.openai.com/v1";
+	}
+	return model.provider === "openai-codex" && baseUrl === "https://chatgpt.com/backend-api";
+}
+
+export function getOpenAIContextTokenScope(
+	model: Pick<Model<Api>, "api" | "provider" | "id" | "baseUrl">,
+): ContextTokenScope {
+	return {
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		baseUrl: normalizeBaseUrl(model.baseUrl),
+	};
+}
+
+export function hasCompatibleOpenAICompactionCheckpoint(
+	message: AssistantMessage,
+	model: Pick<Model<Api>, "api" | "provider" | "id" | "baseUrl">,
+): boolean {
+	return (
+		message.provider === model.provider &&
+		message.api === model.api &&
+		message.model === model.id &&
+		message.openaiCompaction?.sourceBaseUrl === normalizeBaseUrl(model.baseUrl)
+	);
+}
+
+export function usesOpenAICompactionCheckpoint(model: Model<Api>, context: Context): boolean {
+	return context.messages.some(
+		(message) => message.role === "assistant" && hasCompatibleOpenAICompactionCheckpoint(message, model),
+	);
+}
+
 // =============================================================================
 // Message conversion
 // =============================================================================
@@ -126,13 +172,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	let replayStart = 0;
 	for (let i = transformedMessages.length - 1; i >= 0; i--) {
 		const message = transformedMessages[i];
-		if (
-			message.role === "assistant" &&
-			message.provider === model.provider &&
-			message.api === model.api &&
-			message.model === model.id &&
-			message.openaiCompaction
-		) {
+		if (message.role === "assistant" && hasCompatibleOpenAICompactionCheckpoint(message, model)) {
 			replayStart = i;
 			break;
 		}
@@ -179,20 +219,17 @@ export function convertResponsesMessages<TApi extends Api>(
 		} else if (msg.role === "assistant") {
 			const output: ResponseInput = [];
 			const assistantMsg = msg as AssistantMessage;
-			if (
-				assistantMsg.provider === model.provider &&
-				assistantMsg.api === model.api &&
-				assistantMsg.model === model.id &&
-				assistantMsg.openaiCompaction
-			) {
-				output.push(assistantMsg.openaiCompaction);
-			}
+			const checkpoint = hasCompatibleOpenAICompactionCheckpoint(assistantMsg, model)
+				? assistantMsg.openaiCompaction
+				: undefined;
+			if (checkpoint) output.push(checkpoint.item);
 			const isDifferentModel =
 				assistantMsg.model !== model.id &&
 				assistantMsg.provider === model.provider &&
 				assistantMsg.api === model.api;
 
-			for (const block of msg.content) {
+			const content = checkpoint ? msg.content.slice(checkpoint.contentIndex) : msg.content;
+			for (const block of content) {
 				if (block.type === "thinking") {
 					if (block.thinkingSignature) {
 						const reasoningItem = JSON.parse(block.thinkingSignature) as ResponseReasoningItem;
@@ -464,12 +501,17 @@ export async function processResponsesStream<TApi extends Api>(
 			const item = event.item;
 
 			if (item.type === "compaction") {
-				const compaction = item as ResponseCompactionItem;
 				output.openaiCompaction = {
-					type: "compaction",
-					id: compaction.id,
-					encrypted_content: compaction.encrypted_content,
+					item: {
+						type: "compaction",
+						id: item.id,
+						encrypted_content: item.encrypted_content,
+					},
+					contentIndex: blocks.length,
+					sourceBaseUrl: normalizeBaseUrl(model.baseUrl),
 				};
+				output.contextTokens = null;
+				output.contextTokenScope = getOpenAIContextTokenScope(model);
 			} else if (item.type === "reasoning" && currentBlock?.type === "thinking") {
 				const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";
 				const contentText = item.content?.map((c) => c.text).join("\n\n") || "";
@@ -517,7 +559,7 @@ export async function processResponsesStream<TApi extends Api>(
 				currentBlock = null;
 				stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
 			}
-		} else if (event.type === "response.completed") {
+		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
 			const response = event.response;
 			if (response?.id) {
 				output.responseId = response.id;

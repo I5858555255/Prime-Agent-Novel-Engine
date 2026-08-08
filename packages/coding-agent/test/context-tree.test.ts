@@ -171,6 +171,30 @@ describe("loadContextTreeChildrenFromDisk", () => {
 		expect(nodes[0].contextUsage).toEqual({ tokens: null, contextWindow: 200000, percent: null });
 	});
 
+	it("reports unknown persisted context after a server checkpoint", () => {
+		const rlmDir = makeTempDir();
+		const child = writeChildSession(join(rlmDir, "sub-srvcmp01"), "server compact", createUsage(1500, 500, 0.02));
+		child.sessionManager.appendMessage({
+			...createAssistantMessage("after checkpoint", createUsage(1500, 500, 0.02)),
+			openaiCompaction: {
+				item: { type: "compaction", id: "cmp_1", encrypted_content: "opaque" },
+				contentIndex: 0,
+				sourceBaseUrl: model.baseUrl,
+			},
+			contextTokenScope: {
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				baseUrl: model.baseUrl,
+			},
+			contextTokens: null,
+		});
+		child.sessionManager.appendMessage(createUserMessage("trailing input"));
+
+		const nodes = loadContextTreeChildrenFromDisk(rlmDir, resolveContextWindow);
+		expect(nodes[0].contextUsage).toEqual({ tokens: null, contextWindow: 200000, percent: null });
+	});
+
 	it("derives error and cancelled status from the last assistant stop reason", () => {
 		const rlmDir = makeTempDir();
 		const errored = writeChildSession(join(rlmDir, "sub-err00001"), "fail", createUsage(100, 10, 0.01));
@@ -357,6 +381,30 @@ describe("AgentSession.getContextTree", () => {
 		expect(tree.ownUsage.cost.total).toBeCloseTo(0.3);
 		// In-memory session, no rlm dir: completed children cannot be discovered.
 		expect(tree.children).toEqual([]);
+	});
+
+	it("keeps live context unknown after a server checkpoint", () => {
+		const { session, sessionManager } = createSession();
+		sessionManager.appendMessage(createUserMessage("work"));
+		sessionManager.appendMessage({
+			...createAssistantMessage("after checkpoint", createUsage(1500, 500, 0.02)),
+			openaiCompaction: {
+				item: { type: "compaction", id: "cmp_1", encrypted_content: "opaque" },
+				contentIndex: 0,
+				sourceBaseUrl: model.baseUrl,
+			},
+			contextTokenScope: {
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				baseUrl: model.baseUrl,
+			},
+			contextTokens: null,
+		});
+		syncAgentMessages(session, sessionManager);
+
+		expect(session._contextTokensForCurrentMessages()).toBeUndefined();
+		expect(session.getContextUsage()).toEqual({ tokens: null, contextWindow: model.contextWindow, percent: null });
 	});
 
 	it("keeps pre-compaction spend in the totals after compaction", () => {

@@ -893,7 +893,13 @@ interface OpenAICompletionsCompat {
 }
 
 interface OpenAIResponsesCompat {
-  // Reserved for future use
+  sendSessionIdHeader?: boolean;
+  supportsLongCacheRetention?: boolean;
+  supportsServerCompaction?: boolean;
+}
+
+interface OpenAICodexResponsesCompat {
+  supportsServerCompaction?: boolean;
 }
 ```
 
@@ -905,7 +911,7 @@ If `compat` is not set, the library falls back to URL-based detection. If `compa
 
 ### Type Safety
 
-Models are typed by their API, which keeps the model metadata accurate. Provider-specific option types are enforced when you call the provider functions directly. The generic `stream` and `complete` functions accept `StreamOptions` with additional provider fields.
+Models are typed by their API, which keeps the model metadata accurate. Provider-specific option types are enforced when you call the provider functions directly. The generic `stream` and `complete` functions accept `StreamOptions` with additional provider fields. Set `serverCompactionThreshold` to request provider-managed compaction at a token threshold; unsupported providers ignore it. Official OpenAI Responses and Codex endpoints support it by default, while custom endpoints require `compat.supportsServerCompaction: true`.
 
 ```typescript
 import { streamAnthropic, type AnthropicOptions } from 'prime-agent-ai';

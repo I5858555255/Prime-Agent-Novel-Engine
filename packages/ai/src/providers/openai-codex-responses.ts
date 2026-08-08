@@ -40,7 +40,14 @@ import {
 } from "../utils/diagnostics.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
+import {
+	convertResponsesMessages,
+	convertResponsesTools,
+	getOpenAIContextTokenScope,
+	processResponsesStream,
+	supportsOpenAIServerCompaction,
+	usesOpenAICompactionCheckpoint,
+} from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
 // ============================================================================
@@ -92,6 +99,7 @@ interface RequestBody {
 	text?: { verbosity?: string };
 	include?: string[];
 	prompt_cache_key?: string;
+	context_management?: ResponseCreateParamsStreaming["context_management"];
 	[key: string]: unknown;
 }
 
@@ -149,6 +157,9 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
+		if (usesOpenAICompactionCheckpoint(model, context)) {
+			output.contextTokenScope = getOpenAIContextTokenScope(model);
+		}
 
 		try {
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
@@ -360,6 +371,10 @@ function buildRequestBody(
 		tool_choice: "auto",
 		parallel_tool_calls: true,
 	};
+
+	if (options?.serverCompactionThreshold !== undefined && supportsOpenAIServerCompaction(model)) {
+		body.context_management = [{ type: "compaction", compact_threshold: options.serverCompactionThreshold }];
+	}
 
 	if (options?.temperature !== undefined) {
 		body.temperature = options.temperature;
