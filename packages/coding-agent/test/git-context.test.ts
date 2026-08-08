@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { captureGitContext, gitContextsEqual } from "../src/utils/git.js";
 
 function git(cwd: string, ...args: string[]): string {
-	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+	const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+	if (result.error) throw result.error;
+	return result.stdout.trim();
 }
 
 function initRepo(dir: string): void {

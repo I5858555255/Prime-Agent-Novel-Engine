@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
@@ -12,6 +12,12 @@ import {
 } from "../../src/core/autonomous.js";
 import type { AgentCronJob } from "../../src/core/cron-jobs.js";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.js";
+
+function safeExec(command: string, args: string[], options?: any) {
+	const result = spawnSync(command, args, options);
+	if (result.error) throw result.error;
+	return result;
+}
 
 function isProcessRunning(pid: number): boolean {
 	try {
@@ -178,13 +184,13 @@ describe("AgentSession autonomous mode", () => {
 	it("continues after a git worktree change instead of letting the agent self-terminate", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		execFileSync("git", ["init"], { cwd: harness.tempDir, stdio: "ignore" });
-		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: harness.tempDir });
-		execFileSync("git", ["config", "user.name", "Test User"], { cwd: harness.tempDir });
+		safeExec("git", ["init"], { cwd: harness.tempDir, stdio: "ignore" });
+		safeExec("git", ["config", "user.email", "test@example.com"], { cwd: harness.tempDir });
+		safeExec("git", ["config", "user.name", "Test User"], { cwd: harness.tempDir });
 		const path = join(harness.tempDir, "file.txt");
 		writeFileSync(path, "before\n");
-		execFileSync("git", ["add", "file.txt"], { cwd: harness.tempDir });
-		execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
+		safeExec("git", ["add", "file.txt"], { cwd: harness.tempDir });
+		safeExec("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
 			cwd: harness.tempDir,
 			stdio: "ignore",
 		});
@@ -337,13 +343,13 @@ describe("AgentSession autonomous mode", () => {
 
 	it("advances retry budget without rerunning a failed autonomous gate until the workspace changes", async () => {
 		const tempDir = join(process.cwd(), `.tmp-autonomous-gate-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		execFileSync("mkdir", ["-p", join(tempDir, "verification")]);
-		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
-		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
-		execFileSync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+		safeExec("mkdir", ["-p", join(tempDir, "verification")]);
+		safeExec("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		safeExec("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+		safeExec("git", ["config", "user.name", "Test User"], { cwd: tempDir });
 		writeFileSync(join(tempDir, "src.rs"), "initial\n");
-		execFileSync("git", ["add", "src.rs"], { cwd: tempDir });
-		execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
+		safeExec("git", ["add", "src.rs"], { cwd: tempDir });
+		safeExec("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
 			cwd: tempDir,
 			stdio: "ignore",
 		});
@@ -375,13 +381,13 @@ describe("AgentSession autonomous mode", () => {
 			process.cwd(),
 			`.tmp-autonomous-untracked-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
-		execFileSync("mkdir", ["-p", tempDir]);
-		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
-		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
-		execFileSync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+		safeExec("mkdir", ["-p", tempDir]);
+		safeExec("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		safeExec("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+		safeExec("git", ["config", "user.name", "Test User"], { cwd: tempDir });
 		writeFileSync(join(tempDir, "src.rs"), "initial\n");
-		execFileSync("git", ["add", "src.rs"], { cwd: tempDir });
-		execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
+		safeExec("git", ["add", "src.rs"], { cwd: tempDir });
+		safeExec("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
 			cwd: tempDir,
 			stdio: "ignore",
 		});
@@ -429,8 +435,8 @@ describe("AgentSession autonomous mode", () => {
 			process.cwd(),
 			`.tmp-autonomous-process-tree-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
-		execFileSync("mkdir", ["-p", tempDir]);
-		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		safeExec("mkdir", ["-p", tempDir]);
+		safeExec("git", ["init"], { cwd: tempDir, stdio: "ignore" });
 		const pidFile = join(tempDir, "descendant.pid");
 		const script = join(tempDir, "gate.cjs");
 		writeFileSync(
@@ -474,7 +480,7 @@ describe("AgentSession autonomous mode", () => {
 			},
 		});
 		harnesses.push(harness);
-		execFileSync("git", ["init"], { cwd: harness.tempDir, stdio: "ignore" });
+		safeExec("git", ["init"], { cwd: harness.tempDir, stdio: "ignore" });
 		const pidFile = join(harness.tempDir, "gate.pid");
 		let gatePid: number | undefined;
 		try {
@@ -520,13 +526,13 @@ describe("AgentSession autonomous mode", () => {
 			process.cwd(),
 			`.tmp-autonomous-post-snapshot-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
-		execFileSync("mkdir", ["-p", tempDir]);
-		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
-		execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
-		execFileSync("git", ["config", "user.name", "Test User"], { cwd: tempDir });
+		safeExec("mkdir", ["-p", tempDir]);
+		safeExec("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		safeExec("git", ["config", "user.email", "test@example.com"], { cwd: tempDir });
+		safeExec("git", ["config", "user.name", "Test User"], { cwd: tempDir });
 		writeFileSync(join(tempDir, "src.rs"), "initial\n");
-		execFileSync("git", ["add", "src.rs"], { cwd: tempDir });
-		execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
+		safeExec("git", ["add", "src.rs"], { cwd: tempDir });
+		safeExec("git", ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "initial"], {
 			cwd: tempDir,
 			stdio: "ignore",
 		});

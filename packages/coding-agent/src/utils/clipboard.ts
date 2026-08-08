@@ -1,4 +1,4 @@
-import { execSync, spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { platform } from "os";
 import { isWaylandSession } from "./clipboard-image.js";
 import { clipboard } from "./clipboard-native.js";
@@ -7,13 +7,16 @@ type NativeClipboardExecOptions = {
 	input: string;
 	timeout: number;
 	stdio: ["pipe", "ignore", "ignore"];
+	encoding: "buffer";
 };
 
 function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
-	try {
-		execSync("xclip -selection clipboard", options);
-	} catch {
-		execSync("xsel --clipboard --input", options);
+	const xclipResult = spawnSync("xclip", ["-selection", "clipboard"], options);
+	if (xclipResult.error || xclipResult.status !== 0) {
+		const xselResult = spawnSync("xsel", ["--clipboard", "--input"], options);
+		if (xselResult.error || xselResult.status !== 0) {
+			throw new Error("Failed to copy using xclip and xsel");
+		}
 	}
 }
 
@@ -61,25 +64,26 @@ export async function copyToClipboard(text: string): Promise<void> {
 		return;
 	}
 
-	const options: NativeClipboardExecOptions = { input: text, timeout: 5000, stdio: ["pipe", "ignore", "ignore"] };
+	const options: NativeClipboardExecOptions = {
+		input: text,
+		timeout: 5000,
+		stdio: ["pipe", "ignore", "ignore"],
+		encoding: "buffer",
+	};
 
 	if (!copied) {
 		try {
 			if (p === "darwin") {
-				execSync("pbcopy", options);
-				copied = true;
+				const result = spawnSync("pbcopy", [], options);
+				if (result.status === 0) copied = true;
 			} else if (p === "win32") {
-				execSync("clip", options);
-				copied = true;
+				const result = spawnSync("clip", [], options);
+				if (result.status === 0) copied = true;
 			} else {
 				// Linux. Try Termux, Wayland, or X11 clipboard tools.
 				if (process.env.TERMUX_VERSION) {
-					try {
-						execSync("termux-clipboard-set", options);
-						copied = true;
-					} catch {
-						// Fall back to Wayland or X11 tools.
-					}
+					const result = spawnSync("termux-clipboard-set", [], options);
+					if (result.status === 0) copied = true;
 				}
 
 				if (!copied) {
@@ -88,9 +92,11 @@ export async function copyToClipboard(text: string): Promise<void> {
 					const isWayland = isWaylandSession();
 					if (isWayland && hasWaylandDisplay) {
 						try {
-							// Verify wl-copy exists (spawn errors are async and won't be caught)
-							execSync("which wl-copy", { stdio: "ignore" });
-							// wl-copy with execSync hangs due to fork behavior; use spawn instead
+							// Verify wl-copy exists
+							const whichResult = spawnSync("which", ["wl-copy"], { stdio: "ignore" });
+							if (whichResult.status !== 0) throw new Error("wl-copy not found");
+
+							// wl-copy hangs with spawnSync due to fork behavior; use spawn instead
 							const proc = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
 							proc.stdin.on("error", () => {
 								// Ignore EPIPE errors if wl-copy exits early
