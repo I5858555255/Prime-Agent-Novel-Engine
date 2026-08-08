@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Added OpenAI Responses automatic server-side compaction with ordered, endpoint-matched checkpoint persistence and replay.
+- Added OpenAI Responses automatic server-side compaction with ordered, endpoint-matched checkpoint persistence and replay ([#913](https://github.com/PrimeIntellect-ai/prime-agent/pull/913) by [@paulbrav](https://github.com/paulbrav)).
 
 ## [0.7.1] - 2026-08-07
 
