@@ -222,7 +222,7 @@ RPC clients can use the same daemon-owned coordination features as the interacti
 
 | Command | Fields | Successful response data |
 |---------|--------|--------------------------|
-| `send_message` | `targetActiveSessionId`, `message`, optional `deliveryMode` (`auto`, `steer`, `follow_up`) | Agent-message delivery receipt |
+| `send_message` | `targetActiveSessionId`, `message` | Agent-message delivery receipt; messages always use steering delivery |
 | `agent_messages_status` | none | Messaging safety status |
 | `agent_messages_pause` | none | Updated messaging safety status |
 | `agent_messages_resume` | none | Updated messaging safety status |
