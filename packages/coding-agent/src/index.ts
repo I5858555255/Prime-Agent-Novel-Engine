@@ -14,9 +14,21 @@ export {
 	parseAgentRuntimeResultManifest,
 } from "./core/agent-git-worktree.js";
 export {
+	type AgentIntegrationGateResult,
+	type AgentIntegrationQualityGate,
+	type AgentIntegrationWorkspace,
+	AgentMergeManager,
+	type AgentMergeOutcome,
+	type AgentMergeRequest,
+	type AgentMergeResult,
+	type CreateAgentMergeManagerOptions,
+} from "./core/agent-merge-manager.js";
+export {
 	AGENT_RUNTIME_SCHEDULER_STATE_VERSION,
 	type AgentRuntimeAgentRecord,
 	type AgentRuntimeAgentStatus,
+	type AgentRuntimeIntegrationRecord,
+	type AgentRuntimeIntegrationStatus,
 	AgentRuntimeScheduler,
 	type AgentRuntimeSchedulerSnapshot,
 	type AgentRuntimeSchedulerSummary,

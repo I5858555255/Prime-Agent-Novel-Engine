@@ -1337,6 +1337,9 @@ export class AgentSession {
 				runId: this.sessionId,
 				statePath: schedulerArtifactDir ? join(schedulerArtifactDir, "agent-runtime-scheduler.json") : undefined,
 			});
+		if (this._rlmDepth === 0) {
+			void this._agentRuntimeScheduler.resumePendingIntegrations().catch(() => undefined);
+		}
 		// A resumed child may have replied before this process started; false would
 		// claim knowledge that is not present in the session transcript.
 		this._repliedToParentSinceTask =
@@ -9924,6 +9927,7 @@ export class AgentSession {
 				run.status = "done";
 				this._agentRuntimeScheduler.completeAgent(run.id);
 				this._agentRuntimeScheduler.transitionTask(run.id, "completed");
+				await this._agentRuntimeScheduler.integrateAgentWorkspace(run.id);
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();

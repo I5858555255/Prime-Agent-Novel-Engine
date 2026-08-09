@@ -142,6 +142,7 @@ describe("issue 1056 agent runtime scheduler phase two", () => {
 
 		const spawned = await parent.session.runRlmChild("Update shared.txt", { name: "isolated-writer" });
 		await expect.poll(() => scheduler.getAgent(spawned.rlm_child_id)?.status, { timeout: 10_000 }).toBe("completed");
+		await expect.poll(() => scheduler.getTask(spawned.rlm_child_id)?.status, { timeout: 10_000 }).toBe("integrated");
 		const agent = scheduler.getAgent(spawned.rlm_child_id);
 		expect(runtimeOptions?.cwd).toBe(agent?.worktreePath);
 		expect(runtimeOptions?.cwd).not.toBe(parent.tempDir);
@@ -161,10 +162,6 @@ describe("issue 1056 agent runtime scheduler phase two", () => {
 		expect(manifest.changedFiles).toEqual(["shared.txt"]);
 		expect(git(parent.tempDir, ["show", `${manifest.resultSha}:shared.txt`])).toBe("child version");
 		expect(child.session.messages.map(getMessageText).join("\n")).toContain("[agent runtime task contract]");
-		await expect(scheduler.cleanupAgentWorkspace(spawned.rlm_child_id)).rejects.toThrow(
-			"while task status is completed",
-		);
-
 		const restoredScheduler = new AgentRuntimeScheduler({
 			workspacePath: schedulerRoot,
 			runId: "run-session-phase-two",
@@ -173,8 +170,11 @@ describe("issue 1056 agent runtime scheduler phase two", () => {
 		expect(restoredScheduler.summary().workspaceAgents).toEqual([
 			expect.objectContaining({ id: spawned.rlm_child_id, candidateSha: manifest.resultSha }),
 		]);
-		restoredScheduler.transitionTask(spawned.rlm_child_id, "integrating");
-		restoredScheduler.transitionTask(spawned.rlm_child_id, "integrated");
+		expect(restoredScheduler.getIntegrationRecord(spawned.rlm_child_id)).toMatchObject({
+			status: "integrated",
+			candidateSha: manifest.resultSha,
+			resultSha: expect.any(String),
+		});
 		await restoredScheduler.cleanupAgentWorkspace(spawned.rlm_child_id);
 		expect(existsSync(agent!.worktreePath!)).toBe(false);
 		expect(restoredScheduler.getAgent(spawned.rlm_child_id)?.worktreeCleanedAt).toEqual(expect.any(String));

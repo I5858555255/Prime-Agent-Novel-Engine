@@ -1,13 +1,21 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
 	type AgentGitWorkspace,
 	AgentGitWorktreeManager,
 	type AgentRuntimeResultManifest,
 } from "./agent-git-worktree.js";
+import {
+	type AgentIntegrationGateResult,
+	type AgentIntegrationQualityGate,
+	type AgentIntegrationWorkspace,
+	AgentMergeManager,
+	type AgentMergeOutcome,
+} from "./agent-merge-manager.js";
 
-export const AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 2;
+export const AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 3;
 
 export type AgentRuntimeTaskStatus =
 	| "planned"
@@ -64,6 +72,29 @@ export interface AgentRuntimeSchedulerSnapshot {
 	updatedAt: string;
 	tasks: AgentRuntimeTaskRecord[];
 	agents: AgentRuntimeAgentRecord[];
+	integrationRecords: AgentRuntimeIntegrationRecord[];
+	integrationWorkspaces: AgentIntegrationWorkspace[];
+}
+
+export type AgentRuntimeIntegrationStatus = "queued" | "integrating" | AgentMergeOutcome;
+
+export interface AgentRuntimeIntegrationRecord {
+	taskId: string;
+	agentId: string;
+	repositoryId: string;
+	baseSha: string;
+	candidateSha: string;
+	status: AgentRuntimeIntegrationStatus;
+	queuedAt: string;
+	startedAt?: string;
+	completedAt?: string;
+	recoverySha?: string;
+	resultSha?: string;
+	attemptedSha?: string;
+	changedFiles: string[];
+	conflictFiles: string[];
+	gateResults: AgentIntegrationGateResult[];
+	error?: string;
 }
 
 export interface AgentRuntimeTaskReadiness {
@@ -82,6 +113,8 @@ export interface AgentRuntimeSchedulerSummary {
 	blockedTaskIds: string[];
 	activeAgents: AgentRuntimeAgentRecord[];
 	workspaceAgents: AgentRuntimeAgentRecord[];
+	integrationRecords: AgentRuntimeIntegrationRecord[];
+	integrationWorkspaces: AgentIntegrationWorkspace[];
 }
 
 export interface CreateAgentRuntimeSchedulerOptions {
@@ -89,6 +122,7 @@ export interface CreateAgentRuntimeSchedulerOptions {
 	runId: string;
 	statePath?: string;
 	now?: () => number;
+	integrationQualityGates?: AgentIntegrationQualityGate[];
 }
 
 export interface RegisterAgentRuntimeTaskInput {
@@ -126,6 +160,14 @@ const AGENT_STATUSES: readonly AgentRuntimeAgentStatus[] = [
 	"completed",
 	"failed",
 	"cancelled",
+];
+
+const INTEGRATION_STATUSES: readonly AgentRuntimeIntegrationStatus[] = [
+	"queued",
+	"integrating",
+	"integrated",
+	"conflict",
+	"failed",
 ];
 
 const TASK_TRANSITIONS: Readonly<Record<AgentRuntimeTaskStatus, ReadonlySet<AgentRuntimeTaskStatus>>> = {
@@ -196,6 +238,13 @@ function parseAgentStatus(value: unknown): AgentRuntimeAgentStatus {
 	return value as AgentRuntimeAgentStatus;
 }
 
+function parseIntegrationStatus(value: unknown): AgentRuntimeIntegrationStatus {
+	if (!INTEGRATION_STATUSES.includes(value as AgentRuntimeIntegrationStatus)) {
+		throw new Error("Agent runtime scheduler state has invalid integration status");
+	}
+	return value as AgentRuntimeIntegrationStatus;
+}
+
 function parseTask(value: unknown): AgentRuntimeTaskRecord {
 	if (!isRecord(value)) throw new Error("Agent runtime scheduler state has invalid task record");
 	return {
@@ -235,12 +284,74 @@ function parseAgent(value: unknown): AgentRuntimeAgentRecord {
 	};
 }
 
+function parseGateResult(value: unknown): AgentIntegrationGateResult {
+	if (!isRecord(value)) throw new Error("Agent runtime scheduler state has invalid gate result");
+	const args = stringArray(value, "args");
+	if (typeof value.passed !== "boolean" || typeof value.durationMs !== "number") {
+		throw new Error("Agent runtime scheduler state has invalid gate result fields");
+	}
+	if (value.exitCode !== null && typeof value.exitCode !== "number") {
+		throw new Error("Agent runtime scheduler state has invalid gate exitCode");
+	}
+	return {
+		id: requiredString(value, "id"),
+		command: requiredString(value, "command"),
+		args,
+		passed: value.passed,
+		exitCode: value.exitCode,
+		stdout: typeof value.stdout === "string" ? value.stdout : "",
+		stderr: typeof value.stderr === "string" ? value.stderr : "",
+		durationMs: value.durationMs,
+	};
+}
+
+function parseIntegrationRecord(value: unknown): AgentRuntimeIntegrationRecord {
+	if (!isRecord(value)) throw new Error("Agent runtime scheduler state has invalid integration record");
+	if (!Array.isArray(value.gateResults)) {
+		throw new Error("Agent runtime scheduler state has invalid integration gate results");
+	}
+	return {
+		taskId: requiredString(value, "taskId"),
+		agentId: requiredString(value, "agentId"),
+		repositoryId: requiredString(value, "repositoryId"),
+		baseSha: requiredString(value, "baseSha"),
+		candidateSha: requiredString(value, "candidateSha"),
+		status: parseIntegrationStatus(value.status),
+		queuedAt: requiredString(value, "queuedAt"),
+		startedAt: optionalString(value, "startedAt"),
+		completedAt: optionalString(value, "completedAt"),
+		recoverySha: optionalString(value, "recoverySha"),
+		resultSha: optionalString(value, "resultSha"),
+		attemptedSha: optionalString(value, "attemptedSha"),
+		changedFiles: stringArray(value, "changedFiles"),
+		conflictFiles: stringArray(value, "conflictFiles"),
+		gateResults: value.gateResults.map(parseGateResult),
+		error: optionalString(value, "error"),
+	};
+}
+
+function parseIntegrationWorkspace(value: unknown): AgentIntegrationWorkspace {
+	if (!isRecord(value)) throw new Error("Agent runtime scheduler state has invalid integration workspace");
+	return {
+		repositoryId: requiredString(value, "repositoryId"),
+		repositoryRoot: requiredString(value, "repositoryRoot"),
+		branch: requiredString(value, "branch"),
+		worktreePath: requiredString(value, "worktreePath"),
+		headSha: requiredString(value, "headSha"),
+	};
+}
+
 function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 	if (!isRecord(value)) throw new Error("Agent runtime scheduler state must be an object");
 	if (value.version !== AGENT_RUNTIME_SCHEDULER_STATE_VERSION) {
 		throw new Error(`Unsupported agent runtime scheduler state version: ${String(value.version)}`);
 	}
-	if (!Array.isArray(value.tasks) || !Array.isArray(value.agents)) {
+	if (
+		!Array.isArray(value.tasks) ||
+		!Array.isArray(value.agents) ||
+		!Array.isArray(value.integrationRecords) ||
+		!Array.isArray(value.integrationWorkspaces)
+	) {
 		throw new Error("Agent runtime scheduler state has invalid registry arrays");
 	}
 	const snapshot: AgentRuntimeSchedulerSnapshot = {
@@ -251,9 +362,19 @@ function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 		updatedAt: requiredString(value, "updatedAt"),
 		tasks: value.tasks.map(parseTask),
 		agents: value.agents.map(parseAgent),
+		integrationRecords: value.integrationRecords.map(parseIntegrationRecord),
+		integrationWorkspaces: value.integrationWorkspaces.map(parseIntegrationWorkspace),
 	};
 	assertUniqueIds(snapshot.tasks, "task");
 	assertUniqueIds(snapshot.agents, "agent");
+	assertUniqueIds(
+		snapshot.integrationRecords.map((record) => ({ id: record.taskId })),
+		"integration task",
+	);
+	assertUniqueIds(
+		snapshot.integrationWorkspaces.map((workspace) => ({ id: workspace.repositoryId })),
+		"integration repository",
+	);
 	return snapshot;
 }
 
@@ -284,12 +405,27 @@ function cloneAgent(agent: AgentRuntimeAgentRecord): AgentRuntimeAgentRecord {
 	return { ...agent };
 }
 
+function cloneIntegrationRecord(record: AgentRuntimeIntegrationRecord): AgentRuntimeIntegrationRecord {
+	return {
+		...record,
+		changedFiles: [...record.changedFiles],
+		conflictFiles: [...record.conflictFiles],
+		gateResults: record.gateResults.map((gate) => ({ ...gate, args: [...gate.args] })),
+	};
+}
+
 export class AgentRuntimeScheduler {
 	private readonly statePath?: string;
 	private readonly now: () => number;
 	private readonly tasks = new Map<string, AgentRuntimeTaskRecord>();
 	private readonly agents = new Map<string, AgentRuntimeAgentRecord>();
+	private readonly integrationRecords = new Map<string, AgentRuntimeIntegrationRecord>();
+	private readonly integrationWorkspaces = new Map<string, AgentIntegrationWorkspace>();
 	private readonly worktreeManager: AgentGitWorktreeManager;
+	private readonly mergeManager: AgentMergeManager;
+	private readonly integrationQualityGates: AgentIntegrationQualityGate[];
+	private readonly integrationOperations = new Map<string, Promise<AgentRuntimeIntegrationRecord>>();
+	private integrationTail: Promise<void> = Promise.resolve();
 	private state: AgentRuntimeSchedulerSnapshot;
 
 	constructor(options: CreateAgentRuntimeSchedulerOptions) {
@@ -301,6 +437,21 @@ export class AgentRuntimeScheduler {
 			preferredRoot: options.statePath ? resolve(dirname(options.statePath), "worktrees") : undefined,
 			now: this.now,
 		});
+		const integrationRoot = options.statePath
+			? resolve(dirname(options.statePath), "integration")
+			: resolve(
+					tmpdir(),
+					"prime-agent-integrations",
+					createHash("sha256")
+						.update(`${canonicalWorkspaceId(options.workspacePath)}\0${options.runId}`)
+						.digest("hex")
+						.slice(0, 16),
+				);
+		this.mergeManager = new AgentMergeManager({ runId: options.runId, preferredRoot: integrationRoot });
+		this.integrationQualityGates = (options.integrationQualityGates ?? []).map((gate) => ({
+			...gate,
+			args: gate.args ? [...gate.args] : undefined,
+		}));
 		const workspaceId = canonicalWorkspaceId(options.workspacePath);
 		const loaded = this.loadState();
 		if (loaded) {
@@ -318,11 +469,19 @@ export class AgentRuntimeScheduler {
 				updatedAt: timestamp,
 				tasks: [],
 				agents: [],
+				integrationRecords: [],
+				integrationWorkspaces: [],
 			};
 		}
 		for (const task of this.state.tasks) this.tasks.set(task.id, task);
 		for (const agent of this.state.agents) this.agents.set(agent.id, agent);
-		if (this.markInterruptedAgentsRecovering()) this.persist();
+		for (const record of this.state.integrationRecords) this.integrationRecords.set(record.taskId, record);
+		for (const workspace of this.state.integrationWorkspaces) {
+			this.integrationWorkspaces.set(workspace.repositoryId, workspace);
+		}
+		const recoveredAgents = this.markInterruptedAgentsRecovering();
+		const recoveredIntegrations = this.markInterruptedIntegrationsQueued();
+		if (recoveredAgents || recoveredIntegrations) this.persist();
 		else if (!loaded) this.persist();
 	}
 
@@ -492,6 +651,60 @@ export class AgentRuntimeScheduler {
 		this.persist();
 	}
 
+	async integrateAgentWorkspace(agentId: string): Promise<AgentRuntimeIntegrationRecord | undefined> {
+		const agent = this.requireAgent(agentId);
+		const workspace = this.workspaceForAgent(agent);
+		if (!workspace || !agent.candidateSha) return undefined;
+		const existing = this.integrationRecords.get(agent.taskId);
+		if (
+			existing &&
+			(existing.status === "integrated" || existing.status === "conflict" || existing.status === "failed")
+		) {
+			return cloneIntegrationRecord(existing);
+		}
+		const activeOperation = this.integrationOperations.get(agent.taskId);
+		if (activeOperation) return cloneIntegrationRecord(await activeOperation);
+		if (!existing) {
+			const record: AgentRuntimeIntegrationRecord = {
+				taskId: agent.taskId,
+				agentId: agent.id,
+				repositoryId: workspace.repositoryId,
+				baseSha: workspace.baseSha,
+				candidateSha: agent.candidateSha,
+				status: "queued",
+				queuedAt: this.timestamp(),
+				changedFiles: [],
+				conflictFiles: [],
+				gateResults: [],
+			};
+			this.integrationRecords.set(record.taskId, record);
+			this.persist();
+		}
+		const operation = this.integrationTail.then(() => this.performIntegration(agent.id));
+		this.integrationTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.integrationOperations.set(agent.taskId, operation);
+		try {
+			return cloneIntegrationRecord(await operation);
+		} finally {
+			this.integrationOperations.delete(agent.taskId);
+		}
+	}
+
+	async resumePendingIntegrations(): Promise<AgentRuntimeIntegrationRecord[]> {
+		const pending = [...this.integrationRecords.values()]
+			.filter((record) => record.status === "queued" || record.status === "integrating")
+			.sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.taskId.localeCompare(b.taskId));
+		const results: AgentRuntimeIntegrationRecord[] = [];
+		for (const record of pending) {
+			const result = await this.integrateAgentWorkspace(record.agentId);
+			if (result) results.push(result);
+		}
+		return results;
+	}
+
 	completeAgent(agentId: string): AgentRuntimeAgentRecord {
 		return this.finishAgent(agentId, "completed");
 	}
@@ -541,6 +754,74 @@ export class AgentRuntimeScheduler {
 		return agent ? cloneAgent(agent) : undefined;
 	}
 
+	getIntegrationRecord(taskId: string): AgentRuntimeIntegrationRecord | undefined {
+		const record = this.integrationRecords.get(taskId);
+		return record ? cloneIntegrationRecord(record) : undefined;
+	}
+
+	private async performIntegration(agentId: string): Promise<AgentRuntimeIntegrationRecord> {
+		const agent = this.requireAgent(agentId);
+		const task = this.requireTask(agent.taskId);
+		const workspace = this.workspaceForAgent(agent);
+		const record = this.integrationRecords.get(agent.taskId);
+		if (!workspace || !agent.candidateSha || !record) {
+			throw new Error(`Agent ${agentId} has no integration candidate`);
+		}
+
+		record.status = "integrating";
+		record.startedAt ??= this.timestamp();
+		record.completedAt = undefined;
+		record.error = undefined;
+		record.changedFiles = [];
+		record.conflictFiles = [];
+		record.gateResults = [];
+		if (task.status === "completed" || task.status === "conflict") {
+			this.transitionTask(task.id, "integrating");
+		} else if (task.status === "integrating") {
+			this.persist();
+		} else {
+			throw new Error(`Agent runtime task ${task.id} is not ready for integration: ${task.status}`);
+		}
+
+		try {
+			const result = await this.mergeManager.integrate({
+				taskId: task.id,
+				candidateSha: agent.candidateSha,
+				candidateWorkspace: workspace,
+				integrationWorkspace: this.integrationWorkspaces.get(workspace.repositoryId),
+				recoverySha: record.recoverySha,
+				qualityGates: this.integrationQualityGates,
+				onPrepared: (integrationWorkspace, recoverySha) => {
+					this.integrationWorkspaces.set(integrationWorkspace.repositoryId, { ...integrationWorkspace });
+					record.recoverySha = recoverySha;
+					this.persist();
+				},
+			});
+			this.integrationWorkspaces.set(result.integrationWorkspace.repositoryId, { ...result.integrationWorkspace });
+			record.status = result.outcome;
+			record.completedAt = this.timestamp();
+			record.recoverySha = result.recoverySha;
+			record.resultSha = result.resultSha;
+			record.attemptedSha = result.attemptedSha;
+			record.changedFiles = [...result.changedFiles];
+			record.conflictFiles = [...result.conflictFiles];
+			record.gateResults = result.gateResults.map((gate) => ({ ...gate, args: [...gate.args] }));
+			record.error = result.error;
+			this.transitionTask(task.id, result.outcome, result.error);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			record.status = "failed";
+			record.completedAt = this.timestamp();
+			record.error = message;
+			if (task.status === "integrating" || task.status === "completed" || task.status === "conflict") {
+				this.transitionTask(task.id, "failed", message);
+			} else {
+				this.persist();
+			}
+		}
+		return cloneIntegrationRecord(record);
+	}
+
 	summary(): AgentRuntimeSchedulerSummary {
 		const taskCounts: Partial<Record<AgentRuntimeTaskStatus, number>> = {};
 		const agentCounts: Partial<Record<AgentRuntimeAgentStatus, number>> = {};
@@ -570,6 +851,12 @@ export class AgentRuntimeScheduler {
 			blockedTaskIds: blockedTaskIds.sort(),
 			activeAgents: activeAgents.sort((a, b) => a.id.localeCompare(b.id)),
 			workspaceAgents: workspaceAgents.sort((a, b) => a.id.localeCompare(b.id)),
+			integrationRecords: [...this.integrationRecords.values()]
+				.map(cloneIntegrationRecord)
+				.sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.taskId.localeCompare(b.taskId)),
+			integrationWorkspaces: [...this.integrationWorkspaces.values()]
+				.map((workspace) => ({ ...workspace }))
+				.sort((a, b) => a.repositoryId.localeCompare(b.repositoryId)),
 		};
 	}
 
@@ -578,6 +865,8 @@ export class AgentRuntimeScheduler {
 			...this.state,
 			tasks: [...this.tasks.values()].map(cloneTask),
 			agents: [...this.agents.values()].map(cloneAgent),
+			integrationRecords: [...this.integrationRecords.values()].map(cloneIntegrationRecord),
+			integrationWorkspaces: [...this.integrationWorkspaces.values()].map((workspace) => ({ ...workspace })),
 		};
 	}
 
@@ -650,6 +939,17 @@ export class AgentRuntimeScheduler {
 		return changed;
 	}
 
+	private markInterruptedIntegrationsQueued(): boolean {
+		let changed = false;
+		for (const record of this.integrationRecords.values()) {
+			if (record.status !== "integrating") continue;
+			record.status = "queued";
+			record.completedAt = undefined;
+			changed = true;
+		}
+		return changed;
+	}
+
 	private loadState(): AgentRuntimeSchedulerSnapshot | undefined {
 		if (!this.statePath || !existsSync(this.statePath)) return undefined;
 		return parseSnapshot(JSON.parse(readFileSync(this.statePath, "utf8")) as unknown);
@@ -658,6 +958,8 @@ export class AgentRuntimeScheduler {
 	private persist(): void {
 		this.state.tasks = [...this.tasks.values()];
 		this.state.agents = [...this.agents.values()];
+		this.state.integrationRecords = [...this.integrationRecords.values()];
+		this.state.integrationWorkspaces = [...this.integrationWorkspaces.values()];
 		this.state.updatedAt = this.timestamp();
 		if (!this.statePath) return;
 		mkdirSync(dirname(this.statePath), { recursive: true });
