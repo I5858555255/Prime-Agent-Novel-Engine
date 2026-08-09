@@ -1769,7 +1769,7 @@ export class AgentsViewMode implements Component, Focusable {
 			}
 			const behavior = delivery === "followUp" ? "followUp" : liveSummary?.isStreaming ? "steer" : undefined;
 			this.setStatusMessage("Sending reply...");
-			await this.sendPrompt(activeSessionId, text, behavior);
+			await this.sendPrompt(activeSessionId, text, behavior, liveSummary ?? target.summary);
 			// The fallback-directory notice must outlive the transient send statuses.
 			if (cwdFallbackNotice) this.setStatusMessage(cwdFallbackNotice, { sticky: true });
 			else this.setStatusMessage("Reply sent");
@@ -2118,6 +2118,7 @@ export class AgentsViewMode implements Component, Focusable {
 		activeSessionId: string,
 		message: string,
 		streamingBehavior?: "steer" | "followUp",
+		targetSummary?: SessionSummary,
 	): Promise<void> {
 		if (this.options.config.telemetryDisabled) {
 			const client = await this.connectDedicatedClient();
@@ -2127,6 +2128,11 @@ export class AgentsViewMode implements Component, Focusable {
 				recoverDaemon: this.options.recoverDaemon,
 				reconnectTimeoutMs: this.options.reconnectTimeoutMs,
 				telemetryDisabled: true,
+				// The reply's revival fallback must recreate with the agents-view
+				// launch context, not daemon defaults.
+				...(targetSummary
+					? { reviveConfig: agentsViewSessionRuntimeConfig(this.options.config, targetSummary) }
+					: {}),
 			});
 			try {
 				await connection.prompt(message, streamingBehavior === undefined ? undefined : { streamingBehavior });

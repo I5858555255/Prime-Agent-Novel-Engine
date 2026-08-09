@@ -124,7 +124,12 @@ describe("agents view reply on inactive sessions", () => {
 		expect(request).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "create", sessionPath: savedSummary.sessionFile }),
 		);
-		expect(self.sendPrompt).toHaveBeenCalledWith("active-9", "wake up", "steer");
+		expect(self.sendPrompt).toHaveBeenCalledWith(
+			"active-9",
+			"wake up",
+			"steer",
+			expect.objectContaining({ activeSessionId: "active-9" }),
+		);
 		expect(self.selectSummary).toHaveBeenCalledWith(expect.objectContaining({ activeSessionId: "active-9" }));
 		expect(self.inactiveAgentIdentities).not.toContain("file:/tmp/sessions/saved-1.jsonl");
 		expect(self.setReplyTarget).not.toHaveBeenCalled();
@@ -166,7 +171,12 @@ describe("agents view reply on inactive sessions", () => {
 		await expect(reply).resolves.toBe(true);
 		expect(selectSummary).not.toHaveBeenCalled();
 		expect(selection.activeSessionId).toBe("active-2");
-		expect(sendPrompt).toHaveBeenCalledWith("active-9", "wake up", undefined);
+		expect(sendPrompt).toHaveBeenCalledWith(
+			"active-9",
+			"wake up",
+			undefined,
+			expect.objectContaining({ activeSessionId: "active-9" }),
+		);
 		expect(self.inactiveAgentIdentities).not.toContain("file:/tmp/sessions/saved-1.jsonl");
 	});
 
@@ -335,7 +345,12 @@ describe("agents view reply on inactive sessions", () => {
 		expect(request).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "create", sessionPath: savedSummary.sessionFile }),
 		);
-		expect(self.sendPrompt).toHaveBeenCalledWith("active-new", "wake up", undefined);
+		expect(self.sendPrompt).toHaveBeenCalledWith(
+			"active-new",
+			"wake up",
+			undefined,
+			expect.objectContaining({ activeSessionId: "active-new" }),
+		);
 		expect(self.sendPrompt).not.toHaveBeenCalledWith("active-dead", expect.anything(), expect.anything());
 	});
 
@@ -353,14 +368,29 @@ describe("agents view reply on inactive sessions", () => {
 		const target = () => ({ key: "active-1", summary: liveSummary });
 
 		await invoke("sendReply", self, target(), "hello");
-		expect(self.sendPrompt).toHaveBeenCalledWith("active-1", "hello", undefined);
+		expect(self.sendPrompt).toHaveBeenCalledWith(
+			"active-1",
+			"hello",
+			undefined,
+			expect.objectContaining({ activeSessionId: "active-1" }),
+		);
 
 		liveSummary = summary({ activeSessionId: "active-1", lifecycle: "live", isStreaming: true });
 		await invoke("sendReply", self, target(), "change course");
-		expect(self.sendPrompt).toHaveBeenCalledWith("active-1", "change course", "steer");
+		expect(self.sendPrompt).toHaveBeenCalledWith(
+			"active-1",
+			"change course",
+			"steer",
+			expect.objectContaining({ activeSessionId: "active-1" }),
+		);
 
 		await invoke("sendReply", self, target(), "later please", "followUp");
-		expect(self.sendPrompt).toHaveBeenCalledWith("active-1", "later please", "followUp");
+		expect(self.sendPrompt).toHaveBeenCalledWith(
+			"active-1",
+			"later please",
+			"followUp",
+			expect.objectContaining({ activeSessionId: "active-1" }),
+		);
 
 		expect(request).not.toHaveBeenCalled();
 		expect(self.selectSummary).not.toHaveBeenCalled();

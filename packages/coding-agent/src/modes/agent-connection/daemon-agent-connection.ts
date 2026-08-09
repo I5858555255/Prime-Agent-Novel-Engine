@@ -242,6 +242,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private reviveSession?: { promise: Promise<RevivedSessionBinding>; sourceActiveSessionId: string };
 	private lastAttachCreatedAttachment = false;
 	private reviveConfigSessionFile: string | undefined;
+	private lastAttachPublishedIdentity: { sessionId: string; sessionFile: string | undefined } | undefined;
 	private readonly definitiveRequestErrors = new WeakSet<Error>();
 	private disposing = false;
 	private disposed = false;
@@ -419,6 +420,11 @@ export class DaemonAgentConnection implements AgentConnection {
 		// connection first attached to; later transcripts (session switches)
 		// must not inherit its cwd.
 		this.reviveConfigSessionFile ??= this.attachedSessionFile;
+		// Recorded before the snapshot await below: a replacement snapshot
+		// landing mid-stream can rewrite the attached identity, and a caller
+		// capturing it afterwards would adopt the switched transcript as its
+		// own.
+		this.lastAttachPublishedIdentity = { sessionId: summary.sessionId, sessionFile: this.attachedSessionFile };
 		this.captureDaemonLogPath();
 		this.updateReconnectFailed = false;
 		this.terminalCloseEmitted = false;
@@ -1104,14 +1110,17 @@ export class DaemonAgentConnection implements AgentConnection {
 				// and lose the prompt; fall through to the snapshot reads below,
 				// which recover or schedule a background resync.
 			}
-			// Capture the transcript identity the attach established: an
-			// in-worker session switch replaces the runtime transcript without
-			// changing the active-session id, so the retry must verify this
-			// identity — not just the id — before re-sending the prompt.
+			// Capture the transcript identity the attach RESPONSE published (not
+			// the current fields): an in-worker session switch replaces the
+			// runtime transcript without changing the active-session id, and a
+			// replacement snapshot landing while the attach snapshot streamed
+			// can rewrite the attached identity before this line runs. Adopting
+			// the switched transcript here would let matchesRevivedBinding pass
+			// and resend the failed prompt into it.
 			const revivedBinding: RevivedSessionBinding = {
 				activeSessionId: revivedActiveSessionId,
-				sessionId: this.attachedSessionId,
-				sessionFile: this.attachedSessionFile,
+				sessionId: this.lastAttachPublishedIdentity?.sessionId ?? this.attachedSessionId,
+				sessionFile: this.lastAttachPublishedIdentity?.sessionFile ?? this.attachedSessionFile,
 			};
 			let snapshot: AgentConnectionSnapshot | undefined;
 			try {

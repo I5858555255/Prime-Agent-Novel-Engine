@@ -2494,6 +2494,71 @@ describe("DaemonAgentConnection", () => {
 		expect(create && "config" in create ? create.config?.cwd : "present").toBeUndefined();
 	});
 
+	it("does not adopt a mid-stream replacement as the revived transcript identity", async () => {
+		const fakeClient = new FakeDaemonClient();
+		let emitFrames = () => {};
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			emitFrames = () => {
+				// The attach snapshot completes, and an in-worker switch's
+				// replacement rewrites the attached identity in the same parse
+				// batch - both processed before the awaiting attach continuation
+				// resumes and the revival captures its transcript identity.
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-identity-race",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-identity-race",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+				fakeClient.emitMessage({
+					type: "session_replaced",
+					activeSessionId: command.activeSessionId,
+					state: createConnectionState(command.activeSessionId, "session-b"),
+					messages: [],
+				});
+			};
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-identity-race", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(1),
+		);
+		emitFrames();
+
+		// The revived binding must be the identity the attach RESPONSE
+		// published (session-revived), not the switched transcript - adopting
+		// the replacement would let the retry inject the failed prompt into it.
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1"]);
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");
