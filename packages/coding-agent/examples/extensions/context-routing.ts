@@ -39,7 +39,11 @@ export type ContextRoutingMode = (typeof CONTEXT_ROUTING_MODES)[number];
 /** Whole-file reads at or below this size are treated as small when stat-able. */
 export const SMALL_FILE_BYTES = 16 * 1024;
 
-export type ContextRoutingPattern = "curl/wget stdout" | "cat whole-file dump" | "python whole-file print";
+export type ContextRoutingPattern =
+	| "curl/wget stdout"
+	| "cat whole-file dump"
+	| "python whole-file print"
+	| "unbounded head/tail reader";
 
 export interface ContextRoutingInspection {
 	decision: "allow" | "block";
@@ -216,29 +220,38 @@ interface ParsedBashCell {
 	body: string;
 }
 
+interface GuardedRange {
+	start: number;
+	end: number;
+}
+
 interface ShellSegment {
 	text: string;
-	stdoutRedirected: boolean;
+	start: number;
+	end: number;
+	separatorBefore?: "&&" | "||" | "newline" | ";";
+}
+
+interface ShellStage {
+	text: string;
+	start: number;
+	end: number;
+}
+
+type RedirectSafety = "none" | "safe" | "unsafe";
+
+interface ShellRedirections {
+	stdout: RedirectSafety;
+	ranges: Array<{ start: number; end: number }>;
 }
 
 const BASH_CELL_PATTERN = /^(?:[ \t]*\r?\n)*[ \t]*%%bash\b[^\r\n]*(?:\r?\n|$)/;
 const BYPASS_MARKER_PATTERN = /^#\s*context-routing\s*:\s*(?:allow|bypass)\s*$/i;
 const FALLBACK_MARKER_PATTERN = /^#\s*context-routing\s*:\s*fallback\s*$/i;
-const IMPORT_FALLBACK_PATTERN =
-	/\btry\b[\s\S]{0,1000}\bexcept\s+(?:ImportError|ModuleNotFoundError)(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*:/i;
-const SHELL_FALLBACK_PATTERN = /\b(?:command\s+-v|which)\s+[^\r\n;|&]+(?:\s[^\r\n;|&]+)?\s*\|\|/i;
-const INTEGRATION_FALLBACK_PATTERN =
-	/\b(?:jcodemunch|context[-_ ]?mode|mcp)\b[\s\S]{0,120}\b(?:unavailable|not available|missing|fallback)\b/i;
-const SHELL_KEYWORD_PATTERN = /^(?:(?:if|then|else|elif|do|while|until|for|case|!|command)\s+)+/i;
+const INTEGRATION_IDENTIFIER_PATTERN = /^(?:jcodemunch(?:-mcp)?|context[-_ ]?mode|mcp(?:[-_][a-z0-9_-]+)?)$/i;
+const SHELL_KEYWORD_PATTERN = /^(?:(?:if|then|else|elif|do|while|until|for|case|!)\s+)+/i;
 const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=(?:[^\s]*|"[^"]*"|'[^']*')\s+/;
-const CURL_OUTPUT_PATTERN = /(?:^|\s)(?:-o|--output|--output-document)(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/i;
-const CURL_STDOUT_OUTPUT_PATTERN = /(?:^|\s)(?:-o|--output|--output-document)(?:=|\s+)(?:-|"-"|'-')(?=\s|$)/i;
-const CURL_FILE_OUTPUT_PATTERN = /(?:^|\s)(?:-O|--remote-name)(?=\s|$)/i;
-const WGET_STDOUT_PATTERN =
-	/(?:^|\s)(?:-O(?:\s+|-)?-|--output-document(?:=|\s+)(?:-|"-"|'-')|-[A-Za-z]*q[A-Za-z]*O-)(?=\s|$)/i;
-const WGET_OUTPUT_PATTERN = /(?:^|\s)(?:-O|--output-document)(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/i;
 const HEAD_REQUEST_PATTERN = /(?:^|\s)(?:-I|--head)(?=\s|$)/i;
-const BOUNDED_PIPELINE_PATTERN = /\|\s*(?:head|tail)(?:\s|$)/i;
 
 function normalizeMode(value: boolean | string | undefined): ContextRoutingMode {
 	return typeof value === "string" && (CONTEXT_ROUTING_MODES as readonly string[]).includes(value)
@@ -258,23 +271,56 @@ function hasLeadingMarker(code: string, pattern: RegExp): boolean {
 	return firstLine !== undefined && pattern.test(firstLine);
 }
 
-function hasFallbackGuard(code: string): boolean {
-	const bashCell = parseBashCell(code);
-	const fallbackText = bashCell
-		? bashCell.body.replace(/(^|\r?\n)[ \t]*#.*(?=\r?$)/gm, "$1")
-		: maskPythonStrings(code);
-	return (
-		hasLeadingMarker(code, FALLBACK_MARKER_PATTERN) ||
-		IMPORT_FALLBACK_PATTERN.test(fallbackText) ||
-		SHELL_FALLBACK_PATTERN.test(fallbackText) ||
-		INTEGRATION_FALLBACK_PATTERN.test(fallbackText)
-	);
-}
-
 function parseBashCell(code: string): ParsedBashCell | undefined {
 	const match = BASH_CELL_PATTERN.exec(code);
 	if (!match) return undefined;
 	return { body: code.slice(match[0].length) };
+}
+
+function maskRanges(source: string, ranges: readonly GuardedRange[]): string {
+	if (ranges.length === 0) return source;
+	const characters = source.split("");
+	for (const range of ranges) {
+		for (let index = Math.max(0, range.start); index < Math.min(characters.length, range.end); index += 1) {
+			if (characters[index] !== "\n" && characters[index] !== "\r") characters[index] = " ";
+		}
+	}
+	return characters.join("");
+}
+
+function lineRanges(source: string): Array<{ start: number; end: number; text: string }> {
+	const ranges: Array<{ start: number; end: number; text: string }> = [];
+	let start = 0;
+	for (const match of source.matchAll(/.*(?:\r?\n|$)/g)) {
+		const text = match[0];
+		if (text.length === 0) break;
+		const end = start + text.length;
+		ranges.push({ start, end, text: text.replace(/\r?\n$/, "") });
+		start = end;
+	}
+	return ranges;
+}
+
+function findFallbackMarkerRanges(source: string): GuardedRange[] {
+	const lines = lineRanges(source);
+	const ranges: GuardedRange[] = [];
+	for (let index = 0; index < lines.length; index += 1) {
+		if (!FALLBACK_MARKER_PATTERN.test(lines[index]!.text.trim())) continue;
+		let next = index + 1;
+		while (next < lines.length && lines[next]!.text.trim().length === 0) next += 1;
+		if (next >= lines.length) continue;
+		const markerIndent = lines[index]!.text.match(/^\s*/)?.[0].length ?? 0;
+		const nextIndent = lines[next]!.text.match(/^\s*/)?.[0].length ?? 0;
+		let end = lines[next]!.end;
+		for (let continuation = next + 1; continuation < lines.length; continuation += 1) {
+			const text = lines[continuation]!.text;
+			const indent = text.match(/^\s*/)?.[0].length ?? 0;
+			if (text.trim().length > 0 && indent <= markerIndent && indent <= nextIndent) break;
+			end = lines[continuation]!.end;
+		}
+		ranges.push({ start: lines[next]!.start, end });
+	}
+	return ranges;
 }
 
 function splitShellSegments(body: string): ShellSegment[] {
@@ -282,13 +328,24 @@ function splitShellSegments(body: string): ShellSegment[] {
 	let start = 0;
 	let quote: "single" | "double" | undefined;
 	let escaped = false;
-	let stdoutRedirected = false;
+	let separatorBefore: ShellSegment["separatorBefore"];
 
 	const push = (end: number) => {
-		const text = body.slice(start, end).trim();
-		if (text.length > 0) segments.push({ text, stdoutRedirected });
+		const raw = body.slice(start, end);
+		const leading = raw.match(/^\s*/)?.[0].length ?? 0;
+		const trailing = raw.match(/\s*$/)?.[0].length ?? 0;
+		const trimmedStart = start + leading;
+		const trimmedEnd = Math.max(trimmedStart, end - trailing);
+		if (trimmedEnd > trimmedStart) {
+			segments.push({
+				text: body.slice(trimmedStart, trimmedEnd),
+				start: trimmedStart,
+				end: trimmedEnd,
+				separatorBefore,
+			});
+		}
 		start = end;
-		stdoutRedirected = false;
+		separatorBefore = undefined;
 	};
 
 	for (let index = 0; index < body.length; index += 1) {
@@ -323,18 +380,15 @@ function splitShellSegments(body: string): ShellSegment[] {
 			index = newline - 1;
 			continue;
 		}
-		if (character === ">") {
-			const previous = body[index - 1];
-			if (previous !== "2") stdoutRedirected = true;
-			continue;
-		}
 		if (character === "\n" || character === ";") {
 			push(index);
+			separatorBefore = character === ";" ? ";" : "newline";
 			start = index + 1;
 			continue;
 		}
 		if ((character === "&" || character === "|") && body[index + 1] === character) {
 			push(index);
+			separatorBefore = character === "&" ? "&&" : "||";
 			index += 1;
 			start = index + 1;
 		}
@@ -354,7 +408,9 @@ function shellWords(text: string): string[] {
 		current = "";
 	};
 
-	for (const character of text.trim()) {
+	const trimmed = text.trim();
+	for (let index = 0; index < trimmed.length; index += 1) {
+		const character = trimmed[index];
 		if (escaped) {
 			current += character;
 			escaped = false;
@@ -374,6 +430,7 @@ function shellWords(text: string): string[] {
 			else current += character;
 			continue;
 		}
+		if (character === "#" && (index === 0 || /\s/.test(trimmed[index - 1] ?? ""))) break;
 		if (character === "'") quote = "single";
 		else if (character === '"') quote = "double";
 		else if (/\s/.test(character)) push();
@@ -406,46 +463,397 @@ function commandAfterShellPreamble(text: string): string {
 	return result.trim();
 }
 
-function inspectBashCell(cell: ParsedBashCell, cwd: string | undefined): ContextRoutingInspection {
-	for (const segment of splitShellSegments(cell.body)) {
-		const command = commandAfterShellPreamble(segment.text);
-		const words = shellWords(command);
-		const executable = words[0]?.toLowerCase();
-		if (!executable || segment.stdoutRedirected || BOUNDED_PIPELINE_PATTERN.test(command)) continue;
+function splitPipelineStages(text: string, offset: number): ShellStage[] {
+	const stages: ShellStage[] = [];
+	let start = 0;
+	let quote: "single" | "double" | undefined;
+	let escaped = false;
+	const push = (end: number) => {
+		const raw = text.slice(start, end);
+		const leading = raw.match(/^\s*/)?.[0].length ?? 0;
+		const trailing = raw.match(/\s*$/)?.[0].length ?? 0;
+		const stageStart = start + leading;
+		const stageEnd = Math.max(stageStart, end - trailing);
+		if (stageEnd > stageStart)
+			stages.push({ text: text.slice(stageStart, stageEnd), start: offset + stageStart, end: offset + stageEnd });
+		start = end;
+	};
+	for (let index = 0; index < text.length; index += 1) {
+		const character = text[index];
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (character === "\\" && quote !== "single") {
+			escaped = true;
+			continue;
+		}
+		if (quote === "single") {
+			if (character === "'") quote = undefined;
+			continue;
+		}
+		if (quote === "double") {
+			if (character === '"') quote = undefined;
+			continue;
+		}
+		if (character === "'") quote = "single";
+		else if (character === '"') quote = "double";
+		else if (character === "#" && (index === 0 || /\s/.test(text[index - 1] ?? ""))) break;
+		else if (character === "|" && text[index + 1] !== "|") {
+			push(index);
+			if (text[index + 1] === "&") index += 1;
+			start = index + 1;
+		}
+	}
+	push(text.length);
+	return stages;
+}
 
-		if ((executable === "curl" || executable === "curl.exe") && !HEAD_REQUEST_PATTERN.test(command)) {
-			if (
-				(!CURL_OUTPUT_PATTERN.test(command) && !CURL_FILE_OUTPUT_PATTERN.test(command)) ||
-				CURL_STDOUT_OUTPUT_PATTERN.test(command)
-			) {
-				return {
-					decision: "block",
-					pattern: "curl/wget stdout",
-					reason: "Raw curl output would expand context; redirect it to a file or use a bounded parser.",
-				};
+function readShellToken(source: string, start: number): { end: number; value: string } | undefined {
+	let index = start;
+	while (/\s/.test(source[index] ?? "")) index += 1;
+	if (index >= source.length || /[;|&]/.test(source[index] ?? "")) return undefined;
+	const valueStart = index;
+	let value = "";
+	let quote: "single" | "double" | undefined;
+	let escaped = false;
+	for (; index < source.length; index += 1) {
+		const character = source[index];
+		if (escaped) {
+			value += character;
+			escaped = false;
+			continue;
+		}
+		if (character === "\\" && quote !== "single") {
+			escaped = true;
+			continue;
+		}
+		if (quote === "single") {
+			if (character === "'") quote = undefined;
+			else value += character;
+			continue;
+		}
+		if (quote === "double") {
+			if (character === '"') quote = undefined;
+			else value += character;
+			continue;
+		}
+		if (character === "'") quote = "single";
+		else if (character === '"') quote = "double";
+		else if (/\s|[;|&]/.test(character)) break;
+		else value += character;
+	}
+	return { end: index === valueStart ? index + 1 : index, value };
+}
+
+function entersDescriptorNamespace(target: string): boolean {
+	const components: string[] = [];
+	for (const component of target.split("/")) {
+		if (!component || component === ".") continue;
+		if (component === "..") {
+			components.pop();
+			continue;
+		}
+		components.push(component);
+		if (components[0] === "dev" && components[1] === "fd") return true;
+		if (
+			components[0] === "proc" &&
+			/^(?:self|thread-self|\d+)$/.test(components[1] ?? "") &&
+			(components[2] === "fd" ||
+				(components[2] === "task" && /^\d+$/.test(components[3] ?? "") && components[4] === "fd"))
+		)
+			return true;
+	}
+	return false;
+}
+
+function isSafeRedirectTarget(target: string | undefined, cwd: string | undefined): boolean {
+	if (!target || target === "-" || target.startsWith("&") || target.startsWith("~")) return false;
+	if (/^\d+$/.test(target)) return false;
+	if (entersDescriptorNamespace(target)) return false;
+	const normalized = target.startsWith("/")
+		? path.posix.normalize(target)
+		: cwd
+			? path.posix.resolve(cwd, target)
+			: target;
+	if (/^\/dev\/null$/.test(normalized)) return true;
+	if (/^\d+$/.test(normalized) || /^\/dev\/(?:stdin|stdout|stderr|fd\/\d+)$/.test(normalized)) return false;
+	if (normalized === "/proc" || normalized.startsWith("/proc/")) return false;
+	return !normalized.startsWith("~") && !/[$`*?{}<>|;]/.test(normalized);
+}
+
+function parseShellRedirections(text: string, cwd: string | undefined): ShellRedirections {
+	const ranges: Array<{ start: number; end: number }> = [];
+	let stdout: RedirectSafety = "none";
+	let quote: "single" | "double" | undefined;
+	let escaped = false;
+	for (let index = 0; index < text.length; index += 1) {
+		const character = text[index];
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (character === "\\" && quote !== "single") {
+			escaped = true;
+			continue;
+		}
+		if (quote === "single") {
+			if (character === "'") quote = undefined;
+			continue;
+		}
+		if (quote === "double") {
+			if (character === '"') quote = undefined;
+			continue;
+		}
+		if (character === "'") {
+			quote = "single";
+			continue;
+		}
+		if (character === '"') {
+			quote = "double";
+			continue;
+		}
+		if (character === "#" && (index === 0 || /\s/.test(text[index - 1] ?? ""))) break;
+		let start = index;
+		let fd: number | "all" | undefined;
+		let operatorEnd: number | undefined;
+		if (character === "&" && text[index + 1] === ">") {
+			fd = "all";
+			operatorEnd = index + (text[index + 2] === ">" ? 3 : 2);
+		} else if (character === ">") {
+			operatorEnd = index + (text[index + 1] === ">" ? 2 : 1);
+			if (text[operatorEnd] === "&") operatorEnd += 1;
+			let digitStart = index;
+			while (digitStart > 0 && /\d/.test(text[digitStart - 1] ?? "")) digitStart -= 1;
+			if (digitStart < index && (digitStart === 0 || /\s|[;|&]/.test(text[digitStart - 1] ?? ""))) {
+				start = digitStart;
+				fd = Number(text.slice(digitStart, index));
 			}
 		}
+		if (operatorEnd === undefined) continue;
+		const target = readShellToken(text, operatorEnd);
+		const safe = isSafeRedirectTarget(target?.value, cwd);
+		ranges.push({ start, end: target?.end ?? operatorEnd });
+		if (fd === undefined || fd === 1 || fd === "all") stdout = safe ? "safe" : "unsafe";
+		index = (target?.end ?? operatorEnd) - 1;
+	}
+	return { stdout, ranges };
+}
 
-		if (executable === "wget" || executable === "wget.exe") {
-			if (
-				WGET_STDOUT_PATTERN.test(command) ||
-				(!WGET_OUTPUT_PATTERN.test(command) && /(?:^|\s)-qO-?(?:\s|$)/i.test(command))
-			) {
+function shellWordsWithoutRedirections(text: string, redirections: ShellRedirections): string[] {
+	return shellWords(maskRanges(text, redirections.ranges));
+}
+
+function classifyOutputTarget(target: string | undefined, cwd: string | undefined): RedirectSafety {
+	return isSafeRedirectTarget(target, cwd) ? "safe" : "unsafe";
+}
+
+function outputOptionSafety(words: string[], executable: string, cwd: string | undefined): RedirectSafety {
+	let result: RedirectSafety = "none";
+	const isCurl = executable === "curl" || executable === "curl.exe";
+	for (let index = 1; index < words.length; index += 1) {
+		const word = words[index]!;
+		if (isCurl && (word === "-O" || word === "--remote-name")) {
+			result = "safe";
+			continue;
+		}
+		if (isCurl && /^--(?:output|output-document)=/.test(word)) {
+			result = classifyOutputTarget(word.slice(word.indexOf("=") + 1), cwd);
+			continue;
+		}
+		if (isCurl && /^-o.+/.test(word)) {
+			result = classifyOutputTarget(word.slice(2), cwd);
+			continue;
+		}
+		if (isCurl && (word === "-o" || word === "--output" || word === "--output-document")) {
+			result = classifyOutputTarget(words[++index], cwd);
+			continue;
+		}
+		if (!isCurl && word === "-O") {
+			result = classifyOutputTarget(words[++index], cwd);
+			continue;
+		}
+		if (!isCurl && /^--output-document=/.test(word)) {
+			result = classifyOutputTarget(word.slice(word.indexOf("=") + 1), cwd);
+			continue;
+		}
+		if (!isCurl && /^-[A-Za-z]*O(?:.+)?$/.test(word)) {
+			const target = word.replace(/^-.*?O/, "");
+			result = classifyOutputTarget(target || words[++index], cwd);
+		}
+	}
+	return result;
+}
+
+function limiterInfo(words: string[]): { isLimiter: boolean; bounded: boolean } {
+	const executable = words[0]?.toLowerCase();
+	if (executable !== "head" && executable !== "head.exe" && executable !== "tail" && executable !== "tail.exe") {
+		return { isLimiter: false, bounded: false };
+	}
+	for (let index = 1; index < words.length; index += 1) {
+		const word = words[index]!;
+		const inline = /^(?:--(?:lines|bytes)=|-?[nc])(.+)$/.exec(word);
+		if (word === "-n" || word === "-c" || word === "--lines" || word === "--bytes") {
+			const value = words[++index];
+			return { isLimiter: true, bounded: /^\d+$/.test(value ?? "") };
+		}
+		if (/^\+[0-9]+$/.test(word)) return { isLimiter: true, bounded: false };
+		if (/^-[nc]\d+$/.test(word) || /^-\d+$/.test(word)) return { isLimiter: true, bounded: true };
+		if (inline) return { isLimiter: true, bounded: /^\d+$/.test(inline[1] ?? "") };
+	}
+	return { isLimiter: true, bounded: true };
+}
+
+function isPassThroughPipelineStage(words: string[]): boolean {
+	const executable = words[0]?.toLowerCase();
+	if (!executable) return false;
+	if ((executable === "cat" || executable === "cat.exe") && words.length === 1) return true;
+	if (executable === "tee" || executable === "tee.exe" || executable === "wc" || executable === "wc.exe") return true;
+	if (executable === "tr" || executable === "tr.exe") return true;
+
+	const hasNoInputFile = (consumingOptions: ReadonlySet<string>, maxExpressions: number): boolean => {
+		let expressions = 0;
+		for (let index = 1; index < words.length; index += 1) {
+			const word = words[index]!;
+			if (word === "--") return index + 1 === words.length;
+			if (word.startsWith("-")) {
+				if (consumingOptions.has(word)) index += 1;
+				continue;
+			}
+			expressions += 1;
+			if (expressions > maxExpressions) return false;
+		}
+		return true;
+	};
+
+	if (executable === "grep" || executable === "grep.exe" || executable === "egrep" || executable === "fgrep") {
+		let hasPattern = false;
+		for (let index = 1; index < words.length; index += 1) {
+			const word = words[index]!;
+			if (word === "--") {
+				if (hasPattern && index + 1 < words.length) return false;
+				continue;
+			}
+			if (word === "-e" || word === "--regexp" || word === "-f" || word === "--file") {
+				hasPattern = true;
+				index += 1;
+				continue;
+			}
+			if (word.startsWith("-")) continue;
+			if (hasPattern) return false;
+			hasPattern = true;
+		}
+		return true;
+	}
+	if (executable === "sed" || executable === "sed.exe") {
+		return hasNoInputFile(new Set(["-e", "--expression", "-f", "--file"]), 1);
+	}
+	if (executable === "awk" || executable === "gawk") return hasNoInputFile(new Set(["-f", "--file"]), 1);
+	if (executable === "cut")
+		return hasNoInputFile(new Set(["-b", "-c", "-d", "-f", "--bytes", "--characters", "--delimiter", "--fields"]), 0);
+	if (executable === "sort" || executable === "uniq" || executable === "fold" || executable === "fmt") {
+		return hasNoInputFile(new Set(), 0);
+	}
+	return false;
+}
+
+function boundedPipelineLimiter(stages: ShellStage[], cwd: string | undefined): number | undefined {
+	let lastLimiter: number | undefined;
+	let lastLimiterBounded = false;
+	for (let index = 0; index < stages.length; index += 1) {
+		const redirections = parseShellRedirections(stages[index]!.text, cwd);
+		const words = shellWordsWithoutRedirections(stages[index]!.text, redirections);
+		const info = limiterInfo(words);
+		if (info.isLimiter) {
+			lastLimiter = index;
+			lastLimiterBounded = info.bounded;
+		}
+	}
+	if (lastLimiter === undefined || !lastLimiterBounded) return undefined;
+	for (let index = lastLimiter + 1; index < stages.length; index += 1) {
+		const redirections = parseShellRedirections(stages[index]!.text, cwd);
+		if (!isPassThroughPipelineStage(shellWordsWithoutRedirections(stages[index]!.text, redirections)))
+			return undefined;
+	}
+	return lastLimiter;
+}
+
+function shellAvailabilityCheck(text: string): boolean {
+	const command = commandAfterShellPreamble(text);
+	const match = /^(?:command\s+-v|which)\s+([^\s;&|]+)/i.exec(command);
+	return match !== null && INTEGRATION_IDENTIFIER_PATTERN.test(match[1] ?? "");
+}
+
+function findShellFallbackRanges(body: string, segments: readonly ShellSegment[]): GuardedRange[] {
+	const ranges = findFallbackMarkerRanges(body);
+	for (let index = 1; index < segments.length; index += 1) {
+		if (segments[index]!.separatorBefore !== "||" || !shellAvailabilityCheck(segments[index - 1]!.text)) continue;
+		ranges.push({ start: segments[index]!.start, end: segments[index]!.end });
+	}
+	return ranges;
+}
+
+function inspectBashCell(
+	cell: ParsedBashCell,
+	cwd: string | undefined,
+	guardedRanges: readonly GuardedRange[],
+): ContextRoutingInspection {
+	const segments = splitShellSegments(cell.body);
+	for (const segment of segments) {
+		if (guardedRanges.some((range) => segment.start >= range.start && segment.start < range.end)) continue;
+		const stages = splitPipelineStages(segment.text, segment.start);
+		const limiter = boundedPipelineLimiter(stages, cwd);
+		for (let index = 0; index < stages.length; index += 1) {
+			const stage = stages[index]!;
+			const redirections = parseShellRedirections(stage.text, cwd);
+			const words = shellWordsWithoutRedirections(stage.text, redirections);
+			const command = commandAfterShellPreamble(words.join(" "));
+			const executable = command.split(/\s+/, 1)[0]?.toLowerCase();
+			if (!executable) continue;
+			const directLimiter = limiterInfo(words);
+			const pipelineBounded = limiter !== undefined && index <= limiter && redirections.stdout !== "unsafe";
+			if (directLimiter.isLimiter && !directLimiter.bounded && !pipelineBounded) {
 				return {
 					decision: "block",
-					pattern: "curl/wget stdout",
-					reason: "Raw wget output would expand context; redirect it to a file or use a bounded parser.",
+					pattern: "unbounded head/tail reader",
+					reason: "An unbounded head/tail read would expand context; use a numeric bound or a bounded pipeline.",
 				};
 			}
-		}
+			if (
+				redirections.stdout === "safe" ||
+				pipelineBounded ||
+				(limiter !== undefined && index > limiter && isPassThroughPipelineStage(words))
+			)
+				continue;
 
-		if (executable === "cat" || executable === "cat.exe") {
-			if (!allCatInputsAreSmall(words, cwd)) {
-				return {
-					decision: "block",
-					pattern: "cat whole-file dump",
-					reason: "A broad cat dump would expand context; use a bounded slice or redirect it to a file.",
-				};
+			if ((executable === "curl" || executable === "curl.exe") && !HEAD_REQUEST_PATTERN.test(command)) {
+				if (outputOptionSafety(words, executable, cwd) !== "safe") {
+					return {
+						decision: "block",
+						pattern: "curl/wget stdout",
+						reason: "Raw curl output would expand context; redirect it to a real file or use a bounded parser.",
+					};
+				}
+			}
+
+			if (executable === "wget" || executable === "wget.exe") {
+				if (outputOptionSafety(words, executable, cwd) !== "safe") {
+					return {
+						decision: "block",
+						pattern: "curl/wget stdout",
+						reason: "Raw wget output would expand context; redirect it to a real file or use a bounded parser.",
+					};
+				}
+			}
+
+			if (executable === "cat" || executable === "cat.exe") {
+				if (!allCatInputsAreSmall(words, cwd)) {
+					return {
+						decision: "block",
+						pattern: "cat whole-file dump",
+						reason: "A broad cat dump would expand context; use a bounded slice or redirect it to a file.",
+					};
+				}
 			}
 		}
 	}
@@ -455,6 +863,8 @@ function inspectBashCell(cell: ParsedBashCell, cwd: string | undefined): Context
 interface CallExpression {
 	name: string;
 	argumentsText: string;
+	start: number;
+	open: number;
 	end: number;
 }
 
@@ -494,7 +904,7 @@ function findCalls(source: string, names: readonly string[]): CallExpression[] {
 		const match = /[A-Za-z_][A-Za-z0-9_.]*/y;
 		match.lastIndex = index;
 		const identifier = match.exec(source)?.[0];
-		if (!identifier || !names.includes(identifier)) continue;
+		if (!identifier || !names.some((name) => identifier === name || identifier.endsWith(`.${name}`))) continue;
 		let open = index + identifier.length;
 		while (/\s/.test(source[open] ?? "")) open += 1;
 		if (source[open] !== "(") continue;
@@ -529,7 +939,13 @@ function findCalls(source: string, names: readonly string[]): CallExpression[] {
 			}
 		}
 		if (depth === 0) {
-			calls.push({ name: identifier, argumentsText: source.slice(open + 1, end - 1), end });
+			calls.push({
+				name: identifier,
+				argumentsText: source.slice(open + 1, end - 1),
+				start: index,
+				open,
+				end,
+			});
 			index = end - 1;
 		}
 	}
@@ -538,7 +954,8 @@ function findCalls(source: string, names: readonly string[]): CallExpression[] {
 
 function extractLiteralPath(expression: string): string | undefined {
 	const match = /\b(?:Path|open)\s*\(\s*(["'])([^"']+)\1/.exec(expression);
-	return match?.[2];
+	if (match) return match[2];
+	return /^\s*(["'])([^"']+)\1/.exec(expression)?.[2];
 }
 
 function maskPythonStrings(expression: string): string {
@@ -587,29 +1004,259 @@ function maskPythonStrings(expression: string): string {
 	return masked;
 }
 
-function readIsBounded(expression: string): boolean {
-	return (
-		/\.(?:read_text|read)\s*\([^)]*\)\s*\[\s*(?:\d*\s*:\s*)?\d+\s*\]/.test(expression) ||
-		/\.read\s*\(\s*\d+\s*\)/.test(expression)
-	);
+function isReadCallBounded(call: CallExpression): boolean {
+	return call.name === "read" && /^\s*\d+\s*$/.test(call.argumentsText);
+}
+
+function findMatchingDelimiter(source: string, start: number, open: string, close: string): number | undefined {
+	let depth = 0;
+	let quote: "single" | "double" | undefined;
+	let escaped = false;
+	for (let index = start; index < source.length; index += 1) {
+		const character = source[index];
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (character === "\\" && quote !== "single") {
+			escaped = true;
+			continue;
+		}
+		if (quote === "single") {
+			if (character === "'") quote = undefined;
+			continue;
+		}
+		if (quote === "double") {
+			if (character === '"') quote = undefined;
+			continue;
+		}
+		if (character === "'") quote = "single";
+		else if (character === '"') quote = "double";
+		else if (character === open) depth += 1;
+		else if (character === close) {
+			depth -= 1;
+			if (depth === 0) return index;
+		}
+	}
+	return undefined;
+}
+
+function isBoundedSliceAfterRead(expression: string, call: CallExpression): boolean {
+	let index = call.end;
+	while (/\s/.test(expression[index] ?? "")) index += 1;
+	if (expression[index] !== "[") return false;
+	const close = findMatchingDelimiter(expression, index, "[", "]");
+	if (close === undefined) return false;
+	const slice = expression.slice(index + 1, close).trim();
+	if (!slice.includes(":")) return /^\d+$/.test(slice);
+	const upper = slice.split(":", 2)[1]?.trim() ?? "";
+	return /^\d+$/.test(upper);
+}
+
+function splitPythonArguments(source: string): string[] {
+	const argumentsText: string[] = [];
+	let start = 0;
+	let parens = 0;
+	let brackets = 0;
+	let braces = 0;
+	let quote: "single" | "double" | undefined;
+	let escaped = false;
+	for (let index = 0; index < source.length; index += 1) {
+		const character = source[index];
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (character === "\\" && quote !== "single") {
+			escaped = true;
+			continue;
+		}
+		if (quote === "single") {
+			if (character === "'") quote = undefined;
+			continue;
+		}
+		if (quote === "double") {
+			if (character === '"') quote = undefined;
+			continue;
+		}
+		if (character === "'") quote = "single";
+		else if (character === '"') quote = "double";
+		else if (character === "(") parens += 1;
+		else if (character === ")") parens -= 1;
+		else if (character === "[") brackets += 1;
+		else if (character === "]") brackets -= 1;
+		else if (character === "{") braces += 1;
+		else if (character === "}") braces -= 1;
+		else if (character === "," && parens === 0 && brackets === 0 && braces === 0) {
+			argumentsText.push(source.slice(start, index));
+			start = index + 1;
+		}
+	}
+	argumentsText.push(source.slice(start));
+	return argumentsText;
+}
+
+function resolvePathForRead(expression: string, read: CallExpression): string | undefined {
+	const pathCalls = findCalls(expression, ["open", "Path"])
+		.filter((call) => call.end <= read.start && /^\s*\.\s*$/.test(expression.slice(call.end, read.start)))
+		.sort((left, right) => right.end - left.end);
+	return pathCalls.length > 0 ? extractLiteralPath(pathCalls[0]!.argumentsText) : undefined;
+}
+
+function pythonDelimiterDepths(source: string): number[] {
+	const depths = new Array<number>(source.length + 1).fill(0);
+	let depth = 0;
+	for (let index = 0; index < source.length; index += 1) {
+		depths[index] = depth;
+		if (/[([{]/.test(source[index] ?? "")) depth += 1;
+		else if (source[index] === ")" || source[index] === "]" || source[index] === "}") depth = Math.max(0, depth - 1);
+	}
+	depths[source.length] = depth;
+	return depths;
+}
+
+function hasScalarBoundary(masked: string, start: number, end: number, depths: number[], maxDepth: number): boolean {
+	for (let index = start; index < end; index += 1) {
+		if ((depths[index] ?? 0) > maxDepth) continue;
+		if (masked[index] === ",") return true;
+		const keyword = /[A-Za-z_]/.test(masked[index] ?? "")
+			? /^[A-Za-z_][A-Za-z0-9_]*/.exec(masked.slice(index))?.[0]
+			: undefined;
+		if (keyword && /^(?:and|or|if|else|for)$/.test(keyword)) return true;
+		if (keyword) index += keyword.length - 1;
+	}
+	return false;
+}
+
+function comparisonConsumesRead(masked: string, read: CallExpression): boolean {
+	const depths = pythonDelimiterDepths(masked);
+	const comparisons = /(?:\bnot\s+in\b|\bis(?:\s+not)?\b|==|!=|<=|>=|<|>|\bin\b)/g;
+	for (const match of masked.matchAll(comparisons)) {
+		const operatorStart = match.index ?? 0;
+		const operatorEnd = operatorStart + match[0].length;
+		const readDepth = depths[read.start] ?? 0;
+		const operatorDepth = depths[operatorStart] ?? 0;
+		if (operatorDepth > readDepth) continue;
+		const readIsLeftOperand = read.end <= operatorStart;
+		const readIsRightOperand = read.start >= operatorEnd;
+		if (!readIsLeftOperand && !readIsRightOperand) continue;
+		const gapStart = readIsLeftOperand ? read.end : operatorEnd;
+		const gapEnd = readIsLeftOperand ? operatorStart : read.start;
+		const sharedDepth = Math.min(depths[read.start] ?? 0, depths[operatorStart] ?? 0);
+		if (!hasScalarBoundary(masked, gapStart, gapEnd, depths, sharedDepth)) return true;
+	}
+	return false;
+}
+
+function readHasScalarReducerAncestor(expression: string, read: CallExpression): boolean {
+	const scalarReducers = findCalls(expression, ["len", "hash", "sum", "bool", "any", "all"]);
+	return scalarReducers.some((call) => call.start < read.start && call.end >= read.end);
+}
+
+function readIsScalar(expression: string, read: CallExpression): boolean {
+	const masked = maskPythonStrings(expression);
+	if (comparisonConsumesRead(masked, read)) return true;
+	if (readHasScalarReducerAncestor(expression, read)) return true;
+	let after = read.end;
+	while (/\s/.test(expression[after] ?? "")) after += 1;
+	return /^(?:\.\s*(?:count|find|index|startswith|endswith|isascii)\s*\()/.test(expression.slice(after));
+}
+
+function isWholeFileReadExpression(expression: string, cwd: string | undefined): boolean {
+	const reads = findCalls(expression, ["read", "read_text"]);
+	for (const read of reads) {
+		if (isReadCallBounded(read) || isBoundedSliceAfterRead(expression, read) || readIsScalar(expression, read))
+			continue;
+		const fileName = resolvePathForRead(expression, read);
+		if (!resolveSmallFile(fileName, cwd)) return true;
+	}
+	return false;
+}
+
+function findFStringInterpolations(source: string): string[] {
+	const interpolations: string[] = [];
+	for (let index = 0; index < source.length; index += 1) {
+		if (!/[fF]/.test(source[index] ?? "") || (index > 0 && /[A-Za-z0-9_]/.test(source[index - 1] ?? ""))) continue;
+		const quoteIndex = source[index + 1] === "r" || source[index + 1] === "R" ? index + 2 : index + 1;
+		const quote = source[quoteIndex];
+		if (quote !== "'" && quote !== '"') continue;
+		const end = skipPythonString(source, quoteIndex);
+		const content = source.slice(quoteIndex + 1, Math.max(quoteIndex + 1, end - 1));
+		for (let contentIndex = 0; contentIndex < content.length; contentIndex += 1) {
+			if (content[contentIndex] !== "{" || content[contentIndex + 1] === "{") continue;
+			const close = findMatchingDelimiter(content, contentIndex, "{", "}");
+			if (close === undefined) break;
+			interpolations.push(content.slice(contentIndex + 1, close));
+			contentIndex = close;
+		}
+		index = Math.max(index, end - 1);
+	}
+	return interpolations;
 }
 
 function isWholeFilePrint(expression: string, cwd: string | undefined): boolean {
-	const maskedExpression = maskPythonStrings(expression);
-	if (!/\b(?:read_text|read)\s*\(/.test(maskedExpression)) return false;
-	if (readIsBounded(maskedExpression)) return false;
-	const fileName = extractLiteralPath(expression);
-	return !resolveSmallFile(fileName, cwd);
+	for (const argument of splitPythonArguments(expression)) {
+		if (isWholeFileReadExpression(argument, cwd)) return true;
+		if (findFStringInterpolations(argument).some((interpolation) => isWholeFileReadExpression(interpolation, cwd)))
+			return true;
+	}
+	return false;
 }
 
-function inspectPythonCode(code: string, cwd: string | undefined): ContextRoutingInspection {
-	for (const call of findCalls(code, ["print", "display", "stdout.write", "sys.stdout.write"])) {
-		if (isWholeFilePrint(call.argumentsText, cwd)) {
+function hasIntegrationIdentifier(text: string): boolean {
+	return maskPythonStrings(text)
+		.split(/\s+/)
+		.some((word) => INTEGRATION_IDENTIFIER_PATTERN.test(word.replace(/[^A-Za-z0-9_-]/g, "")));
+}
+
+function findPythonFallbackRanges(code: string): GuardedRange[] {
+	const lines = lineRanges(code);
+	const ranges = findFallbackMarkerRanges(code);
+	for (let index = 0; index < lines.length; index += 1) {
+		const tryMatch = /^(\s*)try\s*:\s*$/.exec(lines[index]!.text);
+		if (!tryMatch) continue;
+		const tryIndent = tryMatch[1]!.length;
+		let exceptIndex = index + 1;
+		while (exceptIndex < lines.length) {
+			const line = lines[exceptIndex]!.text;
+			const indent = line.match(/^\s*/)?.[0].length ?? 0;
+			if (line.trim().length > 0 && indent <= tryIndent) {
+				if (
+					indent === tryIndent &&
+					/^except\s+\(?[^:]*\b(?:ImportError|ModuleNotFoundError)\b[^:]*\)?\s*:/.test(line.trim())
+				)
+					break;
+				if (indent < tryIndent) break;
+			}
+			exceptIndex += 1;
+		}
+		if (exceptIndex >= lines.length) continue;
+		let end = lines[exceptIndex]!.end;
+		for (let bodyIndex = exceptIndex + 1; bodyIndex < lines.length; bodyIndex += 1) {
+			const line = lines[bodyIndex]!.text;
+			const indent = line.match(/^\s*/)?.[0].length ?? 0;
+			if (line.trim().length > 0 && indent <= tryIndent) break;
+			end = lines[bodyIndex]!.end;
+		}
+		const guardedText = code.slice(lines[index]!.start, end);
+		if (hasIntegrationIdentifier(guardedText)) ranges.push({ start: lines[exceptIndex]!.start, end });
+	}
+	return ranges;
+}
+
+function inspectPythonCode(
+	code: string,
+	cwd: string | undefined,
+	guardedRanges: readonly GuardedRange[],
+): ContextRoutingInspection {
+	const inspectedCode = maskRanges(code, guardedRanges);
+	for (const call of findCalls(inspectedCode, ["print", "display", "stdout.write", "sys.stdout.write"])) {
+		if (isWholeFilePrint(inspectedCode.slice(call.start, call.end), cwd)) {
 			return {
 				decision: "block",
 				pattern: "python whole-file print",
 				reason:
-					"Printing an unbounded Python file read would expand context; use a bounded slice or stat-able small file.",
+					"Printing an unbounded Python file read would expand context; use a bounded slice, a scalar reducer, or a stat-able small file.",
 			};
 		}
 	}
@@ -624,11 +1271,13 @@ export function inspectContextRoutingCode(code: string, cwd?: string): ContextRo
 	if (hasLeadingMarker(code, BYPASS_MARKER_PATTERN)) {
 		return { decision: "allow", reason: "Explicit context-routing bypass marker." };
 	}
-	if (hasFallbackGuard(code)) {
-		return { decision: "allow", reason: "Unavailable-integration fallback detected." };
-	}
 	const bashCell = parseBashCell(code);
-	return bashCell ? inspectBashCell(bashCell, cwd) : inspectPythonCode(code, cwd);
+	if (bashCell) {
+		const segments = splitShellSegments(bashCell.body);
+		const guardedRanges = findShellFallbackRanges(bashCell.body, segments);
+		return inspectBashCell(bashCell, cwd, guardedRanges);
+	}
+	return inspectPythonCode(code, cwd, findPythonFallbackRanges(code));
 }
 
 function formatStats(mode: ContextRoutingMode, stats: ContextRoutingStats): string {

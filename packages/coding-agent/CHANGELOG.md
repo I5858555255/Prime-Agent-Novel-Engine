@@ -8,6 +8,7 @@
 - Fixed host-managed stdio MCP sidecars crashing on closed stdin, retrying possibly delivered tool calls, accepting invalid handshakes/settings, or returning before process cleanup completed.
 - Fixed Python host bridge requests waiting forever or leaking comms after timeouts and cancellation, and corrected the bundled Context Mode file-processing example.
 - Fixed bounded IPython artifacts using unbounded append/search memory, rescanning from byte zero, leaking failed captures, publishing partial artifacts, or splitting Unicode boundaries.
+- Fixed strict context routing bypasses around fallback guards, descriptor redirects, unbounded pipeline tails, and mixed Python reads while allowing scalar reductions.
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
 

@@ -46,15 +46,28 @@ shell recognition. It blocks:
 - immediately printed unbounded `open(...).read()` or
   `Path(...).read_text()` expressions.
 
-It allows bounded reads such as `read(200)`, `read_text()[:200]`, or a
-`head`/`tail` pipeline, stat-able files of 16 KiB or less, redirects (`curl
-URL > response`, `cat file > out`), normal builds/tests/git commands, and
-writes. Unknown shell syntax is allowed
-rather than guessed to be a violation.
+Fallbacks are branch-scoped rather than cell-scoped. An `ImportError` branch is
+exempt only when its surrounding range names an integration such as
+jCodeMunch, and a `command -v`/`which` `||` branch is exempt only when the
+availability check names that integration. A `# context-routing: fallback`
+marker exempts the following fallback statement only; reads elsewhere in the
+cell are still inspected.
 
-If a jCodeMunch or Context Mode integration is unavailable, a clear
-`try/except ImportError` or `command -v ... ||` fallback is allowed. A
-`# context-routing: fallback` marker can document another fallback shape.
+Stdout is considered materialized only when a redirect target is a literal file
+path or `/dev/null`. Relative targets are resolved against the inspection cwd,
+including `..` traversal. Descriptor targets (`&1`, `&2`, `-`, `/dev/stdout`,
+`/dev/stderr`, `/dev/fd/*`, and all `/proc/*` paths) are not safe redirects.
+Pipelines are bounded
+only when the last relevant `head`/`tail` stage has a numeric bound (for
+example `head -5` or `tail -n 5`); `tail -n +1` and `--lines=+1` remain
+unbounded.
+
+Python output inspects every read in every printed argument. Direct content,
+including `str`, `repr`, f-string interpolation, and unbounded slices, remains
+guarded; scalar reducers such as `len`, `hash`, `count`, `sum`, and comparisons
+are allowed. Bounded reads, stat-able files of 16 KiB or less, normal
+builds/tests/git commands, and writes remain allowed. Unknown shell syntax is
+allowed rather than guessed to be a violation.
 
 For an intentional exception, put this as the first non-blank line in the
 IPython cell:

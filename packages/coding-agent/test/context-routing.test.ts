@@ -48,6 +48,14 @@ describe("context-routing policy", () => {
 			expect(
 				inspectContextRoutingCode('from pathlib import Path\nprint(Path("large.txt").read_text())', cwd).decision,
 			).toBe("block");
+			for (const code of [
+				"%%bash\ntail -n +1 large.txt",
+				"%%bash\ntail --lines=+5 large.txt",
+				"%%bash\nhead +5 large.txt",
+				"%%bash\nhead -n+5 large.txt",
+			]) {
+				expect(inspectContextRoutingCode(code, cwd), code).toMatchObject({ decision: "block" });
+			}
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -61,6 +69,10 @@ describe("context-routing policy", () => {
 				"%%bash\nwget -O response.html https://example.com",
 				"%%bash\ncat large.txt > response.txt",
 				"%%bash\ncat large.txt | head -n 20",
+				"%%bash\ntail large.txt",
+				"%%bash\nhead -5 large.txt",
+				"%%bash\ntail -n 5 large.txt",
+				"%%bash\nhead -n 5 large.txt",
 				"%%bash\ncurl https://example.com | head -c 200",
 				"npm test",
 				"git status --short",
@@ -108,6 +120,181 @@ describe("context-routing policy", () => {
 					cwd,
 				).decision,
 			).toBe("block");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("scopes fallback guards to integration branches and ranges", () => {
+		const cwd = createTempFiles();
+		try {
+			expect(
+				inspectContextRoutingCode(
+					'try:\n    import unrelated\nexcept ImportError:\n    print(open("large.txt").read())',
+					cwd,
+				).decision,
+			).toBe("block");
+			expect(
+				inspectContextRoutingCode(
+					'try:\n    import jcodemunch\nexcept ImportError:\n    print(open("large.txt").read())\nprint(open("large.txt").read())',
+					cwd,
+				).decision,
+			).toBe("block");
+			expect(inspectContextRoutingCode("%%bash\ncommand -v unrelated || cat large.txt", cwd).decision).toBe("block");
+			expect(inspectContextRoutingCode("%%bash\ncommand -v jcodemunch || cat large.txt", cwd).decision).toBe(
+				"allow",
+			);
+			expect(
+				inspectContextRoutingCode("%%bash\n# context-routing: fallback\ncat large.txt\ncat large.txt", cwd)
+					.decision,
+			).toBe("block");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects unsafe redirections and only accepts genuinely bounded pipelines", () => {
+		const cwd = createTempFiles();
+		try {
+			const blocked = [
+				"%%bash\ncat large.txt >&2",
+				"%%bash\ncat large.txt >/dev/stdout",
+				"%%bash\ncat large.txt >/dev/stderr",
+				"%%bash\ncat large.txt >/dev/stdin",
+				"%%bash\ncat large.txt >/dev/fd/0",
+				"%%bash\ncat large.txt >/dev/fd/1",
+				"%%bash\ncat large.txt >/dev/fd/2",
+				"%%bash\ncat large.txt >/dev//fd/1",
+				"%%bash\ncat large.txt >/dev//fd/2",
+				"%%bash\ncat large.txt >/dev/./fd/1",
+				"%%bash\ncat large.txt >/dev/./fd/2",
+				"%%bash\ncat large.txt >/dev/fd/../fd/1",
+				"%%bash\ncat large.txt >/dev/fd/../fd/2",
+				"%%bash\ncat large.txt >//dev/fd/1",
+				"%%bash\ncat large.txt >//dev/fd/2",
+				"%%bash\ncat large.txt >/proc/self/fd/0",
+				"%%bash\ncat large.txt >/proc/self/fd/1",
+				"%%bash\ncat large.txt >/proc/self/fd/2",
+				"%%bash\ncat large.txt >/proc/thread-self/fd/1",
+				"%%bash\ncat large.txt >/proc/thread-self/fd/2",
+				"%%bash\ncat large.txt >/proc/12345/fd/1",
+				"%%bash\ncat large.txt >/proc/12345/fd/2",
+				"%%bash\ncat large.txt >/proc/12345/task/67890/fd/1",
+				"%%bash\ncat large.txt >/proc/12345/task/67890/fd/2",
+				"%%bash\ncat large.txt >/proc/12345/task/67890/fd/../fd/1",
+				"%%bash\ncat large.txt >/proc/thread-self/fd/../fd/2",
+				"%%bash\ncat large.txt >/proc/self/root/proc/self/fd/1",
+				"%%bash\ncat large.txt >/proc/self/root/proc/self/fd/2",
+				"%%bash\ncat large.txt >/proc/self/root/dev/fd/1",
+				"%%bash\ncat large.txt >/proc/self/root/dev/fd/2",
+				"%%bash\ncat large.txt >/proc/self/cwd/proc/self/fd/1",
+				"%%bash\ncat large.txt >/proc/self/cwd/proc/self/fd/2",
+				"%%bash\ncat large.txt >/proc/self/cwd/dev/fd/1",
+				"%%bash\ncat large.txt >/proc/self/cwd/dev/fd/2",
+				"%%bash\ncat large.txt >//proc//self//root//proc//self//fd//1",
+				"%%bash\ncat large.txt >//proc//self//root//proc//self//fd//2",
+				"%%bash\ncat large.txt >//proc//self//cwd//dev//fd//1",
+				"%%bash\ncat large.txt >//proc//self//cwd//dev//fd//2",
+				"%%bash\ncat large.txt >/proc/self/root/../root/proc/self/fd/1",
+				"%%bash\ncat large.txt >/proc/self/root/../root/proc/self/fd/2",
+				"%%bash\ncat large.txt >-",
+				"%%bash\ncat large.txt | tail -n +1",
+				"%%bash\ncat large.txt | tail --lines=+1",
+				"%%bash\ncat large.txt | head -5 | tail -n +1",
+				"%%bash\ncat large.txt | head -5 | grep x other.txt",
+			];
+			for (const code of blocked)
+				expect(inspectContextRoutingCode(code, cwd), code).toMatchObject({ decision: "block" });
+
+			const allowed = [
+				"%%bash\ncat large.txt >/dev/null",
+				"%%bash\ncat large.txt > response.txt",
+				"%%bash\ncat large.txt | head -5",
+				"%%bash\ncat large.txt | head -n 5",
+				"%%bash\ncat large.txt | tail -n 5",
+				"%%bash\ncat large.txt | head -5 | cat",
+				"%%bash\ncat large.txt | head -5 | grep x",
+			];
+			for (const code of allowed)
+				expect(inspectContextRoutingCode(code, cwd), code).toMatchObject({ decision: "allow" });
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves relative redirects against the inspection cwd", () => {
+		const cwd = createTempFiles();
+		const nestedCwd = "/tmp/prime-agent-context-routing-nested";
+		try {
+			const rootBlocked = [
+				"%%bash\ncat large.txt > proc/self/root/proc/self/fd/1",
+				"%%bash\ncurl https://example.com > proc/self/root/proc/self/fd/1",
+				"%%bash\ncurl https://example.com -o proc/self/root/proc/self/fd/1",
+				"%%bash\ncurl https://example.com > 'proc/self/root/proc/self/fd/2'",
+				'%%bash\ncurl https://example.com > "proc/self/cwd/dev/fd/1"',
+				"%%bash\ncurl https://example.com > //proc//self//root//proc//self//fd//2",
+				"%%bash\ncurl https://example.com > proc/self/cwd/../../root/proc/self/fd/1",
+			];
+			for (const code of rootBlocked)
+				expect(inspectContextRoutingCode(code, "/"), code).toMatchObject({ decision: "block" });
+
+			const nestedBlocked = [
+				"%%bash\ncat large.txt > ../../proc/self/fd/1",
+				"%%bash\ncurl https://example.com > ../../proc/self/fd/1",
+				'%%bash\nwget -O "../../proc/self/fd/2" https://example.com',
+				'%%bash\ncurl https://example.com > "../../proc/self/root/dev/fd/2"',
+				"%%bash\ncurl https://example.com > ../../proc//self/./root/../root/proc/self/fd/1",
+			];
+			for (const code of nestedBlocked)
+				expect(inspectContextRoutingCode(code, nestedCwd), code).toMatchObject({ decision: "block" });
+
+			const allowed = [
+				"%%bash\ncurl https://example.com > response.html",
+				'%%bash\ncurl https://example.com > "../response.html"',
+			];
+			for (const code of allowed)
+				expect(inspectContextRoutingCode(code, cwd), code).toMatchObject({ decision: "allow" });
+			expect(inspectContextRoutingCode("%%bash\ncurl https://example.com > tmp/response.html", "/").decision).toBe(
+				"allow",
+			);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("inspects every direct read while allowing scalar reductions", () => {
+		const cwd = createTempFiles();
+		try {
+			const blocked = [
+				'print(open("small.txt").read(), open("large.txt").read())',
+				'print(open("large.txt").read(200), open("large.txt").read())',
+				'print(str(open("large.txt").read()))',
+				'print(open("large.txt").read() if flag == "x" else "")',
+				'print((flag == "x") and open("large.txt").read())',
+				'print(open("large.txt").read() + str(flag == "x"))',
+				'print(open("large.txt").read() + ("suffix" if flag == "x" else ""))',
+				'print(list([open("large.txt").read()]))',
+				'print(min([open("large.txt").read(), "z"]))',
+				'print(max((open("large.txt").read(), "z")))',
+				'print(tuple(({"content": [open("large.txt").read()]},)))',
+				"print(f\"{open('large.txt').read()}\")",
+			];
+			for (const code of blocked)
+				expect(inspectContextRoutingCode(code, cwd), code).toMatchObject({ decision: "block" });
+
+			const allowed = [
+				'print(len(open("large.txt").read()))',
+				'print(hash(open("large.txt").read()))',
+				'print(open("large.txt").read().count("x"))',
+				'print(open("large.txt").read() == "x")',
+				'print(open("large.txt").read()[:200])',
+				'print(len([open("large.txt").read()]))',
+				'print(bool({"content": (open("large.txt").read(),)}))',
+				'print(hash(tuple([open("large.txt").read()])))',
+				"print(f\"{len(open('large.txt').read())}\")",
+			];
+			for (const code of allowed)
+				expect(inspectContextRoutingCode(code, cwd), code).toMatchObject({ decision: "allow" });
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
