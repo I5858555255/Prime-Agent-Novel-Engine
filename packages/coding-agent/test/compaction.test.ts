@@ -1,9 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildSummarizationPrompt,
 	type CompactionSettings,
@@ -12,6 +12,7 @@ import {
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	findCutPoint,
+	generateSummary,
 	getLastAssistantUsage,
 	prepareCompaction,
 	shouldCompact,
@@ -26,6 +27,18 @@ import {
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "../src/core/session-manager.js";
+
+const { completeSimpleMock } = vi.hoisted(() => ({
+	completeSimpleMock: vi.fn(),
+}));
+
+vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-ai")>();
+	return {
+		...actual,
+		completeSimple: completeSimpleMock,
+	};
+});
 
 // ============================================================================
 // Test fixtures
@@ -78,6 +91,7 @@ function resetEntryCounter() {
 // Reset counter before each test to get predictable IDs
 beforeEach(() => {
 	resetEntryCounter();
+	completeSimpleMock.mockReset();
 });
 
 function createMessageEntry(message: AgentMessage): SessionMessageEntry {
@@ -545,6 +559,104 @@ describe("Large session fixture", () => {
 
 		expect(loaded.messages.length).toBeGreaterThan(100);
 		expect(loaded.model).not.toBeNull();
+	});
+});
+
+describe("Issue #900 Bounded Summarization & Validation", () => {
+	function createTestModel(contextWindow = 10000): Model<"anthropic-messages"> {
+		return {
+			id: "test-model",
+			name: "Test Model",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow,
+			maxTokens: 4096,
+		};
+	}
+
+	const mockAssistantSummary: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: "## Goal\nSummary chunk" }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "test-model",
+		usage: createMockUsage(100, 50),
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+
+	it("splits oversized conversation into bounded chunks on message boundaries and aggregates", async () => {
+		completeSimpleMock.mockResolvedValue(mockAssistantSummary);
+
+		const smallContextModel = createTestModel(8000);
+		// Each message has ~6000 chars => ~1500 tokens.
+		// 4 messages => ~6000 tokens input.
+		// safeInputBudget for 8k window with 2k reserve = (8000-2000-2000)*0.9 = 3600 tokens.
+		// A (1500) + B (1500) = 3000 <= 3600, so Chunk 1 has A and B. Chunk 2 has C and D.
+		const largeMessages: AgentMessage[] = [
+			createUserMessage("A".repeat(6000)),
+			createUserMessage("B".repeat(6000)),
+			createUserMessage("C".repeat(6000)),
+			createUserMessage("D".repeat(6000)),
+		];
+
+		const summary = await generateSummary(largeMessages, smallContextModel, 2000, "test-key");
+
+		expect(summary).toContain("Summary chunk");
+		// 2 chunk calls + 1 aggregation call = 3 total completeSimple calls
+		expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+
+		// Verify chunk 1 had messages A and B
+		const call0Text = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
+		expect(call0Text).toContain("AAAA");
+		expect(call0Text).toContain("BBBB");
+		expect(call0Text).not.toContain("CCCC");
+
+		// Verify chunk 2 had messages C and D
+		const call1Text = completeSimpleMock.mock.calls[1][1].messages[0].content[0].text;
+		expect(call1Text).toContain("CCCC");
+		expect(call1Text).toContain("DDDD");
+		expect(call1Text).not.toContain("AAAA");
+	});
+
+	it("does not chunk when conversation fits in single safe budget", async () => {
+		completeSimpleMock.mockResolvedValue(mockAssistantSummary);
+
+		const model = createTestModel(200000);
+		const smallMessages: AgentMessage[] = [
+			createUserMessage("Short user prompt"),
+			createAssistantMessage("Short response"),
+		];
+
+		await generateSummary(smallMessages, model, 2000, "test-key");
+
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("validates post-compaction context tokens and throws if result exceeds budget", async () => {
+		completeSimpleMock.mockResolvedValue({
+			...mockAssistantSummary,
+			content: [{ type: "text", text: "X".repeat(40000) }], // giant summary output: ~10k tokens
+		});
+
+		const tinyModel = createTestModel(5000);
+		const preparation = {
+			firstKeptEntryId: "entry-1",
+			messagesToSummarize: [createUserMessage("msg 1")],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			tokensBefore: 10000,
+			fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
+			settings: { enabled: true, reserveTokens: 1000, keepRecentTokens: 2000 },
+		};
+
+		await expect(compact(preparation, tinyModel, "test-key")).rejects.toThrow(
+			/Compaction result .* exceeds safe context limit/,
+		);
 	});
 });
 
