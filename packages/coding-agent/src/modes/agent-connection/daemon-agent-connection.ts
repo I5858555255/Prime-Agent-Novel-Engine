@@ -1778,6 +1778,11 @@ export class DaemonAgentConnection implements AgentConnection {
 				(purpose === "replacement" || purpose === "resync") && message.activeSessionId !== this.activeSessionId;
 			if (isPendingCatchupFailure && this.pendingReattachActiveSessionIds.has(message.activeSessionId)) {
 				this.pendingBindingCatchupFailures.add(message.activeSessionId);
+				// Newest wins in both directions: this failure is newer than any
+				// buffered success, whose snapshot now predates the events the
+				// failed catch-up carried. Drop it so publication consumes the
+				// marker and re-reads instead of serving the stale buffer.
+				this.pendingBindingCatchupSnapshots.delete(message.activeSessionId);
 			}
 			const recoveryPromise =
 				(purpose === "replacement" || purpose === "resync") && message.activeSessionId === this.activeSessionId
