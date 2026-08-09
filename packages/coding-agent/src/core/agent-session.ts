@@ -1172,8 +1172,10 @@ export class AgentSession {
 	private _overflowRecovery: "idle" | "attempted" | "reported" = "idle";
 	/** Consecutive auto-continuations for output-token-truncated responses. */
 	private _lengthContinuations = 0;
-	/** True between queueing a truncation continuation and its steer prompt start. */
-	private _lengthContinuationPending = false;
+	/** The injected truncation continuation steer, tracked by identity until its
+	 *  message_start, so only that message can clear the pending marker (an
+	 *  interloping message_start cannot consume it and reset the budget). */
+	private _pendingLengthContinuationMessage: UserMessage | undefined = undefined;
 	private _continueAfterThresholdCompaction = false;
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
 	private _pendingRequestedRefine: { instructions?: string; global?: boolean } | undefined;
@@ -2230,23 +2232,41 @@ export class AgentSession {
 			await this._agentEventQueue;
 			await this._runSerializedRefineCheckpoint();
 		}
-		if (await this._shouldStopForThresholdCompaction(context)) {
-			return true;
-		}
 		// Auto-continue responses truncated by the model's output-token limit.
 		// stopReason "length" with non-empty text means the reply was cut off
 		// mid-generation (the output==0 context-overflow case is handled
 		// separately); queue a bounded follow-up so the model finishes where it
-		// left off instead of silently delivering a partial answer.
-		if (!this._steeringStopPending && this._shouldAutoContinueTruncation(context.message)) {
-			this._lengthContinuations++;
-			this._lengthContinuationPending = true;
-			await this._queuePreparedPrompt("steer", LENGTH_CONTINUATION_PROMPT, undefined, {
+		// left off instead of silently delivering a partial answer. This is
+		// queued BEFORE the threshold-compaction check: if we're also over the
+		// compaction threshold, the queued steer counts as pending session work,
+		// so _runAutoCompaction schedules a post-compaction continue and the
+		// truncated reply is still finished rather than silently dropped.
+		const truncationContinuation = !this._steeringStopPending && this._shouldAutoContinueTruncation(context.message);
+		if (truncationContinuation) {
+			const message: UserMessage = {
+				role: "user",
+				content: [{ type: "text", text: LENGTH_CONTINUATION_PROMPT }],
+				timestamp: Date.now(),
+			};
+			const accepted = await this._queuePreparedPrompt("steer", LENGTH_CONTINUATION_PROMPT, undefined, {
+				message,
 				source: "internal",
 				resumeIfIdle: true,
 				suppressAutonomousContinuation: true,
+				// Non-visible so an ACP/daemon abort cancels this like other
+				// internal control turns, instead of stranding a stale
+				// continuation that runs ahead of the user's next prompt.
+				queueVisible: false,
 			});
-			return false;
+			if (accepted) {
+				// Track the injected message by identity so only its own
+				// message_start consumes the pending marker.
+				this._lengthContinuations++;
+				this._pendingLengthContinuationMessage = message;
+			}
+		}
+		if (await this._shouldStopForThresholdCompaction(context)) {
+			return true;
 		}
 		// Steering stops continuation only after mandatory serialized checkpoints.
 		// Returning true here still prevents the agent loop from starting another turn.
@@ -3521,13 +3541,18 @@ export class AgentSession {
 		}
 
 		if (event.type === "message_start") {
-			if (this._lengthContinuationPending) {
+			if (
+				this._pendingLengthContinuationMessage !== undefined &&
+				event.message === this._pendingLengthContinuationMessage
+			) {
 				// This is the steer prompt we injected to continue a truncated
 				// response; keep the per-run continuation budget intact.
-				this._lengthContinuationPending = false;
+				this._pendingLengthContinuationMessage = undefined;
 			} else if (this._isPromptTurnStartMessage(event.message)) {
 				this._overflowRecovery = "idle";
 				this._lengthContinuations = 0;
+				// Drop any stale marker from a cancelled continuation.
+				this._pendingLengthContinuationMessage = undefined;
 			}
 		}
 
@@ -5429,6 +5454,7 @@ export class AgentSession {
 			suppressAutonomousContinuation?: boolean;
 			resumeIfIdle?: boolean;
 			source?: InputSource | "internal";
+			queueVisible?: boolean;
 		} = {},
 	): Promise<boolean> {
 		const action = this._createPreparedTurnAction(schedule, text, images, options);

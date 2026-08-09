@@ -7,7 +7,6 @@
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
 - Fixed responses being silently truncated at the provider's output-token limit (`stopReason: "length"` with non-empty text): the agent now queues a bounded auto-continuation so the model finishes where it left off instead of delivering a partial answer as final.
 
-
 ## [0.7.1] - 2026-08-07
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
