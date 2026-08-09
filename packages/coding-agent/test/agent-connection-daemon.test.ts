@@ -54,6 +54,7 @@ class FakeDaemonClient {
 	promptResponseError: string | undefined;
 	readonly deadActiveSessionIds = new Set<string>();
 	readonly attachedIds = new Set<string>();
+	omitWasAttached = false;
 	createResponseError: string | undefined;
 	createGate: Promise<void> | undefined;
 	revivedAttachGate: Promise<void> | undefined;
@@ -157,7 +158,8 @@ class FakeDaemonClient {
 				}
 				{
 					// Mirror the supervisor's per-socket attachment Set: wasAttached
-					// reports whether this attach created the entry.
+					// reports whether this attach created the entry. omitWasAttached
+					// models a pre-revision-15 daemon.
 					const wasAttached = this.attachedIds.has(command.activeSessionId);
 					this.attachedIds.add(command.activeSessionId);
 					return {
@@ -167,7 +169,7 @@ class FakeDaemonClient {
 						data: {
 							...(this.attachResultFactory?.(command) ??
 								createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12)),
-							wasAttached,
+							...(this.omitWasAttached ? {} : { wasAttached }),
 						},
 					};
 				}
@@ -2319,6 +2321,110 @@ describe("DaemonAgentConnection", () => {
 		// The sibling must still be live on the shared socket.
 		emitSequencedQueueUpdate(fakeClient, "active-revived", 24);
 		await vi.waitFor(() => expect(siblingEvents.some((event) => event.type === "session_event")).toBe(true));
+	});
+
+	it("defaults to not detaching when an older daemon omits attach ownership", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.omitWasAttached = true;
+		let emitRevivedSnapshot = () => {};
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23);
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			emitRevivedSnapshot = () => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-legacy-owner",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-legacy-owner",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+			};
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-legacy-owner", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.switchSessionAlreadyActiveId = "active-b";
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(1),
+		);
+		await connection.switchSession("/tmp/session-b.jsonl");
+		emitRevivedSnapshot();
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+
+		// Without the revision-15 ownership report the client cannot prove the
+		// attach created the socket entry, so the conservative default keeps
+		// the possible sibling attachment (accepting a stale entry instead).
+		expect(fakeClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+		);
+	});
+
+	it("suppresses a background revival resync after an in-worker transcript switch", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			// Legacy bare-summary attach: the resync comes from separate reads.
+			return {
+				id: command.activeSessionId,
+				activeSessionId: command.activeSessionId,
+				sessionId: "session-revived",
+				sessionFile: "/tmp/session-revived.jsonl",
+			} as unknown as DaemonAttachResult;
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+		// The revival's synchronous snapshot read fails, scheduling the
+		// background retry.
+		fakeClient.connectionStateFailures = 1;
+
+		await connection.prompt("continue");
+		expect(events.some((event) => event.type === "session_resynced")).toBe(false);
+
+		// An in-worker switch replaces the transcript WITHOUT changing the
+		// active id before the background retry fires.
+		fakeClient.emitMessage({
+			type: "session_replaced",
+			activeSessionId: "active-revived",
+			state: createConnectionState("active-revived", "session-b"),
+			messages: [],
+		});
+
+		// The background retry must observe the moved transcript identity and
+		// stay silent: a resync of the pre-switch snapshot would revert the
+		// window. Wait past the retry window before asserting.
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+		const resyncs = events.filter(
+			(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+				event.type === "session_resynced",
+		);
+		expect(resyncs).toHaveLength(0);
 	});
 
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {

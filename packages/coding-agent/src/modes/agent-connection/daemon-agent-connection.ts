@@ -1074,7 +1074,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				// reads, which can fail transiently); only the resync emission is
 				// missing. Retry it in the background instead of failing a revival
 				// whose prompts already work.
-				this.scheduleRevivalResync(revivedActiveSessionId);
+				this.scheduleRevivalResync(revivedBinding);
 			}
 			this.activeSideQuestionIds.clear();
 			if (this.disposed) {
@@ -1113,16 +1113,20 @@ export class DaemonAgentConnection implements AgentConnection {
 	 * dead transcript even though prompts already reach the revived session.
 	 * Retry in the background until the snapshot lands or the binding moves.
 	 */
-	private scheduleRevivalResync(revivedActiveSessionId: string): void {
+	private scheduleRevivalResync(revivedBinding: RevivedSessionBinding): void {
 		void (async () => {
 			for (let attempt = 1; attempt <= REVIVAL_RESYNC_MAX_ATTEMPTS; attempt++) {
 				await delay(attempt * REVIVAL_RESYNC_RETRY_MS);
-				if (this.disposed || this.activeSessionId !== revivedActiveSessionId) {
+				// The full transcript identity gates every step: an in-worker
+				// switch replaces the transcript WITHOUT changing the active id,
+				// and emitting a pre-switch snapshot after its session_replaced
+				// would revert the window.
+				if (this.disposed || !this.matchesRevivedBinding(revivedBinding)) {
 					return;
 				}
 				try {
 					const snapshot = await this.getInitialSnapshot();
-					if (this.disposed || this.activeSessionId !== revivedActiveSessionId) {
+					if (this.disposed || !this.matchesRevivedBinding(revivedBinding)) {
 						return;
 					}
 					void this.emit({ type: "session_resynced", snapshot });
