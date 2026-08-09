@@ -2594,6 +2594,94 @@ describe("DaemonAgentConnection", () => {
 		});
 	});
 
+	it("retains the fallback cwd when the switch lands as a reattach to a live worker", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.switchSessionAlreadyActiveId = "active-b";
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+
+		// The transcript's recorded directory is missing; the user selects a
+		// fallback cwd, and the switch resolves as a reattach because another
+		// worker already owns the transcript.
+		await connection.switchSession("/tmp/session-b.jsonl", { cwdOverride: "/tmp/fallback-b" });
+		fakeClient.deadActiveSessionIds.add("active-b");
+
+		await connection.prompt("continue");
+
+		// Reviving the reattached transcript must reuse the selected fallback
+		// cwd, exactly like an in-worker switch. The override is keyed to the
+		// canonical file the reattach reported (the fake's default state), not
+		// the caller's path spelling.
+		expect(fakeClient.requests.find((request) => request.type === "create")).toMatchObject({
+			sessionPath: "/tmp/session-current.jsonl",
+			config: { cwd: "/tmp/fallback-b" },
+		});
+	});
+
+	it("behaves like an old client when the ownership capability is absent despite the field", async () => {
+		const fakeClient = new FakeDaemonClient();
+		// New daemon (field present in responses), old-client behavior (no
+		// negotiated capability): the field must be ignored entirely, keeping
+		// the pre-revision-15 semantics - the mirror direction of the
+		// omitted-field test above.
+		expect(fakeClient.serverCapabilities.has("attach_ownership")).toBe(false);
+		const sibling = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-revived");
+		void sibling;
+		let emitRevivedSnapshot = () => {};
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23);
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			emitRevivedSnapshot = () => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-old-client",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-old-client",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+			};
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-old-client", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.switchSessionAlreadyActiveId = "active-b";
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(2),
+		);
+		await connection.switchSession("/tmp/session-b.jsonl");
+		emitRevivedSnapshot();
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+
+		// wasAttached=true travels in the response (the sibling attached
+		// first), but without the capability the client keeps the historical
+		// unconditional detach - identical to a client predating the field.
+		await vi.waitFor(() =>
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+			),
+		);
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");

@@ -1618,7 +1618,17 @@ export class DaemonAgentConnection implements AgentConnection {
 			if (error.activeSessionId === sourceActiveSessionId) {
 				return { cancelled: false };
 			}
-			return this.reattachSession(sourceActiveSessionId, error.activeSessionId);
+			const result = await this.reattachSession(sourceActiveSessionId, error.activeSessionId);
+			if (options?.cwdOverride) {
+				// The transcript is live under another worker, but the user still
+				// selected a fallback cwd because its recorded directory is
+				// missing; a later revival of this transcript needs the same
+				// override or its recreate fails on that directory. Keyed by the
+				// reattached transcript's canonical file when known - the caller's
+				// path spelling may differ.
+				this.switchCwdOverride = { sessionPath: this.attachedSessionFile ?? sessionPath, cwd: options.cwdOverride };
+			}
+			return result;
 		}
 	}
 
