@@ -95,8 +95,13 @@ export class CommandRecoveryJournal {
 	lookup(
 		clientId: DaemonClientId,
 		commandId: DaemonCommandId,
+		commandType?: string,
 	): Exclude<CommandJournalBeginResult, { status: "new" }> | undefined {
-		const existing = this.entries.get(createCommandIdempotencyKey(clientId, commandId));
+		const key = createCommandIdempotencyKey(clientId, commandId);
+		const existing = this.entries.get(key);
+		if (existing && commandType !== undefined) {
+			assertCommandTypeMatches(existing, key, commandType);
+		}
 		if (existing?.response) {
 			return { status: "complete", response: existing.response };
 		}
