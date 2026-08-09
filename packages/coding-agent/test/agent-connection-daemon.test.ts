@@ -1039,8 +1039,46 @@ describe("DaemonAgentConnection", () => {
 		expect(revivedPrompts).toHaveLength(2);
 	});
 
-	it("releases a session revived after disposal began", async () => {
+	it("releases an owned session revived after disposal began without touching its attachment", async () => {
 		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+			ownedSession: true,
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+		let releaseCreate = () => {};
+		fakeClient.createGate = new Promise<void>((resolve) => {
+			releaseCreate = resolve;
+		});
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(1),
+		);
+		const dispose = connection.dispose();
+		releaseCreate();
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+		await dispose;
+
+		// The create claimed ownership, so the owned session is completed; but
+		// this revival never attached, so no detach may be issued — on a shared
+		// socket it would deafen a sibling connection attached to the same id.
+		await vi.waitFor(() =>
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "complete_owned_session", activeSessionId: "active-revived" }),
+			),
+		);
+		expect(fakeClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+		);
+	});
+
+	it("does not detach a revived id a sibling connection is attached to on the shared client", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const sibling = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-revived");
+		const siblingEvents: AgentConnectionEvent[] = [];
+		sibling.subscribe((event) => {
+			siblingEvents.push(event);
+		});
 		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
 		fakeClient.deadActiveSessionIds.add("active-1");
 		let releaseCreate = () => {};
@@ -1057,11 +1095,12 @@ describe("DaemonAgentConnection", () => {
 		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
 		await dispose;
 
-		await vi.waitFor(() =>
-			expect(fakeClient.requests).toContainEqual(
-				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
-			),
+		expect(fakeClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
 		);
+		// The sibling must still be live on the shared socket.
+		emitSequencedQueueUpdate(fakeClient, "active-revived", 13);
+		await vi.waitFor(() => expect(siblingEvents.some((event) => event.type === "session_event")).toBe(true));
 	});
 
 	it("propagates the client-owned lifecycle when reviving an owned session", async () => {
@@ -1089,16 +1128,17 @@ describe("DaemonAgentConnection", () => {
 
 		await expect(connection.prompt("continue")).rejects.toThrow("Unknown active session: active-1");
 		// An owned revived worker must not outlive the failed revival: the
-		// failed/superseded attach releases it with complete_owned_session in
-		// addition to the detach.
+		// failed attach releases it with complete_owned_session. The attach
+		// THREW without a supersede, so it acquired no attachment - a detach
+		// here could deafen a sibling connection on the shared socket.
 		await vi.waitFor(() => {
 			expect(fakeClient.requests).toContainEqual(
 				expect.objectContaining({ type: "complete_owned_session", activeSessionId: "active-revived" }),
 			);
-			expect(fakeClient.requests).toContainEqual(
-				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
-			);
 		});
+		expect(fakeClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+		);
 	});
 
 	it("ignores an unknown-session error whose id the attempted id merely prefixes", async () => {
@@ -1143,7 +1183,7 @@ describe("DaemonAgentConnection", () => {
 		]);
 	});
 
-	it("cedes to a session switch that lands during revival and releases the revived session", async () => {
+	it("cedes to a session switch that lands during revival without detaching the unacquired id", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
 		fakeClient.deadActiveSessionIds.add("active-1");
@@ -1161,12 +1201,12 @@ describe("DaemonAgentConnection", () => {
 		releaseCreate();
 		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
 
-		// The revival must not stomp the switched binding nor leave the revived
-		// session attached: the next prompt targets the switched session.
-		await vi.waitFor(() =>
-			expect(fakeClient.requests).toContainEqual(
-				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
-			),
+		// The revival must not stomp the switched binding, and — having never
+		// attached to the revived id — must not detach it either (on a shared
+		// socket that could deafen a sibling attached to the same id). The
+		// revived worker stays resident for the idle sweeps.
+		expect(fakeClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
 		);
 		await connection.prompt("next");
 		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");

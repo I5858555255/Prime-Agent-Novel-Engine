@@ -1004,7 +1004,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			);
 			const revivedActiveSessionId = readCreatedActiveSessionId(summary);
 			if (this.disposed || this.disposing) {
-				this.releaseRevivedSession(revivedActiveSessionId);
+				this.releaseRevivedSession(revivedActiveSessionId, false);
 				throw new Error("Connection was disposed during session revival");
 			}
 			if (this.activeSessionId !== sourceActiveSessionId) {
@@ -1016,24 +1016,27 @@ export class DaemonAgentConnection implements AgentConnection {
 				// session file), releasing it would detach the currently
 				// published binding and leave the connection deaf to its events.
 				if (this.activeSessionId !== revivedActiveSessionId) {
-					this.releaseRevivedSession(revivedActiveSessionId);
+					this.releaseRevivedSession(revivedActiveSessionId, false);
 				}
 				throw new Error(`Session revival superseded: binding moved from ${sourceActiveSessionId}`);
 			}
 			try {
 				await this.attachSessionBinding(revivedActiveSessionId, true);
 			} catch (error) {
+				// Supersede errors are thrown after a successful attach response,
+				// so only they prove this revival acquired the attachment.
+				const attachAcquired = DaemonAgentConnection.isAttachSupersededError(error);
 				if (this.disposed || this.disposing) {
-					this.releaseRevivedSession(revivedActiveSessionId);
+					this.releaseRevivedSession(revivedActiveSessionId, attachAcquired);
 					throw error;
 				}
 				if (this.activeSessionId !== revivedActiveSessionId) {
 					// The attach did not publish the revived binding (transient
-					// failure or supersession); drop any server-side attachment
-					// bookkeeping the request may have registered before failing,
-					// and complete an owned revived worker so it cannot outlive
-					// the failed revival.
-					this.releaseRevivedSession(revivedActiveSessionId);
+					// failure or supersession); drop the attachment bookkeeping
+					// only when this attach actually registered it, and complete
+					// an owned revived worker so it cannot outlive the failed
+					// revival.
+					this.releaseRevivedSession(revivedActiveSessionId, attachAcquired);
 					throw error;
 				}
 				// The attach response was applied — the binding is published and
@@ -1064,7 +1067,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			}
 			this.activeSideQuestionIds.clear();
 			if (this.disposed) {
-				this.releaseRevivedSession(revivedActiveSessionId);
+				this.releaseRevivedSession(revivedActiveSessionId, true);
 				throw new Error("Connection was disposed during session revival");
 			}
 			if (sourceActiveSessionId !== revivedActiveSessionId) {
@@ -1118,14 +1121,40 @@ export class DaemonAgentConnection implements AgentConnection {
 	 * the revival was superseded: dispose() only released the previous
 	 * binding, so an owned revived session would otherwise outlive this
 	 * connection indefinitely.
+	 *
+	 * The detach is conditional on THIS revival having acquired the socket
+	 * attachment. The supervisor tracks attachedActiveSessionIds once per
+	 * socket (no refcount), and a DaemonClient can be shared by sibling
+	 * connections: detaching an id we never attached would deafen a sibling
+	 * attached to the session the create returned. create alone never
+	 * attaches — only attachSessionBinding does — so pre-attach call-sites
+	 * pass false. Completing an owned session stays unconditional: the create
+	 * claimed ownership regardless of any attachment.
 	 */
-	private releaseRevivedSession(revivedActiveSessionId: string): void {
+	private releaseRevivedSession(revivedActiveSessionId: string, detachAttachment: boolean): void {
 		if (this.options.ownedSession) {
 			void this.requestOk({ type: "complete_owned_session", activeSessionId: revivedActiveSessionId }).catch(
 				() => undefined,
 			);
 		}
-		void this.requestOk({ type: "detach", activeSessionId: revivedActiveSessionId }).catch(() => undefined);
+		if (detachAttachment) {
+			void this.requestOk({ type: "detach", activeSessionId: revivedActiveSessionId }).catch(() => undefined);
+		}
+	}
+
+	/**
+	 * attachSessionBinding throws its supersession errors strictly AFTER a
+	 * successful attach response — i.e. after the supervisor registered this
+	 * socket's attachment. Any other attach failure (transport, rejected
+	 * request) acquired nothing. A server-side registration whose response
+	 * was lost client-side without a supersede error is the residual
+	 * trade-off: it may leave a stale socket attachment (inflating the
+	 * supervisor's attachedClients until the socket closes) but cannot
+	 * deafen a sibling connection; with a per-socket attachment Set both
+	 * cannot be avoided at once, and deafening a live sibling is worse.
+	 */
+	private static isAttachSupersededError(error: unknown): boolean {
+		return error instanceof Error && error.message.startsWith("Session attach superseded");
 	}
 
 	private async promptWithAdmissionCancellation(
