@@ -282,6 +282,10 @@ export class InProcessAgentConnection implements AgentConnection {
 		// In-process extension UI requests are handled directly by InteractiveMode.
 	}
 
+	async triggerExtensionShortcut(_key: string): Promise<void> {
+		// In-process shortcuts are handled directly by InteractiveMode via onExtensionShortcut.
+	}
+
 	async prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
 			let settled = false;

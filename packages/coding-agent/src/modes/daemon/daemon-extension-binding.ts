@@ -94,6 +94,17 @@ export async function bindActiveSessionState(
 			});
 		},
 	});
+
+	// Broadcast registered shortcut keys so attached TUI clients can proxy
+	// key presses back via extension_shortcut_trigger.
+	const shortcutKeys = [...session.extensionRunner.getShortcuts({}).keys()];
+	if (shortcutKeys.length > 0) {
+		callbacks.broadcast(state, {
+			type: "extension_shortcut_list",
+			activeSessionId: state.activeSessionId,
+			shortcutKeys,
+		});
+	}
 }
 
 function createCommandContextActions(state: ActiveSessionState): ExtensionCommandContextActions {
