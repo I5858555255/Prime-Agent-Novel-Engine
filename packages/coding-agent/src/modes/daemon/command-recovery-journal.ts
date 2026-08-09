@@ -1,5 +1,6 @@
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { DaemonClientId, DaemonCommandId, DaemonResponse } from "./daemon-protocol.js";
 
 interface ReceivedRecord {
@@ -70,7 +71,7 @@ function assertResponseMatchesReceipt(entry: JournalEntry, key: string, response
 }
 
 function responsesEqual(left: DaemonResponse, right: DaemonResponse): boolean {
-	return JSON.stringify(left) === JSON.stringify(right);
+	return isDeepStrictEqual(left, right);
 }
 
 /**
