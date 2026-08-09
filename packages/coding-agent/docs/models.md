@@ -91,6 +91,24 @@ Override defaults when you need specific values:
 
 The file reloads each time you open `/model`. Edit during session; no restart needed.
 
+## Restricting Providers and Models
+
+Environment variables are available by default so existing setups continue to work. To opt in to an explicit
+provider/model allowlist, add `modelAllowlist` to `~/.prime/agent/settings.json` (or the project settings file):
+
+```json
+{
+  "modelAllowlist": [
+    "anthropic/claude-sonnet-4-5",
+    "prime-inference"
+  ]
+}
+```
+
+Entries match a provider, a model ID, or a `provider/model` glob. When this setting is present, models outside the
+list are hidden from discovery and cannot be selected or used, including when their API keys are present in the
+environment. An empty list disables all providers. Omit the setting to retain automatic provider discovery.
+
 ## Google AI Studio Example
 
 Use `google-generative-ai` with a `baseUrl` to add models from Google AI Studio, including custom Gemma 4 entries:
