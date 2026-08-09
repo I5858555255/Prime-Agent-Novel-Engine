@@ -207,6 +207,21 @@ describe("builtin skills", () => {
 			expect(loader.getSkills().skills).toEqual([]);
 		});
 
+		it("loads an explicitly required bundled skill with --no-skills", async () => {
+			writeSkill(bundledDir, "goal");
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				bundledSkillsDir: bundledDir,
+				noSkills: true,
+				additionalSkillPaths: [join(bundledDir, "goal")],
+			});
+			await loader.reload();
+
+			expect(loader.getSkills().skills.map((skill) => skill.name)).toEqual(["goal"]);
+		});
+
 		it("surfaces a skill diagnostic when the bundled skills dir is missing", async () => {
 			const missingDir = join(tempDir, "does-not-exist");
 			const loader = new DefaultResourceLoader({ cwd, agentDir, bundledSkillsDir: missingDir });

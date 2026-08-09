@@ -33,7 +33,14 @@ import {
 	SessionSelectorError,
 	SessionSelectorNotFoundError,
 } from "./cli/session-resolver.js";
-import { APP_NAME, expandTildePath, getAgentDir, getSessionDirEnvOverride, VERSION } from "./config.js";
+import {
+	APP_NAME,
+	expandTildePath,
+	getAgentDir,
+	getBundledSkillsDir,
+	getSessionDirEnvOverride,
+	VERSION,
+} from "./config.js";
 import {
 	type AgentExecutionMode,
 	type AgentSessionRuntimeConfig,
@@ -684,6 +691,21 @@ export function daemonServerDefaultSessionConfig(config: AgentSessionRuntimeConf
 	return { ...config, initialGoal: undefined };
 }
 
+/**
+ * Keep the goal runtime available when automatic skill discovery is disabled.
+ * `--goal` tells the model to call the bundled Python `goal` module, so omitting
+ * that one required skill leaves autonomous runs unable to complete.
+ */
+export function resolveRuntimeSkillPaths(config: AgentSessionRuntimeConfig, rlmDepth = 0): string[] | undefined {
+	const configuredSkills = config.skills ?? [];
+	if (!config.noSkills || !config.initialGoal || rlmDepth > 0) {
+		return config.skills;
+	}
+
+	const goalSkillPath = join(getBundledSkillsDir(), "goal");
+	return configuredSkills.includes(goalSkillPath) ? configuredSkills : [...configuredSkills, goalSkillPath];
+}
+
 export function resolveRuntimeSessionOptions(
 	sessionOptions: CreateAgentSessionOptions,
 	runtimeSessionOptions?: CreateAgentSessionOptions,
@@ -740,7 +762,7 @@ async function prepareRuntimeServices(options: {
 		telemetryDisabled: config.telemetryDisabled,
 		resourceLoaderOptions: {
 			additionalExtensionPaths: config.extensions,
-			additionalSkillPaths: config.skills,
+			additionalSkillPaths: resolveRuntimeSkillPaths(config, options.sessionOptionsOverride?.rlmDepth),
 			additionalPromptTemplatePaths: config.promptTemplates,
 			additionalThemePaths: config.themes,
 			noExtensions: config.noExtensions,
