@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { HostRequestHandler } from "./kernel/index.js";
 import type { CustomMessage } from "./messages.js";
-import { canonicalSessionPath } from "./session-lease.js";
+import { canonicalSessionPath, SessionAlreadyActiveError } from "./session-lease.js";
 
 export const AGENT_MESSAGE_CUSTOM_TYPE = "agent_message";
 export const AGENT_MESSAGE_SKILL_NAME = "agent-message";
@@ -13,6 +13,8 @@ export const DEFAULT_AGENT_MESSAGE_MAX_CHARS = 16_384;
 export const DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION = 20;
 export const DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY = 3;
 export const DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS = 1000;
+const AGENT_MESSAGE_SESSION_ALREADY_ACTIVE_ERROR =
+	"Agent message delivery failed: the target session is already active elsewhere. Cross-daemon routing is not supported.";
 
 /** Legacy daemon wire input accepted and ignored for compatibility. */
 export type AgentSessionMessageDeliveryMode = "auto" | "steer" | "follow_up";
@@ -560,7 +562,7 @@ export function createAgentMessageHostHandlers(
 						? result.value
 						: {
 								target: roster.entries[index]!.id,
-								error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+								error: formatAgentMessageDeliveryError(result.reason),
 							},
 				);
 				return { receipts } as unknown as Record<string, unknown>;
@@ -597,13 +599,39 @@ export function createAgentMessageHostHandlers(
 				}
 				target = matches[0]!.id;
 			}
-			return (await controller.sendAgentMessage({
-				target,
-				message: payload.message,
-				receiverRole: payload.receiver_role as AgentFamilyRelationship,
-			})) as unknown as Record<string, unknown>;
+			try {
+				return (await controller.sendAgentMessage({
+					target,
+					message: payload.message,
+					receiverRole: payload.receiver_role as AgentFamilyRelationship,
+				})) as unknown as Record<string, unknown>;
+			} catch (error) {
+				if (isSessionAlreadyActiveError(error)) {
+					throw new Error(AGENT_MESSAGE_SESSION_ALREADY_ACTIVE_ERROR);
+				}
+				throw error;
+			}
 		},
 	};
+}
+
+function formatAgentMessageDeliveryError(error: unknown): string {
+	if (isSessionAlreadyActiveError(error)) {
+		return AGENT_MESSAGE_SESSION_ALREADY_ACTIVE_ERROR;
+	}
+	return error instanceof Error ? error.message : String(error);
+}
+
+function isSessionAlreadyActiveError(error: unknown): boolean {
+	if (error instanceof SessionAlreadyActiveError) {
+		return true;
+	}
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as { code?: unknown }).code === "session_already_active"
+	);
 }
 
 function formatAgentSessionMessageMetadata(value: string): string {
