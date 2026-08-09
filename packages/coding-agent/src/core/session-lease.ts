@@ -116,6 +116,9 @@ function runProcessQuery(command: string, args: string[]): string {
 	return execFileSync(command, args, {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
+		// Without this, every powershell.exe start-time query flashes a console
+		// window on Windows (isLeaseOwnerAlive runs it once per acquire).
+		windowsHide: true,
 	});
 }
 
@@ -265,7 +268,16 @@ export function acquireSessionLease(
 			} catch (error) {
 				rmSync(candidateDirectory, { recursive: true, force: true });
 				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+				// Windows reports EPERM/EACCES — not EEXIST/ENOTEMPTY — when
+				// renaming a directory onto an existing one (MoveFileEx cannot
+				// replace a non-empty directory). Same meaning: the lease slot
+				// is occupied, so fall through to the owner check and stale
+				// reclamation instead of crashing the worker.
+				const occupied =
+					code === "EEXIST" ||
+					code === "ENOTEMPTY" ||
+					((code === "EPERM" || code === "EACCES") && existsSync(directory));
+				if (!occupied) {
 					throw error;
 				}
 				const existingOwner = readLeaseOwner(directory);
