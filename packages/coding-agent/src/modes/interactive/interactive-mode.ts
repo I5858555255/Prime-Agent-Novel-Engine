@@ -6680,7 +6680,7 @@ export class InteractiveMode {
 		if (this.hasActiveRefineCommand()) {
 			void this.agentConnection.abort();
 		}
-		if (this.isAgentStreaming()) {
+		if (this.isAgentStreaming() || this.hasActiveRefineCommand()) {
 			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
