@@ -1301,6 +1301,80 @@ describe("DaemonAgentConnection", () => {
 		await vi.waitFor(() => expect(events.some((event) => event.type === "session_resynced")).toBe(true));
 	});
 
+	it("discards a late revived snapshot when a switch lands during the stream and releases the revived session", async () => {
+		const fakeClient = new FakeDaemonClient();
+		let emitRevivedSnapshot = () => {};
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			emitRevivedSnapshot = () => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-race",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-race",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+			};
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-revive-race", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.switchSessionAlreadyActiveId = "active-b";
+
+		const prompt = connection.prompt("continue");
+		// Wait until the revived attach response has been applied (its snapshot
+		// stream is still pending), then complete a switch to another session.
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(1),
+		);
+		await connection.switchSession("/tmp/session-b.jsonl");
+		emitRevivedSnapshot();
+
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+		// The late revived snapshot must not masquerade as the switched session:
+		// no resync describing the revived session, and the revived attachment
+		// is released.
+		const resyncs = events.filter(
+			(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+				event.type === "session_resynced",
+		);
+		expect(resyncs.every((event) => event.snapshot.state.sessionId !== "session-revived")).toBe(true);
+		await vi.waitFor(() =>
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+			),
+		);
+		await connection.prompt("next");
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts[prompts.length - 1]).toMatchObject({ activeSessionId: "active-b" });
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");

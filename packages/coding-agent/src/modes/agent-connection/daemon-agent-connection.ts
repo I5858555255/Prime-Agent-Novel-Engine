@@ -384,9 +384,16 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, getAttachLastEventSequence(result));
 		if ("snapshot" in result) {
+			const appliedActiveSessionId = this.activeSessionId;
 			const snapshot = result.snapshotStream
 				? await this.waitForSnapshot(result.snapshotStream.id)
 				: result.snapshot;
+			if (this.activeSessionId !== appliedActiveSessionId) {
+				// A concurrent transition rebound the connection while the
+				// streamed snapshot was in flight; applying the late snapshot
+				// would describe a session this connection no longer shows.
+				throw new Error(`Session attach superseded: binding moved from ${appliedActiveSessionId}`);
+			}
 			this.latestSnapshot = mapDaemonSessionSnapshot(snapshot, result.replay);
 			if (this.lastEventSequence !== undefined) {
 				this.latestSnapshot.lastEventSequence = this.lastEventSequence;
@@ -970,7 +977,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				// worker matches the selector anymore.
 				void this.requestOk({ type: "detach", activeSessionId: sourceActiveSessionId }).catch(() => undefined);
 			}
-			if (snapshot) {
+			if (snapshot && this.activeSessionId === revivedActiveSessionId) {
 				void this.emit({ type: "session_resynced", snapshot });
 			}
 			return revivedActiveSessionId;
@@ -2148,14 +2155,23 @@ export class DaemonAgentConnection implements AgentConnection {
 			lastEventSequence: message.lastEventSequence,
 			lastEventCursor: message.lastEventCursor,
 		};
-		if (message.lastEventCursor) {
-			this.observeEventCursor(message.lastEventCursor);
+		// A snapshot admitted for a pending binding transition may complete while
+		// the published binding is (still, or again) a different session; its
+		// waiter gets the resolved snapshot below, but the shared identity and
+		// snapshot cache must only describe the published binding.
+		const isForPublishedBinding = message.activeSessionId === this.activeSessionId;
+		let mappedSnapshot: AgentConnectionSnapshot | undefined;
+		if (isForPublishedBinding) {
+			if (message.lastEventCursor) {
+				this.observeEventCursor(message.lastEventCursor);
+			}
+			this.lastEventSequence = maxEventSequence(this.lastEventSequence, message.lastEventSequence);
+			this.attachedSessionId = snapshot.state.sessionId;
+			this.attachedSessionFile = snapshot.state.sessionFile;
+			mappedSnapshot = mapDaemonSessionSnapshot(snapshot);
+			this.latestSnapshot = mappedSnapshot;
+			this.latestSnapshotIsFresh = true;
 		}
-		this.lastEventSequence = maxEventSequence(this.lastEventSequence, message.lastEventSequence);
-		this.attachedSessionId = snapshot.state.sessionId;
-		this.attachedSessionFile = snapshot.state.sessionFile;
-		this.latestSnapshot = mapDaemonSessionSnapshot(snapshot);
-		this.latestSnapshotIsFresh = true;
 		assembly.resolve(snapshot);
 		const purpose = assembly.begin.purpose ?? "attach";
 		clearTimeout(assembly.timeout);
@@ -2172,10 +2188,10 @@ export class DaemonAgentConnection implements AgentConnection {
 				}
 			}
 		}
-		if (purpose === "replacement") {
+		if (purpose === "replacement" && isForPublishedBinding) {
 			await this.emit({ type: "session_replaced", state: snapshot.state, messages });
-		} else if (purpose === "resync") {
-			await this.emit({ type: "session_resynced", snapshot: this.latestSnapshot });
+		} else if (purpose === "resync" && mappedSnapshot) {
+			await this.emit({ type: "session_resynced", snapshot: mappedSnapshot });
 		}
 	}
 
