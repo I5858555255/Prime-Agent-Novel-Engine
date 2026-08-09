@@ -1489,6 +1489,86 @@ describe("DaemonAgentConnection", () => {
 		expect(prompts[prompts.length - 1]).toMatchObject({ activeSessionId: "active-b" });
 	});
 
+	it("applies a catch-up resync buffered while the revived binding was pending", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const catchupMessages: AgentMessage[] = [{ role: "user", content: "caught-up", timestamp: 9 }];
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			queueMicrotask(() => {
+				// The attach snapshot and a daemon catch-up resync (events that
+				// landed during the attach) share the socket buffer and complete
+				// before the attach continuation publishes the revived binding.
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-attach",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-attach",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-catchup",
+					snapshot: snapshotHeader,
+					messageCount: catchupMessages.length,
+					targetChunkBytes: 512 * 1024,
+					purpose: "resync",
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_chunk",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-catchup",
+					index: 0,
+					messages: [catchupMessages[0]!],
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-catchup",
+					chunkCount: 1,
+					lastEventSequence: 30,
+				});
+			});
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-revive-attach", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue");
+
+		await vi.waitFor(() => expect(events.some((event) => event.type === "session_resynced")).toBe(true));
+		const resynced = events.find(
+			(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+				event.type === "session_resynced",
+		);
+		// The resync delivered after revival must carry the buffered catch-up
+		// (the newer events), not the older attach snapshot it raced.
+		expect(resynced?.snapshot.messages).toEqual(catchupMessages);
+		expect(resynced?.snapshot.lastEventSequence).toBe(30);
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");

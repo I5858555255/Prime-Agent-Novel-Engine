@@ -325,9 +325,22 @@ export class DaemonAgentConnection implements AgentConnection {
 				entryActiveSessionId,
 				resumeCursor,
 			);
+			// The daemon queues events that land during an attach snapshot and
+			// delivers them as a catch-up resync; one addressed to the target
+			// while it was still pending had no waiter and was buffered. Apply
+			// it now that the binding has published, so the intervening events
+			// are not lost behind the older attach snapshot.
+			const catchup = this.pendingBindingCatchupSnapshots.get(this.activeSessionId);
+			if (catchup) {
+				this.pendingBindingCatchupSnapshots.delete(this.activeSessionId);
+				this.applyReplacementSnapshot(catchup);
+			}
 		} finally {
 			if (admitPendingTarget) {
+				// A failed or superseded transition discards its buffered
+				// catch-up along with the admission.
 				this.pendingReattachActiveSessionIds.delete(targetActiveSessionId);
+				this.pendingBindingCatchupSnapshots.delete(targetActiveSessionId);
 			}
 		}
 	}
@@ -2197,6 +2210,15 @@ export class DaemonAgentConnection implements AgentConnection {
 						break;
 					}
 					this.completedSnapshots.delete(oldest);
+				}
+				if (!isForPublishedBinding) {
+					// An unsolicited catch-up (the daemon queues events that land
+					// during an attach snapshot and delivers them as a resync) for
+					// a still-pending binding target has no waiter: buffer the
+					// newest one per target so the attach can apply it once the
+					// binding publishes, instead of losing the intervening events
+					// behind the older attach snapshot.
+					this.pendingBindingCatchupSnapshots.set(message.activeSessionId, snapshot);
 				}
 			}
 		}
