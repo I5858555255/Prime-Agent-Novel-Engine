@@ -118,6 +118,22 @@ K' = H(clientId, commandId, commandType, canonicalPayload).
 
 That change requires a daemon protocol migration; the current journal hardening deliberately preserves the wire format.
 
+### Current integration boundary
+
+`CommandRecoveryJournal.lookup()` accepts an optional `commandType` and validates it before returning a pending or completed entry. The current supervisor preflight still calls `lookup(clientId, commandId)` without that third argument, before its later `begin(..., command.type)` call.
+
+The supervisor integration must be changed to:
+
+```ts
+this.commandJournal.lookup(
+  journalIdentity.clientId,
+  journalIdentity.commandId,
+  command.type,
+)
+```
+
+and covered by a socket-level regression for both pending and completed entries. Until that call site is updated, command-type consistency is enforced during journal admission, result recording, and recovery loading, but not at the supervisor's earliest replay/uncertain-result branch. This limitation is recorded explicitly rather than presenting the journal-only change as an end-to-end exactly-once proof.
+
 ## 3. Linearizable quiescence
 
 A session may report idle only when there is no queued, committing, running, or already-scheduled future work.
