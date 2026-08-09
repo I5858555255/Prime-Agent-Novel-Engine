@@ -22,7 +22,10 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getMarkdownTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
+import { type AgentConfig, buildAgentProcessArgs } from "./agent-config.js";
+import { type AgentScope, discoverAgents } from "./agents.js";
+
+export { buildAgentProcessArgs } from "./agent-config.js";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -230,9 +233,7 @@ async function runSingleAgent(
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (agent.model) args.push("--model", agent.model);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	const args = buildAgentProcessArgs(agent);
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;

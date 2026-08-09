@@ -214,6 +214,26 @@ On reload, the aggregate is reapplied to the parent message. Context-tree report
 
 Session-local state lives in the session artifact directory under `harness/harness_state.json`. Explicitly global entries live under `~/.prime/agent/harness/`. The Python store reloads after external modification so host-side `/refine` writes and kernel writes do not overwrite each other.
 
+Reusable sub-agent specifications may record a canonical thinking preference:
+
+```python
+reviewer = rlm.harness.create_subagent(
+    title="Security reviewer",
+    content="Review authentication and authorization changes.",
+    thinking="high",
+    global_=True,
+)
+rlm.harness.update_subagent(
+    reviewer.id,
+    reviewer.title,
+    reviewer.content,
+    thinking="medium",
+    global_=True,
+)
+```
+
+Accepted values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. Omitting `thinking` preserves an existing preference during updates. The preference is model-independent persisted intent, not a capability override: before composing the eventual `rlm(...)` call, the orchestrating agent must inspect the selected model's effective `thinking_levels` and pass the preference only when available.
+
 `/refine` runs a dedicated review over the current trajectory and applies small create/update/delete edits. Rollback uses recorded before/after snapshots. The base system prompt remains immutable; refinements are supplemental state.
 
 ## Goal Requests

@@ -104,6 +104,7 @@ class HarnessStateTest(unittest.TestCase):
             subagent = state.create_subagent(
                 "Reviewer",
                 "Review the proposed patch for regressions and missing tests.",
+                thinking="high",
                 metadata={"max_turns": 3},
             )
             state.create_prompt_note("Refinement cadence", "Refine only after repeated evidence.")
@@ -120,6 +121,7 @@ class HarnessStateTest(unittest.TestCase):
             self.assertEqual(reloaded.get("skill", skill.id).version, 1)
             self.assertEqual(reloaded.get("skill", skill.id).arguments["failure_log"]["type"], "string")
             self.assertEqual(reloaded.get("subagent", subagent.id).metadata["max_turns"], 3)
+            self.assertEqual(reloaded.get("subagent", subagent.id).thinking, "high")
             self.assertEqual(reloaded.refinements[0].id, event.id)
             self.assertIn("Prefer focused patches", reloaded.overview())
             self.assertIn(
@@ -127,12 +129,82 @@ class HarnessStateTest(unittest.TestCase):
                 reloaded.overview(),
             )
             overview = reloaded.overview()
-            self.assertIn("handle = await rlm('sub-task')", overview)
+            self.assertIn("handle = await rlm('sub-task', thinking=...)", overview)
             self.assertIn("never the child's answer", overview)
             self.assertIn("receiver_role='parent'", overview)
             self.assertIn("await rlm.list_subagents()", overview)
             self.assertIn("receiver_role='child'", overview)
+            self.assertIn("thinking=high", overview)
             self.assertIn("refinements: 1", reloaded.overview())
+
+    def test_subagent_thinking_is_validated_and_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+
+            created = state.create_subagent(
+                "Security reviewer",
+                "Review authentication and authorization changes.",
+                id="security_reviewer",
+                thinking="high",
+                metadata={"owner": "security"},
+            )
+            self.assertEqual(created.thinking, "high")
+            self.assertEqual(created.metadata, {"owner": "security"})
+
+            preserved = state.update_subagent(
+                "security_reviewer",
+                "Security reviewer",
+                "Review authentication, authorization, and secrets.",
+            )
+            self.assertEqual(preserved.thinking, "high")
+            self.assertEqual(preserved.metadata, {"owner": "security"})
+
+            updated = state.update_subagent(
+                "security_reviewer",
+                "Security reviewer",
+                "Review authentication, authorization, and secrets.",
+                thinking="medium",
+            )
+            self.assertEqual(updated.thinking, "medium")
+            self.assertEqual(updated.metadata, {"owner": "security"})
+
+            with self.assertRaisesRegex(ValueError, "subagent thinking must be one of"):
+                state.create_subagent("Invalid", "Invalid thinking.", thinking="ultra")  # type: ignore[arg-type]
+            with self.assertRaisesRegex(TypeError, "subagent thinking must be a string"):
+                state.create_subagent("Invalid type", "Invalid thinking.", thinking=42)  # type: ignore[arg-type]
+            with self.assertRaisesRegex(ValueError, "thinking is supported only for subagent entries"):
+                state.create("memory", "Invalid kind", "Invalid thinking.", thinking="high")
+
+    def test_load_sanitizes_persisted_subagent_thinking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "entries": {
+                            "subagent": {
+                                "valid": {"title": "Valid", "content": "Valid spec.", "thinking": " high "},
+                                "invalid": {"title": "Invalid", "content": "Invalid spec.", "thinking": "ultra"},
+                            },
+                            "memory": {
+                                "memory": {"title": "Memory", "content": "Memory.", "thinking": "high"},
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = HarnessState(state_path)
+
+            self.assertEqual(state.get("subagent", "valid").thinking, "high")
+            self.assertIsNone(state.get("subagent", "invalid").thinking)
+            self.assertIsNone(state.get("memory", "memory").thinking)
+            snapshot = state.snapshot()
+            self.assertEqual(snapshot["entries"]["subagent"]["valid"]["thinking"], "high")
+            self.assertNotIn("thinking", snapshot["entries"]["subagent"]["invalid"])
+            self.assertNotIn("thinking", snapshot["entries"]["memory"]["memory"])
 
     def test_load_ignores_unknown_json_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

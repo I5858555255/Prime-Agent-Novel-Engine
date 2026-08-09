@@ -9,7 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .harness import HarnessEntry, HarnessScope, HarnessState, RefinementEvent, get_harness_state
+from .harness import (
+    HarnessEntry,
+    HarnessScope,
+    HarnessState,
+    RefinementEvent,
+    ThinkingLevel,
+    get_harness_state,
+)
 
 try:
     from ipykernel.comm import Comm
@@ -346,6 +353,7 @@ __all__ = [
     "RLMSpawnHandle",
     "RLMSubagent",
     "RefinementEvent",
+    "ThinkingLevel",
     "delete_subagent",
     "find_models",
     "get_current_model",

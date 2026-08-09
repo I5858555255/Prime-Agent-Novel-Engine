@@ -2,8 +2,8 @@
 
 Delegate tasks to specialized subprocess agents with isolated context windows.
 
-Prime Agent also provides native recursive delegation through `rlm.call()` and
-`rlm.run_async()`. This extension is a separate example for users who want
+Prime Agent also provides native recursive delegation through `await rlm(...)`.
+This extension is a separate example for users who want
 file-defined agent profiles and explicit single, parallel, or chained workflows.
 
 ## Features
@@ -22,6 +22,7 @@ subagent/
 ├── README.md            # This file
 ├── index.ts             # The extension (entry point)
 ├── agents.ts            # Agent discovery logic
+├── agent-config.ts      # Profile validation and child CLI arguments
 ├── agents/              # Sample agent definitions
 │   ├── scout.md         # Fast recon, returns compressed context
 │   ├── planner.md       # Creates implementation plans
@@ -42,6 +43,7 @@ From the repository root, symlink the files:
 mkdir -p ~/.prime/agent/extensions/subagent
 ln -sf "$(pwd)/packages/coding-agent/examples/extensions/subagent/index.ts" ~/.prime/agent/extensions/subagent/index.ts
 ln -sf "$(pwd)/packages/coding-agent/examples/extensions/subagent/agents.ts" ~/.prime/agent/extensions/subagent/agents.ts
+ln -sf "$(pwd)/packages/coding-agent/examples/extensions/subagent/agent-config.ts" ~/.prime/agent/extensions/subagent/agent-config.ts
 
 # Symlink agents
 mkdir -p ~/.prime/agent/agents
@@ -133,10 +135,13 @@ name: my-agent
 description: What this agent does
 tools: bash
 model: claude-haiku-4-5
+thinking: low
 ---
 
 System prompt for the agent goes here.
 ```
+
+`thinking` is optional and accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. The extension passes it to the child process as `--thinking <level>`. Omit it to use the child process's normal configured default. Profiles with an invalid value are not loaded; a valid level may still be adjusted by normal model/provider capability handling.
 
 **Locations:**
 - `~/.prime/agent/agents/*.md` - User-level (always loaded)
@@ -146,12 +151,12 @@ Project agents override user agents with the same name when `agentScope: "both"`
 
 ## Sample Agents
 
-| Agent | Purpose | Model | Tools |
-|-------|---------|-------|-------|
-| `scout` | Fast codebase recon | Haiku | bash |
-| `planner` | Implementation plans | Sonnet | bash |
-| `reviewer` | Code review | Sonnet | bash |
-| `worker` | General-purpose | Sonnet | (all default) |
+| Agent | Purpose | Model | Thinking | Tools |
+|-------|---------|-------|----------|-------|
+| `scout` | Fast codebase recon | Haiku | low | bash |
+| `planner` | Implementation plans | Sonnet | default | bash |
+| `reviewer` | Code review | Sonnet | default | bash |
+| `worker` | General-purpose | Sonnet | default | (all default) |
 
 ## Workflow Prompts
 

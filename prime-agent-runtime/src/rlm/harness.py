@@ -13,14 +13,16 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 HarnessKind = Literal["prompt", "memory", "skill", "subagent"]
 HarnessScope = Literal["local", "global"]
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 _DEFAULT_FILE_NAME = "harness_state.json"
 _DEFAULT_HARNESS_DIR_NAME = "harness"
 _KINDS: tuple[HarnessKind, ...] = ("prompt", "memory", "skill", "subagent")
+_THINKING_LEVELS: tuple[ThinkingLevel, ...] = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 _state_cache: dict[tuple[Path, HarnessScope], "HarnessState"] = {}
 
 
@@ -102,6 +104,7 @@ class HarnessEntry:
     scope: HarnessScope = "local"
     reference: dict[str, Any] = field(default_factory=dict)
     arguments: dict[str, Any] = field(default_factory=dict)
+    thinking: ThinkingLevel | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     source: str = "agent"
     created_at: str = field(default_factory=_now)
@@ -136,6 +139,22 @@ def _validate_python_skill_reference(reference: dict[str, Any] | None) -> dict[s
     if not any(isinstance(normalized.get(key), str) and normalized[key] for key in ("callable", "call_pattern")):
         raise ValueError("skill reference requires a callable or call_pattern")
     return normalized
+
+
+def _validate_subagent_thinking(value: Any) -> ThinkingLevel:
+    if not isinstance(value, str):
+        raise TypeError(f"subagent thinking must be a string, got {type(value).__name__}")
+    normalized = value.strip()
+    if normalized not in _THINKING_LEVELS:
+        raise ValueError(f"subagent thinking must be one of: {', '.join(_THINKING_LEVELS)}")
+    return cast(ThinkingLevel, normalized)
+
+
+def _entry_dict(entry: HarnessEntry) -> dict[str, Any]:
+    data = asdict(entry)
+    if entry.thinking is None:
+        data.pop("thinking", None)
+    return data
 
 
 class HarnessState:
@@ -249,6 +268,14 @@ class HarnessState:
                             entry_data["arguments"] = {}
                         if not isinstance(entry_data.get("metadata"), dict):
                             entry_data["metadata"] = {}
+                        thinking = entry_data.get("thinking")
+                        if kind == "subagent" and thinking is not None:
+                            try:
+                                entry_data["thinking"] = _validate_subagent_thinking(thinking)
+                            except (TypeError, ValueError):
+                                entry_data["thinking"] = None
+                        else:
+                            entry_data["thinking"] = None
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
         self.entries = entries
 
@@ -289,7 +316,7 @@ class HarnessState:
         data = {
             "schema": 1,
             "entries": {
-                kind: {entry_id: asdict(entry) for entry_id, entry in records.items()}
+                kind: {entry_id: _entry_dict(entry) for entry_id, entry in records.items()}
                 for kind, records in self.entries.items()
             },
             "refinements": [asdict(event) for event in self.refinements],
@@ -309,6 +336,7 @@ class HarnessState:
         path: str = "general",
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
+        thinking: ThinkingLevel | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
         global_: bool = False,
@@ -324,6 +352,7 @@ class HarnessState:
                 path=path,
                 reference=reference,
                 arguments=arguments,
+                thinking=thinking,
                 metadata=metadata,
                 source=source,
             )
@@ -337,6 +366,7 @@ class HarnessState:
             path=path,
             reference=reference,
             arguments=arguments,
+            thinking=thinking,
             metadata=metadata,
             source=source,
         )
@@ -351,6 +381,7 @@ class HarnessState:
         path: str | None = None,
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
+        thinking: ThinkingLevel | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
     ) -> HarnessEntry:
@@ -360,22 +391,28 @@ class HarnessState:
         # silent update).
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
+        if thinking is not None:
+            if kind != "subagent":
+                raise ValueError("thinking is supported only for subagent entries")
+            thinking = _validate_subagent_thinking(thinking)
 
         entry_id = id or _slug(title, kind)
         existing = self.entries[kind].get(entry_id)
         if existing:
             existing.title = title
             existing.content = content
-            # Preserve path/reference/arguments/metadata when the caller omits them
-            # (None) so updating only an entry's title or content does not reset its
-            # grouping path or wipe a skill's reference/argument contract. An explicit
-            # value (including {}) still overwrites.
+            # Preserve path/reference/arguments/thinking/metadata when the caller omits
+            # them (None) so updating only an entry's title or content does not reset
+            # its grouping path or wipe a skill's reference/argument contract. An
+            # explicit container value (including {}) still overwrites.
             if path is not None:
                 existing.path = path
             if reference is not None:
                 existing.reference = dict(reference)
             if arguments is not None:
                 existing.arguments = dict(arguments)
+            if thinking is not None:
+                existing.thinking = thinking
             if metadata is not None:
                 existing.metadata = dict(metadata)
             existing.source = source
@@ -392,6 +429,7 @@ class HarnessState:
                 scope=self.scope,
                 reference=dict(reference or {}),
                 arguments=dict(arguments or {}),
+                thinking=thinking,
                 metadata=dict(metadata or {}),
                 source=source,
             )
@@ -444,6 +482,7 @@ class HarnessState:
         path: str = "general",
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
+        thinking: ThinkingLevel | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
         global_: bool = False,
@@ -459,6 +498,7 @@ class HarnessState:
                 path=path,
                 reference=reference,
                 arguments=arguments,
+                thinking=thinking,
                 metadata=metadata,
                 source=source,
             )
@@ -477,6 +517,7 @@ class HarnessState:
             path=path,
             reference=reference,
             arguments=arguments,
+            thinking=thinking,
             metadata=metadata,
             source=source,
         )
@@ -491,6 +532,7 @@ class HarnessState:
         path: str | None = None,
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
+        thinking: ThinkingLevel | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
         global_: bool = False,
@@ -506,6 +548,7 @@ class HarnessState:
                 path=path,
                 reference=reference,
                 arguments=arguments,
+                thinking=thinking,
                 metadata=metadata,
                 source=source,
             )
@@ -523,6 +566,7 @@ class HarnessState:
             path=path,
             reference=reference,
             arguments=arguments,
+            thinking=thinking,
             metadata=metadata,
             source=source,
         )
@@ -651,11 +695,22 @@ class HarnessState:
         *,
         id: str | None = None,
         path: str = "general",
+        thinking: ThinkingLevel | None = None,
         metadata: dict[str, Any] | None = None,
         global_: bool = False,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.create("subagent", title, content, id=id, path=path, metadata=metadata, global_=global_, **kwargs)
+        return self.create(
+            "subagent",
+            title,
+            content,
+            id=id,
+            path=path,
+            thinking=thinking,
+            metadata=metadata,
+            global_=global_,
+            **kwargs,
+        )
 
     def update_subagent(
         self,
@@ -664,11 +719,22 @@ class HarnessState:
         content: str,
         *,
         path: str | None = None,
+        thinking: ThinkingLevel | None = None,
         metadata: dict[str, Any] | None = None,
         global_: bool = False,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.update("subagent", id, title, content, path=path, metadata=metadata, global_=global_, **kwargs)
+        return self.update(
+            "subagent",
+            id,
+            title,
+            content,
+            path=path,
+            thinking=thinking,
+            metadata=metadata,
+            global_=global_,
+            **kwargs,
+        )
 
     def delete_subagent(self, id: str, *, global_: bool = False, **kwargs: Any) -> bool:
         return self.delete("subagent", id, global_=global_, **kwargs)
@@ -727,8 +793,11 @@ class HarnessState:
             "Call contract: installed Python skills use await <skill_import>(...) or a matching shell CLI; "
             "harness skill entries are Python REPL skills and must include a Python reference plus arguments. "
             "Spawn a subagent spec by composing a concise task prompt and calling "
-            "handle = await rlm('sub-task'); admission returns immediately with rlm_child_id, name, session_dir, "
-            "and model, never the child's answer. Results arrive only through explicit agent_message replies or "
+            "handle = await rlm('sub-task', thinking=...); admission returns immediately with rlm_child_id, name, "
+            "session_dir, and model, never the child's answer. A subagent spec may include a canonical thinking "
+            "preference; "
+            "pass it only when it appears in the selected model's effective thinking_levels. Results arrive only "
+            "through explicit agent_message replies or "
             "files; children reply with await agent_message.send(message, receiver_role='parent'). Use "
             "await rlm.list_subagents() to recover direct child handles and await agent_message.send(..., "
             "receiver_role='child', receiver_name=handle.name) for follow-ups.",
@@ -752,9 +821,10 @@ class HarnessState:
                     if len(reference_text) > 120:
                         reference_text = f"{reference_text[:117]}..."
                     reference_summary = f" ref={reference_text}"
+                thinking_summary = f" thinking={entry.thinking}" if entry.kind == "subagent" and entry.thinking else ""
                 lines.append(
                     f"  - [{entry.scope}:{entry.id}] {entry.title} ({entry.path}, v{entry.version})"
-                    f"{reference_summary}{argument_summary}: {summary}"
+                    f"{reference_summary}{argument_summary}{thinking_summary}: {summary}"
                 )
             overflow = len(self.entries[kind]) - len(records)
             if overflow > 0:
@@ -775,7 +845,7 @@ class HarnessState:
             "file_path": str(self.file_path),
             "scope": self.scope,
             "entries": {
-                kind: {entry_id: asdict(entry) for entry_id, entry in records.items()}
+                kind: {entry_id: _entry_dict(entry) for entry_id, entry in records.items()}
                 for kind, records in self.entries.items()
             },
             "refinements": [asdict(event) for event in self.refinements],
@@ -815,5 +885,6 @@ __all__ = [
     "HarnessScope",
     "HarnessState",
     "RefinementEvent",
+    "ThinkingLevel",
     "get_harness_state",
 ]

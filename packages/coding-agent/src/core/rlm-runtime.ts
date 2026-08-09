@@ -92,7 +92,15 @@ export function normalizeRequestedRlmSubagentModel(value: unknown): string | und
 	return model;
 }
 
-const RLM_THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+export const RLM_THINKING_LEVELS: readonly ThinkingLevel[] = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
 
 /** Resolve the canonical child thinking levels allowed by both the model and user settings. */
 export function getRlmThinkingLevels(model: Model<Api>, configuredLevels?: readonly ThinkingLevel[]): ThinkingLevel[] {

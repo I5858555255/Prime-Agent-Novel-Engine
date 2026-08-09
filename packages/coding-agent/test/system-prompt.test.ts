@@ -77,10 +77,11 @@ describe("buildRlmPrompt", () => {
 				"Python state in the kernel, by contrast, persists across cells: named variables, helper functions, classes, imports, notes, parsed outputs, and helper data structures all remain available in every later turn. Tool calls are themselves Python `await` expressions, so their return values can be bound to variables and composed into program logic just like any other call.",
 				"",
 				"Continual harness state is available as `rlm.harness` and `rlm.get_harness_state()`. CRUD calls are local to this Prime Agent session by default: `rlm.harness.create_memory(...)`, `rlm.harness.update_memory(...)`, `rlm.harness.delete_memory(...)`, `rlm.harness.create_skill(...)`, `rlm.harness.update_skill(...)`, `rlm.harness.delete_skill(...)`, `rlm.harness.create_subagent(...)`, `rlm.harness.update_subagent(...)`, `rlm.harness.delete_subagent(...)`, `rlm.harness.create_prompt_note(...)`, `rlm.harness.update_prompt_note(...)`, `rlm.harness.delete_prompt_note(...)`, plus `rlm.harness.record_refinement(...)` and `rlm.harness.overview()`. Use `global_=True` only for stable cross-session lessons; Python reserves `global`, so literal `global=True` is invalid syntax.",
+				"Persistent subagent specs may set `thinking=...` to record an exact canonical effort preference. When invoking that spec, inspect the selected model's effective `thinking_levels` and pass the preference only when available; otherwise choose a compatible model or report the policy conflict rather than silently substituting a level.",
 				"",
 				"Terminology: continual harness names the persisted prompt, memory, skill, and subagent layer; RLM names the runtime, IPython kernel, and native call interface exposed to the model.",
 				"",
-				"RLM-native call contract: installed Python skills are pre-imported modules. Read the matching SKILL.md and call its documented function, such as `await <skill_import>.<function>(...)`; when a CLI exists, use `<skill_import> ...` from shell. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm('sub-task')`; admission returns a child handle immediately. Results arrive only through an available messaging capability or files, never as an `rlm()` return value. Do not invent non-native wrappers such as `call_skill(...)` or `run_subagent(...)`.",
+				"RLM-native call contract: installed Python skills are pre-imported modules. Read the matching SKILL.md and call its documented function, such as `await <skill_import>.<function>(...)`; when a CLI exists, use `<skill_import> ...` from shell. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a reusable delegation spec with `await rlm('sub-task', thinking=...)` when its thinking preference is available; admission returns a child handle immediately. Results arrive only through an available messaging capability or files, never as an `rlm()` return value. Do not invent non-native wrappers such as `call_skill(...)` or `run_subagent(...)`.",
 				"",
 				"Treat continual harness refinement as a small, evidence-backed update after observing a repeated failure or reusable tactic: diagnose the issue, update the smallest relevant continual harness component, validate on the next action, then record the outcome. Use `await refine.run()` to turn repeated delegation patterns into reusable subagent specs, repeated procedures into skills, durable facts/preferences into memories, and narrow behavioral policies into prompt addendums. It returns immediately and runs when the current turn ends, so continue working normally after calling it. Do not rewrite the whole continual harness when a focused memory, skill, prompt note, or subagent spec is enough.",
 			].join("\n"),
@@ -332,6 +333,7 @@ describe("buildSystemPrompt", () => {
 						path: "review",
 						reference: {},
 						arguments: {},
+						thinking: "high",
 						metadata: {},
 						source: "refine",
 						created_at: "2026-06-08T00:00:00.000Z",
@@ -369,8 +371,8 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("Call contract: read each installed Python skill's SKILL.md");
 		expect(prompt).toContain("Continual harness skill entries are Python REPL skills");
 		expect(prompt).toContain("Spawn a continual harness subagent spec by composing a concise task prompt");
-		expect(prompt).toContain("handle = await rlm('sub-task')");
-		expect(prompt).toContain("admission returns immediately");
+		expect(prompt).toContain("handle = await rlm('sub-task', thinking=...)");
+		expect(prompt).toContain("Admission returns immediately");
 		expect(prompt).toContain("never the child's answer");
 		expect(prompt).toContain("receiver_role='parent'");
 		expect(prompt).toContain("await rlm.list_subagents()");
@@ -387,7 +389,8 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("[global:focused_edits] Focused edits (policy, v1)");
 		expect(prompt).toContain("[global:validation] Validation (repo/prime-agent, v2): Run `npm run check`");
 		expect(prompt).toContain("[global:review_refinement] Review refinement (quality, v1)");
-		expect(prompt).toContain("[global:refinement_reviewer] Refinement reviewer (review, v1)");
+		expect(prompt).toContain("[global:refinement_reviewer] Refinement reviewer (review, v1) thinking=high");
+		expect(prompt).toContain("A spec's optional canonical `thinking` is an exact preference");
 		expect(prompt).toContain("recent refinements: 1");
 		expect(prompt).toContain("[refine_1] Observed validation miss: create memory:validation");
 		expect(prompt.indexOf("# Continual Harness State")).toBeGreaterThan(prompt.indexOf("Conversation log:"));
