@@ -6,6 +6,7 @@
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
 - Fixed IPython host bridge requests hanging indefinitely when a request, handler, or response is lost, with a configurable 120-second deadline and safe cleanup ([#848](https://github.com/PrimeIntellect-ai/prime-agent/issues/848)).
+- Fixed completed IPython cells blocking the serial execution queue when Jupyter drops the matching IOPub idle event ([#848](https://github.com/PrimeIntellect-ai/prime-agent/issues/848)).
 
 ## [0.7.1] - 2026-08-07
 
