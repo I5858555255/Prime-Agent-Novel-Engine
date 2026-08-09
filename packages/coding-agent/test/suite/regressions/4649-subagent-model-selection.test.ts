@@ -17,9 +17,21 @@ describe("ENG-4649 subagent model selection", () => {
 	it("searches a bounded authenticated catalog without advertising it", async () => {
 		const harness = await createHarness({
 			provider,
-			models: Array.from({ length: 320 }, (_, index) => ({ id: `model-${index}` })),
+			models: Array.from({ length: 320 }, (_, index) => ({ id: `model-${index}`, reasoning: true })),
+			settings: { rlmAllowedThinkingLevels: ["high", "low", "high"] },
 		});
 		try {
+			const selectedModel = harness.session.modelRegistry
+				.getAll()
+				.find((model) => model.provider === provider && model.id === "model-319");
+			if (!selectedModel) throw new Error("Missing selected model");
+			selectedModel.thinkingLevelMap = {
+				off: null,
+				minimal: null,
+				low: "LOW",
+				medium: null,
+				high: "HIGH",
+			};
 			const prompt = harness.session.agent.state.systemPrompt;
 			expect(prompt).not.toContain(`${provider}/model-319`);
 			const handlers = (
@@ -27,6 +39,14 @@ describe("ENG-4649 subagent model selection", () => {
 			)._createKernelHostHandlers();
 			const findModels = handlers["rlm.find_models"];
 			if (!findModels) throw new Error("Missing rlm.find_models host handler");
+			const modelInfo = handlers["model.info"];
+			if (!modelInfo) throw new Error("Missing model.info host handler");
+			await expect(modelInfo({})).resolves.toMatchObject({
+				provider,
+				id: "model-0",
+				selector: `${provider}/model-0`,
+				thinking_levels: ["low", "high"],
+			});
 			await expect(findModels({ query: "model 319", limit: 5 })).resolves.toEqual({
 				models: [
 					{
@@ -34,10 +54,19 @@ describe("ENG-4649 subagent model selection", () => {
 						id: "model-319",
 						name: "model-319",
 						selector: `${provider}/model-319`,
+						thinking_levels: ["low", "high"],
 					},
 				],
 			});
 			await expect(findModels({ query: "model", limit: 21 })).rejects.toThrow("integer from 1 to 20");
+			await expect(
+				harness.session.runRlmChild("reject disabled thinking", {
+					model: `${provider}/model-319`,
+					thinking: "max",
+				}),
+			).rejects.toThrow(
+				`Requested thinking level "max" is unavailable for subagent model "${provider}/model-319"; available levels: low, high`,
+			);
 			harness.setResponses([fauxAssistantMessage("resolved child answer")]);
 
 			const result = await harness.session.runRlmChild("use the requested model", {
@@ -301,6 +330,105 @@ describe("ENG-4649 subagent model selection", () => {
 				provider,
 				modelId: "child-model",
 			});
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("sets allowed child thinking, rejects explicit unsupported levels, and clamps inheritance", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [
+				{ id: "parent-model", reasoning: true },
+				{ id: "reasoning-child", reasoning: true },
+				{ id: "plain-child", reasoning: false },
+			],
+		});
+		try {
+			harness.session.setThinkingLevel("high");
+			harness.setResponses([
+				fauxAssistantMessage("independent thinking answer"),
+				fauxAssistantMessage("clamped thinking answer"),
+			]);
+
+			const reasoningChild = await harness.session.runRlmChild("use less thinking than the parent", {
+				model: `${provider}/reasoning-child`,
+				thinking: " low ",
+			});
+			await expect(
+				harness.session.runRlmChild("reject unsupported thinking", {
+					model: `${provider}/plain-child`,
+					thinking: "max",
+				}),
+			).rejects.toThrow(
+				`Requested thinking level "max" is unavailable for subagent model "${provider}/plain-child"; available levels: off`,
+			);
+			const plainChild = await harness.session.runRlmChild("clamp inherited thinking for plain model", {
+				model: `${provider}/plain-child`,
+			});
+			await vi.waitFor(() => {
+				expect(harness.session.getRlmChildSession(reasoningChild.rlm_child_id)).toBeDefined();
+				expect(harness.session.getRlmChildSession(plainChild.rlm_child_id)).toBeDefined();
+			});
+
+			expect(harness.session.thinkingLevel).toBe("high");
+			expect(harness.session.getRlmChildSession(reasoningChild.rlm_child_id)?.thinkingLevel).toBe("low");
+			expect(harness.session.getRlmChildSession(plainChild.rlm_child_id)?.thinkingLevel).toBe("off");
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("fails closed when RLM settings leave a model with no allowed thinking levels", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model", reasoning: true }],
+			settings: { rlmAllowedThinkingLevels: [] },
+		});
+		try {
+			await expect(harness.session.findRlmModels("parent", 8)).resolves.toMatchObject({
+				models: [{ thinking_levels: [] }],
+			});
+			await expect(harness.session.runRlmChild("no allowed thinking")).rejects.toThrow(
+				`No thinking levels are available for subagent model "${provider}/parent-model" after applying model capabilities and rlmAllowedThinkingLevels`,
+			);
+			expect((await harness.session.listRlmSubagents()).subagents).toEqual([]);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("rejects malformed RLM thinking allowlists", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model", reasoning: true }],
+			settings: { rlmAllowedThinkingLevels: ["ultra"] as never },
+		});
+		try {
+			await expect(harness.session.findRlmModels("parent", 8)).rejects.toThrow(
+				"rlmAllowedThinkingLevels contains invalid values",
+			);
+			await expect(harness.session.runRlmChild("invalid config")).rejects.toThrow(
+				"rlmAllowedThinkingLevels contains invalid values",
+			);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("rejects invalid child thinking levels at admission", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model", reasoning: true }],
+		});
+		try {
+			await expect(harness.session.runRlmChild("bad thinking type", { thinking: 42 })).rejects.toThrow(
+				"rlm.run thinking must be a string",
+			);
+			await expect(harness.session.runRlmChild("bad thinking level", { thinking: "ultra" })).rejects.toThrow(
+				"rlm.run thinking must be one of: off, minimal, low, medium, high, xhigh, max",
+			);
+			expect((await harness.session.listRlmSubagents()).subagents).toEqual([]);
 		} finally {
 			harness.cleanup();
 		}

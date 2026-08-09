@@ -128,7 +128,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			"",
 			"A callable `rlm` is already in your global namespace. `await rlm('sub-task')` spawns a child and returns immediately after task admission with `rlm_child_id`, `name`, `session_dir`, and `model`; it never waits for or returns the child's answer.",
 			"Choose a stable child name with `await rlm('sub-task', name='api-reviewer')`; names must be unique among siblings. If omitted, the host generates a readable unique name.",
-			"A child inherits your model. If a different model is explicitly requested, use `await rlm.find_models(...)` and an exact returned selector. An unavailable requested model fails spawn; decide whether to retry or omit `model`.",
+			"A child inherits your model and an allowed thinking level when no override is supplied. Before each spawn, inspect the current model with `await rlm.get_current_model()` or search alternatives with `await rlm.find_models(...)`; each result's `thinking_levels` is the effective canonical list after model capabilities, provider mappings, model overrides, and `rlmAllowedThinkingLevels` settings. Pass only a listed canonical value in `thinking`; the host maps it to any provider-specific name. Choose the level based on delegated task complexity, using lower levels for simple, bounded, mechanical work and higher levels for complex, ambiguous, or synthesis-heavy work. Do not vary levels randomly or merely for diversity; identical tasks may use the same level. Omit `thinking` only when the inherited level is appropriate and allowed. For a different model, use an exact selector returned by `rlm.find_models(...)`. An unavailable model or thinking level fails spawn; decide whether to retry with an available value or omit the override.",
 		);
 		if (hasAgentMessage) {
 			parts.push(
@@ -178,6 +178,7 @@ export function buildSubagentGuidance(
 		"# Delegating to sub-agents",
 		"",
 		"Spawn independent, self-contained work with `handle = await rlm('task', name='worker')`. This returns at admission, not completion; keep the handle to stop or inspect the child later.",
+		"Choose each child's `thinking` level from the delegated task's complexity, using lower levels for simple mechanical work and higher levels for complex or ambiguous work. Do not assign levels randomly or for variety; omit the override only when the inherited parent level is appropriate.",
 	];
 	if (options.hasAgentMessage) {
 		lines.push(

@@ -61,7 +61,7 @@ class RlmSubagentRegistryTest(unittest.TestCase):
 
         self.assertEqual(subagents[0].status, "error")
 
-    def test_forwards_orchestrator_chosen_name_and_model_to_host(self) -> None:
+    def test_forwards_orchestrator_chosen_child_options_to_host(self) -> None:
         host_request = AsyncMock(
             return_value={
                 "rlm_child_id": "sub-a1b2c3d4",
@@ -77,6 +77,7 @@ class RlmSubagentRegistryTest(unittest.TestCase):
                     "check the API",
                     name="api-reviewer",
                     model="deepseek/deepseek-v4-flash",
+                    thinking="high",
                 )
             )
 
@@ -87,6 +88,7 @@ class RlmSubagentRegistryTest(unittest.TestCase):
                 "kwargs": {
                     "name": "api-reviewer",
                     "model": "deepseek/deepseek-v4-flash",
+                    "thinking": "high",
                 },
             },
         )
@@ -103,6 +105,7 @@ class RlmSubagentRegistryTest(unittest.TestCase):
                         "id": "claude-opus-4-7",
                         "name": "Claude Opus 4.7",
                         "selector": "anthropic/claude-opus-4-7",
+                        "thinking_levels": ["low", "medium", "high", "max"],
                     }
                 ]
             }
@@ -115,10 +118,48 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         self.assertEqual(models[0].id, "claude-opus-4-7")
         self.assertEqual(models[0].name, "Claude Opus 4.7")
         self.assertEqual(models[0].selector, "anthropic/claude-opus-4-7")
+        self.assertEqual(models[0].thinking_levels, ("low", "medium", "high", "max"))
         host_request.assert_awaited_once_with(
             "rlm.find_models",
             {"query": "opus", "limit": 3},
         )
+
+    def test_gets_current_model_thinking_levels_through_host(self) -> None:
+        host_request = AsyncMock(
+            return_value={
+                "provider": "openai-codex",
+                "id": "gpt-5.6-sol",
+                "name": "GPT-5.6 SOL",
+                "selector": "openai-codex/gpt-5.6-sol",
+                "thinking_levels": ["low", "medium", "high", "xhigh"],
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            model = asyncio.run(rlm_module.rlm.get_current_model())
+
+        self.assertEqual(model.selector, "openai-codex/gpt-5.6-sol")
+        self.assertEqual(model.thinking_levels, ("low", "medium", "high", "xhigh"))
+        host_request.assert_awaited_once_with("model.info")
+
+    def test_accepts_legacy_model_payload_without_thinking_levels(self) -> None:
+        host_request = AsyncMock(
+            return_value={
+                "models": [
+                    {
+                        "provider": "anthropic",
+                        "id": "legacy-model",
+                        "name": "Legacy Model",
+                        "selector": "anthropic/legacy-model",
+                    }
+                ]
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            models = asyncio.run(rlm_module.find_models("legacy"))
+
+        self.assertIsNone(models[0].thinking_levels)
 
     def test_rejects_invalid_model_search_input_and_response(self) -> None:
         with self.assertRaisesRegex(TypeError, "query must be str"):

@@ -205,7 +205,7 @@ Current behavior:
 
 ### Thinking Level Map
 
-Use `thinkingLevelMap` on a model to describe model-specific thinking controls. Keys are Prime Agent thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+Use `thinkingLevelMap` on a model to describe model-specific thinking controls. Keys are canonical Prime Agent thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. String values may use different provider-specific names; callers continue selecting the canonical key.
 
 Values are tristate:
 
@@ -226,7 +226,8 @@ Example for a model that only supports off, high, and max reasoning:
     "low": null,
     "medium": null,
     "high": "high",
-    "xhigh": "max"
+    "xhigh": null,
+    "max": "max"
   }
 }
 ```
@@ -305,7 +306,7 @@ Use `modelOverrides` to customize specific built-in models without replacing the
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `input`, `cost` (partial), `contextWindow`, `maxTokens`, `headers`, `compat`.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial), `contextWindow`, `maxTokens`, `headers`, `compat`. Set a `thinkingLevelMap` value to `null` to disable that canonical level for the model; RLM discovery reflects the resulting effective list.
 
 Behavior notes:
 - `modelOverrides` are applied to built-in provider models.

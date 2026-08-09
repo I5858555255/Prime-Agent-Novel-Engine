@@ -17,9 +17,22 @@ Edit directly or use `/settings` for common options.
 |---------|------|---------|-------------|
 | `defaultProvider` | string | - | Default provider (e.g., `"anthropic"`, `"openai"`) |
 | `defaultModel` | string | - | Default model ID |
-| `defaultThinkingLevel` | string | `"xhigh"` | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` |
+| `defaultThinkingLevel` | string | `"xhigh"` | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"` |
+| `rlmAllowedThinkingLevels` | string[] | model-supported levels | Cross-model allowlist for child-agent thinking levels |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
+
+#### rlmAllowedThinkingLevels
+
+Use `rlmAllowedThinkingLevels` to cap the canonical effort levels that child agents may use across every model. Prime Agent intersects this list with each model's supported levels and exposes the result through `RLMModel.thinking_levels`. Project settings follow normal override semantics. An empty list, or a model with no matching supported level, prevents that model from being used for an RLM child.
+
+```json
+{
+  "rlmAllowedThinkingLevels": ["off", "minimal", "low", "medium", "high"]
+}
+```
+
+Use per-model `thinkingLevelMap` overrides in `models.json` when correcting model capability or provider-specific effort mappings instead of setting a cross-model RLM policy.
 
 #### thinkingBudgets
 

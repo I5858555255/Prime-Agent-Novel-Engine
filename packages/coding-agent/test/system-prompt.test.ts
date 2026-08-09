@@ -100,17 +100,23 @@ describe("buildRlmPrompt", () => {
 		expect(prompt).toContain("Each `%%bash` cell runs in a throw-away subshell");
 	});
 
-	test("discovers requested models through a bounded authenticated host search", () => {
+	test("discovers effective thinking levels dynamically with model metadata", () => {
 		const prompt = buildRlmPrompt({
 			cwd: "/repo",
 			messagesPath: "/repo/.pi/sessions/session.jsonl",
 			activeTools: ["ipython"],
 		});
 
+		expect(prompt).toContain("await rlm.get_current_model()");
 		expect(prompt).toContain("await rlm.find_models(...)");
-		expect(prompt).toContain("exact returned selector");
-		expect(prompt).toContain("An unavailable requested model fails spawn");
-		expect(prompt).toContain("decide whether to retry or omit `model`");
+		expect(prompt).toContain("exact selector returned by `rlm.find_models(...)`");
+		expect(prompt).toContain("each result's `thinking_levels` is the effective canonical list");
+		expect(prompt).toContain("the host maps it to any provider-specific name");
+		expect(prompt).toContain("Choose the level based on delegated task complexity");
+		expect(prompt).toContain("Omit `thinking` only when the inherited level is appropriate and allowed");
+		expect(prompt).toContain("Do not vary levels randomly or merely for diversity");
+		expect(prompt).toContain("An unavailable model or thinking level fails spawn");
+		expect(prompt).not.toContain("Valid values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`");
 		expect(prompt).not.toContain("model choices for subagents");
 	});
 
@@ -452,6 +458,8 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("rlm.delete_subagent");
 		expect(prompt).toContain("rlm_child_id");
 		expect(prompt).toContain("name='api-reviewer'");
+		expect(prompt).toContain("Choose each child's `thinking` level from the delegated task's complexity");
+		expect(prompt).toContain("Do not assign levels randomly or for variety");
 		expect(prompt).toContain("session_dir");
 		expect(prompt).toContain("agent_observe");
 		expect(prompt).toContain("restricted to your parent, siblings, and direct children");

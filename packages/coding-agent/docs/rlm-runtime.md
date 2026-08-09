@@ -129,6 +129,7 @@ The Python shim therefore registers comm handlers on the control channel, and th
 ```python
 rlm
 run(prompt: str, **kwargs)
+get_current_model()
 find_models(query: str = "", limit: int = 8)
 list_subagents()
 delete_subagent(selector)
@@ -150,17 +151,20 @@ await rlm.run("subtask")
 
 Supported `rlm.run` options are:
 
-- `name`: a unique readable child session name; and
-- `model`: an exact `provider/model` selector from `rlm.find_models()`.
+- `name`: a unique readable child session name;
+- `model`: an exact `provider/model` selector from `rlm.find_models()`; and
+- `thinking`: an independent child reasoning level selected from the target `RLMModel.thinking_levels` list.
 
-Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. If an exact selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
+`get_current_model()` returns the parent model metadata, while `find_models()` searches a bounded catalog backed by active, non-expired credentials. Each result carries effective canonical `thinking_levels`, computed from model capabilities and provider-specific `thinkingLevelMap` metadata, then intersected with the user's optional `rlmAllowedThinkingLevels` setting. Provider-specific effort names remain inside the host mapping.
+
+Unknown options fail instead of being ignored. If an exact model selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. An explicitly requested thinking level outside the effective list also fails admission. Without an explicit level, the child inherits the parent effort when it is allowed or clamps within the effective list. An empty effective list fails closed before child admission. The parent is prompted to choose thinking from delegated task complexity rather than randomizing levels or varying them merely for diversity.
 
 ## Child Execution
 
 `AgentSession.runRlmChild()` performs the following sequence:
 
 1. Check `RLM_DEPTH < RLM_MAX_DEPTH`.
-2. Resolve the requested model or inherit the parent model.
+2. Resolve the requested model and thinking level or inherit them from the parent.
 3. Create a `sub-xxxxxxxx` child directory under the parent artifact directory.
 4. Admit the task into the parent registry and return its `RLMSpawnHandle`.
 5. In detached work, create a child `SessionManager`, `Agent`, and `AgentSession`.
