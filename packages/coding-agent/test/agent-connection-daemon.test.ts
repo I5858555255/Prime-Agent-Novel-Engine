@@ -52,6 +52,12 @@ class FakeDaemonClient {
 	promptGate: Promise<void> | undefined;
 	promptError: Error | undefined;
 	promptResponseError: string | undefined;
+	readonly deadActiveSessionIds = new Set<string>();
+	createResponseError: string | undefined;
+	createGate: Promise<void> | undefined;
+	revivedAttachGate: Promise<void> | undefined;
+	switchSessionAlreadyActiveId: string | undefined;
+	connectionStateFailures = 0;
 	cancelPromptAdmissionStatus: "cancelled" | "owned" | "unknown" = "owned";
 	serverCapabilities = new Set<string>();
 	updateRestartSessions: Array<Record<string, unknown>> = [];
@@ -75,6 +81,14 @@ class FakeDaemonClient {
 		this.requestTimeouts.push(timeoutMs);
 		switch (command.type) {
 			case "prompt":
+				if (this.deadActiveSessionIds.has(command.activeSessionId)) {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: `Unknown active session: ${command.activeSessionId}`,
+					};
+				}
 				if (this.promptGate) await this.promptGate;
 				if (this.promptError) throw this.promptError;
 				if (this.promptResponseError) {
@@ -82,8 +96,29 @@ class FakeDaemonClient {
 				}
 				return { type: "response", command: command.type, success: true };
 			case "prompt_and_wait":
+				if (this.deadActiveSessionIds.has(command.activeSessionId)) {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: `Unknown active session: ${command.activeSessionId}`,
+					};
+				}
 				if (this.promptGate) await this.promptGate;
 				if (this.promptError) throw this.promptError;
+				return { type: "response", command: command.type, success: true };
+			case "create":
+				if (this.createGate) await this.createGate;
+				if (this.createResponseError) {
+					return { type: "response", command: command.type, success: false, error: this.createResponseError };
+				}
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { id: "active-revived", activeSessionId: "active-revived", sessionId: "session-revived" },
+				};
+			case "complete_owned_session":
 				return { type: "response", command: command.type, success: true };
 			case "cancel_prompt_admission":
 				return {
@@ -103,6 +138,9 @@ class FakeDaemonClient {
 				if (this.attachFailures > 0) {
 					this.attachFailures--;
 					throw new Error("attach failed");
+				}
+				if (command.activeSessionId === "active-revived" && this.revivedAttachGate) {
+					await this.revivedAttachGate;
 				}
 				if (command.activeSessionId === "active-restored" && this.restoredAttachGate) {
 					await this.restoredAttachGate;
@@ -133,6 +171,10 @@ class FakeDaemonClient {
 				};
 			case "get_connection_state":
 				await this.connectionStateGate;
+				if (this.connectionStateFailures > 0) {
+					this.connectionStateFailures--;
+					return { type: "response", command: command.type, success: false, error: "state read failed" };
+				}
 				return {
 					type: "response",
 					command: command.type,
@@ -435,7 +477,27 @@ class FakeDaemonClient {
 						},
 					},
 				};
+			case "reattach":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: createAttachResult(command.targetActiveSessionId, command.clientId, command.capabilities, 30),
+				};
 			case "switch_session":
+				if (this.switchSessionAlreadyActiveId) {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: "Session already active",
+						errorInfo: {
+							code: "session_already_active",
+							sessionPath: command.sessionPath,
+							activeSessionId: this.switchSessionAlreadyActiveId,
+						},
+					};
+				}
 				return {
 					type: "response",
 					command: command.type,
@@ -823,6 +885,341 @@ describe("DaemonAgentConnection", () => {
 		releasePrompt();
 
 		await expect(prompt).rejects.toThrow("post-ownership validation failed");
+	});
+
+	it("revives an archived session from its saved file when a prompt hits an unknown session", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue");
+
+		expect(fakeClient.requests.find((request) => request.type === "create")).toMatchObject({
+			sessionPath: "/tmp/session-current.jsonl",
+			continueRecent: false,
+		});
+		const promptRequests = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(promptRequests.map((request) => request.activeSessionId)).toEqual(["active-1", "active-revived"]);
+		await vi.waitFor(() => expect(events.some((event) => event.type === "session_resynced")).toBe(true));
+	});
+
+	it("revives an archived session for a signal-carrying prompt", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue", { signal: new AbortController().signal });
+
+		const promptRequests = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(promptRequests.map((request) => request.activeSessionId)).toEqual(["active-1", "active-revived"]);
+	});
+
+	it("surfaces the original unknown-session error when revival fails", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.createResponseError = "Session not found: /tmp/session-current.jsonl";
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await expect(connection.prompt("continue")).rejects.toThrow("Unknown active session: active-1");
+		expect(fakeClient.requests.filter((request) => request.type === "prompt")).toHaveLength(1);
+	});
+
+	it("does not attempt revival without a saved session file", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = new DaemonAgentConnection(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await expect(connection.prompt("continue")).rejects.toThrow("Unknown active session: active-1");
+		expect(fakeClient.requests.map((request) => request.type)).toEqual(["prompt"]);
+	});
+
+	it("revives via promptAndWait and detaches the dead session id", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.promptAndWait("continue");
+
+		const waitRequests = fakeClient.requests.filter((request) => request.type === "prompt_and_wait");
+		expect(waitRequests.map((request) => request.activeSessionId)).toEqual(["active-1", "active-revived"]);
+		await vi.waitFor(() =>
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "detach", activeSessionId: "active-1" }),
+			),
+		);
+	});
+
+	it("ignores an unknown-session error naming a different session than the prompt targeted", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.promptResponseError = "Unknown active session: some-other-session";
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+
+		await expect(connection.prompt("continue")).rejects.toThrow("Unknown active session: some-other-session");
+		expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(0);
+	});
+
+	it("rolls back the binding when the post-revival attach fails, then recovers on the next prompt", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.attachFailures = 1;
+
+		await expect(connection.prompt("first")).rejects.toThrow("Unknown active session: active-1");
+		// The rolled-back binding must keep targeting the original session, not
+		// the half-revived one this client never attached to.
+		const promptsAfterRollback = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(promptsAfterRollback.map((request) => request.activeSessionId)).toEqual(["active-1"]);
+
+		await connection.prompt("second");
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1", "active-1", "active-revived"]);
+	});
+
+	it("shares a single revival between concurrent failing prompts", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		let releaseCreate = () => {};
+		fakeClient.createGate = new Promise<void>((resolve) => {
+			releaseCreate = resolve;
+		});
+
+		const first = connection.prompt("first");
+		const second = connection.prompt("second");
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(1),
+		);
+		releaseCreate();
+		await Promise.all([first, second]);
+
+		expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(1);
+		const revivedPrompts = fakeClient.requests.filter(
+			(request) => request.type === "prompt" && request.activeSessionId === "active-revived",
+		);
+		expect(revivedPrompts).toHaveLength(2);
+	});
+
+	it("releases a session revived after disposal began", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		let releaseCreate = () => {};
+		fakeClient.createGate = new Promise<void>((resolve) => {
+			releaseCreate = resolve;
+		});
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(1),
+		);
+		const dispose = connection.dispose();
+		releaseCreate();
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+		await dispose;
+
+		await vi.waitFor(() =>
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+			),
+		);
+	});
+
+	it("propagates the client-owned lifecycle when reviving an owned session", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+			ownedSession: true,
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue");
+
+		expect(fakeClient.requests.find((request) => request.type === "create")).toMatchObject({
+			sessionPath: "/tmp/session-current.jsonl",
+			lifecycle: "client_owned",
+		});
+	});
+
+	it("ignores an unknown-session error whose id the attempted id merely prefixes", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.promptResponseError = "Unknown active session: active-10";
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+
+		await expect(connection.prompt("continue")).rejects.toThrow("Unknown active session: active-10");
+		expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(0);
+	});
+
+	it("keeps prompts on the dead binding until the revived attach completes", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		let releaseAttach = () => {};
+		fakeClient.revivedAttachGate = new Promise<void>((resolve) => {
+			releaseAttach = resolve;
+		});
+
+		const first = connection.prompt("first");
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.filter((request) => request.type === "attach")).toHaveLength(2),
+		);
+		// The revived binding must not be observable while its attach is still in
+		// flight: a prompt started now targets the (dead) published binding and
+		// joins the revival instead of racing ahead of the attach.
+		const third = connection.prompt("third");
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.filter((request) => request.type === "prompt")).toHaveLength(2),
+		);
+		releaseAttach();
+		await Promise.all([first, third]);
+
+		expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(1);
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts.map((request) => request.activeSessionId)).toEqual([
+			"active-1",
+			"active-1",
+			"active-revived",
+			"active-revived",
+		]);
+	});
+
+	it("cedes to a session switch that lands during revival and releases the revived session", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.switchSessionAlreadyActiveId = "active-b";
+		let releaseCreate = () => {};
+		fakeClient.createGate = new Promise<void>((resolve) => {
+			releaseCreate = resolve;
+		});
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(1),
+		);
+		await connection.switchSession("/tmp/session-b.jsonl");
+		releaseCreate();
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+
+		// The revival must not stomp the switched binding nor leave the revived
+		// session attached: the next prompt targets the switched session.
+		await vi.waitFor(() =>
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+			),
+		);
+		await connection.prompt("next");
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts[prompts.length - 1]).toMatchObject({ activeSessionId: "active-b" });
+		expect(prompts.every((request) => request.activeSessionId !== "active-revived")).toBe(true);
+	});
+
+	it("admits revived-session snapshot frames that arrive before the attach response continuation", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const messages: AgentMessage[] = [{ role: "user", content: "revived history", timestamp: 1 }];
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+				messages,
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			// Model the daemon writing the response and the snapshot frames into
+			// one socket buffer: the frames are processed before the awaiting
+			// attach continuation publishes the revived binding.
+			queueMicrotask(() => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revived",
+					snapshot: snapshotHeader,
+					messageCount: messages.length,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_chunk",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revived",
+					index: 0,
+					messages: [messages[0]!],
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revived",
+					chunkCount: 1,
+					lastEventSequence: 23,
+				});
+			});
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: {
+					id: "snapshot-revived",
+					messageCount: messages.length,
+					targetChunkBytes: 512 * 1024,
+				},
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+			snapshotTimeoutMs: 200,
+		});
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue");
+
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1", "active-revived"]);
+		await vi.waitFor(() => expect(events.some((event) => event.type === "session_resynced")).toBe(true));
+		const resynced = events.find(
+			(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+				event.type === "session_resynced",
+		);
+		expect(resynced?.snapshot.messages).toEqual(messages);
+	});
+
+	it("retries the resync in the background when a legacy revived attach cannot read its snapshot", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			// Legacy daemons answer attach with a bare summary; the snapshot then
+			// comes from separate reads that can fail transiently.
+			return {
+				id: command.activeSessionId,
+				activeSessionId: command.activeSessionId,
+				sessionId: "session-revived",
+				sessionFile: "/tmp/session-revived.jsonl",
+			} as unknown as DaemonAttachResult;
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.connectionStateFailures = 1;
+
+		// The prompt must succeed even though the revival's resync read failed…
+		await connection.prompt("continue");
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1", "active-revived"]);
+		expect(events.some((event) => event.type === "session_resynced")).toBe(false);
+
+		// …and the background retry must deliver the resync so the window does
+		// not keep rendering the dead transcript.
+		await vi.waitFor(() => expect(events.some((event) => event.type === "session_resynced")).toBe(true), {
+			timeout: 3000,
+		});
 	});
 
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {

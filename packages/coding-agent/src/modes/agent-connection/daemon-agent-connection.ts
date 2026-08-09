@@ -97,6 +97,8 @@ interface DaemonSnapshotAssembly {
 
 export const DAEMON_REFINE_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 const DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const REVIVAL_RESYNC_RETRY_MS = 250;
+const REVIVAL_RESYNC_MAX_ATTEMPTS = 8;
 export const DAEMON_RECONNECT_TIMEOUT_MS = 60_000;
 export const DAEMON_SNAPSHOT_TIMEOUT_MS = 30_000;
 const MAX_IGNORED_SNAPSHOT_IDS = 128;
@@ -227,6 +229,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly snapshotRecoveryPromises = new Map<string, Promise<void>>();
 	private readonly ignoredSnapshotIds = new Set<string>();
 	private reconnectPromise?: Promise<void>;
+	private reviveSession?: { promise: Promise<void>; sourceActiveSessionId: string };
 	private readonly definitiveRequestErrors = new WeakSet<Error>();
 	private disposing = false;
 	private disposed = false;
@@ -293,10 +296,51 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async attach(): Promise<void> {
+		await this.attachSessionBinding(this.activeSessionId, false);
+	}
+
+	/**
+	 * Attach to targetActiveSessionId and publish it as this connection's
+	 * binding only once the attach response has been applied. If another
+	 * lifecycle transition (revival, reconnect, update recovery, session
+	 * switch) rebinds the connection while the request is in flight, the
+	 * stale response is rejected instead of rebinding backwards, and the
+	 * current binding is left untouched.
+	 */
+	private async attachSessionBinding(targetActiveSessionId: string, resetCursors: boolean): Promise<void> {
+		const entryActiveSessionId = this.activeSessionId;
+		const resumeCursor = resetCursors ? undefined : this.lastEventCursor;
+		// Admit the target's frames before the request goes out: response and
+		// snapshot frames can share one socket buffer, and a frame filtered out
+		// here is lost (the snapshot assembly then times out or rejects).
+		const admitPendingTarget = targetActiveSessionId !== entryActiveSessionId;
+		if (admitPendingTarget) {
+			this.pendingReattachActiveSessionIds.add(targetActiveSessionId);
+		}
+		try {
+			await this.attachSessionBindingAdmitted(
+				targetActiveSessionId,
+				resetCursors,
+				entryActiveSessionId,
+				resumeCursor,
+			);
+		} finally {
+			if (admitPendingTarget) {
+				this.pendingReattachActiveSessionIds.delete(targetActiveSessionId);
+			}
+		}
+	}
+
+	private async attachSessionBindingAdmitted(
+		targetActiveSessionId: string,
+		resetCursors: boolean,
+		entryActiveSessionId: string,
+		resumeCursor: DaemonEventCursor | undefined,
+	): Promise<void> {
 		const supportsExtensionUi = this.options.supportsExtensionUi !== false;
 		const result = await this.requestData<SessionSummary | DaemonAttachResult>({
 			type: "attach",
-			activeSessionId: this.activeSessionId,
+			activeSessionId: targetActiveSessionId,
 			supportsExtensionUi,
 			clientId: this.clientId,
 			capabilities: [
@@ -311,13 +355,21 @@ export class DaemonAgentConnection implements AgentConnection {
 			launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,
 			telemetryDisabled: this.options.telemetryDisabled,
 			resumeCursor:
-				this.lastEventCursor === undefined
+				resumeCursor === undefined
 					? undefined
 					: {
-							activeSessionId: this.activeSessionId,
-							...this.lastEventCursor,
+							activeSessionId: targetActiveSessionId,
+							...resumeCursor,
 						},
 		});
+		if (this.activeSessionId !== entryActiveSessionId) {
+			throw new Error(`Session attach superseded: binding moved from ${entryActiveSessionId}`);
+		}
+		if (resetCursors) {
+			this.lastEventSequence = undefined;
+			this.lastEventCursor = undefined;
+			this.retiredEventGenerations.clear();
+		}
 		this.activeSessionId = getAttachActiveSessionId(result);
 		const summary = "snapshot" in result ? result.snapshot.summary : result;
 		this.attachedSessionId = summary.sessionId;
@@ -732,11 +784,219 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async prompt(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
-		await this.promptWithAdmissionCancellation("prompt", message, options);
+		await this.promptWithSessionRevival("prompt", message, options);
 	}
 
 	async promptAndWait(message: string, options?: AgentConnectionPromptOptions): Promise<void> {
-		await this.promptWithAdmissionCancellation("prompt_and_wait", message, options);
+		await this.promptWithSessionRevival("prompt_and_wait", message, options);
+	}
+
+	/**
+	 * Deliver a prompt, transparently reviving the session from its saved
+	 * session file when the daemon no longer has it resident.
+	 *
+	 * A window can outlive its session: the daemon archives an RLM subagent
+	 * after it delivers its final answer, evicts idle workers, and parents
+	 * delete finished children. Without revival every keystroke in a window
+	 * attached to such a session dead-ends in "Unknown active session" even
+	 * though the transcript is saved and resumable — the exact affordance the
+	 * agents view already offers via resume-on-open and resume-on-reply.
+	 * Typing a message is an explicit "continue this session" request, so it
+	 * gets the same treatment here. That deliberately includes sessions the
+	 * daemon reported as killed: the agents view reply flow already resumes
+	 * those, and a revived transcript is strictly recoverable.
+	 */
+	private async promptWithSessionRevival(
+		type: "prompt" | "prompt_and_wait",
+		message: string,
+		options?: AgentConnectionPromptOptions,
+	): Promise<void> {
+		const attemptedActiveSessionId = this.activeSessionId;
+		try {
+			await this.promptWithAdmissionCancellation(type, message, options);
+		} catch (error) {
+			if (!this.canReviveFromSavedSession(error, attemptedActiveSessionId)) {
+				throw error;
+			}
+			if (this.activeSessionId === attemptedActiveSessionId) {
+				try {
+					await this.reviveFromSavedSession();
+				} catch {
+					// Surface the original unknown-session error: it names the session
+					// the caller targeted, which is more actionable than a revival
+					// failure for a session that may have been deleted outright.
+					throw error;
+				}
+				await this.promptWithAdmissionCancellation(type, message, options);
+				return;
+			}
+			// The binding moved while this prompt was in flight. Join only a
+			// sibling revival of the SAME session this prompt targeted; joining
+			// any other transition (a revival of a different session, an explicit
+			// session switch) would inject this prompt into another transcript.
+			const revival = this.reviveSession;
+			if (!revival || revival.sourceActiveSessionId !== attemptedActiveSessionId) {
+				throw error;
+			}
+			try {
+				await revival.promise;
+			} catch {
+				throw error;
+			}
+			await this.promptWithAdmissionCancellation(type, message, options);
+		}
+	}
+
+	private canReviveFromSavedSession(error: unknown, attemptedActiveSessionId: string): boolean {
+		return (
+			!this.disposed &&
+			!this.disposing &&
+			this.attachedSessionFile !== undefined &&
+			error instanceof Error &&
+			// Exact match, bound to the id this prompt actually targeted: an
+			// unknown-session error about any other selector (another target id,
+			// or an id this one merely prefixes) must not trigger a revival.
+			error.message === `Unknown active session: ${attemptedActiveSessionId}`
+		);
+	}
+
+	/**
+	 * Resume this connection's saved session file into the daemon and reattach.
+	 * The daemon's create-with-sessionPath is idempotent: a session that is
+	 * still (or again) resident is reused instead of resumed twice.
+	 *
+	 * The revived binding is never published early: the connection keeps its
+	 * previous binding until the attach to the revived session has succeeded,
+	 * so no concurrently started prompt can target a session this client has
+	 * not attached to, and there is no rollback that could stomp a newer
+	 * binding installed by a concurrent transition (session switch, reconnect,
+	 * update recovery). A revival superseded by such a transition fails and
+	 * leaves the newer binding untouched.
+	 */
+	private reviveFromSavedSession(): Promise<void> {
+		if (this.reviveSession) {
+			return this.reviveSession.promise;
+		}
+		const sourceActiveSessionId = this.activeSessionId;
+		const revival = (async () => {
+			// Lifecycle transitions (daemon reconnect, update recovery) rebind the
+			// same state this revival reads; let any in-flight one settle first.
+			await this.updateReconnectPromise?.catch(() => undefined);
+			await this.reconnectPromise?.catch(() => undefined);
+			const sessionFile = this.attachedSessionFile;
+			if (!sessionFile) {
+				throw new Error("The session is no longer active and has no saved session file to resume");
+			}
+			if (this.activeSessionId !== sourceActiveSessionId) {
+				throw new Error(`Session revival superseded: binding moved from ${sourceActiveSessionId}`);
+			}
+			const summary = await this.requestData<unknown>(
+				{
+					type: "create",
+					sessionPath: sessionFile,
+					continueRecent: false,
+					...(this.options.ownedSession ? { lifecycle: "client_owned" as const } : {}),
+				},
+				DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS,
+			);
+			const revivedActiveSessionId = readCreatedActiveSessionId(summary);
+			if (this.disposed || this.disposing) {
+				this.releaseRevivedSession(revivedActiveSessionId);
+				throw new Error("Connection was disposed during session revival");
+			}
+			if (this.activeSessionId !== sourceActiveSessionId) {
+				// A concurrent transition rebound the connection while the daemon
+				// was resuming the session; the newer binding wins. The revived
+				// worker stays resident for the idle sweeps unless it is owned.
+				this.releaseRevivedSession(revivedActiveSessionId);
+				throw new Error(`Session revival superseded: binding moved from ${sourceActiveSessionId}`);
+			}
+			try {
+				await this.attachSessionBinding(revivedActiveSessionId, true);
+			} catch (error) {
+				if (this.disposed || this.disposing) {
+					this.releaseRevivedSession(revivedActiveSessionId);
+				} else if (this.activeSessionId !== revivedActiveSessionId) {
+					// The attach did not publish the revived binding (transient
+					// failure or supersession); drop any server-side attachment
+					// bookkeeping the request may have registered before failing.
+					void this.requestOk({ type: "detach", activeSessionId: revivedActiveSessionId }).catch(() => undefined);
+				}
+				throw error;
+			}
+			let snapshot: AgentConnectionSnapshot | undefined;
+			try {
+				snapshot = await this.getInitialSnapshot();
+			} catch {
+				// The connection is coherently bound AND attached to the revived
+				// session (a legacy attach result leaves the snapshot to separate
+				// reads, which can fail transiently); only the resync emission is
+				// missing. Retry it in the background instead of failing a revival
+				// whose prompts already work.
+				this.scheduleRevivalResync(this.activeSessionId);
+			}
+			this.activeSideQuestionIds.clear();
+			if (this.disposed) {
+				return;
+			}
+			if (sourceActiveSessionId !== revivedActiveSessionId) {
+				// The dead id lingers in the shared socket client's attachment
+				// bookkeeping; the supervisor's detach cleans it even when no
+				// worker matches the selector anymore.
+				void this.requestOk({ type: "detach", activeSessionId: sourceActiveSessionId }).catch(() => undefined);
+			}
+			if (snapshot) {
+				void this.emit({ type: "session_resynced", snapshot });
+			}
+		})().finally(() => {
+			if (this.reviveSession?.promise === revival) {
+				this.reviveSession = undefined;
+			}
+		});
+		this.reviveSession = { promise: revival, sourceActiveSessionId };
+		return revival;
+	}
+
+	/**
+	 * The revival attached successfully but its resync snapshot read failed;
+	 * without the session_resynced emission the window keeps rendering the
+	 * dead transcript even though prompts already reach the revived session.
+	 * Retry in the background until the snapshot lands or the binding moves.
+	 */
+	private scheduleRevivalResync(revivedActiveSessionId: string): void {
+		void (async () => {
+			for (let attempt = 1; attempt <= REVIVAL_RESYNC_MAX_ATTEMPTS; attempt++) {
+				await delay(attempt * REVIVAL_RESYNC_RETRY_MS);
+				if (this.disposed || this.activeSessionId !== revivedActiveSessionId) {
+					return;
+				}
+				try {
+					const snapshot = await this.getInitialSnapshot();
+					if (this.disposed || this.activeSessionId !== revivedActiveSessionId) {
+						return;
+					}
+					void this.emit({ type: "session_resynced", snapshot });
+					return;
+				} catch {
+					// Keep retrying: the next prompt cannot repair the stale render.
+				}
+			}
+		})();
+	}
+
+	/**
+	 * Best-effort cleanup for a session revived after disposal began or after
+	 * the revival was superseded: dispose() only released the previous
+	 * binding, so an owned revived session would otherwise outlive this
+	 * connection indefinitely.
+	 */
+	private releaseRevivedSession(revivedActiveSessionId: string): void {
+		if (this.options.ownedSession) {
+			void this.requestOk({ type: "complete_owned_session", activeSessionId: revivedActiveSessionId }).catch(
+				() => undefined,
+			);
+		}
+		void this.requestOk({ type: "detach", activeSessionId: revivedActiveSessionId }).catch(() => undefined);
 	}
 
 	private async promptWithAdmissionCancellation(
@@ -1911,7 +2171,14 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (!("activeSessionId" in message)) {
 			return false;
 		}
-		return message.activeSessionId === this.activeSessionId;
+		// A binding transition's target is admitted alongside the published
+		// binding: the daemon starts streaming the target's attach snapshot in
+		// the same socket buffer as the attach response, so its frames can be
+		// parsed before the awaiting continuation publishes the new binding.
+		return (
+			message.activeSessionId === this.activeSessionId ||
+			(message.activeSessionId !== undefined && this.pendingReattachActiveSessionIds.has(message.activeSessionId))
+		);
 	}
 
 	private isStaleSequencedMessage(message: DaemonOutbound): boolean {
@@ -1976,6 +2243,23 @@ export class DaemonAgentConnection implements AgentConnection {
 			this.activeSideQuestionIds.delete(event.id);
 		}
 	}
+}
+
+function readCreatedActiveSessionId(value: unknown): string {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Daemon returned an invalid session summary");
+	}
+	const summary = value as { id?: unknown; activeSessionId?: unknown };
+	const activeSessionId =
+		typeof summary.activeSessionId === "string"
+			? summary.activeSessionId
+			: typeof summary.id === "string"
+				? summary.id
+				: undefined;
+	if (!activeSessionId) {
+		throw new Error("Daemon returned a revived session without an active session id");
+	}
+	return activeSessionId;
 }
 
 function readSessionSummaries(value: unknown): SessionSummary[] {
