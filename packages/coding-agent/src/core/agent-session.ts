@@ -103,6 +103,14 @@ import {
 	setAutonomousEnabled,
 } from "./autonomous.js";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.js";
+import type { BrowserConnectionChoice, BrowserPromptContext } from "./browser/connection.js";
+import { createBrowserHostHandlers } from "./browser/host-handlers.js";
+import {
+	detachAgentBrowserSession,
+	forceBrowserPromptOnNextConnect,
+	getSharedBrowserManager,
+	registerBrowserPromptFn,
+} from "./browser/runtime.js";
 import {
 	COMPACT_SKILL_NAME,
 	type CompactionResult,
@@ -271,6 +279,9 @@ import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { addAssistantUsage, emptyUsage } from "./usage.js";
 import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR, WEBSEARCH_SKILL_NAME } from "./websearch-credential.js";
+
+/** Bundled skill name gating the browser host bridge. */
+const BROWSER_SKILL_NAME = "browser";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -3998,6 +4009,10 @@ export class AgentSession {
 				session.dispose();
 			}
 			this._rlmChildSessions.clear();
+			// Release this agent's browser tabs: created tabs close, adopted
+			// (user) tabs are only released. Cascades naturally since child
+			// sessions are disposed above and each runs its own detach.
+			detachAgentBrowserSession(this.sessionId);
 			this._rlmChildCleanupFailures.clear();
 			this._deletedRlmChildIds.clear();
 			this._pendingNextTurnMessages = [];
@@ -8779,7 +8794,84 @@ export class AgentSession {
 		if (this._mcpManager) {
 			Object.assign(handlers, this._mcpManager.hostHandlers());
 		}
+		if (visibleKernelSkillNames.has(BROWSER_SKILL_NAME) && this.settingsManager.getBundledBrowserEnabled()) {
+			// The prompt fn is per-process; the session whose kernel triggers the
+			// first browser connection registers last and gets to ask its user.
+			registerBrowserPromptFn((context) => this._promptBrowserConnection(context));
+			Object.assign(
+				handlers,
+				createBrowserHostHandlers({
+					manager: getSharedBrowserManager(this.settingsManager),
+					agentId: this.sessionId,
+					rlmDepth: this._rlmDepth,
+					modelSupportsVision: () => this.model?.input?.includes("image") ?? false,
+					resetConnectionPreference: () => {
+						this.settingsManager.setBrowserSettings({});
+						forceBrowserPromptOnNextConnect();
+					},
+				}),
+			);
+		}
 		return handlers;
+	}
+
+	/**
+	 * Ask the user how to connect a browser, via the extension UI bridge
+	 * (works in interactive, daemon, and RPC modes). Options are built from
+	 * what was actually detected: live debuggable browsers (attach, keeps
+	 * logins), installed browser binaries (managed launch, clean profile),
+	 * plus a manual CDP endpoint. Headless sessions have no UI context and
+	 * silently fall back to a managed launch. A declined dialog aborts the
+	 * connection attempt with an instructive error.
+	 */
+	private async _promptBrowserConnection(context: BrowserPromptContext): Promise<BrowserConnectionChoice> {
+		const ui = this._extensionUIContext;
+		if (!ui) {
+			return { mode: "launch" };
+		}
+		const options: string[] = [];
+		const actions: BrowserConnectionChoice[] = [];
+		for (const candidate of context.attachable) {
+			options.push(`Use my RUNNING ${candidate.label} — keeps my logins (already debuggable)`);
+			actions.push({ mode: "attach", wsUrl: candidate.wsUrl, label: candidate.label });
+		}
+		// When nothing debuggable is running, guided attach is the only way to
+		// get a logged-in browser — offer it. When candidates exist, a browser
+		// not listed simply needs its checkbox ticked (see the title hint) and
+		// will show up on retry, so no confusing extra option.
+		if (context.attachable.length === 0) {
+			options.push("Use my running browser — keeps my logins (one-time checkbox on its chrome://inspect page)");
+			actions.push({ mode: "attach" });
+		}
+		for (const binary of context.launchable) {
+			options.push(`Open a NEW separate ${binary.label} window — fresh profile, no logins, fully automatic`);
+			actions.push({ mode: "launch", binaryPath: binary.path });
+		}
+		options.push("Download a managed Chromium — one-time download; most isolated, never touches my browsers");
+		actions.push({ mode: "download" });
+		options.push("Enter a CDP endpoint manually (e.g. http://127.0.0.1:9222)");
+		actions.push({ mode: "endpoint", cdpUrl: "" });
+		const choice = await ui.select(
+			[
+				"Browser connection needed.",
+				"How should the agent connect to a browser?",
+				"Tip: to use your own logged-in browser, open chrome://inspect/#remote-debugging in it and tick Allow — it then appears in this list.",
+			].join("\n"),
+			options,
+		);
+		if (choice === undefined) {
+			throw new Error("browser connection declined by user");
+		}
+		const picked = actions[options.indexOf(choice)] ?? { mode: "launch" as const };
+		if (picked.mode === "endpoint") {
+			const input = await ui.input("CDP endpoint", "http://127.0.0.1:9222");
+			const cdpUrl = input?.trim();
+			if (cdpUrl) {
+				return { mode: "endpoint", cdpUrl };
+			}
+			throw new Error("browser connection declined by user");
+		}
+		return picked;
 	}
 
 	async reload(): Promise<void> {

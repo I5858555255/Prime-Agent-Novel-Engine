@@ -2268,6 +2268,8 @@ export class DefaultPackageManager implements PackageManager {
 				...userOverrides.skills,
 				// Disable the bundled websearch skill unless explicitly enabled…
 				...(this.settingsManager.getBundledWebsearchEnabled() ? [] : ["-websearch/SKILL.md"]),
+				// Disable the bundled browser skill unless explicitly enabled…
+				...(this.settingsManager.getBundledBrowserEnabled() ? [] : ["-browser/SKILL.md"]),
 				// …and disable any MCP integration the user hasn't logged into.
 				...this.extraBuiltinSkillOverrides(),
 			];

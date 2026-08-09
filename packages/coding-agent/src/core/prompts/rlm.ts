@@ -76,7 +76,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		`Conversation log: ${messagesPath}`,
 		`Recursive agent depth: ${depth}`,
 		`Pre-installed Python packages: ${DEFAULT_RLM_EXTRA_IMPORT_LABELS.join(", ")}.`,
-		"Install additional packages with `uv pip install <pkg>` (this is a uv-managed venv with no pip module).",
+		"If a package you need is missing, install it right away with `uv pip install <pkg>` (uv-managed venv, no pip module) — never downgrade the task (e.g. falling back to CSV instead of Excel) just because a library is absent.",
 	];
 
 	const childDoctrine = buildChildAgentDoctrine(options);

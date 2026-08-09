@@ -648,6 +648,8 @@ export class KernelManager {
 				cwd: this.options.cwd,
 				env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
 				stdio: ["ignore", "pipe", "pipe"],
+				// Console-subsystem Python would otherwise pop a visible console window.
+				windowsHide: true,
 			});
 			this.kernel = kernel;
 
