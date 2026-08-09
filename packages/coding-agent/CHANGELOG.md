@@ -3,25 +3,25 @@
 ## [Unreleased]
 
 - Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
-- Fixed flashing console windows on Windows by hiding every spawned child process (`windowsHide: true`).
-- Fixed the Python kernel bootstrap failing on Windows by resolving the venv interpreter at `Scripts\python.exe` instead of the POSIX `bin/python` path.
+- Fixed flashing console windows on Windows by hiding every spawned child process (`windowsHide: true`) ([#668](https://github.com/PrimeIntellect-ai/prime-agent/issues/668), [#869](https://github.com/PrimeIntellect-ai/prime-agent/issues/869)).
+- Fixed the Python kernel bootstrap failing on Windows by resolving the venv interpreter at `Scripts\python.exe` instead of the POSIX `bin/python` path ([#660](https://github.com/PrimeIntellect-ai/prime-agent/issues/660)).
 - Fixed Windows shell detection accepting an unusable WSL `bash.exe` launcher as the Bash executable, while allowing slower WSL startup probes.
 - Fixed Herdr agent reporting on Windows by connecting through Herdr's named-pipe endpoint.
-- Fixed Windows daemon force-stop operations leaving descendant processes alive by terminating process trees through `taskkill`.
+- Fixed Windows daemon force-stop operations leaving descendant processes alive by terminating process trees through `taskkill` ([#917](https://github.com/PrimeIntellect-ai/prime-agent/issues/917)).
 - Fixed Windows daemon status, doctor, and shutdown discovery missing a live default named-pipe supervisor without worker descriptors.
 - Fixed existing daemon sessions adopting Herdr environment without reloading their lifecycle reporter.
-- Added `install.ps1`, a Windows installer matching `install.sh`: the same preflight, release-channel resolution, SHA-256 verification, and global npm install.
-- Added a Windows CI leg so the build, checks, and test suite run on `windows-latest`.
-- Fixed `%%bash` cells silently executing inside WSL on Windows, where the working directory arrived as `/mnt/c/...` and the kernel's environment did not cross the boundary; they now use the same shell the Bash tool resolves.
-- Fixed a configured `shellPath` reaching IPython's `%%script` magic with its quotes attached on Windows, which failed as `Couldn't find program`.
-- Fixed autonomous gates running under `cmd.exe` on Windows while every other shell surface used bash.
-- Fixed daemon socket paths passed with `--daemon-socket` failing to bind or connect on Windows; filesystem paths now map onto a named pipe, and a relative path is resolved before the update coordinator changes directory.
-- Fixed session leases and the supervisor launch lock never detecting a conflict on Windows, where a directory-onto-directory rename reports EPERM instead of EEXIST, so two agents could believe they owned the same session.
-- Fixed the owned session worker skipping its graceful shutdown on Windows, where `process.kill(process.pid, "SIGTERM")` terminates immediately without running SIGTERM handlers, and failing to notice a killed frontend.
-- Fixed the IPython kernel's `dispose()` returning before the kernel exited, which left its working directory locked on Windows.
-- Fixed the command recovery journal throwing on Windows by skipping the POSIX-only directory fsync after an atomic rename.
-- Fixed `uv` discovery ignoring `PATHEXT`, so a `uv.cmd` shim installed by scoop or pipx was never found.
-- Fixed `~/.agents/skills` being re-scoped from user to project when the working directory sits under the home directory, which is the normal case on Windows.
+- Added `install.ps1`, a Windows installer matching `install.sh`: the same preflight, release-channel resolution, SHA-256 verification, and global npm install ([#665](https://github.com/PrimeIntellect-ai/prime-agent/issues/665)).
+- Added a Windows CI leg so the build, checks, and test suite run on `windows-latest` ([#946](https://github.com/PrimeIntellect-ai/prime-agent/issues/946)).
+- Fixed `%%bash` cells silently executing inside WSL on Windows, where the working directory arrived as `/mnt/c/...` and the kernel's environment did not cross the boundary; they now use the same shell the Bash tool resolves ([#1047](https://github.com/PrimeIntellect-ai/prime-agent/issues/1047)).
+- Fixed a configured `shellPath` reaching IPython's `%%script` magic with its quotes attached on Windows, which failed as `Couldn't find program` ([#1047](https://github.com/PrimeIntellect-ai/prime-agent/issues/1047)).
+- Fixed autonomous gates running under `cmd.exe` on Windows while every other shell surface used bash ([#1047](https://github.com/PrimeIntellect-ai/prime-agent/issues/1047)).
+- Fixed daemon socket paths passed with `--daemon-socket` failing to bind or connect on Windows; filesystem paths now map onto a named pipe, and a relative path is resolved before the update coordinator changes directory ([#1050](https://github.com/PrimeIntellect-ai/prime-agent/issues/1050)).
+- Fixed session leases and the supervisor launch lock never detecting a conflict on Windows, where a directory-onto-directory rename reports EPERM instead of EEXIST, so two agents could believe they owned the same session ([#667](https://github.com/PrimeIntellect-ai/prime-agent/issues/667), [#841](https://github.com/PrimeIntellect-ai/prime-agent/issues/841)).
+- Fixed the owned session worker skipping its graceful shutdown on Windows, where `process.kill(process.pid, "SIGTERM")` terminates immediately without running SIGTERM handlers, and failing to notice a killed frontend ([#1048](https://github.com/PrimeIntellect-ai/prime-agent/issues/1048)).
+- Fixed the IPython kernel's `dispose()` returning before the kernel exited, which left its working directory locked on Windows ([#1049](https://github.com/PrimeIntellect-ai/prime-agent/issues/1049)).
+- Fixed the command recovery journal throwing on Windows by skipping the POSIX-only directory fsync after an atomic rename ([#666](https://github.com/PrimeIntellect-ai/prime-agent/issues/666)).
+- Fixed `uv` discovery ignoring `PATHEXT`, so a `uv.cmd` shim installed by scoop or pipx was never found ([#1052](https://github.com/PrimeIntellect-ai/prime-agent/issues/1052)).
+- Fixed `~/.agents/skills` being re-scoped from user to project when the working directory sits under the home directory, which is the normal case on Windows ([#1051](https://github.com/PrimeIntellect-ai/prime-agent/issues/1051)).
 
 ## [0.7.0] - 2026-08-05
 
