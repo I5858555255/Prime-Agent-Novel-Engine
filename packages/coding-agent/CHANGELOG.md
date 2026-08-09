@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Fixed interrupted IPython cells leaving child processes running and the kernel busy by isolating each Unix kernel process group and signaling the full tree.
+
+
 ## [0.7.0] - 2026-08-05
 
 ### Breaking Changes
