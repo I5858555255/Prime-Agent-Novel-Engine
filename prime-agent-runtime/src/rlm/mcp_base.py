@@ -90,6 +90,18 @@ def _resolve_config_value(value: str) -> str:
     return (os.environ.get(value) or value).strip()
 
 
+def _sdk_field(obj: Any, snake: str, camel: str, default: Any = None) -> Any:
+    """Read an MCP SDK field that is snake_case in Python and camelCase on the wire.
+
+    Pydantic models in ``mcp.types`` expose the snake_case attribute; ``camel`` is
+    only the serialization alias, so ``getattr(obj, camel)`` is always missing.
+    Prefer snake_case, then camelCase for plain test doubles / older shapes.
+    """
+    if hasattr(obj, snake):
+        return getattr(obj, snake)
+    return getattr(obj, camel, default)
+
+
 def _resolve_streamable_http():
     """Return an SDK streamable-HTTP transport callable.
 
@@ -263,7 +275,7 @@ class McpIntegration:
                     t.name: {
                         "name": t.name,
                         "description": getattr(t, "description", "") or "",
-                        "inputSchema": getattr(t, "inputSchema", None) or {},
+                        "inputSchema": _sdk_field(t, "input_schema", "inputSchema") or {},
                     }
                     for t in resp.tools
                 }
@@ -314,10 +326,10 @@ def _parse_result(result: Any) -> Any:
         text = getattr(block, "text", None)
         if text is not None:
             texts.append(text)
-    if getattr(result, "isError", False):
+    if _sdk_field(result, "is_error", "isError", False):
         raise McpToolError("\n".join(texts) or "MCP tool returned an error")
 
-    structured = getattr(result, "structuredContent", None)
+    structured = _sdk_field(result, "structured_content", "structuredContent")
     if structured is not None:  # falsy-but-valid payloads ({} / []) are real results
         return structured
     if texts:

@@ -29,10 +29,11 @@ class _FakeSession:
         Tool = type("Tool", (), {})
 
         def make(name, desc, schema):
+            # Mirror mcp.types.Tool: snake_case Python attrs, camelCase wire aliases.
             t = Tool()
             t.name = name
             t.description = desc
-            t.inputSchema = schema
+            t.input_schema = schema
             return t
 
         resp = type("Resp", (), {})()
@@ -145,20 +146,48 @@ class McpIntegrationTest(unittest.TestCase):
 
     def test_empty_structured_result_preserved(self):
         for payload in ({}, []):
-            result = type("R", (), {"structuredContent": payload, "content": [], "isError": False})()
+            result = type(
+                "R", (), {"structured_content": payload, "content": [], "is_error": False}
+            )()
             self.assertEqual(mcp_base._parse_result(result), payload)
 
     def test_error_result_raises(self):
         block = type("B", (), {"text": "boom"})()
-        result = type("R", (), {"isError": True, "content": [block], "structuredContent": None})()
+        result = type("R", (), {"is_error": True, "content": [block], "structured_content": None})()
         with self.assertRaises(McpToolError) as ctx:
             mcp_base._parse_result(result)
         self.assertIn("boom", str(ctx.exception))
 
+    def test_parse_result_accepts_camel_case_aliases(self):
+        # Plain dict-shaped doubles may still use wire names.
+        block = type("B", (), {"text": "boom"})()
+        err = type("R", (), {"isError": True, "content": [block], "structuredContent": None})()
+        with self.assertRaises(McpToolError):
+            mcp_base._parse_result(err)
+        ok = type("R", (), {"structuredContent": {"ok": True}, "content": [], "isError": False})()
+        self.assertEqual(mcp_base._parse_result(ok), {"ok": True})
+
+    def test_list_tools_preserves_input_schema_from_sdk_field(self):
+        schema = {
+            "type": "object",
+            "properties": {"team": {"type": "string"}},
+            "required": ["team"],
+        }
+        session = _FakeSession(
+            tools=[("list_issues", "List issues", schema)],
+            result=type("R", (), {"structured_content": None, "content": [], "is_error": False})(),
+        )
+        self._write_auth(
+            {"type": "oauth", "access": "t", "refresh": "r", "expires": (time.time() + 3600) * 1000}
+        )
+        with self._patch_session(session):
+            tools = _run(_Integration().list_tools())
+        self.assertEqual(tools, [{"name": "list_issues", "description": "List issues", "inputSchema": schema}])
+
     def test_auto_bound_tool_calls_session(self):
         session = _FakeSession(
             tools=[("list_issues", "List issues", {"type": "object"})],
-            result=type("R", (), {"structuredContent": {"issues": [1, 2]}})(),
+            result=type("R", (), {"structured_content": {"issues": [1, 2]}})(),
         )
         self._write_auth(
             {"type": "oauth", "access": "t", "refresh": "r", "expires": (time.time() + 3600) * 1000}
@@ -182,7 +211,7 @@ class McpIntegrationTest(unittest.TestCase):
 
     def test_text_result_parsing(self):
         block = type("B", (), {"text": "hello"})()
-        result = type("R", (), {"content": [block], "structuredContent": None})()
+        result = type("R", (), {"content": [block], "structured_content": None, "is_error": False})()
         self.assertEqual(mcp_base._parse_result(result), "hello")
 
     def test_requires_server_attribute(self):
@@ -211,7 +240,9 @@ class McpIntegrationTest(unittest.TestCase):
             session = mock.MagicMock()
             session.initialize = mock.AsyncMock()
             session.call_tool = mock.AsyncMock(
-                return_value=type("R", (), {"content": [], "structuredContent": None})()
+                return_value=type(
+                    "R", (), {"content": [], "structured_content": None, "is_error": False}
+                )()
             )
             session_cls.return_value.__aenter__ = mock.AsyncMock(return_value=session)
             session_cls.return_value.__aexit__ = mock.AsyncMock(return_value=False)
