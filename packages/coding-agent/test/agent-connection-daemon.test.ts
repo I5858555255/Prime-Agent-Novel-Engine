@@ -1968,6 +1968,167 @@ describe("DaemonAgentConnection", () => {
 		});
 	});
 
+	it("re-reads when a live event lands between the attach snapshot end and the continuation", async () => {
+		const fakeClient = new FakeDaemonClient();
+		let revivedSnapshotHeader: Record<string, unknown> | undefined;
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			revivedSnapshotHeader = snapshotHeader;
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-live-race", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(1),
+		);
+		// The attach snapshot ends at sequence 23 and a live event with
+		// sequence 24 is parsed before the continuation resumes: the cursor now
+		// claims 24 while the attach snapshot's content stops at 23.
+		fakeClient.emitMessage({
+			type: "session_snapshot_begin",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-live-race",
+			snapshot: revivedSnapshotHeader as never,
+			messageCount: 0,
+			targetChunkBytes: 512 * 1024,
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_end",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-live-race",
+			chunkCount: 0,
+			lastEventSequence: 23,
+		});
+		emitSequencedQueueUpdate(fakeClient, "active-revived", 24);
+		await prompt;
+
+		// The cache must not be served as fresh state that silently omits the
+		// live event: the revival's resync comes from a re-read.
+		await vi.waitFor(() => {
+			const resyncs = events.filter(
+				(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+					event.type === "session_resynced",
+			);
+			expect(resyncs.length).toBeGreaterThan(0);
+			expect(resyncs[resyncs.length - 1]?.snapshot.messages).toEqual([
+				{ role: "user", content: "current prompt", timestamp: 4 },
+			]);
+		});
+		expect(fakeClient.requests.filter((request) => request.type === "get_connection_state").length).toBeGreaterThan(
+			0,
+		);
+	});
+
+	it("keeps a newer catch-up even when a live event cleared the freshness flag", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const catchupMessages: AgentMessage[] = [{ role: "user", content: "catch-up-then-live", timestamp: 13 }];
+		let revivedSnapshotHeader: Record<string, unknown> | undefined;
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			revivedSnapshotHeader = snapshotHeader;
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-live-race2", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(1),
+		);
+		fakeClient.emitMessage({
+			type: "session_snapshot_begin",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-live-race2",
+			snapshot: revivedSnapshotHeader as never,
+			messageCount: 0,
+			targetChunkBytes: 512 * 1024,
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_end",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-live-race2",
+			chunkCount: 0,
+			lastEventSequence: 23,
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_begin",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-live-catchup",
+			snapshot: revivedSnapshotHeader as never,
+			messageCount: catchupMessages.length,
+			targetChunkBytes: 512 * 1024,
+			purpose: "resync",
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_chunk",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-live-catchup",
+			index: 0,
+			messages: [catchupMessages[0]!],
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_end",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-live-catchup",
+			chunkCount: 1,
+			lastEventSequence: 33,
+		});
+		emitSequencedQueueUpdate(fakeClient, "active-revived", 34);
+		await prompt;
+
+		// The live event cleared the freshness flag; that must not let the
+		// older attach snapshot overwrite the newer catch-up, and the final
+		// state must come from a re-read that includes everything.
+		await vi.waitFor(() => {
+			const resyncs = events.filter(
+				(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+					event.type === "session_resynced",
+			);
+			expect(resyncs.length).toBeGreaterThan(0);
+			expect(resyncs[resyncs.length - 1]?.snapshot.messages).toEqual([
+				{ role: "user", content: "current prompt", timestamp: 4 },
+			]);
+		});
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");

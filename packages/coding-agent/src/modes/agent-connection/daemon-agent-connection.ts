@@ -424,14 +424,18 @@ export class DaemonAgentConnection implements AgentConnection {
 			// published binding via completeSnapshotAssembly before this
 			// continuation resumes. Newest wins by event sequence: overwriting
 			// it with the older attach snapshot would drop the intervening
-			// events. The identity check comes first because a sequence is only
-			// comparable within one session: an unchanged snapshot here can
-			// still describe the previous binding (its sequence is unrelated).
-			const concurrentSeq = this.latestSnapshot?.lastEventSequence;
+			// events. The identity checks come first because a sequence is only
+			// comparable within one session: an unchanged object can still
+			// describe the previous binding, and a live event's spread-copy can
+			// change the object while carrying the previous session's state.
+			// Freshness deliberately does NOT gate the choice - a live event
+			// clearing the flag must not resurrect the older attach snapshot.
+			const concurrent = this.latestSnapshot;
+			const concurrentSeq = concurrent?.lastEventSequence;
 			const keepConcurrentlyAppliedSnapshot =
-				this.latestSnapshotIsFresh &&
-				this.latestSnapshot !== undefined &&
-				this.latestSnapshot !== preAwaitSnapshot &&
+				concurrent !== undefined &&
+				concurrent !== preAwaitSnapshot &&
+				concurrent.state.sessionId === this.attachedSessionId &&
 				concurrentSeq !== undefined &&
 				(snapshot.lastEventSequence === undefined || concurrentSeq > snapshot.lastEventSequence);
 			if (!keepConcurrentlyAppliedSnapshot) {
@@ -442,7 +446,15 @@ export class DaemonAgentConnection implements AgentConnection {
 				if (this.lastEventCursor) {
 					this.latestSnapshot.lastEventCursor = this.lastEventCursor;
 				}
-				this.latestSnapshotIsFresh = true;
+				// A live event parsed between the snapshot's end frame and this
+				// continuation advanced the connection cursor past the snapshot's
+				// content; marking such a cache fresh would serve state whose
+				// stamped cursor claims it includes an event it does not. The
+				// invalidation is preserved so the next read re-reads.
+				this.latestSnapshotIsFresh =
+					this.lastEventSequence === undefined ||
+					snapshot.lastEventSequence === undefined ||
+					this.lastEventSequence <= snapshot.lastEventSequence;
 			}
 		} else {
 			this.latestSnapshot = undefined;
