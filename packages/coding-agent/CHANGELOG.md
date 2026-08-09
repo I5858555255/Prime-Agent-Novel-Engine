@@ -5,6 +5,7 @@
 - Added host-managed local stdio MCP servers with serialized calls, restart handling, and cleanup on reload or session disposal.
 - Added bounded IPython output artifacts with opaque retrieval handles for oversized stdout, stderr, results, and tracebacks.
 - Added bundled `jcodemunch` and `context-mode` Python skills enabled by default through lazy host-managed stdio defaults, with HTTP overrides, curated tool surfaces, and graceful unavailable diagnostics.
+- Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Fixed host-managed stdio MCP sidecars crashing on closed stdin, retrying possibly delivered tool calls, accepting invalid handshakes/settings, or returning before process cleanup completed.
 - Fixed Python host bridge requests waiting forever or leaking comms after timeouts and cancellation, and corrected the bundled Context Mode file-processing example.
 - Fixed bounded IPython artifacts using unbounded append/search memory, rescanning from byte zero, leaking failed captures, publishing partial artifacts, or splitting Unicode boundaries.
