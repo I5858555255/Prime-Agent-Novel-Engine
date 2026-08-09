@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added capability-aware thinking-level selection for native RLM children, reusable continual-harness subagent specs, and Markdown profiles in the optional subagent extension, including dynamic model discovery, provider mapping, an `rlmAllowedThinkingLevels` policy, and delegation guidance based on task complexity ([#1059](https://github.com/PrimeIntellect-ai/prime-agent/pull/1059) by [@BestSithInEU](https://github.com/BestSithInEU)).
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))

@@ -3,6 +3,7 @@
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { isModelThinkingLevel, MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.js";
 
 export type Mode = "text" | "json" | "rpc" | "acp" | "daemon";
@@ -59,14 +60,13 @@ export interface Args {
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
 }
 
-const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const REMOVED_BUILTIN_TOOL_NAMES = new Set(["read", "write", "grep", "find", "ls"]);
 const BUILTIN_TOOL_NAMES = ["ipython"];
 
 export const INTERNAL_RUNTIME_COMMAND_MARKER = "\0prime-agent-runtime-command";
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
-	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
+	return isModelThinkingLevel(level);
 }
 
 export function parseArgs(args: string[]): Args {
@@ -172,7 +172,7 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.diagnostics.push({
 					type: "warning",
-					message: `Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
+					message: `Invalid thinking level "${level}". Valid values: ${MODEL_THINKING_LEVELS.join(", ")}`,
 				});
 			}
 		} else if (arg === "--print" || arg === "-p") {

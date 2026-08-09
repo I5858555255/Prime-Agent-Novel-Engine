@@ -59,7 +59,25 @@ handle = await rlm("Review the authentication flow for security issues", name="a
 print(handle.rlm_child_id, handle.name, handle.session_dir, handle.model)
 ```
 
-The call returns immediately after task admission with a child handle; it never waits for or returns the child's answer. The TypeScript host creates a normal child `AgentSession` with an independent context and session directory. The child inherits the parent model, provider configuration, skills, tools, retry policy, and resource loader unless the call requests another configured model.
+The call returns immediately after task admission with a child handle; it never waits for or returns the child's answer. The TypeScript host creates a normal child `AgentSession` with an independent context and session directory. The child inherits the parent model, thinking level, provider configuration, skills, tools, retry policy, and resource loader unless the call requests another configured model or thinking level.
+
+Inspect the current parent model with `rlm.get_current_model()`, or use an exact selector returned by `rlm.find_models()` for a different model. Both return `RLMModel` values whose `thinking_levels` field lists the effective canonical levels available to children:
+
+```python
+current = await rlm.get_current_model()
+models = await rlm.find_models("sonnet")
+candidate = models[0]
+print(current.thinking_levels, candidate.thinking_levels)
+review = await rlm(
+    "Review the public API and reply to the parent",
+    model=candidate.selector,
+    thinking=candidate.thinking_levels[-1],
+)
+```
+
+The list is computed dynamically from the selected model's capabilities and `thinkingLevelMap`, then intersected with the optional `rlmAllowedThinkingLevels` setting. Prime Agent exposes canonical names in this API and maps them to provider-specific values internally. An explicit unavailable level fails admission rather than silently clamping to a different effort. If `thinking` is omitted, inherited parent effort is retained when allowed or clamped within the effective list; an empty list fails admission.
+
+Before each delegation, the parent should choose a level based on the subtask's complexity: lower effort for simple, bounded, mechanical work and higher effort for complex, ambiguous, or synthesis-heavy work. Levels should not be randomized or varied merely for diversity, and identical tasks may reasonably use the same level. Omit `thinking` only when the inherited parent level is appropriate.
 
 Spawn independent children in separate calls and end the turn instead of awaiting completion:
 

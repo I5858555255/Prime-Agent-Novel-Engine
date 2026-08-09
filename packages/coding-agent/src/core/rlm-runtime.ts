@@ -1,5 +1,11 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	getSupportedThinkingLevels,
+	MODEL_THINKING_LEVELS,
+	type Model,
+	type ServiceTier,
+} from "@earendil-works/pi-ai";
 import type { AgentSession } from "./agent-session.js";
 import type { ToolDefinition } from "./extensions/index.js";
 import type { HostRequestHandler } from "./kernel/index.js";
@@ -43,6 +49,7 @@ export interface RlmModelMatch {
 	id: string;
 	name: string;
 	selector: string;
+	thinking_levels: ThinkingLevel[];
 }
 
 export interface RlmFindModelsResult {
@@ -91,6 +98,49 @@ export function normalizeRequestedRlmSubagentModel(value: unknown): string | und
 	return model;
 }
 
+export const RLM_THINKING_LEVELS: readonly ThinkingLevel[] = MODEL_THINKING_LEVELS;
+
+/** Resolve the canonical child thinking levels allowed by both the model and user settings. */
+export function getRlmThinkingLevels(model: Model<Api>, configuredLevels?: readonly ThinkingLevel[]): ThinkingLevel[] {
+	const supportedLevels = getSupportedThinkingLevels(model) as ThinkingLevel[];
+	if (configuredLevels === undefined) return supportedLevels;
+	const configured = new Set(configuredLevels);
+	return supportedLevels.filter((level) => configured.has(level));
+}
+
+/** Clamp inherited thinking to an effective RLM allowlist without bypassing user settings. */
+export function clampRlmThinkingLevel(level: ThinkingLevel, availableLevels: readonly ThinkingLevel[]): ThinkingLevel {
+	if (availableLevels.length === 0) {
+		throw new Error("No thinking levels are available for this subagent model");
+	}
+	if (availableLevels.includes(level)) return level;
+	const requestedIndex = RLM_THINKING_LEVELS.indexOf(level);
+	for (let index = requestedIndex + 1; index < RLM_THINKING_LEVELS.length; index++) {
+		const candidate = RLM_THINKING_LEVELS[index];
+		if (availableLevels.includes(candidate)) return candidate;
+	}
+	for (let index = requestedIndex - 1; index >= 0; index--) {
+		const candidate = RLM_THINKING_LEVELS[index];
+		if (availableLevels.includes(candidate)) return candidate;
+	}
+	return availableLevels[0];
+}
+
+/** Validate and normalize an orchestrator-supplied subagent thinking level. */
+export function normalizeRequestedRlmSubagentThinkingLevel(value: unknown): ThinkingLevel | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "string") {
+		throw new Error("rlm.run thinking must be a string");
+	}
+	const thinkingLevel = value.trim();
+	if (!RLM_THINKING_LEVELS.includes(thinkingLevel as ThinkingLevel)) {
+		throw new Error(`rlm.run thinking must be one of: ${RLM_THINKING_LEVELS.join(", ")}`);
+	}
+	return thinkingLevel as ThinkingLevel;
+}
+
 /** Create a readable, collision-resistant default name usable as an agent-message selector. */
 export function createDefaultRlmSubagentSessionName(prompt: string, childId: string): string {
 	const promptSlug = prompt
@@ -119,7 +169,12 @@ function normalizeModelSearchText(value: string): string {
 	return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
-export function findRlmModelMatches(query: string, models: Model<Api>[], limit: number): RlmModelMatch[] {
+export function findRlmModelMatches(
+	query: string,
+	models: Model<Api>[],
+	limit: number,
+	configuredThinkingLevels?: readonly ThinkingLevel[],
+): RlmModelMatch[] {
 	const normalizedQuery = normalizeModelSearchText(query.trim());
 	return models
 		.map((model) => {
@@ -145,6 +200,7 @@ export function findRlmModelMatches(query: string, models: Model<Api>[], limit: 
 			id: model.id,
 			name: model.name || model.id,
 			selector,
+			thinking_levels: getRlmThinkingLevels(model, configuredThinkingLevels),
 		}));
 }
 

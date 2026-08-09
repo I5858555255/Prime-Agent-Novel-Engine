@@ -333,6 +333,86 @@ describe("harness refinement", () => {
 		expect(state.refinements.at(-1)?.changes).toEqual(kinds.map((kind) => `delete ${kind}:${kind}_entry`));
 	});
 
+	it("validates, preserves, updates, and renders subagent thinking", () => {
+		const dir = makeTempDir();
+		const state = loadHarnessState(dir);
+
+		const created = applyRefinementProposal(
+			state,
+			proposal("Create reviewer", [
+				{
+					action: "create",
+					kind: "subagent",
+					id: "security_reviewer",
+					title: "Security reviewer",
+					content: "Review authentication and authorization changes.",
+					thinking: "high",
+				},
+			]),
+			{ id: "refine_create_reviewer" },
+		);
+		expect(created.appliedEdits[0]).toMatchObject({ applied: true, after: { thinking: "high" } });
+		saveHarnessState(dir, state);
+		expect(loadHarnessState(dir).entries.subagent.security_reviewer.thinking).toBe("high");
+		expect(formatHarnessStateForPrompt(state)).toContain(
+			"[local:security_reviewer] Security reviewer (general, v1) thinking=high",
+		);
+
+		const preserved = applyRefinementProposal(
+			state,
+			proposal("Update reviewer", [
+				{
+					action: "update",
+					kind: "subagent",
+					id: "security_reviewer",
+					title: "Security reviewer",
+					content: "Review authentication, authorization, and secrets.",
+				},
+			]),
+			{ id: "refine_update_reviewer" },
+		);
+		expect(preserved.appliedEdits[0]).toMatchObject({ applied: true, after: { thinking: "high" } });
+
+		const updated = applyRefinementProposal(
+			state,
+			proposal("Lower reviewer effort", [
+				{
+					action: "update",
+					kind: "subagent",
+					id: "security_reviewer",
+					title: "Security reviewer",
+					content: "Review authentication, authorization, and secrets.",
+					thinking: "medium",
+				},
+			]),
+			{ id: "refine_lower_reviewer" },
+		);
+		expect(updated.appliedEdits[0]).toMatchObject({ applied: true, after: { thinking: "medium" } });
+
+		for (const [kind, thinking, error] of [
+			["subagent", "ultra", "subagent thinking must be one of"],
+			["subagent", 42, "subagent thinking must be one of"],
+			["memory", "high", "thinking is supported only for subagent entries"],
+		] as const) {
+			const result = applyRefinementProposal(
+				state,
+				proposal("Reject invalid thinking", [
+					{
+						action: "create",
+						kind,
+						id: `invalid_${kind}_${String(thinking)}`,
+						title: "Invalid thinking",
+						content: "This edit must be rejected.",
+						thinking,
+					},
+				]),
+				{ id: `refine_invalid_${kind}_${String(thinking)}` },
+			);
+			expect(result.appliedEdits[0]).toMatchObject({ applied: false });
+			expect(result.appliedEdits[0].error).toContain(error);
+		}
+	});
+
 	it("applies create, update, and delete edits to editable continual harness state", () => {
 		const state = loadHarnessState(makeTempDir());
 		const first = applyRefinementProposal(
@@ -1351,7 +1431,8 @@ describe("global refinement history", () => {
 		const userPrompt = request.messages[0].content[0].text;
 		expect(userPrompt).toContain("Requested refinement scope: local");
 		expect(userPrompt).toContain("Global entries in the overview are read-only context");
-		expect(request.systemPrompt).toContain('handle = await rlm("sub-task")');
+		expect(request.systemPrompt).toContain('handle = await rlm("sub-task", thinking="high")');
+		expect(request.systemPrompt).toContain("top-level `thinking` field");
 		expect(request.systemPrompt).toContain("never the child's answer");
 		expect(request.systemPrompt).toContain('receiver_role="parent"');
 		expect(request.systemPrompt).toContain("await rlm.list_subagents()");

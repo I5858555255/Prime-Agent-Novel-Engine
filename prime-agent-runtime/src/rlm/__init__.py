@@ -9,7 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .harness import HarnessEntry, HarnessScope, HarnessState, RefinementEvent, get_harness_state
+from .harness import (
+    HarnessEntry,
+    HarnessScope,
+    HarnessState,
+    RefinementEvent,
+    ThinkingLevel,
+    get_harness_state,
+)
 
 try:
     from ipykernel.comm import Comm
@@ -38,6 +45,7 @@ class RLMModel:
     id: str
     name: str
     selector: str
+    thinking_levels: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +152,7 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
     ``model`` selects a child with an exact ``provider/model`` selector.
+    ``thinking`` selects the child's reasoning level independently of the parent.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
@@ -151,16 +160,34 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     return _spawn_handle_from_payload(payload)
 
 
-def _model_from_payload(payload: Any) -> RLMModel:
+def _model_from_payload(payload: Any, operation: str = "rlm.find_models") -> RLMModel:
     if not isinstance(payload, dict):
-        raise RuntimeError("rlm.find_models returned an invalid model entry")
+        raise RuntimeError(f"{operation} returned an invalid model entry")
     provider = payload.get("provider")
     model_id = payload.get("id")
     name = payload.get("name")
     selector = payload.get("selector")
+    thinking_levels = payload.get("thinking_levels")
     if not all(isinstance(value, str) and value for value in (provider, model_id, name, selector)):
-        raise RuntimeError("rlm.find_models returned an invalid model entry")
-    return RLMModel(provider=provider, id=model_id, name=name, selector=selector)
+        raise RuntimeError(f"{operation} returned an invalid model entry")
+    if thinking_levels is not None and (
+        not isinstance(thinking_levels, list)
+        or not all(isinstance(level, str) and level for level in thinking_levels)
+    ):
+        raise RuntimeError(f"{operation} returned invalid thinking_levels")
+    return RLMModel(
+        provider=provider,
+        id=model_id,
+        name=name,
+        selector=selector,
+        thinking_levels=None if thinking_levels is None else tuple(thinking_levels),
+    )
+
+
+async def get_current_model() -> RLMModel:
+    """Return the parent model and its effective child thinking-level allowlist."""
+    payload = await host_request("model.info")
+    return _model_from_payload(payload, "rlm.get_current_model")
 
 
 async def find_models(query: str = "", limit: int = 8) -> list[RLMModel]:
@@ -288,6 +315,9 @@ class _RLMCallable:
     async def run(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
+    async def get_current_model(self) -> RLMModel:
+        return await get_current_model()
+
     async def find_models(self, query: str = "", limit: int = 8) -> list[RLMModel]:
         return await find_models(query, limit)
 
@@ -323,8 +353,10 @@ __all__ = [
     "RLMSpawnHandle",
     "RLMSubagent",
     "RefinementEvent",
+    "ThinkingLevel",
     "delete_subagent",
     "find_models",
+    "get_current_model",
     "get_harness_state",
     "harness",
     "host_request",

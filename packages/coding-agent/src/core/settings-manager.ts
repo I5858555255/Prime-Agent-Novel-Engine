@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ServiceTier, Transport } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
@@ -128,6 +129,7 @@ export interface Settings {
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	defaultServiceTier?: ServiceTier;
 	rlmMaxDepth?: number; // default for new sessions; unset falls through to RLM_MAX_DEPTH, then 1
+	rlmAllowedThinkingLevels?: ThinkingLevel[]; // optional cross-model allowlist for child-agent thinking levels
 	idleEvictionMinutes?: number | "off"; // global daemon policy; default: 90
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
@@ -776,6 +778,23 @@ export class SettingsManager {
 		this.globalSettings.rlmMaxDepth = maxDepth;
 		this.markModified("rlmMaxDepth");
 		this.save();
+	}
+
+	getRlmAllowedThinkingLevels(): ThinkingLevel[] | undefined {
+		const configured: unknown = this.settings.rlmAllowedThinkingLevels;
+		if (configured === undefined) return undefined;
+		if (!Array.isArray(configured)) {
+			throw new Error("rlmAllowedThinkingLevels must be an array");
+		}
+		const validLevels: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+		const invalid = configured.filter(
+			(level) => typeof level !== "string" || !validLevels.includes(level as ThinkingLevel),
+		);
+		if (invalid.length > 0) {
+			throw new Error(`rlmAllowedThinkingLevels contains invalid values; expected only: ${validLevels.join(", ")}`);
+		}
+		const configuredSet = new Set(configured as ThinkingLevel[]);
+		return validLevels.filter((level) => configuredSet.has(level));
 	}
 
 	getIdleEvictionMinutes(): number | "off" {

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added shared runtime metadata and validation for canonical model thinking levels ([#1059](https://github.com/PrimeIntellect-ai/prime-agent/pull/1059) by [@BestSithInEU](https://github.com/BestSithInEU)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

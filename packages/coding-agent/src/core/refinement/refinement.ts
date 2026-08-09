@@ -16,6 +16,7 @@ import { completeSimple } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../../config.js";
 import { serializeConversation } from "../compaction/utils.js";
 import { convertToLlm } from "../messages.js";
+import { RLM_THINKING_LEVELS } from "../rlm-runtime.js";
 import type { CustomEntry } from "../session-manager.js";
 
 export const REFINEMENT_CUSTOM_TYPE = "prime-agent.refinement";
@@ -40,6 +41,7 @@ export interface HarnessEntry {
 	scope?: HarnessScope;
 	reference: Record<string, unknown>;
 	arguments: Record<string, unknown>;
+	thinking?: ThinkingLevel;
 	metadata: Record<string, unknown>;
 	source: string;
 	created_at: string;
@@ -71,6 +73,7 @@ export interface RefinementEdit {
 	path?: string;
 	reference?: Record<string, unknown>;
 	arguments?: Record<string, unknown>;
+	thinking?: unknown;
 	metadata?: Record<string, unknown>;
 	reason?: string;
 }
@@ -135,7 +138,7 @@ Continual harness components:
 - prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.
 - memory: durable facts, decisions, failures, preferences, and outcomes.
 - skill: installed Python REPL skill. Skill create/update edits MUST include a \`reference\` object with \`{"type":"python"}\`, a Python import, and a callable or call pattern; they also MUST include an \`arguments\` object describing accepted inputs, required fields, defaults, and constraints. Use \`{}\` for \`arguments\` only when the Python callable truly needs no external inputs. Include the RLM-native call form \`await <skill_import>(...)\`.
-- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: compose a concise task prompt and spawn with \`handle = await rlm("sub-task")\`; admission returns immediately with \`rlm_child_id\`, \`name\`, \`session_dir\`, and \`model\`, never the child's answer. Results arrive only through explicit \`agent_message\` replies or files; children reply with \`await agent_message.send(message, receiver_role="parent")\`. Use \`await rlm.list_subagents()\` to recover direct child handles and \`await agent_message.send(..., receiver_role="child", receiver_name=handle.name)\` for follow-ups. Do not invent wrappers like \`run_subagent(...)\`.
+- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. A subagent may recommend one canonical thinking level through the top-level \`thinking\` field: \`off\`, \`minimal\`, \`low\`, \`medium\`, \`high\`, \`xhigh\`, or \`max\`. Treat it as an exact preference: inspect the selected model's effective \`thinking_levels\` and pass it only when available; otherwise choose a compatible model or report the policy conflict rather than silently substituting a level. Include the RLM-native call form: compose a concise task prompt and spawn with \`handle = await rlm("sub-task", thinking="high")\` when a compatible preference is present; admission returns immediately with \`rlm_child_id\`, \`name\`, \`session_dir\`, and \`model\`, never the child's answer. Results arrive only through explicit \`agent_message\` replies or files; children reply with \`await agent_message.send(message, receiver_role="parent")\`. Use \`await rlm.list_subagents()\` to recover direct child handles and \`await agent_message.send(..., receiver_role="child", receiver_name=handle.name)\` for follow-ups. Do not invent wrappers like \`run_subagent(...)\`.
 
 Scope and persistence policy:
 - The default editable continual harness store is local to the current Prime Agent session. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and project facts that should not affect other sessions.
@@ -164,6 +167,7 @@ JSON only with this exact shape:
       "title": "required for create/update except delete",
       "content": "required for create/update except delete",
       "path": "optional grouping path",
+      "thinking": "optional canonical level for subagent entries only",
       "reference": {"type": "python", "import": "package.module", "callable": "function_name", "call_pattern": "await function_name(...)"},
       "arguments": {"name": {"type": "string", "required": true, "description": "accepted input"}},
       "metadata": {},
@@ -242,6 +246,12 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return value as Record<string, unknown>;
 }
 
+function normalizeSubagentThinking(value: unknown): ThinkingLevel | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value.trim() as ThinkingLevel;
+	return RLM_THINKING_LEVELS.includes(normalized) ? normalized : undefined;
+}
+
 function normalizeHarnessScope(value: unknown, fallback: HarnessScope): HarnessScope {
 	return value === "global" || value === "local" ? value : fallback;
 }
@@ -312,6 +322,7 @@ export function loadHarnessState(
 					scope: normalizeHarnessScope(entry.scope, scope),
 					reference: objectRecord(entry.reference) ?? {},
 					arguments: objectRecord(entry.arguments) ?? {},
+					thinking: kind === "subagent" ? normalizeSubagentThinking(entry.thinking) : undefined,
 					metadata: objectRecord(entry.metadata) ?? {},
 				};
 			}
@@ -455,7 +466,7 @@ export function formatHarnessStateForPrompt(
 			: "When to refine the continual harness: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep continual harness edits small and evidence-backed.",
 		"",
 		includeIpythonExamples
-			? "Call contract: read each installed Python skill's SKILL.md and call its documented module function in IPython; do not assume a `.run` entrypoint. Use `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a continual harness subagent spec by composing a concise task prompt and calling `handle = await rlm('sub-task')`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role='parent')`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role='child', receiver_name=handle.name)` for follow-ups. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries."
+			? "Call contract: read each installed Python skill's SKILL.md and call its documented module function in IPython; do not assume a `.run` entrypoint. Use `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a continual harness subagent spec by composing a concise task prompt and calling `handle = await rlm('sub-task', thinking=...)`. A spec's optional canonical `thinking` is an exact preference: pass it only when listed by the selected model's effective `thinking_levels`; otherwise choose a compatible model or report the policy conflict. Admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role='parent')`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role='child', receiver_name=handle.name)` for follow-ups. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries."
 			: options.includeShellExamples
 				? "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without IPython; do not use Python `await`, `asyncio`, or `rlm` examples unless the prompt also documents an IPython kernel."
 				: "Call contract: continual harness entries are routing/context hints only in sessions without IPython or shell access; do not use Python `await`, `asyncio`, `rlm`, or shell skill commands unless the prompt also documents those interfaces.",
@@ -473,7 +484,7 @@ export function formatHarnessStateForPrompt(
 		// IPython sessions, include the native `rlm` invocation hint.
 		if (kind === "subagent" && entries.length > 0 && includeIpythonExamples) {
 			lines.push(
-				`${kind}: ${entries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
+				`${kind}: ${entries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>', thinking=...)\` when its preference is available; admission returns a child handle, never the answer)`,
 			);
 		} else {
 			lines.push(`${kind}: ${entries.length}`);
@@ -487,8 +498,10 @@ export function formatHarnessStateForPrompt(
 				entry.kind === "skill" && Object.keys(entry.reference).length > 0
 					? ` ref=${compactText(JSON.stringify(entry.reference), maxContentLength)}`
 					: "";
+			const thinking = entry.kind === "subagent" ? entry.thinking : undefined;
+			const thinkingText = thinking ? ` thinking=${thinking}` : "";
 			lines.push(
-				`- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${compactText(
+				`- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}${thinkingText}: ${compactText(
 					entry.content,
 					maxContentLength,
 				)}`,
@@ -652,6 +665,7 @@ function parseProposal(text: string): RefinementProposal {
 				path: typeof edit.path === "string" ? edit.path : undefined,
 				reference: objectRecord(edit.reference),
 				arguments: objectRecord(edit.arguments),
+				thinking: edit.thinking,
 				metadata:
 					typeof edit.metadata === "object" && edit.metadata !== null && !Array.isArray(edit.metadata)
 						? (edit.metadata as Record<string, unknown>)
@@ -699,6 +713,14 @@ function validateEdit(edit: RefinementEdit, computedId?: string): string | undef
 		}
 		if (!hasCallable) {
 			return `${edit.action} skill requires callable or call_pattern`;
+		}
+	}
+	if (edit.action !== "delete" && edit.thinking !== undefined) {
+		if (edit.kind !== "subagent") {
+			return `${edit.action} thinking is supported only for subagent entries`;
+		}
+		if (!normalizeSubagentThinking(edit.thinking)) {
+			return `${edit.action} subagent thinking must be one of: ${RLM_THINKING_LEVELS.join(", ")}`;
 		}
 	}
 	return undefined;
@@ -768,6 +790,8 @@ export function applyRefinementProposal(
 			scope: before?.scope ?? options.scope ?? "local",
 			reference: edit.reference ?? before?.reference ?? {},
 			arguments: edit.arguments ?? before?.arguments ?? {},
+			thinking:
+				edit.kind === "subagent" ? (normalizeSubagentThinking(edit.thinking) ?? before?.thinking) : undefined,
 			metadata: edit.metadata ?? before?.metadata ?? {},
 			source: "refine",
 			created_at: createdAt,
@@ -815,6 +839,7 @@ function rollbackProposal(target: RefinementResult): RefinementProposal {
 				path: edit.before.path,
 				reference: edit.before.reference,
 				arguments: edit.before.arguments,
+				thinking: edit.before.thinking,
 				metadata: edit.before.metadata,
 				reason: `Rollback ${target.id}`,
 			});

@@ -2,8 +2,8 @@
 
 Delegate tasks to specialized subprocess agents with isolated context windows.
 
-Prime Agent also provides native recursive delegation through `rlm.call()` and
-`rlm.run_async()`. This extension is a separate example for users who want
+Prime Agent also provides native recursive delegation through `await rlm(...)`.
+This extension is a separate example for users who want
 file-defined agent profiles and explicit single, parallel, or chained workflows.
 
 ## Features
@@ -12,7 +12,8 @@ file-defined agent profiles and explicit single, parallel, or chained workflows.
 - **Streaming output**: See tool calls and progress as they happen
 - **Parallel streaming**: All parallel tasks stream updates simultaneously
 - **Markdown rendering**: Final output rendered with proper formatting (expanded view)
-- **Usage tracking**: Shows turns, tokens, cost, and context usage per agent
+- **Usage tracking**: Shows turns, tokens, cost, context usage, and effective thinking per agent
+- **Model-aware effort**: Resolves each profile's preferred thinking against live model configuration
 - **Abort support**: Ctrl+C propagates to kill subagent processes
 
 ## Structure
@@ -22,6 +23,7 @@ subagent/
 ├── README.md            # This file
 ├── index.ts             # The extension (entry point)
 ├── agents.ts            # Agent discovery logic
+├── agent-config.ts      # Profile validation and child CLI arguments
 ├── agents/              # Sample agent definitions
 │   ├── scout.md         # Fast recon, returns compressed context
 │   ├── planner.md       # Creates implementation plans
@@ -42,6 +44,7 @@ From the repository root, symlink the files:
 mkdir -p ~/.prime/agent/extensions/subagent
 ln -sf "$(pwd)/packages/coding-agent/examples/extensions/subagent/index.ts" ~/.prime/agent/extensions/subagent/index.ts
 ln -sf "$(pwd)/packages/coding-agent/examples/extensions/subagent/agents.ts" ~/.prime/agent/extensions/subagent/agents.ts
+ln -sf "$(pwd)/packages/coding-agent/examples/extensions/subagent/agent-config.ts" ~/.prime/agent/extensions/subagent/agent-config.ts
 
 # Symlink agents
 mkdir -p ~/.prime/agent/agents
@@ -133,10 +136,13 @@ name: my-agent
 description: What this agent does
 tools: bash
 model: claude-haiku-4-5
+thinking: low
 ---
 
 System prompt for the agent goes here.
 ```
+
+`thinking` is an optional preferred effort. At execution time the extension resolves the profile model through Prime Agent's model registry, reads its configured capabilities and `thinkingLevelMap`, and clamps the preference to the nearest supported level before passing `--model <provider/model>` and `--thinking <level>` to the child. If the profile omits `model`, the active model is used and pinned for that child. A dedicated `thinking` field takes precedence over a `:level` suffix in `model`; without `thinking`, the model selector is preserved unchanged. The result's usage line shows the effective level and the original preference when it was adjusted. Omit `thinking` to use the child process's normal configured default. Unknown level names and model resolution warnings fail execution; non-string and empty values are rejected while loading the profile.
 
 **Locations:**
 - `~/.prime/agent/agents/*.md` - User-level (always loaded)
@@ -146,12 +152,12 @@ Project agents override user agents with the same name when `agentScope: "both"`
 
 ## Sample Agents
 
-| Agent | Purpose | Model | Tools |
-|-------|---------|-------|-------|
-| `scout` | Fast codebase recon | Haiku | bash |
-| `planner` | Implementation plans | Sonnet | bash |
-| `reviewer` | Code review | Sonnet | bash |
-| `worker` | General-purpose | Sonnet | (all default) |
+| Agent | Purpose | Model | Thinking | Tools |
+|-------|---------|-------|----------|-------|
+| `scout` | Fast codebase recon | Haiku | low | bash |
+| `planner` | Implementation plans | Sonnet | high | bash |
+| `reviewer` | Code review | Sonnet | high | bash |
+| `worker` | General-purpose | Sonnet | medium | (all default) |
 
 ## Workflow Prompts
 

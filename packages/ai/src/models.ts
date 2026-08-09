@@ -61,12 +61,24 @@ export function calculateCost<TApi extends Api>(
 	return usage.cost;
 }
 
-const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+export const MODEL_THINKING_LEVELS: readonly ModelThinkingLevel[] = Object.freeze([
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+]);
+
+export function isModelThinkingLevel(value: unknown): value is ModelThinkingLevel {
+	return typeof value === "string" && MODEL_THINKING_LEVELS.includes(value as ModelThinkingLevel);
+}
 
 export function getSupportedThinkingLevels<TApi extends Api>(model: Model<TApi>): ModelThinkingLevel[] {
 	if (!model.reasoning) return ["off"];
 
-	return EXTENDED_THINKING_LEVELS.filter((level) => {
+	return MODEL_THINKING_LEVELS.filter((level) => {
 		const mapped = model.thinkingLevelMap?.[level];
 		if (mapped === null) return false;
 		if (level === "xhigh" || level === "max") return mapped !== undefined;
@@ -81,15 +93,15 @@ export function clampThinkingLevel<TApi extends Api>(
 	const availableLevels = getSupportedThinkingLevels(model);
 	if (availableLevels.includes(level)) return level;
 
-	const requestedIndex = EXTENDED_THINKING_LEVELS.indexOf(level);
+	const requestedIndex = MODEL_THINKING_LEVELS.indexOf(level);
 	if (requestedIndex === -1) return availableLevels[0] ?? "off";
 
-	for (let i = requestedIndex; i < EXTENDED_THINKING_LEVELS.length; i++) {
-		const candidate = EXTENDED_THINKING_LEVELS[i];
+	for (let i = requestedIndex; i < MODEL_THINKING_LEVELS.length; i++) {
+		const candidate = MODEL_THINKING_LEVELS[i];
 		if (availableLevels.includes(candidate)) return candidate;
 	}
 	for (let i = requestedIndex - 1; i >= 0; i--) {
-		const candidate = EXTENDED_THINKING_LEVELS[i];
+		const candidate = MODEL_THINKING_LEVELS[i];
 		if (availableLevels.includes(candidate)) return candidate;
 	}
 	return availableLevels[0] ?? "off";
