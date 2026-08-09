@@ -580,8 +580,23 @@ function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolea
 }
 
 /**
+ * Major version of a Claude model reference.
+ *
+ * Handles both naming conventions: family-first ("claude-opus-5",
+ * "claude-haiku-4-5-20251001-v1:0") and version-first ("claude-3-7-sonnet").
+ * Returns 0 when no version token is present.
+ */
+function claudeMajorVersion(candidate: string): number {
+	for (const pattern of [/claude-[a-z]+-(\d+)/, /claude-(\d+)-/]) {
+		const match = pattern.exec(candidate);
+		if (match) return Number(match[1]);
+	}
+	return 0;
+}
+
+/**
  * Check if the model supports prompt caching.
- * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude 4.x models
+ * Supported: Claude 3.5 Haiku, Claude 3.7 Sonnet, and Claude 4 or newer.
  *
  * For base models and system-defined inference profiles the model ID / ARN
  * contains the model name, so we can decide locally.
@@ -601,8 +616,10 @@ function supportsPromptCaching(model: Model<"bedrock-converse-stream">): boolean
 		if (typeof process !== "undefined" && process.env.AWS_BEDROCK_FORCE_CACHE === "1") return true;
 		return false;
 	}
-	// Claude 4.x models (opus-4, sonnet-4, haiku-4)
-	if (candidates.some((s) => s.includes("-4-"))) return true;
+	// Claude 4 and newer. Comparing the version token rather than matching fixed
+	// substrings keeps caching enabled for future releases; a missed match is
+	// silent and bills the entire context as uncached input on every request.
+	if (candidates.some((s) => claudeMajorVersion(s) >= 4)) return true;
 	// Claude 3.7 Sonnet
 	if (candidates.some((s) => s.includes("claude-3-7-sonnet"))) return true;
 	// Claude 3.5 Haiku
