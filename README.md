@@ -77,6 +77,112 @@ prime-agent update [--force]         # Update Prime Agent
 prime-agent shutdown [--force]       # Stop every agent, worker, and background service
 ```
 
+## Context-Efficient Tools in This Fork
+
+This fork adds context-efficient retrieval and output handling without changing Prime Agent's single-tool model. The model still receives `ipython`; the extra capabilities are Python skills called from the persistent kernel. For local MCP integrations, the call path is:
+
+```text
+IPython → Python skill → host bridge → lazy stdio MCP sidecar
+```
+
+The host owns each sidecar's command, environment, working directory, startup, serialization, restart, and shutdown. Process settings and secrets are not copied into the kernel. A timed-out tool call that may already have reached a server is not automatically retried; the tainted sidecar is cleaned up before another call is dispatched.
+
+### jCodeMunch: structured code retrieval
+
+`jcodemunch` retrieves symbols and focused code context instead of loading whole repositories into the model's context. Use it to find definitions, inspect outlines and exact implementations, trace references/importers, assemble ranked context, or estimate a refactor's blast radius.
+
+```python
+import jcodemunch
+
+status = await jcodemunch.available()
+if status["configured"]:
+    tools = await jcodemunch.list_tools()  # The server owns the schemas
+    hits = await jcodemunch.search_symbols(
+        repo="prime-agent", query="McpIntegration", detail_level="compact"
+    )
+    source = await jcodemunch.get_symbol_source(
+        repo="prime-agent", symbol_id=hits[0]["symbol_id"], verify=True
+    )
+```
+
+The Python skill is bundled, but the `jcodemunch-mcp` sidecar is separate and optional. Importing the skill never installs, indexes, upgrades, or purges it. When the command is unavailable, `available()` returns a diagnostic and the agent can fall back to normal file inspection.
+
+### Context Mode: bounded large-output processing
+
+`context_mode` is for large logs, documents, web pages, and command output where a small derived result is more useful than raw content. It can process a file in isolation, execute bounded analysis, batch commands, or index and search fetched content.
+
+```python
+import context_mode
+
+summary = await context_mode.ctx_execute_file(
+    path="logs/server.log",
+    language="python",
+    code=(
+        "errors=[line for line in FILE_CONTENT.splitlines() if 'ERROR' in line]; "
+        "print(len(errors)); print('\n'.join(errors[:10]))"
+    ),
+    intent="Find the first recurring production failure.",
+)
+```
+
+The bundled skill exposes only collection, execution, indexing, and search operations; maintenance operations such as upgrade and purge are blocked. The separately installed `context-mode` sidecar still runs with its own filesystem and network permissions. Context Mode limits what enters the model context; it is not a security sandbox.
+
+Both sidecars default to lazy host-managed stdio when their commands are installed. Override the command, environment, working directory, tool filters, or transport under `mcpServers`, or disable one explicitly:
+
+```jsonc
+{
+  "mcpServers": {
+    "jcodemunch": {
+      "type": "stdio",
+      "command": "/path/to/jcodemunch-mcp"
+    },
+    "context-mode": {
+      "type": "stdio",
+      "command": "context-mode",
+      "enabled": false
+    }
+  }
+}
+```
+
+Both skills can also connect to a configured streamable HTTP MCP endpoint. See the [MCP integration guide](packages/coding-agent/docs/mcp-integrations.md#optional-local-sidecars) for transport, authentication, and tool-filter settings.
+
+### Bounded IPython output artifacts
+
+Large IPython stdout, stderr, results, and tracebacks are automatically materialized as artifacts instead of being injected wholesale into the conversation. Prime Agent returns a bounded preview plus an opaque handle. The agent can then page or search only the relevant channel:
+
+```python
+import rlm
+
+page = await rlm.host_request(
+    "artifact.read",
+    {"handle": "artifact_…", "channel": "stdout", "offset": 0, "max_chars": 4000},
+)
+matches = await rlm.host_request(
+    "artifact.search",
+    {"handle": "artifact_…", "channel": "stdout", "query": "ERROR"},
+)
+```
+
+Artifacts use bounded previews, chunked search, sparse seek checkpoints, atomic publication, and code-point-safe boundaries. Failed or cancelled executions dispose temporary captures rather than leaving open files behind.
+
+### Optional context-routing policy
+
+The example context-routing extension can steer broad reads toward these tools:
+
+```bash
+prime-agent \
+  -e ./packages/coding-agent/examples/extensions/context-routing.ts \
+  --context-routing advisory
+
+# Block high-confidence large raw reads instead of only advising:
+prime-agent \
+  -e ./packages/coding-agent/examples/extensions/context-routing.ts \
+  --context-routing strict-large-read
+```
+
+`advisory` recommends jCodeMunch for source retrieval and Context Mode for large documents or logs. `strict-large-read` additionally blocks high-confidence raw `cat`/download output and directly printed unbounded Python file reads while allowing bounded reads, scalar reductions, builds, tests, git commands, and writes. It is a routing policy, not a security control; see the [extension documentation](packages/coding-agent/examples/extensions/context-routing.md) for its bypass marker, limitations, and optional fast reindex behavior.
+
 ## Built for Long-Running Work
 Prime Agent is built for long-running work, especially for evaluations in research. These features are available in the TUI, and when run autonomously. 
 
