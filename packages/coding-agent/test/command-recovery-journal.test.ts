@@ -29,10 +29,13 @@ describe("CommandRecoveryJournal", () => {
 		const journal = new CommandRecoveryJournal(createPath());
 		expect(journal.begin("client-a", "command-a", "prompt")).toEqual({ status: "new" });
 
+		expect(() => journal.lookup("client-a", "command-a", "shutdown")).toThrow(
+			/already received as prompt and cannot be reused as shutdown/,
+		);
 		expect(() => journal.begin("client-a", "command-a", "shutdown")).toThrow(
 			/already received as prompt and cannot be reused as shutdown/,
 		);
-		expect(journal.lookup("client-a", "command-a")).toEqual({ status: "pending" });
+		expect(journal.lookup("client-a", "command-a", "prompt")).toEqual({ status: "pending" });
 	});
 
 	it("looks up prior commands without inserting new receipts", () => {
