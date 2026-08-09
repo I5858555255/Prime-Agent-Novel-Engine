@@ -2241,8 +2241,13 @@ export class AgentSession {
 		// compaction threshold, the queued steer counts as pending session work,
 		// so _runAutoCompaction schedules a post-compaction continue and the
 		// truncated reply is still finished rather than silently dropped.
-		const truncationContinuation = !this._steeringStopPending && this._shouldAutoContinueTruncation(context.message);
-		if (truncationContinuation) {
+		// Whether a length-continuation steer was actually admitted. When it was
+		// AND we're also over the compaction threshold, we must not let threshold
+		// compaction queue its own autonomous continuation as well, or the model
+		// would get two post-compaction turns and burn an autonomous credit for
+		// work the bounded steer already covers.
+		let lengthContinuationQueued = false;
+		if (!this._steeringStopPending && this._shouldAutoContinueTruncation(context.message)) {
 			const message: UserMessage = {
 				role: "user",
 				content: [{ type: "text", text: LENGTH_CONTINUATION_PROMPT }],
@@ -2263,9 +2268,10 @@ export class AgentSession {
 				// message_start consumes the pending marker.
 				this._lengthContinuations++;
 				this._pendingLengthContinuationMessage = message;
+				lengthContinuationQueued = true;
 			}
 		}
-		if (await this._shouldStopForThresholdCompaction(context)) {
+		if (await this._shouldStopForThresholdCompaction(context, lengthContinuationQueued)) {
 			return true;
 		}
 		// Steering stops continuation only after mandatory serialized checkpoints.
@@ -2280,9 +2286,15 @@ export class AgentSession {
 		return shouldAutoContinueTruncatedResponse(message, this._lengthContinuations);
 	}
 
-	private async _shouldStopForThresholdCompaction(context: ShouldStopAfterTurnContext): Promise<boolean> {
+	private async _shouldStopForThresholdCompaction(
+		context: ShouldStopAfterTurnContext,
+		suppressAutonomousContinuation = false,
+	): Promise<boolean> {
 		this._continueAfterThresholdCompaction = false;
-		if (this._pendingRequestedCompaction === undefined && !(await this._thresholdCompactionNeeded(context))) {
+		if (
+			this._pendingRequestedCompaction === undefined &&
+			!(await this._thresholdCompactionNeeded(context, suppressAutonomousContinuation))
+		) {
 			return false;
 		}
 
@@ -2757,7 +2769,10 @@ export class AgentSession {
 		}
 	}
 
-	private async _thresholdCompactionNeeded(context: ShouldStopAfterTurnContext): Promise<boolean> {
+	private async _thresholdCompactionNeeded(
+		context: ShouldStopAfterTurnContext,
+		suppressAutonomousContinuation = false,
+	): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 
@@ -2773,7 +2788,14 @@ export class AgentSession {
 			return false;
 		}
 
-		if (await this._queueAutonomousContinuationForThresholdCompaction(context.message)) {
+		// With autonomous mode on, a truncated response that is also over the
+		// threshold already has a length-continuation steer pending, so skip
+		// queueing a separate autonomous continuation (it would run in addition
+		// to the steer after compaction and burn an autonomous credit).
+		if (
+			!suppressAutonomousContinuation &&
+			(await this._queueAutonomousContinuationForThresholdCompaction(context.message))
+		) {
 			this._continueAfterThresholdCompaction = true;
 		}
 		return true;

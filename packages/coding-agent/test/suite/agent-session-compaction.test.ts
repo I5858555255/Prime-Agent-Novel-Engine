@@ -794,6 +794,92 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.getFollowUpMessages()).toEqual([]);
 	});
 
+	it("suppresses the autonomous continuation when a truncation continuation is queued ahead of threshold compaction", async () => {
+		vi.useFakeTimers();
+		const harness = await createHarness({
+			autonomous: {
+				enabled: true,
+				maxContinuations: 2,
+				maxTurns: 100,
+				gates: { commands: [failingGateCommand()], maxRetries: 5 },
+			},
+			settings: { compaction: { enabled: true, reserveTokens: 1000, keepRecentTokens: 1 } },
+			models: [{ id: "faux-1", contextWindow: 200_000 }],
+		});
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals & {
+			_pendingLengthContinuationMessage: unknown;
+		};
+		// Non-empty text so the bounded truncation continuation is eligible, plus
+		// enough output tokens (and a huge tool result) to trip threshold compaction.
+		const model = harness.getModel();
+		const truncatedAssistant: AssistantMessage = {
+			...fauxAssistantMessage("partial answer cut off here", {
+				stopReason: "length",
+				timestamp: Date.now(),
+			}),
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: createUsage(10_000),
+		};
+		const toolResult: ToolResultMessage<unknown> = {
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "large-context",
+			content: [{ type: "text", text: "x".repeat(800_000) }],
+			isError: false,
+			timestamp: Date.now() + 500,
+		};
+		const currentUser = {
+			role: "user",
+			content: [{ type: "text", text: "hello" }],
+			timestamp: Date.now() - 1000,
+		} satisfies Parameters<typeof harness.sessionManager.appendMessage>[0];
+		const oldUser = {
+			role: "user",
+			content: [{ type: "text", text: "old" }],
+			timestamp: Date.now() - 3000,
+		} satisfies Parameters<typeof harness.sessionManager.appendMessage>[0];
+		const oldAssistant = createAssistant(harness, {
+			stopReason: "stop",
+			totalTokens: 100,
+			timestamp: Date.now() - 2000,
+		});
+		const oldMessages: AgentMessage[] = [oldUser, oldAssistant];
+		const messages: AgentMessage[] = [currentUser, truncatedAssistant, toolResult];
+		for (const message of [oldUser, oldAssistant, currentUser, truncatedAssistant]) {
+			harness.sessionManager.appendMessage(message);
+		}
+		harness.session.agent.state.messages = [...oldMessages, ...messages];
+
+		const followUpSpy = vi.spyOn(harness.session.agent, "followUp");
+
+		const shouldStop = await sessionInternals._shouldStopAfterTurn({
+			message: truncatedAssistant,
+			toolResults: [toolResult],
+			context: { systemPrompt: harness.session.systemPrompt, messages, tools: [] },
+			newMessages: [truncatedAssistant, toolResult],
+		});
+
+		// Threshold compaction is still needed, so the loop should stop...
+		expect(shouldStop).toBe(true);
+		// ...but the autonomous gate continuation must NOT be queued as well: the
+		// bounded truncation steer already covers resuming the partial reply.
+		expect(followUpSpy).not.toHaveBeenCalled();
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(0);
+		// The truncation continuation steer itself was admitted and identity-tracked.
+		expect(sessionInternals._pendingLengthContinuationMessage).toBeDefined();
+
+		await sessionInternals._runAutoCompaction("threshold", false);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(followUpSpy).not.toHaveBeenCalled();
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+		expect(harness.session.getAutonomousStatus().continuationsUsed).toBe(0);
+	});
+
 	it("keeps autonomous continuation bookkeeping when only steering queue is drained", async () => {
 		vi.useFakeTimers();
 		const harness = await createHarness({
