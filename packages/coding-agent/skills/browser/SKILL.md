@@ -28,15 +28,41 @@ await browser.screenshot()                     # look before you act
 - **Clicking**: read the pixel off the screenshot → `click_at_xy(x, y)` →
   screenshot to verify. Coordinate clicks pass through iframes, shadow DOM,
   and cross-origin content at the compositor level — don't hunt selectors first.
+  `screenshot()` returns `image {w,h}` (the attached, possibly downscaled
+  picture) and `viewport_css {w,h,dpr}` (what `click_at_xy` expects). Convert:
+  `css = image_coord * viewport_css.w / image.w` (same for y with h).
 - **Text-only models ONLY**: if `screenshot()` returns `vision_unsupported`,
   switch to `dom()` → indexed element list → `click_index(i)` /
   `fill_index(i, text)`. On vision models, do NOT use dom() as your default
   exploration tool. Re-run `dom()` after navigation or big page changes;
   indexes go stale. dom() covers the FULL page; entries marked [below-fold]
-  are off-screen — click_index scrolls to them automatically.
+  are off-screen — click_index scrolls to them automatically. Each line also
+  carries the element's center as `@(x, y)` in CSS pixels (usable with
+  `click_at_xy` directly), and `text_content` lists the page's readable
+  non-interactive text (headings, paragraphs, list/table text) in document
+  order — read it there before falling back to js() for content extraction.
 - **DOM reads**: `await browser.js("...")` for inspection and extraction.
   Top-level `return` works; promises are awaited. Don't read small text off
   screenshots.
+- **Large pages — grep dom() output first, don't dump it**: bind the result
+  to a variable and search it with `grep_dom`, which works like `grep -i -C`:
+  matching lines plus context, nothing else.
+
+  ```python
+  d = await browser.dom(200)
+  print(browser.grep_dom(d, r"checkout|cart"))                 # elements_text
+  print(browser.grep_dom(d, r"price", field="text_content"))   # readable text
+  ```
+
+  The full dict stays live in the kernel — nothing is thrown away. If grep
+  finds nothing, the element may use different wording (or be beyond
+  `max_elements`): try other patterns first, then page through the whole
+  thing in chunks rather than assuming it's absent:
+
+  ```python
+  lines = d["elements_text"].splitlines()
+  print("\n".join(lines[:80]))    # then lines[80:160], ... as needed
+  ```
 - **Forms**: `fill_input(selector, text)` (or `fill_index(i, text)`), then
   `press_key("enter")`. Trusted input events drive React/Vue controlled inputs.
 - **After goto**: `await browser.js("return document.readyState")` or a short
@@ -79,6 +105,8 @@ await browser.screenshot()                     # look before you act
   browsers are listed by name — Chrome/Edge/Brave — plus launching a managed
   one or a custom endpoint). Their choice is persisted; later calls connect
   silently.
-- Coordinates are CSS pixels in the viewport — exactly what screenshots and
-  `dom()` report. `page_info()` gives the current scroll offset.
+- Coordinates are CSS pixels in the viewport — exactly what `dom()`'s
+  `@(x, y)` markers and `page_info()` report. Screenshots may be downscaled;
+  use the `image`/`viewport_css` sizes from `screenshot()`'s return value to
+  convert (see Clicking above).
 - Don't activate/focus tabs; everything works on background tabs.

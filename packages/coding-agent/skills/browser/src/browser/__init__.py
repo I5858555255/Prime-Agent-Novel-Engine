@@ -177,6 +177,11 @@ async def page_info(target_id: str | None = None) -> dict[str, Any]:
 async def screenshot(target_id: str | None = None, quality: int = 70) -> dict[str, Any]:
     """Take a JPEG screenshot and attach it to the model's context as an image.
 
+    Returns {"attached": True, "image": {"w": W, "h": H}, "viewport_css":
+    {"w": W, "h": H, "dpr": D}, "note": ...}. Coordinates read off the attached
+    image scale to click_at_xy's CSS viewport pixels by:
+    css_x = image_x * viewport_css["w"] / image["w"] (same for y).
+
     When the current model has no vision capability this does NOT capture an
     image; it returns {"vision_unsupported": True, "hint": ...} — use dom()
     and click_index() on such models.
@@ -187,19 +192,61 @@ async def screenshot(target_id: str | None = None, quality: int = 70) -> dict[st
     data_b64 = result.get("data")
     if not isinstance(data_b64, str) or not data_b64:
         raise RuntimeError("browser.screenshot returned no image data")
-    emitted_b64, note = _compress_for_attachment(data_b64)
+    emitted_b64, note, attached_size = _compress_for_attachment(data_b64)
     _emit_attachment(emitted_b64, result.get("mime_type", "image/jpeg"))
-    return {"attached": True, "note": note}
+    response: dict[str, Any] = {
+        "attached": True,
+        "note": note,
+        "image": {"w": attached_size[0], "h": attached_size[1]},
+    }
+    viewport = result.get("viewport_css")
+    if isinstance(viewport, dict):
+        response["viewport_css"] = viewport
+    return response
 
 
 async def dom(max_elements: int = 100, target_id: str | None = None) -> dict[str, Any]:
-    """List the viewport's interactive elements as indexed text lines.
+    """List the page's interactive elements as indexed text lines.
 
-    Returns {url, title, viewport, elements_text, scrollables, ...}. The index
-    [i] in elements_text feeds click_index(i)/fill_index(i, text). Re-run after
+    Returns {url, title, viewport, elements_text, text_content, scrollables, ...}.
+    Each elements_text line is `[i] <tag ...> "label" @(cx,cy)` — the index [i]
+    feeds click_index(i)/fill_index(i, text), and @(cx,cy) is the element's
+    center in viewport CSS pixels, usable directly with click_at_xy.
+    text_content lists non-interactive text nodes (headings, paragraphs, list
+    and table text) in document order — read-only, no index. Re-run after
     navigation or major page changes — indexes go stale.
     """
     return await host_request("browser.dom", _payload(max_elements=max_elements, target_id=target_id))
+
+
+def grep_dom(d: dict[str, Any], pattern: str, context: int = 2, field: str = "elements_text") -> str:
+    """Regex-search a dom() text field like `grep -i -C`: return only the
+    matching lines plus `context` lines around each, "--" between gaps.
+
+    `field` is "elements_text" (interactive elements) or "text_content"
+    (readable page text). Use this instead of printing a big dom() dump whole.
+    """
+    import re
+
+    lines = str(d.get(field) or "").splitlines()
+    rx = re.compile(pattern, re.IGNORECASE)
+    keep: set[int] = set()
+    for i, line in enumerate(lines):
+        if rx.search(line):
+            keep.update(range(max(0, i - context), min(len(lines), i + context + 1)))
+    if not keep:
+        return (
+            f"(no match for {pattern!r} in {field} — {len(lines)} lines total; "
+            f"try other patterns, or page through d[{field!r}] in chunks — the full text is in the kernel)"
+        )
+    out: list[str] = []
+    prev = -2
+    for i in sorted(keep):
+        if i != prev + 1 and out:
+            out.append("--")
+        out.append(lines[i])
+        prev = i
+    return "\n".join(out)
 
 
 async def click_index(index: int, target_id: str | None = None) -> dict[str, Any]:
@@ -237,17 +284,21 @@ async def cdp(method: str, params: dict[str, Any] | None = None, target_id: str 
 # ---------------------------------------------------------------------------
 
 
-def _compress_for_attachment(data_b64: str) -> tuple[str, str]:
+def _compress_for_attachment(data_b64: str) -> tuple[str, str, tuple[int, int]]:
+    """Compress a base64 JPEG under the attachment cap.
+
+    Returns (base64, note, (attached_width, attached_height)). Pillow is a hard
+    dependency of this skill, so the attached image's true dimensions are always
+    reported — the model needs them to convert image coordinates to CSS pixels.
+    """
     raw = base64.b64decode(data_b64)
-    if len(data_b64) <= _MAX_ATTACHMENT_DATA_CHARS:
-        return data_b64, "original"
-    try:
-        from PIL import Image
-    except ImportError as error:
-        raise RuntimeError("browser skill needs Pillow to resize screenshots before attaching them.") from error
+    from PIL import Image
 
     image = Image.open(io.BytesIO(raw)).convert("RGB")
     original_width, original_height = image.size
+    if len(data_b64) <= _MAX_ATTACHMENT_DATA_CHARS:
+        return data_b64, "original", (original_width, original_height)
+
     scale = min(1.0, _MAX_ATTACHMENT_DIMENSION / max(original_width, original_height))
     width = max(1, round(original_width * scale))
     height = max(1, round(original_height * scale))
@@ -258,7 +309,11 @@ def _compress_for_attachment(data_b64: str) -> tuple[str, str]:
             resized.save(buffer, format="JPEG", quality=jpeg_quality, optimize=True)
             candidate = base64.b64encode(buffer.getvalue()).decode("ascii")
             if len(candidate) <= _MAX_ATTACHMENT_DATA_CHARS:
-                return candidate, f"original {original_width}x{original_height}; attached {width}x{height} JPEG q{jpeg_quality}"
+                return (
+                    candidate,
+                    f"original {original_width}x{original_height}; attached {width}x{height} JPEG q{jpeg_quality}",
+                    (width, height),
+                )
         next_width = max(1, int(width * 0.75))
         next_height = max(1, int(height * 0.75))
         if next_width == width and next_height == height:

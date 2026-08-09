@@ -119,7 +119,10 @@ const DOM_SNAPSHOT_JS = `(function (maxElements) {
 				.join(" ").trim().replace(/\\s+/g, " ");
 			if (named) return named.slice(0, 80);
 		}
-		return (el.innerText || el.value || el.getAttribute("title") || "").trim().replace(/\\s+/g, " ").slice(0, 80);
+		// Never leak password field values into model context (browser-use
+		// serializer.py does the same): prompt injection could exfiltrate them.
+		const isPassword = el.tagName === "INPUT" && (el.getAttribute("type") || "").toLowerCase() === "password";
+		return (el.innerText || (!isPassword && el.value) || el.getAttribute("title") || "").trim().replace(/\\s+/g, " ").slice(0, 80);
 	}
 	function isVisible(el, rects) {
 		if (!rects || rects.length === 0) return false;
@@ -163,6 +166,7 @@ const DOM_SNAPSHOT_JS = `(function (maxElements) {
 		"a, button, input, select, textarea, details, summary, option, [role], [tabindex], [onclick], [contenteditable], [aria-haspopup], label, iframe"
 	);
 	const elements = [];
+	const listed = new Map(); // element → rect, for ancestor-containment dedupe
 	let index = 0;
 	let totalInteractive = 0;
 	for (const el of candidates) {
@@ -182,6 +186,31 @@ const DOM_SNAPSHOT_JS = `(function (maxElements) {
 			kind = "interactive";
 		}
 		if (!kind) continue;
+		// Ancestor-containment dedupe (browser-use bounding-box propagation,
+		// simplified): a candidate fully inside an already-listed interactive
+		// ancestor (e.g. a pointer-cursor span inside a button) is redundant —
+		// unless it needs individual interaction: form controls, onclick,
+		// aria-label, or an interactive role/tag of its own.
+		if (kind === "interactive") {
+			let covered = false;
+			for (let p = el.parentElement; p; p = p.parentElement) {
+				const ar = listed.get(p);
+				if (ar) {
+					covered =
+						rect.left >= ar.left - 1 && rect.top >= ar.top - 1 &&
+						rect.right <= ar.right + 1 && rect.bottom <= ar.bottom + 1;
+					break; // the nearest listed ancestor decides
+				}
+			}
+			if (covered) {
+				const keep =
+					INTERACTIVE_TAGS.has(tag) || tag === "LABEL" ||
+					el.hasAttribute("onclick") ||
+					(el.getAttribute("aria-label") || "").trim() !== "" ||
+					INTERACTIVE_ROLES.has(role);
+				if (!keep) continue;
+			}
+		}
 		totalInteractive++;
 		// Full-page coverage: elements beyond the cap still count but aren't listed.
 		if (elements.length >= maxElements) continue;
@@ -201,6 +230,7 @@ const DOM_SNAPSHOT_JS = `(function (maxElements) {
 		const cx = Math.round(rect.left + rect.width / 2);
 		const cy = Math.round(rect.top + rect.height / 2);
 		el.setAttribute(MARK, String(index));
+		listed.set(el, rect);
 		elements.push({
 			i: index++,
 			tag: tag.toLowerCase(),
@@ -213,6 +243,43 @@ const DOM_SNAPSHOT_JS = `(function (maxElements) {
 			w: Math.round(rect.width),
 			h: Math.round(rect.height),
 			inView,
+		});
+	}
+	// Non-interactive text nodes (browser-use includes TEXT_NODEs inline with
+	// the same bar: visible + stripped length > 1). Headings/paragraphs/list/
+	// table text carry the page's readable content. They get NO index and no
+	// marker — read-only info. Text under an already-listed interactive or
+	// text ancestor is skipped: it is already represented by that line.
+	const capturedTexts = new Set();
+	const texts = [];
+	for (const el of document.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,blockquote,figcaption,pre,caption,legend")) {
+		if (texts.length >= 60) break;
+		let skip = false;
+		for (let p = el.parentElement; p; p = p.parentElement) {
+			if (capturedTexts.has(p) || listed.has(p)) { skip = true; break; }
+		}
+		if (skip) continue;
+		const rects = el.getClientRects();
+		if (!isVisible(el, rects)) continue;
+		const text = (el.innerText || "").trim().replace(/\\s+/g, " ");
+		if (text.length < 2) continue;
+		// Skip when the text is entirely covered by already-listed interactive
+		// DESCENDANTS too (e.g. <p><a>Learn more</a></p> — the link line has it).
+		// Marked descendants only: unlisted elements can't represent the text.
+		let residual = text;
+		for (const desc of el.querySelectorAll("[" + MARK + "]")) {
+			const lt = (desc.innerText || desc.value || "").trim().replace(/\\s+/g, " ");
+			if (lt) residual = residual.replace(lt, " ");
+		}
+		if (residual.trim().length < 2) continue;
+		const rect = el.getBoundingClientRect();
+		capturedTexts.add(el);
+		texts.push({
+			tag: el.tagName.toLowerCase(),
+			text: text.slice(0, 200),
+			cx: Math.round(rect.left + rect.width / 2),
+			cy: Math.round(rect.top + rect.height / 2),
+			inView: !(rect.bottom < 0 || rect.right < 0 || rect.top > vh || rect.left > vw),
 		});
 	}
 	// Scrollable containers: the model needs to know where scrolling works.
@@ -239,6 +306,7 @@ const DOM_SNAPSHOT_JS = `(function (maxElements) {
 		title: document.title,
 		viewport: { w: vw, h: vh, scrollY: Math.round(window.scrollY), pageHeight: Math.round(document.documentElement.scrollHeight) },
 		elements,
+		texts,
 		scrollables,
 		totalInteractive,
 		truncated: totalInteractive > elements.length,
@@ -369,10 +437,12 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 		if (/\breturn\b/.test(code) && !/^\s*(async\s*)?\(/.test(code)) {
 			code = `(async () => { ${code} })()`;
 		}
-		const response = await manager.runForAgent<{
+		// Goes through run() (not runForAgent directly) so js()/dom()/scroll()
+		// auto-create a tab on first use, same as the action handlers.
+		const response = await run<{
 			result?: { value?: T; description?: string };
 			exceptionDetails?: { exception?: { description?: string }; text?: string };
-		}>(agentId, "Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true }, targetId);
+		}>("Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true }, targetId);
 		if (response.exceptionDetails) {
 			const detail = response.exceptionDetails.exception?.description ?? response.exceptionDetails.text ?? "unknown";
 			throw new Error(`JS evaluation failed: ${detail}`);
@@ -516,10 +586,43 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 				const key = requireString(payload, "key");
 				const modifiers = parseModifiers(payload.modifiers);
 				const targetId = targetOf(payload);
-				if (key.length === 1) {
-					// Printable char: trusted text insertion handles layout/shift correctly.
+				if (key.length === 1 && modifiers === 0) {
+					// Plain printable char: trusted text insertion handles layout/shift correctly.
 					await run("Input.insertText", { text: key }, targetId);
 					return { key };
+				}
+				if (key.length === 1) {
+					// Shortcut combos (Ctrl+A, Ctrl+C, …): insertText would silently
+					// drop the modifiers, so dispatch real key events. Letters/digits
+					// get exact codes; punctuation falls back to the char code, which
+					// is close enough for the combos pages actually bind.
+					const upper = key.toUpperCase();
+					const isLetter = upper >= "A" && upper <= "Z";
+					const isDigit = key >= "0" && key <= "9";
+					const shiftOnly = modifiers === 8;
+					const effectiveKey = isLetter && shiftOnly ? upper : key;
+					const code = isLetter ? `Key${upper}` : isDigit ? `Digit${key}` : "";
+					const windowsVirtualKeyCode = isLetter || isDigit ? upper.charCodeAt(0) : key.charCodeAt(0);
+					await run(
+						"Input.dispatchKeyEvent",
+						{ type: "rawKeyDown", key: effectiveKey, code, windowsVirtualKeyCode, modifiers },
+						targetId,
+					);
+					// Ctrl/Alt/Cmd combos are commands, not typing — no char event.
+					// Shift-only still types (Shift+a → "A").
+					if ((modifiers & 7) === 0) {
+						await run(
+							"Input.dispatchKeyEvent",
+							{ type: "char", text: effectiveKey, key: effectiveKey, code, modifiers },
+							targetId,
+						);
+					}
+					await run(
+						"Input.dispatchKeyEvent",
+						{ type: "keyUp", key: effectiveKey, code, windowsVirtualKeyCode, modifiers },
+						targetId,
+					);
+					return { key: effectiveKey };
 				}
 				const named = NAMED_KEYS[key.toLowerCase()];
 				if (!named) {
@@ -650,13 +753,23 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 					};
 				}
 				const quality = Math.min(Math.max(10, Math.round(optionalNumber(payload, "quality", 70))), 95);
-				const result = await manager.runForAgent<{ data: string }>(
-					agentId,
-					"Page.captureScreenshot",
-					{ format: "jpeg", quality },
-					targetOf(payload),
-				);
-				return { data: result.data, mime_type: "image/jpeg" };
+				const targetId = targetOf(payload);
+				// run() (not runForAgent directly): screenshot is the recommended
+				// FIRST action (screenshot-first), so it must auto-create a tab
+				// instead of failing NOT_CONNECTED on a fresh session.
+				const result = await run<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality }, targetId);
+				// The model reads coordinates off the (possibly downscaled) attached
+				// image but must click in CSS viewport pixels — hand it the viewport
+				// size so the conversion is arithmetic, not guesswork.
+				const viewport = await evaluate<{ w: number; h: number; dpr: number }>(
+					"({w: innerWidth, h: innerHeight, dpr: devicePixelRatio})",
+					targetId,
+				).catch(() => undefined);
+				return {
+					data: result.data,
+					mime_type: "image/jpeg",
+					...(viewport ? { viewport_css: viewport as unknown as Record<string, unknown> } : {}),
+				};
 			} catch (err) {
 				rethrow(err);
 			}
@@ -671,6 +784,7 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 					title: string;
 					viewport: { w: number; h: number; scrollY: number; pageHeight: number };
 					elements: DomElement[];
+					texts: Array<{ tag: string; text: string; cx: number; cy: number; inView: boolean }>;
 					scrollables: Array<{ tag: string; text: string; cx: number; cy: number }>;
 					totalInteractive: number;
 					truncated: boolean;
@@ -686,7 +800,11 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 					const role = el.role ? ` role=${el.role}` : "";
 					const type = el.type ? ` type=${el.type}` : "";
 					const offscreen = el.inView === false ? " [below-fold]" : "";
-					return `[${el.i}] <${el.tag}${role}${type}>${desc}${offscreen}`;
+					return `[${el.i}] <${el.tag}${role}${type}>${desc} @(${el.cx},${el.cy})${offscreen}`;
+				});
+				const textLines = snapshot.texts.map((t) => {
+					const offscreen = t.inView === false ? " [below-fold]" : "";
+					return `<${t.tag}> "${t.text}" @(${t.cx},${t.cy})${offscreen}`;
 				});
 				return {
 					url: snapshot.url,
@@ -696,6 +814,8 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 					total_interactive: snapshot.totalInteractive,
 					truncated: snapshot.truncated,
 					elements_text: lines.join("\n"),
+					text_node_count: snapshot.texts.length,
+					text_content: textLines.join("\n"),
 					scrollables: snapshot.scrollables as unknown as Record<string, unknown>[],
 				};
 			} catch (err) {
