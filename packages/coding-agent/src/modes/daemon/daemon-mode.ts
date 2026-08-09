@@ -4992,6 +4992,7 @@ export class AgentDaemon {
 			byId.set(agent.sessionId, {
 				id: agent.sessionId,
 				...(agent.sessionName ? { name: agent.sessionName } : {}),
+				...(agent.cwd ? { cwd: agent.cwd } : {}),
 				depth,
 				status: agent.status ?? "idle",
 				...(agent.runtimeKind === "subagent"

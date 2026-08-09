@@ -449,7 +449,7 @@ describe("daemon mode helpers", () => {
 		const state = makeState("local-active");
 		state.runtime = {
 			...state.runtime,
-			cwd: "/tmp",
+			cwd: "/projects/fresh-local",
 			metadata: { kind: "top-level", createdAt: 1 },
 			session: {
 				sessionId: "shared-session",
@@ -463,7 +463,7 @@ describe("daemon mode helpers", () => {
 		const internals = daemon as unknown as {
 			sessions: Map<string, ActiveSessionState>;
 			remoteAgentPeers: Map<string, Record<string, unknown>>;
-			createAgentFamilyCatalog(): Promise<Array<{ id: string; name?: string }>>;
+			createAgentFamilyCatalog(): Promise<Array<{ id: string; name?: string; cwd?: string }>>;
 		};
 		internals.sessions.set(state.activeSessionId, state);
 		internals.remoteAgentPeers.set("stale-active", {
@@ -471,15 +471,66 @@ describe("daemon mode helpers", () => {
 			sessionId: "shared-session",
 			sessionName: "stale-peer",
 			runtimeKind: "top-level",
-			cwd: "/tmp",
+			cwd: "/projects/stale-peer",
 			isStreaming: false,
 			unfinishedActionCount: 0,
 		});
 		const listAll = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
 		try {
 			expect(await internals.createAgentFamilyCatalog()).toContainEqual(
-				expect.objectContaining({ id: "shared-session", name: "fresh-local" }),
+				expect.objectContaining({
+					id: "shared-session",
+					name: "fresh-local",
+					cwd: "/projects/fresh-local",
+				}),
 			);
+		} finally {
+			listAll.mockRestore();
+		}
+	});
+
+	it("does not expose working directories for saved root sessions", async () => {
+		const daemon = new AgentDaemon("/tmp/prime-agent-saved-roster-cwd.sock", {
+			defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
+			createRuntime: vi.fn(),
+		});
+		const savedSessions: SessionInfo[] = [
+			{
+				path: "/tmp/saved.jsonl",
+				id: "saved-session",
+				cwd: "/projects/saved",
+				name: "saved",
+				rlmDepth: 0,
+				created: new Date(0),
+				modified: new Date(0),
+				messageCount: 0,
+				firstMessage: "",
+				allMessagesText: "",
+			},
+			{
+				path: "/tmp/legacy.jsonl",
+				id: "legacy-session",
+				cwd: "",
+				name: "legacy",
+				rlmDepth: 0,
+				created: new Date(0),
+				modified: new Date(0),
+				messageCount: 0,
+				firstMessage: "",
+				allMessagesText: "",
+			},
+		];
+		const internals = daemon as unknown as {
+			createAgentFamilyCatalog(): Promise<Array<{ id: string; cwd?: string }>>;
+		};
+		const listAll = vi.spyOn(SessionManager, "listAll").mockResolvedValue(savedSessions);
+		try {
+			const catalog = await internals.createAgentFamilyCatalog();
+			expect(catalog).toContainEqual(expect.objectContaining({ id: "saved-session" }));
+			expect(catalog.find((entry) => entry.id === "saved-session")).not.toHaveProperty("cwd");
+			const legacy = catalog.find((entry) => entry.id === "legacy-session");
+			expect(legacy).toEqual(expect.objectContaining({ id: "legacy-session" }));
+			expect(legacy).not.toHaveProperty("cwd");
 		} finally {
 			listAll.mockRestore();
 		}
@@ -806,6 +857,7 @@ describe("daemon mode helpers", () => {
 			const roster = await internals.createAgentMessageController(() => parentState).roster?.();
 			const passiveRosterEntry = roster?.entries.find((entry) => entry.name === "real-worker");
 			expect(passiveRosterEntry).toMatchObject({ relationship: "child", status: "inactive" });
+			expect(passiveRosterEntry).not.toHaveProperty("cwd");
 			expect(passiveRosterEntry).not.toHaveProperty("repliedSinceTask");
 			const listed = await internals.buildSessionListWithPassiveRlmSubagents(
 				[parentState],
@@ -1329,7 +1381,7 @@ describe("daemon mode helpers", () => {
 		const source = makeState("source");
 		source.runtime = {
 			...source.runtime,
-			cwd: "/tmp",
+			cwd: "/projects/source",
 			session: {
 				sessionId: "session-source",
 				sessionName: "Source",
@@ -1354,6 +1406,9 @@ describe("daemon mode helpers", () => {
 			createAgentMessageListResult(
 				current: ActiveSessionState,
 			): Promise<{ agents: Array<{ activeSessionId: string }> }>;
+			createAgentFamilyRoster(
+				current: ActiveSessionState,
+			): Promise<{ current: { cwd?: string }; entries: Array<{ id: string; cwd?: string }> }>;
 			sendRemoteAgentSessionMessage: typeof sendRemoteAgentSessionMessage;
 			sendAgentSessionMessage(options: {
 				targetSelector: string;
@@ -1368,11 +1423,21 @@ describe("daemon mode helpers", () => {
 			sessionId: "session-remote",
 			sessionName: "Remote",
 			runtimeKind: "top-level",
-			cwd: "/tmp/remote",
+			cwd: "/projects/remote",
 			isStreaming: false,
 			sessionActions: { queuedCount: 0, steering: [], followUps: [] },
 		});
 		internals.sendRemoteAgentSessionMessage = sendRemoteAgentSessionMessage;
+		const listAll = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
+		try {
+			const roster = await internals.createAgentFamilyRoster(source);
+			expect(roster.current).toMatchObject({ cwd: "/projects/source" });
+			expect(roster.entries).toContainEqual(
+				expect.objectContaining({ id: "session-remote", cwd: "/projects/remote" }),
+			);
+		} finally {
+			listAll.mockRestore();
+		}
 
 		expect((await internals.createAgentMessageListResult(source)).agents).toContainEqual(
 			expect.objectContaining({ activeSessionId: remoteSelector }),

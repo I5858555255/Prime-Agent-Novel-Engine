@@ -48,8 +48,17 @@ describe("agent-message skill over the kernel host bridge", () => {
 				"agent_message.list_agents": async (payload) => {
 					requests.push({ type: "agent_message.list_agents", payload });
 					return {
-						current: { name: "alpha", id: "session-alpha", depth: 0 },
-						entries: [{ relationship: "sibling", name: "Beta", id: "session-beta", depth: 0, status: "idle" }],
+						current: { name: "alpha", id: "session-alpha", cwd: "/projects/alpha", depth: 0 },
+						entries: [
+							{
+								relationship: "sibling",
+								name: "Beta",
+								id: "session-beta",
+								cwd: "/projects/beta",
+								depth: 0,
+								status: "idle",
+							},
+						],
 					};
 				},
 				"agent_message.send": async (payload) => {
@@ -80,8 +89,8 @@ print(json.dumps({"agents": agents, "receipt": receipt}, sort_keys=True))
 		expect(result.status).toBe("ok");
 		const output = JSON.parse(result.stdout.trim());
 		expect(output.agents).toMatchObject({
-			current: { id: "session-alpha", depth: 0 },
-			entries: [{ relationship: "sibling", id: "session-beta", status: "idle" }],
+			current: { id: "session-alpha", cwd: "/projects/alpha", depth: 0 },
+			entries: [{ relationship: "sibling", id: "session-beta", cwd: "/projects/beta", status: "idle" }],
 		});
 		expect(output.receipt).toMatchObject({
 			id: "agentmsg-test",

@@ -76,6 +76,7 @@ export interface AgentSessionMessageListResult {
 export interface AgentFamilyCatalogEntry {
 	id: string;
 	name?: string;
+	cwd?: string;
 	depth: number;
 	status: AgentFamilyStatus;
 	repliedSinceTask?: boolean;
@@ -88,13 +89,14 @@ export interface AgentFamilyRosterEntry {
 	relationship: AgentFamilyRelationship;
 	name: string;
 	id: string;
+	cwd?: string;
 	depth: number;
 	status: AgentFamilyStatus;
 	repliedSinceTask?: boolean;
 }
 
 export interface AgentFamilyRosterResult {
-	current: { name: string; id: string; depth: number };
+	current: { name: string; id: string; cwd?: string; depth: number };
 	entries: AgentFamilyRosterEntry[];
 }
 
@@ -227,6 +229,7 @@ export function buildAgentFamilyRoster(
 		relationship,
 		name: entry.name ?? entry.id,
 		id: entry.id,
+		...(entry.status !== "inactive" && entry.cwd ? { cwd: entry.cwd } : {}),
 		depth: entry.depth,
 		status: entry.status,
 		...(relationship === "child" && entry.repliedSinceTask !== undefined
@@ -237,6 +240,7 @@ export function buildAgentFamilyRoster(
 		current: {
 			name: current.name ?? current.id,
 			id: current.id,
+			...(current.cwd ? { cwd: current.cwd } : {}),
 			depth: current.depth,
 		},
 		entries: [

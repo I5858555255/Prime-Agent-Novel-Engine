@@ -26,11 +26,18 @@ if child is not None:
 
 ## API
 
-- `await agent_message.list_agents()` — returns `current` (`name`, `id`, `depth`)
-  and family-scoped `entries` (`relationship`, `name`, `id`, `depth`, `status`)
-  for the current agent's parent, siblings, and children. It includes inactive
-  family members and sorts parent, siblings by name, then children by name; it
-  does not expose a global daemon session list.
+- `await agent_message.list_agents()` — returns `current` (`name`, `id`, optional
+  `cwd`, `depth`) and family-scoped `entries` (`relationship`, `name`, `id`,
+  optional `cwd`, `depth`, `status`) for the current agent's parent, siblings,
+  and children. It includes inactive family members and sorts parent, siblings
+  by name, then children by name; it does not expose a global daemon session
+  list. `cwd` is the full working-directory path recorded by a resident
+  session. It is omitted from inactive historical entries, which can include
+  sessions that are no longer resident in the current supervisor or may be
+  client-owned. `inactive` means the session is not resident in the current
+  supervisor, not that it is stopped everywhere. Resident cross-worker values
+  may briefly lag peer synchronization. Because these paths are returned
+  directly to the model, treat them as potentially sensitive local metadata.
 - `await agent_message.send(message, receiver_role="parent" | "sibling" | "child", receiver_name=None)` — sends one direct
   text message to an active session. Sending to an idle completed subagent
   starts an ordinary follow-up turn in that same child session and context.
