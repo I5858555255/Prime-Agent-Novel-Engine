@@ -12,9 +12,14 @@ import linear
 issues = await linear.list_issues(team="Engineering")
 ```
 
-The MCP connection runs inside the kernel via the official `mcp` Python SDK. The
-host's only jobs are interactive login (browser OAuth) and minting/refreshing
-credentials in `auth.json`.
+HTTP MCP integrations run inside the kernel via the official `mcp` Python SDK.
+The host handles interactive login (browser OAuth) and minting/refreshing
+credentials in `auth.json`, but does not proxy ordinary HTTP tool calls.
+
+Local stdio integrations are different: the host owns their sidecar processes,
+including command, environment, working directory, startup, and shutdown. The
+kernel receives only a host bridge for tool discovery and calls; it never spawns
+the sidecar or receives its process configuration.
 
 ## Table of Contents
 
@@ -216,6 +221,7 @@ Methods:
 Exceptions (both importable from `rlm`):
 
 - `NotEnabled` — raised when no usable credentials exist (not logged in).
+- `Disabled` — raised when an integration is explicitly disabled.
 - `McpToolError` — raised when a tool call returns a result flagged as an error.
 
 ## Enable-by-login lifecycle

@@ -11,7 +11,7 @@ import {
 import { registerOAuthProvider, unregisterOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import type { AuthStorage } from "../auth-storage.js";
 import type { McpServerConfig } from "../settings-manager.js";
-import { isRetryableStdioMcpError, StdioMcpClient } from "./stdio-mcp-client.js";
+import { isRetryableStdioMcpError, isStdioMcpRequestNotSentError, StdioMcpClient } from "./stdio-mcp-client.js";
 
 export interface McpManagerOptions {
 	authStorage: AuthStorage;
@@ -97,6 +97,7 @@ export class McpManager {
 	private readonly stdioClients = new Map<string, StdioMcpClient>();
 	private readonly stdioOperationQueues = new Map<string, Promise<void>>();
 	private disposed = false;
+	private lifecycleGeneration = 0;
 	/** Provider ids we registered for user servers, so refresh can drop removed ones. */
 	private registeredUserProviderIds = new Set<string>();
 
@@ -112,7 +113,11 @@ export class McpManager {
 
 	/** Re-read settings and re-register providers; call after a session reload. */
 	refresh(): void {
+		this.lifecycleGeneration += 1;
 		this.disposed = false;
+		// Refresh is an intentional lifecycle resurrection after session reload;
+		// re-register so process-exit cleanup covers newly lazy-started sidecars.
+		registerMcpExitCleanup(this);
 		// Reload is a lifecycle boundary: never leave an old command/environment
 		// running after settings are re-read. New processes remain lazy.
 		this.disposeStdioClientsSync();
@@ -122,12 +127,29 @@ export class McpManager {
 
 	/** Stop every sidecar owned by this workspace/session. */
 	async dispose(): Promise<void> {
+		const generation = this.lifecycleGeneration;
 		this.disposed = true;
-		liveMcpManagers.delete(this);
-		const clients = [...this.stdioClients.values()];
-		this.stdioClients.clear();
+		const clients = [...this.stdioClients.entries()];
 		this.stdioOperationQueues.clear();
-		await Promise.allSettled(clients.map((client) => client.dispose()));
+		const results = await Promise.allSettled(clients.map(([, client]) => client.dispose()));
+		const failures: unknown[] = [];
+		for (const [index, result] of results.entries()) {
+			const [server, client] = clients[index];
+			if (result.status === "fulfilled") {
+				if (this.stdioClients.get(server) === client) this.stdioClients.delete(server);
+			} else {
+				failures.push(result.reason);
+			}
+		}
+		if (failures.length > 0) {
+			// Keep failed clients owned and keep this manager live so a caller or the
+			// process-exit hook can retry cleanup after a bounded shutdown failure.
+			liveMcpManagers.add(this);
+			const messages = failures.map((error) => (error instanceof Error ? error.message : String(error)));
+			throw new AggregateError(failures, `Failed to dispose MCP stdio clients: ${messages.join("; ")}`);
+		}
+		if (generation === this.lifecycleGeneration) liveMcpManagers.delete(this);
+		else liveMcpManagers.add(this);
 	}
 
 	/** Synchronous best-effort cleanup for process-exit/session replacement paths. */
@@ -317,7 +339,7 @@ export class McpManager {
 	private async withStdioClient<T>(
 		server: string,
 		operation: (client: StdioMcpClient) => Promise<T>,
-		options: { retryTransport?: boolean } = {},
+		options: { retryTransport?: boolean; retryOnlyIfRequestNotSent?: boolean } = {},
 	): Promise<T> {
 		const previous = this.stdioOperationQueues.get(server) ?? Promise.resolve();
 		const queued = previous.then(async () => {
@@ -325,9 +347,14 @@ export class McpManager {
 			try {
 				return await operation(client);
 			} catch (error) {
-				// A failed transport gets one bounded restart. Protocol/tool errors are
-				// returned directly and are not retried.
-				if (options.retryTransport === false || !isRetryableStdioMcpError(error)) throw error;
+				// Read-only discovery can retry any transport failure. Tool calls may have
+				// reached the server, so only a failure proven to precede the write is safe.
+				if (
+					options.retryTransport === false ||
+					!isRetryableStdioMcpError(error) ||
+					(options.retryOnlyIfRequestNotSent && !isStdioMcpRequestNotSentError(error))
+				)
+					throw error;
 				await new Promise<void>((resolve) => {
 					const timer = globalThis.setTimeout(resolve, 100);
 					timer.unref?.();
@@ -410,8 +437,10 @@ export class McpManager {
 				) {
 					throw new Error("mcp.call_tool arguments must be an object");
 				}
-				const result = await this.withStdioClient(server, (client) =>
-					client.callTool(tool, (arguments_ ?? {}) as Record<string, unknown>),
+				const result = await this.withStdioClient(
+					server,
+					(client) => client.callTool(tool, (arguments_ ?? {}) as Record<string, unknown>),
+					{ retryOnlyIfRequestNotSent: true },
 				);
 				return { result };
 			},

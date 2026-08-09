@@ -1,9 +1,10 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { setTimeout as sleep } from "node:timers/promises";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const STOP_TIMEOUT_MS = 1_000;
+
+export const SUPPORTED_PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18"] as const;
 
 export interface StdioMcpClientOptions {
 	server: string;
@@ -24,10 +25,21 @@ export interface StdioMcpTool {
 
 export class StdioMcpTransportError extends Error {
 	readonly retryable = true;
+	readonly requestNotSent: boolean = false;
 
 	constructor(message: string) {
 		super(message);
 		this.name = "StdioMcpTransportError";
+	}
+}
+
+/** A transport failure that is known to have happened before the request was sent. */
+export class StdioMcpRequestNotSentError extends StdioMcpTransportError {
+	readonly requestNotSent = true;
+
+	constructor(message: string) {
+		super(message);
+		this.name = "StdioMcpRequestNotSentError";
 	}
 }
 
@@ -42,6 +54,10 @@ export class StdioMcpProtocolError extends Error {
 
 export function isRetryableStdioMcpError(error: unknown): boolean {
 	return error instanceof StdioMcpTransportError;
+}
+
+export function isStdioMcpRequestNotSentError(error: unknown): boolean {
+	return error instanceof StdioMcpRequestNotSentError;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,7 +75,11 @@ export class StdioMcpClient {
 	private child?: ChildProcessWithoutNullStreams;
 	private startPromise?: Promise<void>;
 	private initialized = false;
+	private toolsSupported = false;
 	private disposed = false;
+	private tainted = false;
+	private taintError?: StdioMcpTransportError;
+	private stopping?: Promise<void>;
 	private nextRequestId = 1;
 	private inputBuffer = "";
 	private readonly pending = new Map<number, PendingRequest>();
@@ -68,6 +88,7 @@ export class StdioMcpClient {
 
 	async listTools(): Promise<StdioMcpTool[]> {
 		await this.start();
+		this.ensureToolsSupported();
 		const result = await this.request("tools/list", {}, this.callTimeoutMs);
 		if (!isRecord(result) || !Array.isArray(result.tools)) {
 			throw new StdioMcpProtocolError(`MCP server ${this.options.server} returned invalid tools`);
@@ -77,6 +98,7 @@ export class StdioMcpClient {
 
 	async callTool(tool: string, arguments_: Record<string, unknown>): Promise<unknown> {
 		await this.start();
+		this.ensureToolsSupported();
 		return this.request("tools/call", { name: tool, arguments: arguments_ }, this.callTimeoutMs);
 	}
 
@@ -89,8 +111,21 @@ export class StdioMcpClient {
 		if (this.disposed) {
 			throw new StdioMcpTransportError(`MCP server ${this.options.server} is disposed`);
 		}
-		await this.stop();
-		await this.start();
+		try {
+			if (this.tainted) {
+				await this.waitForTaintCleanup(true);
+			} else {
+				this.tainted = true;
+				await this.stop();
+			}
+			this.tainted = false;
+			this.taintError = undefined;
+			await this.start();
+		} catch (error) {
+			this.tainted = true;
+			this.taintError = this.toTransportError(error);
+			throw error;
+		}
 	}
 
 	async dispose(): Promise<void> {
@@ -119,6 +154,7 @@ export class StdioMcpClient {
 		if (this.disposed) {
 			throw new StdioMcpTransportError(`MCP server ${this.options.server} is disposed`);
 		}
+		if (this.tainted) await this.waitForTaintCleanup(false);
 		if (this.initialized && this.child) return;
 		if (!this.startPromise) {
 			const start = this.startInternal();
@@ -146,6 +182,7 @@ export class StdioMcpClient {
 		});
 		this.child = child;
 		this.initialized = false;
+		this.toolsSupported = false;
 		this.inputBuffer = "";
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
@@ -153,6 +190,7 @@ export class StdioMcpClient {
 		// Keep stderr private. MCP servers often print credentials or request payloads.
 		child.stderr.on("data", () => undefined);
 		child.on("error", (error) => this.handleChildFailure(child, error));
+		child.stdin.on("error", (error) => this.handleChildFailure(child, error));
 		child.on("exit", () => this.handleChildFailure(child, new Error("process exited")));
 
 		try {
@@ -168,6 +206,22 @@ export class StdioMcpClient {
 			if (!isRecord(initializeResult) || typeof initializeResult.protocolVersion !== "string") {
 				throw new StdioMcpProtocolError(`MCP server ${this.options.server} returned an invalid initialize result`);
 			}
+			if (
+				!SUPPORTED_PROTOCOL_VERSIONS.includes(
+					initializeResult.protocolVersion as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number],
+				)
+			) {
+				throw new StdioMcpProtocolError(
+					`MCP server ${this.options.server} negotiated unsupported protocol version ${initializeResult.protocolVersion}; supported versions: ${SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
+				);
+			}
+			if (!isRecord(initializeResult.serverInfo)) {
+				throw new StdioMcpProtocolError(`MCP server ${this.options.server} returned invalid serverInfo`);
+			}
+			if (!isRecord(initializeResult.capabilities)) {
+				throw new StdioMcpProtocolError(`MCP server ${this.options.server} returned invalid capabilities`);
+			}
+			this.toolsSupported = isRecord(initializeResult.capabilities.tools);
 			this.sendNotification("notifications/initialized", {});
 			this.initialized = true;
 			if (this.disposed)
@@ -182,21 +236,30 @@ export class StdioMcpClient {
 	private request(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
 		const child = this.child;
 		if (!child || child.stdin.destroyed) {
-			return Promise.reject(new StdioMcpTransportError(`MCP server ${this.options.server} is not running`));
+			return Promise.reject(new StdioMcpRequestNotSentError(`MCP server ${this.options.server} is not running`));
 		}
 		const id = this.nextRequestId++;
 		return new Promise<unknown>((resolve, reject) => {
 			const timer = globalThis.setTimeout(() => {
 				this.pending.delete(id);
+				this.taintAndStop();
 				reject(new StdioMcpTransportError(`MCP server ${this.options.server} timed out during ${method}`));
 			}, timeoutMs);
 			this.pending.set(id, { resolve, reject, timer });
-			try {
-				child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-			} catch {
+			const request = `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`;
+			const rejectRequestNotSent = (error?: Error): void => {
+				if (!this.pending.has(id)) return;
 				globalThis.clearTimeout(timer);
 				this.pending.delete(id);
-				reject(new StdioMcpTransportError(`MCP server ${this.options.server} request failed`));
+				const detail = error?.message ? `: ${error.message}` : "";
+				reject(new StdioMcpRequestNotSentError(`MCP server ${this.options.server} request failed${detail}`));
+			};
+			try {
+				child.stdin.write(request, "utf8", (error?: Error | null) => {
+					if (error) rejectRequestNotSent(error);
+				});
+			} catch (error) {
+				rejectRequestNotSent(error instanceof Error ? error : undefined);
 			}
 		});
 	}
@@ -205,9 +268,11 @@ export class StdioMcpClient {
 		const child = this.child;
 		if (!child || child.stdin.destroyed) return;
 		try {
-			child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
-		} catch {
-			// The next request will surface the transport failure.
+			child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`, (error?: Error | null) => {
+				if (error) this.handleChildFailure(child, error);
+			});
+		} catch (error) {
+			this.handleChildFailure(child, error instanceof Error ? error : new Error("notification write failed"));
 		}
 	}
 
@@ -255,9 +320,24 @@ export class StdioMcpClient {
 
 	private handleChildFailure(child: ChildProcessWithoutNullStreams, _error: Error): void {
 		if (this.child !== child) return;
-		this.child = undefined;
-		this.initialized = false;
-		this.failPending(new StdioMcpTransportError(`MCP server ${this.options.server} stopped`));
+		if (child.exitCode !== null || child.signalCode !== null) {
+			this.child = undefined;
+			this.initialized = false;
+			this.toolsSupported = false;
+			this.tainted = true;
+			this.taintError = undefined;
+			this.failPending(new StdioMcpTransportError(`MCP server ${this.options.server} stopped`));
+			return;
+		}
+		this.taintAndStop();
+	}
+
+	private ensureToolsSupported(): void {
+		if (!this.toolsSupported) {
+			throw new StdioMcpProtocolError(
+				`MCP server ${this.options.server} did not negotiate tool support (initialize capabilities.tools is missing)`,
+			);
+		}
 	}
 
 	private failPending(error: Error): void {
@@ -268,24 +348,144 @@ export class StdioMcpClient {
 		}
 	}
 
-	private async stop(): Promise<void> {
-		const child = this.child;
-		this.child = undefined;
-		this.initialized = false;
-		this.failPending(new StdioMcpTransportError(`MCP server ${this.options.server} stopped`));
-		if (!child || child.exitCode !== null) return;
-		this.killProcessTree(child, "SIGTERM");
-		await Promise.race([new Promise<void>((resolve) => child.once("exit", () => resolve())), sleep(STOP_TIMEOUT_MS)]);
-		if (child.exitCode === null) this.killProcessTree(child, "SIGKILL");
+	private toTransportError(error: unknown): StdioMcpTransportError {
+		if (error instanceof StdioMcpTransportError) return error;
+		const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+		return new StdioMcpTransportError(`MCP server ${this.options.server} cleanup failed${detail}`);
 	}
 
+	private taintAndStop(): void {
+		this.tainted = true;
+		const stopping = this.stop();
+		void stopping.then(
+			() => undefined,
+			(error) => {
+				this.taintError = this.toTransportError(error);
+			},
+		);
+	}
+
+	private async waitForTaintCleanup(retryOnFailure: boolean): Promise<void> {
+		const stopping = this.stopping;
+		if (stopping) {
+			try {
+				await stopping;
+			} catch (error) {
+				if (!retryOnFailure) throw error;
+				if (this.stopping === stopping) this.stopping = undefined;
+				this.taintError = undefined;
+				await this.stop();
+			}
+			if (this.stopping === stopping) this.stopping = undefined;
+		}
+		if (this.taintError) {
+			if (!retryOnFailure) throw this.taintError;
+			this.taintError = undefined;
+			await this.stop();
+		}
+		this.tainted = false;
+		this.taintError = undefined;
+	}
+
+	private stop(): Promise<void> {
+		if (this.stopping) return this.stopping;
+		const stopping = Promise.resolve().then(() => this.stopInternal());
+		this.stopping = stopping;
+		stopping.then(
+			() => {
+				if (this.stopping === stopping) this.stopping = undefined;
+			},
+			() => {
+				if (this.stopping === stopping) this.stopping = undefined;
+			},
+		);
+		return stopping;
+	}
+
+	private async stopInternal(): Promise<void> {
+		const child = this.child;
+		this.initialized = false;
+		this.toolsSupported = false;
+		this.failPending(new StdioMcpTransportError(`MCP server ${this.options.server} stopped`));
+		if (!child || child.exitCode !== null || child.signalCode !== null) {
+			if (this.child === child) this.child = undefined;
+			return;
+		}
+
+		// MCP stdio shutdown starts with EOF on stdin. Signals are escalation only.
+		try {
+			if (!child.stdin.destroyed) child.stdin.end();
+		} catch {
+			// The child may have exited between the state check and end().
+		}
+		if (await this.waitForExit(child)) {
+			if (this.child === child) this.child = undefined;
+			return;
+		}
+		if (child.exitCode !== null || child.signalCode !== null) {
+			if (this.child === child) this.child = undefined;
+			return;
+		}
+
+		this.killProcessTree(child, "SIGTERM");
+		if (await this.waitForExit(child)) {
+			if (this.child === child) this.child = undefined;
+			return;
+		}
+		if (child.exitCode !== null || child.signalCode !== null) {
+			if (this.child === child) this.child = undefined;
+			return;
+		}
+
+		this.killProcessTree(child, "SIGKILL");
+		// Do not return until the child has actually emitted exit. This gives callers
+		// a cleanup guarantee instead of merely confirming that a signal was sent.
+		if (await this.waitForExit(child)) {
+			if (this.child === child) this.child = undefined;
+			return;
+		}
+		if (child.exitCode !== null || child.signalCode !== null) {
+			if (this.child === child) this.child = undefined;
+			return;
+		}
+
+		// Keep the live child reference so a later dispose() can retry cleanup. Its
+		// exit handler will clear the reference if the process exits asynchronously.
+		if (this.child === undefined) this.child = child;
+		throw new StdioMcpTransportError(`MCP server ${this.options.server} did not exit after SIGKILL`);
+	}
+
+	/** Synchronous SIGKILL-only cleanup for process-exit hooks; async waits are impossible. */
 	private stopSync(): void {
 		const child = this.child;
 		this.child = undefined;
 		this.initialized = false;
+		this.toolsSupported = false;
 		this.failPending(new StdioMcpTransportError(`MCP server ${this.options.server} stopped`));
 		if (!child || child.exitCode !== null) return;
 		this.killProcessTree(child, "SIGKILL");
+	}
+
+	private waitForExit(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+		if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+		return new Promise<boolean>((resolve) => {
+			let settled = false;
+			let timer: ReturnType<typeof globalThis.setTimeout>;
+			const onExit = (): void => {
+				if (settled) return;
+				settled = true;
+				globalThis.clearTimeout(timer);
+				resolve(true);
+			};
+			timer = globalThis.setTimeout(() => {
+				if (settled) return;
+				settled = true;
+				child.off("exit", onExit);
+				resolve(false);
+			}, STOP_TIMEOUT_MS);
+			timer.unref?.();
+			child.once("exit", onExit);
+		});
 	}
 
 	private killProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
