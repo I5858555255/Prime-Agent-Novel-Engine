@@ -918,6 +918,34 @@ describe("DaemonAgentConnection", () => {
 		expect(promptRequests.map((request) => request.activeSessionId)).toEqual(["active-1", "active-revived"]);
 	});
 
+	it("does not revive when the prompt's admission was cancelled by its abort signal", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.cancelPromptAdmissionStatus = "cancelled";
+		let releasePrompt = () => {};
+		fakeClient.promptGate = new Promise<void>((resolve) => {
+			releasePrompt = resolve;
+		});
+		const controller = new AbortController();
+
+		const prompt = connection.prompt("continue", { signal: controller.signal });
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.filter((request) => request.type === "prompt")).toHaveLength(1),
+		);
+		// The abort races the unknown-session response: the admission wrapper
+		// rethrows the failure carrying the same message, which must not
+		// authorize a revival that restarts the session the user just
+		// cancelled out of.
+		controller.abort();
+		releasePrompt();
+
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+		expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(0);
+		const promptRequests = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(promptRequests.map((request) => request.activeSessionId)).toEqual(["active-1"]);
+	});
+
 	it("surfaces the original unknown-session error when revival fails", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.createResponseError = "Session not found: /tmp/session-current.jsonl";

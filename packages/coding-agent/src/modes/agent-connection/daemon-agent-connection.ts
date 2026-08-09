@@ -225,6 +225,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly activeSideQuestionIds = new Set<string>();
 	private readonly snapshotAssemblies = new Map<string, DaemonSnapshotAssembly>();
 	private readonly completedSnapshots = new Map<string, DaemonSessionSnapshot>();
+	private readonly pendingBindingCatchupSnapshots = new Map<string, DaemonSessionSnapshot>();
 	private readonly pendingReattachActiveSessionIds = new Set<string>();
 	private readonly snapshotRecoveryPromises = new Map<string, Promise<void>>();
 	private readonly ignoredSnapshotIds = new Set<string>();
@@ -822,6 +823,14 @@ export class DaemonAgentConnection implements AgentConnection {
 		try {
 			await this.promptWithAdmissionCancellation(type, message, options);
 		} catch (error) {
+			// A cancelled prompt must never restart an archived session: when the
+			// abort races the unknown-session response, the admission wrapper
+			// rethrows it carrying the same message, and reviving would create
+			// and attach a worker only for the retry to observe the aborted
+			// signal and reject.
+			if (options?.signal?.aborted) {
+				throw error;
+			}
 			if (!this.canReviveFromSavedSession(error, attemptedActiveSessionId)) {
 				throw error;
 			}
@@ -2027,6 +2036,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		}
 		this.snapshotAssemblies.clear();
 		this.completedSnapshots.clear();
+		this.pendingBindingCatchupSnapshots.clear();
 		this.snapshotRecoveryPromises.clear();
 		this.ignoredSnapshotIds.clear();
 	}
