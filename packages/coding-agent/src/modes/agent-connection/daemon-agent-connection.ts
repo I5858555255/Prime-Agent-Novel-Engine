@@ -421,8 +421,12 @@ export class DaemonAgentConnection implements AgentConnection {
 		// The invocation's reviveConfig was computed for the transcript this
 		// connection first attached to; later transcripts (session switches)
 		// must not inherit its cwd. A fileless first attach (--no-session)
-		// records null so a transcript resumed later still counts as foreign.
-		this.reviveConfigSessionFile ??= this.attachedSessionFile ?? null;
+		// records null so a transcript resumed later still counts as foreign -
+		// checked strictly against undefined because ??= would re-assign over
+		// the null marker on the next reconnect attach.
+		if (this.reviveConfigSessionFile === undefined) {
+			this.reviveConfigSessionFile = this.attachedSessionFile ?? null;
+		}
 		// Recorded before the snapshot await below: a replacement snapshot
 		// landing mid-stream can rewrite the attached identity, and a caller
 		// capturing it afterwards would adopt the switched transcript as its
