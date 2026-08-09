@@ -189,6 +189,12 @@ import {
 	isSessionSlashCommandMessage,
 } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
+import {
+	capturePresentedArtifact,
+	normalizePresentedArtifactHostPayload,
+	type PresentedArtifactHostPayload,
+	type PresentedArtifactReceipt,
+} from "./presented-artifacts.js";
 import { throwIfPromptAdmissionCancelled } from "./prompt-admission.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import {
@@ -5891,6 +5897,29 @@ export class AgentSession {
 		}
 	}
 
+	/** Capture and display an artifact without adding it to model context or steering an active turn. */
+	async presentArtifact(payload: PresentedArtifactHostPayload): Promise<PresentedArtifactReceipt> {
+		const artifactDir = this._ensureRlmSessionDir() ?? this._createEphemeralRlmSessionDir();
+		const captured = await capturePresentedArtifact(payload, {
+			cwd: this.sessionManager.getCwd(),
+			artifactDir,
+			sessionId: this.sessionManager.getSessionId(),
+		});
+		const message = captured.message;
+		// Persist and flush before touching live state so a failed write cannot
+		// display an artifact that will disappear on replay.
+		this.sessionManager.appendCustomMessageEntryWithRollback(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+		);
+		this.agent.state.messages.push(message);
+		this._emit({ type: "message_start", message });
+		this._emit({ type: "message_end", message });
+		return captured.receipt;
+	}
+
 	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
@@ -8690,6 +8719,9 @@ export class AgentSession {
 				id: this.model?.id ?? null,
 				provider: this.model?.provider ?? null,
 				input: this.model?.input ?? [],
+			}),
+			"artifact.present": async (payload) => ({
+				...(await this.presentArtifact(normalizePresentedArtifactHostPayload(payload))),
 			}),
 		};
 		if (this._includeGoals) {

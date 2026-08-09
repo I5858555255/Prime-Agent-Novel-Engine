@@ -137,7 +137,7 @@ export {
 } from "./core/extensions/index.js";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.js";
-export { convertToLlm } from "./core/messages.js";
+export { convertToLlm, PRESENTED_ARTIFACT_CUSTOM_TYPE } from "./core/messages.js";
 export { ModelRegistry } from "./core/model-registry.js";
 export type {
 	PackageManager,
@@ -148,6 +148,12 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.js";
 export { DefaultPackageManager } from "./core/package-manager.js";
+export {
+	isPresentedArtifactMessage,
+	type PresentedArtifactDetails,
+	type PresentedArtifactHostPayload,
+	type PresentedArtifactReceipt,
+} from "./core/presented-artifacts.js";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.js";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
 // SDK for programmatic usage
@@ -361,6 +367,7 @@ export {
 	LoginDialogComponent,
 	ModelSelectorComponent,
 	OAuthSelectorComponent,
+	PresentedArtifactMessageComponent,
 	type RenderDiffOptions,
 	rawKeyHint,
 	renderDiff,

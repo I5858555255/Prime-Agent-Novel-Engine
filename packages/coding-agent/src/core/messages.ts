@@ -33,6 +33,7 @@ export const SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE = "session_slash_command_r
 export const COMPACTION_OUTCOME_CUSTOM_TYPE = "compaction_outcome";
 export const RLM_CHILD_FAILURE_CUSTOM_TYPE = "rlm_child_failure";
 export const RLM_CHILD_TERMINAL_NOTICE_CUSTOM_TYPE = "rlm_child_terminal_notice";
+export const PRESENTED_ARTIFACT_CUSTOM_TYPE = "prime-agent.presented-artifact";
 
 export interface SessionSlashCommandDetails {
 	command: SessionSlashCommand;
@@ -445,7 +446,8 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 					if (
 						m.customType === SESSION_SLASH_COMMAND_CUSTOM_TYPE ||
 						m.customType === SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE ||
-						m.customType === COMPACTION_OUTCOME_CUSTOM_TYPE
+						m.customType === COMPACTION_OUTCOME_CUSTOM_TYPE ||
+						m.customType === PRESENTED_ARTIFACT_CUSTOM_TYPE
 					) {
 						return undefined;
 					}

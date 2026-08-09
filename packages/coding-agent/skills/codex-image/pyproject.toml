@@ -1,0 +1,15 @@
+# Kernel-side package for the bundled Codex image skill. It uses only the
+# standard library plus the Prime Agent host bridge.
+[project]
+name = "prime-agent-skill-codex-image"
+version = "0.1.0"
+description = "Stateful Codex-native image generation with presentation and approval-gated export"
+requires-python = ">=3.10"
+dependencies = ["prime-agent-runtime"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_image"]

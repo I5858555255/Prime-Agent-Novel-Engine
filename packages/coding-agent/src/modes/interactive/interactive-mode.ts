@@ -111,6 +111,7 @@ import {
 } from "../../core/messages.js";
 import { findExactModelReferenceMatch, resolveModelScopeFromModels } from "../../core/model-resolver.js";
 import { parseNewSessionCommand } from "../../core/new-session-command.js";
+import { isPresentedArtifactMessage } from "../../core/presented-artifacts.js";
 import { resolvePrimeAgentTracesBaseUrl } from "../../core/prime-inference-auth.js";
 import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-inference-model-selection.js";
 import { parseCommandArgs } from "../../core/prompt-templates.js";
@@ -202,6 +203,7 @@ import { HeartbeatManagerComponent } from "./components/heartbeat-manager.js";
 import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
 import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
 import type { AuthSelectorProvider } from "./components/oauth-selector.js";
+import { PresentedArtifactMessageComponent } from "./components/presented-artifact-message.js";
 import { PrimeOnboardingSplashComponent } from "./components/prime-onboarding-splash.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
@@ -6226,27 +6228,32 @@ export class InteractiveMode {
 										"[Malformed session command message]",
 										this.getMarkdownThemeWithSettings(),
 									)
-								: isCompactionOutcomeMessage(message)
-									? new CompactionOutcomeMessageComponent(message)
-									: message.customType === COMPACTION_OUTCOME_CUSTOM_TYPE
-										? new MalformedCompactionOutcomeMessageComponent()
-										: isAgentSessionMessage(message)
-											? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings(), {
-													suppressLeadingSpace: isCompactAgentMessageNeighbor(
-														this.chatContainer.children.at(-1),
-													),
-												})
-											: isInjectedPromptMessage(message)
-												? new InjectedPromptMessageComponent(message, this.getMarkdownThemeWithSettings())
-												: new CustomMessageComponent(
-														message,
-														this.bindLocalSessionExtensions
-															? this.getLocalSessionHost()
-																	.getExtensionRunner()
-																	.getMessageRenderer(message.customType)
-															: undefined,
-														this.getMarkdownThemeWithSettings(),
-													);
+								: isPresentedArtifactMessage(message)
+									? new PresentedArtifactMessageComponent(message, this.settingsManager.getShowImages())
+									: isCompactionOutcomeMessage(message)
+										? new CompactionOutcomeMessageComponent(message)
+										: message.customType === COMPACTION_OUTCOME_CUSTOM_TYPE
+											? new MalformedCompactionOutcomeMessageComponent()
+											: isAgentSessionMessage(message)
+												? new AgentMessageComponent(message, this.getMarkdownThemeWithSettings(), {
+														suppressLeadingSpace: isCompactAgentMessageNeighbor(
+															this.chatContainer.children.at(-1),
+														),
+													})
+												: isInjectedPromptMessage(message)
+													? new InjectedPromptMessageComponent(
+															message,
+															this.getMarkdownThemeWithSettings(),
+														)
+													: new CustomMessageComponent(
+															message,
+															this.bindLocalSessionExtensions
+																? this.getLocalSessionHost()
+																		.getExtensionRunner()
+																		.getMessageRenderer(message.customType)
+																: undefined,
+															this.getMarkdownThemeWithSettings(),
+														);
 					if (!(component instanceof UserMessageComponent)) {
 						component.setExpanded(this.toolOutputExpanded);
 					}

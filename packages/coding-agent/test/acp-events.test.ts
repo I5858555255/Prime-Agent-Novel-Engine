@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PRESENTED_ARTIFACT_CUSTOM_TYPE } from "../src/core/messages.js";
 import {
 	type AcpEventMappingState,
 	acpToolKind,
@@ -281,5 +282,33 @@ describe("ACP session event mapping", () => {
 		expect(acpUpdatesForSessionEvent({ type: "recap_update", recap: "x" } as AgentConnectionSessionEvent)).toEqual(
 			[],
 		);
+	});
+	it("delivers presented artifacts as standard ACP text and image chunks", () => {
+		const updates = acpUpdatesForSessionEvent({
+			type: "message_end",
+			message: {
+				role: "custom",
+				customType: PRESENTED_ARTIFACT_CUSTOM_TYPE,
+				content: [
+					{ type: "text", text: "Generated preview" },
+					{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+				],
+				display: true,
+				details: { artifactId: "artifact-1", presentationId: "presentation-1" },
+				timestamp: 0,
+			},
+		} as AgentConnectionSessionEvent);
+		expect(updates).toEqual([
+			{
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: "Generated preview" },
+				messageId: "presentation-1",
+			},
+			{
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+				messageId: "presentation-1",
+			},
+		]);
 	});
 });

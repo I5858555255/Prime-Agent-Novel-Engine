@@ -254,6 +254,15 @@ describe("builtin skills", () => {
 			expect(rlmHeartbeat?.kind === "python" && rlmHeartbeat.python.importName).toBe("rlm_heartbeat");
 		});
 
+		it("ships user-facing artifact and Codex image workflows as python skills", () => {
+			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
+			const imports = new Map(
+				skills.filter((skill) => skill.kind === "python").map((skill) => [skill.name, skill.python.importName]),
+			);
+			expect(imports.get("present-artifact")).toBe("present_artifact");
+			expect(imports.get("codex-image")).toBe("codex_image");
+		});
+
 		it("does not ship orchestration heartbeat as a built-in skill", () => {
 			const { skills } = loadSkillsFromDir({ dir: getBundledSkillsDir(), source: "builtin" });
 

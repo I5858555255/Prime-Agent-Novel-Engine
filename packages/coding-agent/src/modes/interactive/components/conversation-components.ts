@@ -9,6 +9,7 @@ import {
 	SESSION_SLASH_COMMAND_CUSTOM_TYPE,
 	SESSION_SLASH_COMMAND_RESULT_CUSTOM_TYPE,
 } from "../../../core/messages.js";
+import { isPresentedArtifactMessage } from "../../../core/presented-artifacts.js";
 import { AgentMessageComponent } from "./agent-message.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { BashExecutionComponent } from "./bash-execution.js";
@@ -18,6 +19,7 @@ import {
 } from "./compaction-outcome-message.js";
 import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./injected-prompt-message.js";
 import { IPythonCellComponent } from "./ipython-cell.js";
+import { PresentedArtifactMessageComponent } from "./presented-artifact-message.js";
 import { SlashCommandMessageComponent } from "./slash-command-message.js";
 import { SlashCommandResultMessageComponent } from "./slash-command-result-message.js";
 import {
@@ -129,6 +131,9 @@ export function buildConversationComponents(
 			} else {
 				components.push(new UserMessageComponent("[Malformed session command message]", options.markdownTheme));
 			}
+		} else if (message.role === "custom" && isPresentedArtifactMessage(message)) {
+			if (!message.display) continue;
+			components.push(new PresentedArtifactMessageComponent(message, options.toolOptions.showImages));
 		} else if (message.role === "custom" && message.customType === COMPACTION_OUTCOME_CUSTOM_TYPE) {
 			if (!message.display) continue;
 			components.push(

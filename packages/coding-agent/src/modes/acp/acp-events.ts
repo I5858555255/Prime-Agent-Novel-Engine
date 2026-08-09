@@ -1,4 +1,5 @@
 import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
+import { isPresentedArtifactMessage } from "../../core/presented-artifacts.js";
 import type { AgentConnectionSessionEvent } from "../agent-connection/types.js";
 import type { PrimeAgentIpythonMeta, PrimeAgentSessionMeta } from "./acp-meta.js";
 import { primeAgentMeta } from "./acp-meta.js";
@@ -137,6 +138,20 @@ export function acpUpdatesForSessionEvent(
 	state: AcpEventMappingState = {},
 ): AcpSessionUpdate[] {
 	switch (event.type) {
+		case "message_end": {
+			const message = event.message;
+			if (!isPresentedArtifactMessage(message)) return [];
+			const content =
+				typeof message.content === "string"
+					? [{ type: "text" as const, text: message.content }]
+					: message.content.filter((block) => block.type === "text" || block.type === "image");
+			return content.map((block) => ({
+				sessionUpdate: "agent_message_chunk",
+				content: block,
+				messageId: message.details?.presentationId,
+			}));
+		}
+
 		case "message_update":
 			if (event.message.role !== "assistant") return [];
 			return assistantDeltaUpdates(event.assistantMessageEvent);

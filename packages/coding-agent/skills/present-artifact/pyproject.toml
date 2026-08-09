@@ -1,0 +1,18 @@
+# Kernel-side package for the bundled present-artifact skill. The runtime is
+# installed in the kernel environment before bundled skills.
+[project]
+name = "present-artifact"
+version = "0.1.0"
+description = "Present on-disk artifacts to Prime Agent users over the host bridge"
+requires-python = ">=3.10"
+dependencies = ["prime-agent-runtime"]
+
+[project.scripts]
+present_artifact = "rlm.skill:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/present_artifact"]
