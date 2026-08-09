@@ -110,6 +110,14 @@ const ZAI_THINKING_COMPAT: OpenAICompletionsCompat = {
 	thinkingFormat: "zai",
 };
 
+const ZAI_THINKING_LEVEL_MAP = {
+	minimal: null,
+	low: "high",
+	medium: "high",
+	high: "high",
+	max: "max",
+} as const;
+
 const PRIME_INFERENCE_BASE_URL = "https://api.pinference.ai/api/v1";
 const PRIME_INFERENCE_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
@@ -1136,6 +1144,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
 				const supportsImage = m.modalities?.input?.includes("image");
+				const hasReasoning = m.reasoning === true;
 
 				models.push({
 					id: modelId,
@@ -1143,8 +1152,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					api: "openai-completions",
 					provider: "zai",
 					baseUrl: "https://api.z.ai/api/coding/paas/v4",
-					reasoning: m.reasoning === true,
+					reasoning: hasReasoning,
 					input: supportsImage ? ["text", "image"] : ["text"],
+					...(hasReasoning ? { thinkingLevelMap: ZAI_THINKING_LEVEL_MAP } : {}),
 					cost: {
 						input: m.cost?.input || 0,
 						output: m.cost?.output || 0,
@@ -1154,6 +1164,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					compat: {
 						supportsDeveloperRole: false,
 						thinkingFormat: ZAI_THINKING_COMPAT.thinkingFormat,
+						...(hasReasoning ? { supportsReasoningEffort: true } : {}),
 						...(!ZAI_TOOL_STREAM_UNSUPPORTED_MODELS.has(modelId) ? { zaiToolStream: true } : {}),
 					},
 					contextWindow: m.limit?.context || 4096,
