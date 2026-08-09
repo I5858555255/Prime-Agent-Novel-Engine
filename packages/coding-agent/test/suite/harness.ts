@@ -11,6 +11,7 @@ import type { FauxModelDefinition, FauxProviderRegistration, FauxResponseStep, M
 import { registerFauxProvider } from "@earendil-works/pi-ai";
 import type { AgentSessionMessageController } from "../../src/core/agent-messages.js";
 import type { AgentObserveController } from "../../src/core/agent-observe.js";
+import type { AgentRuntimeScheduler } from "../../src/core/agent-runtime-scheduler.js";
 import { AgentSession, type AgentSessionEvent, type AutoRefineReviewer } from "../../src/core/agent-session.js";
 import { AuthStorage } from "../../src/core/auth-storage.js";
 import type { AgentAutonomousConfig } from "../../src/core/autonomous.js";
@@ -72,6 +73,7 @@ export interface HarnessOptions {
 	agentObserveController?: AgentObserveController;
 	agentMessageController?: AgentSessionMessageController;
 	subagentRuntimeHost?: SubagentRuntimeHost;
+	agentRuntimeScheduler?: AgentRuntimeScheduler;
 	persistSession?: boolean;
 	rlmDepth?: number;
 	rlmMaxDepth?: number;
@@ -195,6 +197,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		agentObserveController: options.agentObserveController,
 		agentMessageController: options.agentMessageController,
 		subagentRuntimeHost: options.subagentRuntimeHost,
+		agentRuntimeScheduler: options.agentRuntimeScheduler,
 		baseToolsOverride: toolMap,
 		extensionRunnerRef,
 		rlmDepth: options.rlmDepth,

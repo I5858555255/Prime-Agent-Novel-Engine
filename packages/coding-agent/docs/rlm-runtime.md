@@ -66,6 +66,7 @@ sequenceDiagram
 | `src/core/kernel/index.ts` | ZeroMQ sockets, Jupyter framing, execution, comm dispatch, interrupt, and shutdown. |
 | `src/core/tools/ipython.ts` | Agent tool wrapper, lazy kernel provisioning, namespace bootstrap, and output shaping. |
 | `src/core/agent-runtime-scheduler.ts` | Persisted task DAG, agent registry, heartbeat/recovery state, and orchestrator summaries. |
+| `src/core/agent-git-worktree.ts` | Git capability checks, dirty base snapshots, scheduler-owned worktrees, candidate commits, result manifests, and guarded cleanup. |
 | `src/core/agent-session.ts` | RLM policy, child creation, registry, usage attribution, cancellation, and goal handlers. |
 | `src/core/rlm-runtime.ts` | Typed request/spawn-handle validation for `rlm.run`, model discovery, list, and delete. |
 | `prime-agent-runtime/src/rlm/` | Python shim, handle types, callable `rlm`, and session-backed harness state. |
@@ -166,10 +167,11 @@ Unknown options fail instead of being ignored. Model search is bounded to active
 2. Resolve the requested model or inherit the parent model.
 3. Create a `sub-xxxxxxxx` child directory under the parent artifact directory.
 4. Admit the task into the parent registry and persisted runtime scheduler, then return its `RLMSpawnHandle`.
-5. In detached work, create a child `SessionManager`, `Agent`, and `AgentSession`.
-6. Reuse provider hooks, resource loader, model registry, tools, transport, retry settings, and thinking configuration.
-7. Run the child prompt, retain its session, and update lifecycle state independently of the admission call.
-8. Attribute child usage to the parent assistant turn and persist the attribution.
+5. In detached work, inspect the parent repository. For supported Git workspaces, capture an immutable base through a temporary index and create a scheduler-owned branch/worktree.
+6. Create the child `SessionManager`, `Agent`, and `AgentSession` with the assigned worktree as `cwd`.
+7. Reuse provider hooks, resource loader, model registry, tools, transport, retry settings, and thinking configuration.
+8. Run the child prompt, commit its candidate result, validate the result manifest, retain its session, and update lifecycle state independently of the admission call.
+9. Attribute child usage to the parent assistant turn and persist the attribution.
 
 Children receive incremented `RLM_DEPTH`, the inherited maximum depth, and their own `RLM_SESSION_DIR`. The default maximum depth is 1, so root sessions may create children and those children may not create grandchildren unless the limit is configured higher.
 
@@ -193,7 +195,9 @@ This registry survives kernel restart, compaction, and parent restore. Successfu
 
 The parent can continue a retained daemon child with `await agent_message.send(..., receiver_role="child", receiver_name=child.session_name)`. `rlm.delete_subagent()` accepts an exact child ID, active-session ID, session ID, or unique name, but refuses queued or running work. Use `rlm.cancel_subagent()` for an explicit cancellation. Deleting an inactive child closes the retained runtime, writes a durable tombstone, and removes it from messaging and observation. It does not erase the transcript, scheduler audit record, or artifacts on disk.
 
-`await rlm.scheduler_summary()` returns the host-owned run ID, workspace ID, task and agent counts, ready and blocked task IDs, and active agent records. Scheduler state is stored independently from model context. Reloading an interrupted run marks admitted or running agents as `recovering` until their next runtime heartbeat.
+`await rlm.scheduler_summary()` returns the host-owned run ID, workspace ID, task and agent counts, ready and blocked task IDs, active agent records, and every retained Git workspace assignment. Completed workspace records expose the immutable base, candidate commit, branch, worktree, task contract, and result manifest paths. Scheduler state is stored independently from model context. Reloading an interrupted run marks admitted or running agents as `recovering` until their next runtime heartbeat.
+
+Dirty base creation uses `GIT_INDEX_FILE` with `read-tree`, `git add -A`, `write-tree`, and `commit-tree`. It never stages files in the user's index or moves the user's branch. Ignored files are not copied into the snapshot. The worktree backend does not copy ignored dependency directories and does not provide OS-level filesystem isolation.
 
 Registry scope follows the parent transcript. An unrelated new parent session does not inherit children.
 
@@ -243,6 +247,7 @@ For a persisted root session, the relevant layout is:
       kernel-state.json
       scheduled-jobs.json
       agent-runtime-scheduler.json
+      worktrees/
       harness/
         harness_state.json
       sub-xxxxxxxx/
@@ -269,6 +274,9 @@ Provider credentials are resolved by the TypeScript host. The bounded model cata
 | Shell-channel comm reply | Deadlock risk; current replies use control. |
 | Inactive cleanup targets running work | `rlm.delete_subagent()` rejects the request and directs the caller to explicit cancellation. |
 | Child cancellation | `rlm.cancel_subagent()` records cancellation before aborting the child and cleaning up its live registry entry. |
+| Unsupported or unborn Git repository | Repository capability check declines worktree provisioning and preserves the existing shared-cwd runtime behavior. |
+| Candidate commit or manifest validation fails | The scheduler marks the task failed and retains the worktree for inspection. |
+| Worktree cleanup requested before integration/cancellation | The scheduler rejects cleanup; clean candidate branches remain available for later integration. |
 | Parent teardown | Active descendants are cancelled and their runtimes are closed. |
 
 ## Focused Validation

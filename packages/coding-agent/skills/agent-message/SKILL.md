@@ -54,6 +54,9 @@ if child is not None:
   the child is idle and its context is no longer needed before calling
   `await rlm.delete_subagent(child)`. Ordinary deletion refuses active work; use
   `await rlm.cancel_subagent(child)` only when the task must be stopped explicitly.
+- Git-backed children work in isolated scheduler-owned worktrees. Use
+  `await rlm.scheduler_summary()` and inspect `workspaceAgents` to locate a
+  completed candidate branch, worktree, and result manifest.
 - Reach is limited to parent, siblings, and direct children; relay through an
   intermediate child instead of messaging grandchildren or cousins directly.
 - Sender identity is daemon-derived and cannot be spoofed from Python.

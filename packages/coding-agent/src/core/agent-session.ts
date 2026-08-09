@@ -51,6 +51,7 @@ import {
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
+import { formatAgentRuntimeTaskPrompt } from "./agent-git-worktree.js";
 import {
 	AGENT_MESSAGE_CUSTOM_TYPE,
 	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
@@ -8986,7 +8987,8 @@ export class AgentSession {
 	}
 
 	private _createInlineRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): RlmSubagentRuntime {
-		const childSessionManager = SessionManager.create(this._cwd, options.sessionDir);
+		const childCwd = options.cwd ?? this._cwd;
+		const childSessionManager = SessionManager.create(childCwd, options.sessionDir);
 		if (options.parentSession.sessionFile) {
 			childSessionManager.newSession({
 				parentSession: options.parentSession.sessionFile,
@@ -9024,7 +9026,7 @@ export class AgentSession {
 			agent: childAgent,
 			sessionManager: childSessionManager,
 			settingsManager: this.settingsManager,
-			cwd: this._cwd,
+			cwd: childCwd,
 			agentDir: this._agentDir,
 			scopedModels: options.scopedModels,
 			resourceLoader: this._resourceLoader,
@@ -9759,7 +9761,7 @@ export class AgentSession {
 			run.abort = () => void child.abort();
 			run.publication.resolve();
 		};
-		const subagentOptions: CreateRlmSubagentRuntimeOptions = {
+		let subagentOptions: CreateRlmSubagentRuntimeOptions = {
 			...this._createRlmSubagentRuntimeOptions({
 				id: childNodeId,
 				prompt,
@@ -9798,6 +9800,20 @@ export class AgentSession {
 		void (async () => {
 			let childRuntime: RlmSubagentRuntime | undefined;
 			try {
+				throwIfCancelled();
+				this._agentRuntimeScheduler.transitionTask(run.id, "preparing_workspace");
+				const gitWorkspace = await this._agentRuntimeScheduler.prepareAgentWorkspace(run.id, {
+					sourceCwd: this._cwd,
+					metadataDir: run.sessionDir,
+				});
+				if (gitWorkspace) {
+					subagentOptions = {
+						...subagentOptions,
+						cwd: gitWorkspace.worktreePath,
+						gitWorkspace,
+					};
+				}
+				throwIfCancelled();
 				childRuntime = await this._createRlmSubagentRuntime(subagentOptions);
 				const child = childRuntime.session;
 				if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
@@ -9873,7 +9889,9 @@ export class AgentSession {
 					}
 				});
 				run.unsubscribe = unsubscribeChildEvents;
-				const content = `[task from parent]\n\n${prompt}`;
+				const content = gitWorkspace?.taskContract
+					? formatAgentRuntimeTaskPrompt(gitWorkspace.taskContract, prompt)
+					: `[task from parent]\n\n${prompt}`;
 				const spawnMessage: AgentSessionMessage = {
 					role: "custom",
 					customType: AGENT_MESSAGE_CUSTOM_TYPE,
@@ -9899,6 +9917,10 @@ export class AgentSession {
 					customMessage: spawnMessage,
 				});
 				if (run.error) throw new Error(run.error);
+				await this._agentRuntimeScheduler.finalizeAgentWorkspace(
+					run.id,
+					child.getLastAssistantText() ?? answerPreview ?? "Agent completed without a textual summary.",
+				);
 				run.status = "done";
 				this._agentRuntimeScheduler.completeAgent(run.id);
 				this._agentRuntimeScheduler.transitionTask(run.id, "completed");

@@ -238,6 +238,7 @@ describe("ENG-3885 subagent runtime host", () => {
 
 		const result = await session.runRlmChild("inspect inline child persistence");
 		expect(result.session_dir).not.toBeNull();
+		await waitFor(() => session.getAgentRuntimeScheduler().getAgent(result.rlm_child_id)?.status === "completed");
 		const childSessions = await SessionManager.list(tempDir, result.session_dir!);
 		expect(childSessions).toHaveLength(1);
 		const childSessionFile = childSessions[0]!.path;

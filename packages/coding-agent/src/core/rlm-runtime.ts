@@ -1,5 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
+import type { AgentGitWorkspace } from "./agent-git-worktree.js";
 import type { AgentRuntimeScheduler, AgentRuntimeSchedulerSummary } from "./agent-runtime-scheduler.js";
 import type { AgentSession } from "./agent-session.js";
 import type { ToolDefinition } from "./extensions/index.js";
@@ -228,6 +229,10 @@ export interface RlmSubagentRuntime {
 export interface CreateRlmSubagentRuntimeOptions {
 	parentSession: AgentSession;
 	agentRuntimeScheduler?: AgentRuntimeScheduler;
+	/** Isolated repository cwd assigned by the scheduler for write-capable Git tasks. */
+	cwd?: string;
+	/** Persisted Git workspace assignment used to produce the candidate result. */
+	gitWorkspace?: AgentGitWorkspace;
 	id: string;
 	prompt: string;
 	sessionName: string;

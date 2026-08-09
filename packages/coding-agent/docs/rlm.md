@@ -101,8 +101,14 @@ The host also maintains a persisted scheduler summary for task readiness and act
 
 ```python
 summary = await rlm.scheduler_summary()
-print(summary["readyTaskIds"], summary["activeAgents"])
+print(summary["readyTaskIds"], summary["activeAgents"], summary["workspaceAgents"])
 ```
+
+When the parent runs inside a supported Git working tree, each write-capable RLM child receives a scheduler-owned branch and worktree. Dirty tracked and non-ignored untracked parent state is captured through a temporary Git index without changing the parent's branch or index. The child task message includes its immutable base, branch, and assigned worktree.
+
+After the child completes, the host commits its work and validates `agent-runtime-result.json` in the child session directory. Completed workspace records remain in `workspaceAgents`, including `baseSha`, `candidateSha`, `branch`, `worktreePath`, and `resultManifestPath`. Phase 2 retains these candidate branches for review; it does not merge them into the parent working tree automatically.
+
+Non-Git working directories keep the existing shared-cwd behavior. Git worktrees isolate ordinary relative-path writes, but they are not an operating-system sandbox and do not prevent writes through unrelated absolute paths.
 
 Successfully completed daemon-backed children remain addressable while their parent session is open. Delete an inactive child only when its context is no longer needed:
 

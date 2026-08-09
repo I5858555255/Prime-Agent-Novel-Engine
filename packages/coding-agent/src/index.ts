@@ -3,6 +3,17 @@
 // Config paths
 export { getAgentDir, VERSION } from "./config.js";
 export {
+	AGENT_RUNTIME_RESULT_MANIFEST_VERSION,
+	AGENT_RUNTIME_TASK_CONTRACT_VERSION,
+	type AgentGitRepositoryCapability,
+	type AgentGitWorkspace,
+	AgentGitWorktreeManager,
+	type AgentRuntimeResultManifest,
+	type AgentRuntimeTaskContract,
+	formatAgentRuntimeTaskPrompt,
+	parseAgentRuntimeResultManifest,
+} from "./core/agent-git-worktree.js";
+export {
 	AGENT_RUNTIME_SCHEDULER_STATE_VERSION,
 	type AgentRuntimeAgentRecord,
 	type AgentRuntimeAgentStatus,

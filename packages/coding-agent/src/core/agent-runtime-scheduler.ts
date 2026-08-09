@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import {
+	type AgentGitWorkspace,
+	AgentGitWorktreeManager,
+	type AgentRuntimeResultManifest,
+} from "./agent-git-worktree.js";
 
-export const AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 1;
+export const AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 2;
 
 export type AgentRuntimeTaskStatus =
 	| "planned"
@@ -39,6 +44,16 @@ export interface AgentRuntimeAgentRecord {
 	updatedAt: string;
 	heartbeatAt?: string;
 	error?: string;
+	repositoryId?: string;
+	repositoryRoot?: string;
+	gitCommonDir?: string;
+	baseSha?: string;
+	branch?: string;
+	worktreePath?: string;
+	taskContractPath?: string;
+	resultManifestPath?: string;
+	candidateSha?: string;
+	worktreeCleanedAt?: string;
 }
 
 export interface AgentRuntimeSchedulerSnapshot {
@@ -66,6 +81,7 @@ export interface AgentRuntimeSchedulerSummary {
 	readyTaskIds: string[];
 	blockedTaskIds: string[];
 	activeAgents: AgentRuntimeAgentRecord[];
+	workspaceAgents: AgentRuntimeAgentRecord[];
 }
 
 export interface CreateAgentRuntimeSchedulerOptions {
@@ -206,6 +222,16 @@ function parseAgent(value: unknown): AgentRuntimeAgentRecord {
 		updatedAt: requiredString(value, "updatedAt"),
 		heartbeatAt: optionalString(value, "heartbeatAt"),
 		error: optionalString(value, "error"),
+		repositoryId: optionalString(value, "repositoryId"),
+		repositoryRoot: optionalString(value, "repositoryRoot"),
+		gitCommonDir: optionalString(value, "gitCommonDir"),
+		baseSha: optionalString(value, "baseSha"),
+		branch: optionalString(value, "branch"),
+		worktreePath: optionalString(value, "worktreePath"),
+		taskContractPath: optionalString(value, "taskContractPath"),
+		resultManifestPath: optionalString(value, "resultManifestPath"),
+		candidateSha: optionalString(value, "candidateSha"),
+		worktreeCleanedAt: optionalString(value, "worktreeCleanedAt"),
 	};
 }
 
@@ -263,12 +289,18 @@ export class AgentRuntimeScheduler {
 	private readonly now: () => number;
 	private readonly tasks = new Map<string, AgentRuntimeTaskRecord>();
 	private readonly agents = new Map<string, AgentRuntimeAgentRecord>();
+	private readonly worktreeManager: AgentGitWorktreeManager;
 	private state: AgentRuntimeSchedulerSnapshot;
 
 	constructor(options: CreateAgentRuntimeSchedulerOptions) {
 		if (!options.runId.trim()) throw new Error("Agent runtime scheduler runId must not be empty");
 		this.statePath = options.statePath;
 		this.now = options.now ?? Date.now;
+		this.worktreeManager = new AgentGitWorktreeManager({
+			runId: options.runId,
+			preferredRoot: options.statePath ? resolve(dirname(options.statePath), "worktrees") : undefined,
+			now: this.now,
+		});
 		const workspaceId = canonicalWorkspaceId(options.workspacePath);
 		const loaded = this.loadState();
 		if (loaded) {
@@ -385,6 +417,81 @@ export class AgentRuntimeScheduler {
 		return cloneAgent(agent);
 	}
 
+	async prepareAgentWorkspace(
+		agentId: string,
+		input: { sourceCwd: string; metadataDir: string },
+	): Promise<AgentGitWorkspace | undefined> {
+		const agent = this.requireAgent(agentId);
+		const task = this.requireTask(agent.taskId);
+		const workspace = await this.worktreeManager.provision({
+			sourceCwd: input.sourceCwd,
+			taskId: task.id,
+			agentId: agent.id,
+			objective: task.objective,
+			metadataDir: input.metadataDir,
+		});
+		if (!workspace) return undefined;
+		agent.repositoryId = workspace.repositoryId;
+		agent.repositoryRoot = workspace.repositoryRoot;
+		agent.gitCommonDir = workspace.gitCommonDir;
+		agent.baseSha = workspace.baseSha;
+		agent.branch = workspace.branch;
+		agent.worktreePath = workspace.worktreePath;
+		agent.taskContractPath = workspace.taskContractPath;
+		agent.resultManifestPath = workspace.resultManifestPath;
+		agent.updatedAt = this.timestamp();
+		try {
+			this.persist();
+		} catch (error) {
+			await this.worktreeManager.rollbackProvision(workspace).catch(() => undefined);
+			delete agent.repositoryId;
+			delete agent.repositoryRoot;
+			delete agent.gitCommonDir;
+			delete agent.baseSha;
+			delete agent.branch;
+			delete agent.worktreePath;
+			delete agent.taskContractPath;
+			delete agent.resultManifestPath;
+			throw error;
+		}
+		return workspace;
+	}
+
+	async finalizeAgentWorkspace(
+		agentId: string,
+		finalSummary: string,
+	): Promise<AgentRuntimeResultManifest | undefined> {
+		const agent = this.requireAgent(agentId);
+		const workspace = this.workspaceForAgent(agent);
+		if (!workspace) return undefined;
+		const manifest = await this.worktreeManager.finalize({
+			workspace,
+			runId: this.runId,
+			taskId: agent.taskId,
+			agentId: agent.id,
+			finalSummary,
+		});
+		agent.candidateSha = manifest.resultSha;
+		agent.resultManifestPath = workspace.resultManifestPath;
+		agent.updatedAt = this.timestamp();
+		this.persist();
+		return manifest;
+	}
+
+	async cleanupAgentWorkspace(agentId: string): Promise<void> {
+		const agent = this.requireAgent(agentId);
+		const task = this.requireTask(agent.taskId);
+		if (task.status !== "integrated" && task.status !== "cancelled") {
+			throw new Error(`Cannot clean worktree for task ${task.id} while task status is ${task.status}`);
+		}
+		const workspace = this.workspaceForAgent(agent);
+		if (!workspace || agent.worktreeCleanedAt) return;
+		await this.worktreeManager.cleanup(workspace);
+		agent.worktreeCleanedAt = this.timestamp();
+		agent.updatedAt = agent.worktreeCleanedAt;
+		this.persist();
+	}
+
 	completeAgent(agentId: string): AgentRuntimeAgentRecord {
 		return this.finishAgent(agentId, "completed");
 	}
@@ -447,9 +554,11 @@ export class AgentRuntimeScheduler {
 			else blockedTaskIds.push(task.id);
 		}
 		const activeAgents: AgentRuntimeAgentRecord[] = [];
+		const workspaceAgents: AgentRuntimeAgentRecord[] = [];
 		for (const agent of this.agents.values()) {
 			agentCounts[agent.status] = (agentCounts[agent.status] ?? 0) + 1;
 			if (ACTIVE_AGENT_STATUSES.has(agent.status)) activeAgents.push(cloneAgent(agent));
+			if (agent.worktreePath) workspaceAgents.push(cloneAgent(agent));
 		}
 		return {
 			workspaceId: this.state.workspaceId,
@@ -460,6 +569,7 @@ export class AgentRuntimeScheduler {
 			readyTaskIds: readyTaskIds.sort(),
 			blockedTaskIds: blockedTaskIds.sort(),
 			activeAgents: activeAgents.sort((a, b) => a.id.localeCompare(b.id)),
+			workspaceAgents: workspaceAgents.sort((a, b) => a.id.localeCompare(b.id)),
 		};
 	}
 
@@ -503,6 +613,31 @@ export class AgentRuntimeScheduler {
 		const agent = this.agents.get(agentId);
 		if (!agent) throw new Error(`Unknown agent runtime agent: ${agentId}`);
 		return agent;
+	}
+
+	private workspaceForAgent(agent: AgentRuntimeAgentRecord): AgentGitWorkspace | undefined {
+		if (
+			!agent.repositoryId ||
+			!agent.repositoryRoot ||
+			!agent.gitCommonDir ||
+			!agent.baseSha ||
+			!agent.branch ||
+			!agent.worktreePath ||
+			!agent.taskContractPath ||
+			!agent.resultManifestPath
+		) {
+			return undefined;
+		}
+		return {
+			repositoryId: agent.repositoryId,
+			repositoryRoot: agent.repositoryRoot,
+			gitCommonDir: agent.gitCommonDir,
+			baseSha: agent.baseSha,
+			branch: agent.branch,
+			worktreePath: agent.worktreePath,
+			taskContractPath: agent.taskContractPath,
+			resultManifestPath: agent.resultManifestPath,
+		};
 	}
 
 	private markInterruptedAgentsRecovering(): boolean {

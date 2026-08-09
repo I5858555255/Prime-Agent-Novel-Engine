@@ -146,7 +146,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			parts.push("Inspect files a child wrote when you need to collect its work without an observation capability.");
 		}
 		parts.push(
-			"Spawn independent children in separate calls and end your turn instead of awaiting completion. Multiple replies may arrive over multiple turns. Use `await rlm.scheduler_summary()` for the host-owned task and worker summary. Delete only inactive direct children with `await rlm.delete_subagent(child)`; explicitly stop active work with `await rlm.cancel_subagent(child)` first.",
+			"Spawn independent children in separate calls and end your turn instead of awaiting completion. Multiple replies may arrive over multiple turns. Use `await rlm.scheduler_summary()` for the host-owned task, worker, and Git candidate summary; completed isolated results remain under `workspaceAgents` until integration. Delete only inactive direct children with `await rlm.delete_subagent(child)`; explicitly stop active work with `await rlm.cancel_subagent(child)` first.",
 		);
 	}
 
@@ -185,7 +185,7 @@ export function buildSubagentGuidance(
 		);
 	}
 	lines.push(
-		"Use `await rlm.list_subagents()` after kernel restart or compaction and `await rlm.scheduler_summary()` for persisted task readiness and active-worker state.",
+		"Use `await rlm.list_subagents()` after kernel restart or compaction and `await rlm.scheduler_summary()` for persisted task readiness, active-worker state, and retained Git candidate locations.",
 	);
 	if (options.hasAgentObserve) {
 		lines.push("Use `agent_observe` for bounded transcript inspection.");
