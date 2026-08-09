@@ -97,7 +97,7 @@ describe("CommandRecoveryJournal", () => {
 		expect(journal.lookup("client-a", "command-a")).toEqual({ status: "pending" });
 	});
 
-	it("accepts an identical repeated result but rejects a conflicting replacement", () => {
+	it("accepts a structurally identical repeated result but rejects a conflicting replacement", () => {
 		const journal = new CommandRecoveryJournal(createPath());
 		journal.begin("client-a", "command-a", "prompt");
 		const response = {
@@ -107,7 +107,13 @@ describe("CommandRecoveryJournal", () => {
 			success: true as const,
 		};
 		journal.recordResult("client-a", "command-a", response);
-		expect(() => journal.recordResult("client-a", "command-a", response)).not.toThrow();
+		const sameResponseDifferentKeyOrder = {
+			success: true as const,
+			command: "prompt" as const,
+			type: "response" as const,
+			id: "command-a",
+		};
+		expect(() => journal.recordResult("client-a", "command-a", sameResponseDifferentKeyOrder)).not.toThrow();
 		expect(() =>
 			journal.recordResult("client-a", "command-a", {
 				id: "command-a",
