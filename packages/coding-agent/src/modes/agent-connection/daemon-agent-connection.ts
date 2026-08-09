@@ -1757,8 +1757,14 @@ export class DaemonAgentConnection implements AgentConnection {
 			const assembly = this.getSnapshotAssembly(message.snapshotId);
 			const purpose = assembly.begin?.purpose ?? "attach";
 			const snapshotError = new Error(message.error);
+			// Recovery re-reads state for the PUBLISHED binding; running it for a
+			// pending transition target would query the old (typically archived)
+			// selector and could emit a terminal close while the transition can
+			// still succeed. A failed pending catch-up needs no recovery: once
+			// the binding publishes, the transition re-reads fresh state anyway,
+			// and on supersession the buffered state is discarded.
 			const recoveryPromise =
-				purpose === "replacement" || purpose === "resync"
+				(purpose === "replacement" || purpose === "resync") && message.activeSessionId === this.activeSessionId
 					? this.recoverFailedSnapshot(purpose, snapshotError)
 					: undefined;
 			if (recoveryPromise) {

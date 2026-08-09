@@ -171,6 +171,14 @@ class FakeDaemonClient {
 				};
 			case "get_connection_state":
 				await this.connectionStateGate;
+				if (this.deadActiveSessionIds.has(command.activeSessionId)) {
+					return {
+						type: "response",
+						command: command.type,
+						success: false,
+						error: `Unknown active session: ${command.activeSessionId}`,
+					};
+				}
 				if (this.connectionStateFailures > 0) {
 					this.connectionStateFailures--;
 					return { type: "response", command: command.type, success: false, error: "state read failed" };
@@ -1567,6 +1575,74 @@ describe("DaemonAgentConnection", () => {
 		// (the newer events), not the older attach snapshot it raced.
 		expect(resynced?.snapshot.messages).toEqual(catchupMessages);
 		expect(resynced?.snapshot.lastEventSequence).toBe(30);
+	});
+
+	it("does not run terminal snapshot recovery for a catch-up that fails while its target is pending", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			queueMicrotask(() => {
+				// The attach snapshot completes, and a catch-up resync FAILS, both
+				// before the attach continuation publishes the revived binding.
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-attach2",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-attach2",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-catchup-fail",
+					snapshot: snapshotHeader,
+					messageCount: 1,
+					targetChunkBytes: 512 * 1024,
+					purpose: "resync",
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_failed",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-catchup-fail",
+					error: "catch-up encoder failed",
+				});
+			});
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-revive-attach2", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		// Recovery for the failed pending catch-up would read state against the
+		// still-published archived selector, fail, and emit a terminal close —
+		// killing the window even though the revival is about to succeed.
+		await connection.prompt("continue");
+
+		expect(events.filter((event) => event.type === "closed")).toHaveLength(0);
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1", "active-revived"]);
+		await vi.waitFor(() => expect(events.some((event) => event.type === "session_resynced")).toBe(true));
 	});
 
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
