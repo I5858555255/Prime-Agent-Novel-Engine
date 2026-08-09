@@ -229,7 +229,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly snapshotRecoveryPromises = new Map<string, Promise<void>>();
 	private readonly ignoredSnapshotIds = new Set<string>();
 	private reconnectPromise?: Promise<void>;
-	private reviveSession?: { promise: Promise<void>; sourceActiveSessionId: string };
+	private reviveSession?: { promise: Promise<string>; sourceActiveSessionId: string };
 	private readonly definitiveRequestErrors = new WeakSet<Error>();
 	private disposing = false;
 	private disposed = false;
@@ -819,12 +819,20 @@ export class DaemonAgentConnection implements AgentConnection {
 				throw error;
 			}
 			if (this.activeSessionId === attemptedActiveSessionId) {
+				let revivedActiveSessionId: string;
 				try {
-					await this.reviveFromSavedSession();
+					revivedActiveSessionId = await this.reviveFromSavedSession();
 				} catch {
 					// Surface the original unknown-session error: it names the session
 					// the caller targeted, which is more actionable than a revival
 					// failure for a session that may have been deleted outright.
+					throw error;
+				}
+				// A transition that lands between the revival resolving and this
+				// continuation running (e.g. a switch to an already-active session)
+				// rebinds the connection; sending the failed prompt there would
+				// inject it into another transcript.
+				if (this.activeSessionId !== revivedActiveSessionId) {
 					throw error;
 				}
 				await this.promptWithAdmissionCancellation(type, message, options);
@@ -838,9 +846,13 @@ export class DaemonAgentConnection implements AgentConnection {
 			if (!revival || revival.sourceActiveSessionId !== attemptedActiveSessionId) {
 				throw error;
 			}
+			let revivedActiveSessionId: string;
 			try {
-				await revival.promise;
+				revivedActiveSessionId = await revival.promise;
 			} catch {
+				throw error;
+			}
+			if (this.activeSessionId !== revivedActiveSessionId) {
 				throw error;
 			}
 			await this.promptWithAdmissionCancellation(type, message, options);
@@ -873,7 +885,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	 * update recovery). A revival superseded by such a transition fails and
 	 * leaves the newer binding untouched.
 	 */
-	private reviveFromSavedSession(): Promise<void> {
+	private reviveFromSavedSession(): Promise<string> {
 		if (this.reviveSession) {
 			return this.reviveSession.promise;
 		}
@@ -895,6 +907,11 @@ export class DaemonAgentConnection implements AgentConnection {
 					type: "create",
 					sessionPath: sessionFile,
 					continueRecent: false,
+					// The revived worker must carry this invocation's telemetry
+					// opt-out: without it the worker starts under the daemon's
+					// default policy and assertTelemetryAttachAllowed rejects the
+					// attach after the worker already launched.
+					...(this.options.telemetryDisabled ? { config: { telemetryDisabled: true as const } } : {}),
 					...(this.options.ownedSession ? { lifecycle: "client_owned" as const } : {}),
 				},
 				DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS,
@@ -916,13 +933,20 @@ export class DaemonAgentConnection implements AgentConnection {
 			} catch (error) {
 				if (this.disposed || this.disposing) {
 					this.releaseRevivedSession(revivedActiveSessionId);
-				} else if (this.activeSessionId !== revivedActiveSessionId) {
+					throw error;
+				}
+				if (this.activeSessionId !== revivedActiveSessionId) {
 					// The attach did not publish the revived binding (transient
 					// failure or supersession); drop any server-side attachment
 					// bookkeeping the request may have registered before failing.
 					void this.requestOk({ type: "detach", activeSessionId: revivedActiveSessionId }).catch(() => undefined);
+					throw error;
 				}
-				throw error;
+				// The attach response was applied — the binding is published and
+				// the client is attached server-side — but the streamed snapshot
+				// failed. Failing the revival here would strand a coherent binding
+				// and lose the prompt; fall through to the snapshot reads below,
+				// which recover or schedule a background resync.
 			}
 			let snapshot: AgentConnectionSnapshot | undefined;
 			try {
@@ -933,11 +957,12 @@ export class DaemonAgentConnection implements AgentConnection {
 				// reads, which can fail transiently); only the resync emission is
 				// missing. Retry it in the background instead of failing a revival
 				// whose prompts already work.
-				this.scheduleRevivalResync(this.activeSessionId);
+				this.scheduleRevivalResync(revivedActiveSessionId);
 			}
 			this.activeSideQuestionIds.clear();
 			if (this.disposed) {
-				return;
+				this.releaseRevivedSession(revivedActiveSessionId);
+				throw new Error("Connection was disposed during session revival");
 			}
 			if (sourceActiveSessionId !== revivedActiveSessionId) {
 				// The dead id lingers in the shared socket client's attachment
@@ -948,6 +973,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			if (snapshot) {
 				void this.emit({ type: "session_resynced", snapshot });
 			}
+			return revivedActiveSessionId;
 		})().finally(() => {
 			if (this.reviveSession?.promise === revival) {
 				this.reviveSession = undefined;
