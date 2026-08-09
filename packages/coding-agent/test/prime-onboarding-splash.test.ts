@@ -31,6 +31,7 @@ describe("PrimeOnboardingSplashComponent", () => {
 		expect(lines).toHaveLength(36);
 		expect(output).toContain("Welcome to PRIME Agent");
 		expect(output).toContain("Press Enter to login with Prime Intellect");
+		expect(output).toContain("Press Esc to skip");
 		expect(output).toContain("·");
 		expect(output).not.toContain("prime agent");
 		expect(output).not.toContain("Research and infrastructure assistant for high-context work.");
@@ -88,7 +89,21 @@ describe("PrimeOnboardingSplashComponent", () => {
 		const output = stripAnsi(component.render(100).join("\n"));
 
 		expect(output).toContain("Press Enter to choose a model");
+		expect(output).toContain("Press Esc to skip");
 		expect(output).not.toContain("Press Enter to login with Prime Intellect");
+	});
+
+	it("renders the configured cancel key in the skip hint", () => {
+		setKeybindings(new KeybindingsManager({ "tui.select.cancel": "ctrl+x" }));
+		const component = new PrimeOnboardingSplashComponent(
+			() => {},
+			() => {},
+			{ getRows: () => 36 },
+		);
+		const output = stripAnsi(component.render(100).join("\n"));
+
+		expect(output).toContain("Press Ctrl+X to skip");
+		expect(output).not.toContain("Press Esc to skip");
 	});
 
 	it("shows progress and ignores input while onboarding advances", () => {
@@ -103,6 +118,7 @@ describe("PrimeOnboardingSplashComponent", () => {
 		const output = stripAnsi(component.render(100).join("\n"));
 		expect(output).toContain("Preparing models...");
 		expect(output).not.toContain("Press Enter");
+		expect(output).not.toContain("to skip");
 		expect(onSelect).not.toHaveBeenCalled();
 		expect(onCancel).not.toHaveBeenCalled();
 	});

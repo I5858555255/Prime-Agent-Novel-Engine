@@ -1,6 +1,7 @@
 import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { PRIME_BUTTERFLY_LOGO } from "../../../themes/prime-logo.js";
 import { type ThemeColor, theme } from "../theme/theme.js";
+import { keyText } from "./keybinding-hints.js";
 
 interface PrimeOnboardingSplashOptions {
 	getRows?: () => number;
@@ -123,6 +124,16 @@ export class PrimeOnboardingSplashComponent implements Component {
 		];
 	}
 
+	private formatSkipHint(): PanelTextLine | undefined {
+		const cancelKey = keyText("tui.select.cancel", { primaryOnly: true });
+		if (!cancelKey) return undefined;
+		return [
+			{ text: "Press ", tone: "muted" },
+			{ text: cancelKey, tone: "accent", bold: true },
+			{ text: " to skip", tone: "muted" },
+		];
+	}
+
 	private formatBrandLine(): PanelTextLine {
 		return [
 			{ text: "Welcome to ", tone: "text" },
@@ -142,6 +153,10 @@ export class PrimeOnboardingSplashComponent implements Component {
 		lines.push({ left: 0, parts: [] });
 		lines.push(this.centerParts(this.formatBrandLine(), width));
 		lines.push(this.centerParts(this.formatContinueHint(), width));
+		if (!this.progressMessage) {
+			const skipHint = this.formatSkipHint();
+			if (skipHint) lines.push(this.centerParts(skipHint, width));
+		}
 
 		return lines;
 	}
