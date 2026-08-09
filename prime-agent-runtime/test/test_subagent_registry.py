@@ -182,6 +182,51 @@ class RlmSubagentRegistryTest(unittest.TestCase):
             {"target": "sub-a1b2c3d4"},
         )
 
+    def test_cancels_running_subagent_explicitly(self) -> None:
+        host_request = AsyncMock(
+            return_value={
+                "subagent": {
+                    "rlm_child_id": "sub-a1b2c3d4",
+                    "active_session_id": "active-child",
+                    "session_id": "session-child",
+                    "session_name": "api-reviewer",
+                    "session_dir": "/tmp/parent/sub-a1b2c3d4",
+                    "status": "running",
+                },
+                "outcome": "cancelled",
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            cancelled = asyncio.run(rlm_module.rlm.cancel_subagent(" api-reviewer "))
+
+        self.assertEqual(cancelled.rlm_child_id, "sub-a1b2c3d4")
+        self.assertEqual(cancelled.session_name, "api-reviewer")
+        self.assertEqual(cancelled.outcome, "cancelled")
+        host_request.assert_awaited_once_with(
+            "rlm.cancel_subagent",
+            {"target": "api-reviewer"},
+        )
+
+    def test_returns_scheduler_summary_from_host(self) -> None:
+        summary = {
+            "workspaceId": "/tmp/repo",
+            "runId": "run-1056",
+            "updatedAt": "2026-08-09T00:00:00.000Z",
+            "taskCounts": {"running": 1},
+            "agentCounts": {"running": 1},
+            "readyTaskIds": [],
+            "blockedTaskIds": [],
+            "activeAgents": [],
+        }
+        host_request = AsyncMock(return_value=summary)
+
+        with patch.object(rlm_module, "host_request", host_request):
+            result = asyncio.run(rlm_module.rlm.scheduler_summary())
+
+        self.assertEqual(result, summary)
+        host_request.assert_awaited_once_with("rlm.scheduler_summary")
+
     def test_rejects_invalid_delete_response_and_target(self) -> None:
         host_request = AsyncMock(return_value={"subagent": {"status": "completed"}})
 

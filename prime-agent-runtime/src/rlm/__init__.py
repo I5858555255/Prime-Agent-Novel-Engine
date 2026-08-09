@@ -50,6 +50,13 @@ class RLMSubagent:
     status: str
 
 
+@dataclass(frozen=True)
+class RLMCancelResult:
+    rlm_child_id: str
+    session_name: str
+    outcome: str
+
+
 def _install_control_comm_handlers() -> None:
     """Let comm replies arrive on the control channel during an execute_request."""
     if get_ipython is None:
@@ -216,18 +223,45 @@ async def list_subagents() -> list[RLMSubagent]:
     return [_subagent_from_payload(entry) for entry in entries]
 
 
-async def delete_subagent(target: str | RLMSubagent) -> RLMSubagent:
-    """Delete one running or retained direct child from the current parent session."""
+def _subagent_selector(target: str | RLMSubagent) -> str:
     if isinstance(target, RLMSubagent):
-        selector = target.rlm_child_id
-    elif isinstance(target, str):
+        return target.rlm_child_id
+    if isinstance(target, str):
         selector = target.strip()
         if not selector:
             raise ValueError("target must not be empty")
-    else:
-        raise TypeError(f"target must be str or RLMSubagent, got {type(target).__name__}")
+        return selector
+    raise TypeError(f"target must be str or RLMSubagent, got {type(target).__name__}")
+
+
+async def delete_subagent(target: str | RLMSubagent) -> RLMSubagent:
+    """Delete one inactive direct child from the current parent session."""
+    selector = _subagent_selector(target)
     payload = await host_request("rlm.delete_subagent", {"target": selector})
     return _subagent_from_payload(payload.get("subagent"), "rlm.delete_subagent")
+
+
+async def cancel_subagent(target: str | RLMSubagent) -> RLMCancelResult:
+    """Explicitly cancel one running direct child."""
+    selector = _subagent_selector(target)
+    payload = await host_request("rlm.cancel_subagent", {"target": selector})
+    subagent = _subagent_from_payload(payload.get("subagent"), "rlm.cancel_subagent")
+    outcome = payload.get("outcome")
+    if outcome not in {"cancelled", "already_terminal"}:
+        raise RuntimeError("rlm.cancel_subagent returned an invalid outcome")
+    return RLMCancelResult(
+        rlm_child_id=subagent.rlm_child_id,
+        session_name=subagent.session_name,
+        outcome=outcome,
+    )
+
+
+async def scheduler_summary() -> dict[str, Any]:
+    """Return the current host-owned scheduler summary."""
+    payload = await host_request("rlm.scheduler_summary")
+    if not isinstance(payload.get("workspaceId"), str) or not isinstance(payload.get("runId"), str):
+        raise RuntimeError("rlm.scheduler_summary returned an invalid summary")
+    return payload
 
 
 class _HarnessProxy:
@@ -297,6 +331,12 @@ class _RLMCallable:
     async def delete_subagent(self, target: str | RLMSubagent) -> RLMSubagent:
         return await delete_subagent(target)
 
+    async def cancel_subagent(self, target: str | RLMSubagent) -> RLMCancelResult:
+        return await cancel_subagent(target)
+
+    async def scheduler_summary(self) -> dict[str, Any]:
+        return await scheduler_summary()
+
     async def __call__(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
@@ -320,9 +360,11 @@ __all__ = [
     "McpToolError",
     "NotEnabled",
     "RLMModel",
+    "RLMCancelResult",
     "RLMSpawnHandle",
     "RLMSubagent",
     "RefinementEvent",
+    "cancel_subagent",
     "delete_subagent",
     "find_models",
     "get_harness_state",
@@ -331,6 +373,7 @@ __all__ = [
     "list_subagents",
     "rlm",
     "run",
+    "scheduler_summary",
 ]
 
 # Lazily re-export the MCP base class. Kept lazy so `import rlm` never requires

@@ -65,6 +65,7 @@ sequenceDiagram
 |---|---|
 | `src/core/kernel/index.ts` | ZeroMQ sockets, Jupyter framing, execution, comm dispatch, interrupt, and shutdown. |
 | `src/core/tools/ipython.ts` | Agent tool wrapper, lazy kernel provisioning, namespace bootstrap, and output shaping. |
+| `src/core/agent-runtime-scheduler.ts` | Persisted task DAG, agent registry, heartbeat/recovery state, and orchestrator summaries. |
 | `src/core/agent-session.ts` | RLM policy, child creation, registry, usage attribution, cancellation, and goal handlers. |
 | `src/core/rlm-runtime.ts` | Typed request/spawn-handle validation for `rlm.run`, model discovery, list, and delete. |
 | `prime-agent-runtime/src/rlm/` | Python shim, handle types, callable `rlm`, and session-backed harness state. |
@@ -132,6 +133,8 @@ run(prompt: str, **kwargs)
 find_models(query: str = "", limit: int = 8)
 list_subagents()
 delete_subagent(selector)
+cancel_subagent(selector)
+scheduler_summary()
 host_request(request_type: str, payload: dict | None = None)
 RLMSpawnHandle
 RLMModel
@@ -162,7 +165,7 @@ Unknown options fail instead of being ignored. Model search is bounded to active
 1. Check `RLM_DEPTH < RLM_MAX_DEPTH`.
 2. Resolve the requested model or inherit the parent model.
 3. Create a `sub-xxxxxxxx` child directory under the parent artifact directory.
-4. Admit the task into the parent registry and return its `RLMSpawnHandle`.
+4. Admit the task into the parent registry and persisted runtime scheduler, then return its `RLMSpawnHandle`.
 5. In detached work, create a child `SessionManager`, `Agent`, and `AgentSession`.
 6. Reuse provider hooks, resource loader, model registry, tools, transport, retry settings, and thinking configuration.
 7. Run the child prompt, retain its session, and update lifecycle state independently of the admission call.
@@ -188,7 +191,9 @@ The TypeScript parent maintains the authoritative direct-child registry. `await 
 
 This registry survives kernel restart, compaction, and parent restore. Successfully completed daemon-backed children are rehydrated from the parent artifact registry. Inline children remain inspectable in the current process but have no active-session ID.
 
-The parent can continue a retained daemon child with `await agent_message.send(..., receiver_role="child", receiver_name=child.session_name)`. `rlm.delete_subagent()` accepts an exact child ID, active-session ID, session ID, or unique name. Deletion cancels or closes the runtime, writes a durable tombstone, and removes the child from messaging and observation. It does not erase the transcript or artifacts on disk.
+The parent can continue a retained daemon child with `await agent_message.send(..., receiver_role="child", receiver_name=child.session_name)`. `rlm.delete_subagent()` accepts an exact child ID, active-session ID, session ID, or unique name, but refuses queued or running work. Use `rlm.cancel_subagent()` for an explicit cancellation. Deleting an inactive child closes the retained runtime, writes a durable tombstone, and removes it from messaging and observation. It does not erase the transcript, scheduler audit record, or artifacts on disk.
+
+`await rlm.scheduler_summary()` returns the host-owned run ID, workspace ID, task and agent counts, ready and blocked task IDs, and active agent records. Scheduler state is stored independently from model context. Reloading an interrupted run marks admitted or running agents as `recovering` until their next runtime heartbeat.
 
 Registry scope follows the parent transcript. An unrelated new parent session does not inherit children.
 
@@ -237,6 +242,7 @@ For a persisted root session, the relevant layout is:
       kernel-state.dill
       kernel-state.json
       scheduled-jobs.json
+      agent-runtime-scheduler.json
       harness/
         harness_state.json
       sub-xxxxxxxx/
@@ -261,7 +267,8 @@ Provider credentials are resolved by the TypeScript host. The bounded model cata
 | Unsupported options | Host rejects the request. |
 | Requested model unavailable | Spawn fails instead of substituting another model. |
 | Shell-channel comm reply | Deadlock risk; current replies use control. |
-| Child cancellation | Host aborts the child and removes failed/cancelled registry entries. |
+| Inactive cleanup targets running work | `rlm.delete_subagent()` rejects the request and directs the caller to explicit cancellation. |
+| Child cancellation | `rlm.cancel_subagent()` records cancellation before aborting the child and cleaning up its live registry entry. |
 | Parent teardown | Active descendants are cancelled and their runtimes are closed. |
 
 ## Focused Validation

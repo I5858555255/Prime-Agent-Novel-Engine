@@ -97,10 +97,23 @@ for child in children:
     print(child.session_name, child.status, child.active_session_id)
 ```
 
-Successfully completed daemon-backed children remain addressable while their parent session is open. Delete a child only when its context is no longer needed:
+The host also maintains a persisted scheduler summary for task readiness and active-worker state:
+
+```python
+summary = await rlm.scheduler_summary()
+print(summary["readyTaskIds"], summary["activeAgents"])
+```
+
+Successfully completed daemon-backed children remain addressable while their parent session is open. Delete an inactive child only when its context is no longer needed:
 
 ```python
 await rlm.delete_subagent(children[0])
+```
+
+Ordinary deletion refuses running work. Stop a running child explicitly, then allow its cancellation cleanup to finish:
+
+```python
+await rlm.cancel_subagent(children[0])
 ```
 
 The default recursion depth allows a root agent to create children. Raising the configured depth allows descendants to recurse further.

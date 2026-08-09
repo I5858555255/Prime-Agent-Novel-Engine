@@ -146,7 +146,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			parts.push("Inspect files a child wrote when you need to collect its work without an observation capability.");
 		}
 		parts.push(
-			"Spawn independent children in separate calls and end your turn instead of awaiting completion. Multiple replies may arrive over multiple turns. Delete a direct child explicitly with `await rlm.delete_subagent(child)` when it is no longer needed.",
+			"Spawn independent children in separate calls and end your turn instead of awaiting completion. Multiple replies may arrive over multiple turns. Use `await rlm.scheduler_summary()` for the host-owned task and worker summary. Delete only inactive direct children with `await rlm.delete_subagent(child)`; explicitly stop active work with `await rlm.cancel_subagent(child)` first.",
 		);
 	}
 
@@ -184,12 +184,15 @@ export function buildSubagentGuidance(
 			"Ask for an explicit reply when needed. A child replies with `await agent_message.send(message, receiver_role='parent')`; parent follow-ups use `receiver_role='child'` plus the child's name or id. Not every message needs a reply.",
 		);
 	}
-	lines.push("Use `await rlm.list_subagents()` after kernel restart or compaction.");
+	lines.push(
+		"Use `await rlm.list_subagents()` after kernel restart or compaction and `await rlm.scheduler_summary()` for persisted task readiness and active-worker state.",
+	);
 	if (options.hasAgentObserve) {
 		lines.push("Use `agent_observe` for bounded transcript inspection.");
 	}
 	lines.push(
 		"Have children write files and read those files for fan-in.",
+		"Delete only inactive children; use `await rlm.cancel_subagent(child)` when active work must be stopped explicitly.",
 		"Delegate parallel context-heavy research or independent implementation; do a single known lookup, edit, or command inline.",
 	);
 	if (options.includeRefineExamples ?? true) {

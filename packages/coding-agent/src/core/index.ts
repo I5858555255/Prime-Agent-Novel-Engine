@@ -3,6 +3,17 @@
  */
 
 export {
+	AGENT_RUNTIME_SCHEDULER_STATE_VERSION,
+	type AgentRuntimeAgentRecord,
+	type AgentRuntimeAgentStatus,
+	AgentRuntimeScheduler,
+	type AgentRuntimeSchedulerSnapshot,
+	type AgentRuntimeSchedulerSummary,
+	type AgentRuntimeTaskReadiness,
+	type AgentRuntimeTaskRecord,
+	type AgentRuntimeTaskStatus,
+} from "./agent-runtime-scheduler.js";
+export {
 	AgentSession,
 	type AgentSessionConfig,
 	type AgentSessionEvent,

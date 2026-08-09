@@ -81,6 +81,7 @@ import {
 	normalizeObserveMaxChars,
 	ORCHESTRATION_HEARTBEAT_SKILL_NAME,
 } from "./agent-observe.js";
+import { AgentRuntimeScheduler, type AgentRuntimeSchedulerSummary } from "./agent-runtime-scheduler.js";
 import { flushAgentTraceUpload } from "./agent-traces.js";
 import {
 	addLoginGuidanceToAuthError,
@@ -217,13 +218,16 @@ import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.j
 import {
 	type CreateRlmSubagentRuntimeOptions,
 	createDefaultRlmSubagentSessionName,
+	createRlmCancelSubagentHostHandler,
 	createRlmDeleteSubagentHostHandler,
 	createRlmFindModelsHostHandler,
 	createRlmListSubagentsHostHandler,
 	createRlmRunHostHandler,
+	createRlmSchedulerSummaryHostHandler,
 	findRlmModelMatches,
 	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
+	type RlmCancelSubagentResult,
 	type RlmDeleteSubagentResult,
 	type RlmFindModelsResult,
 	type RlmListSubagentsResult,
@@ -471,6 +475,8 @@ export interface AgentSessionConfig {
 	rlmParentAgent?: string;
 	/** Host responsible for creating RLM subagent runtimes. */
 	subagentRuntimeHost?: SubagentRuntimeHost;
+	/** Host-owned scheduler shared by one root session and its RLM descendants. */
+	agentRuntimeScheduler?: AgentRuntimeScheduler;
 	/** Host-side autonomous continuation policy. */
 	autonomous?: AgentAutonomousConfig;
 	/**
@@ -1211,6 +1217,7 @@ export class AgentSession {
 	private _repliedToParentSinceTask: boolean | undefined;
 	private _parentReplyCount = 0;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
+	private readonly _agentRuntimeScheduler: AgentRuntimeScheduler;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
 	private _pendingRlmSubagentSessionNames = new Set<string>();
 	// Inline mode keeps finished child sessions so the inspector can still read them;
@@ -1321,6 +1328,14 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._rlmParentAgent = config.rlmParentAgent;
+		const schedulerArtifactDir = this.sessionManager.getSessionArtifactDir();
+		this._agentRuntimeScheduler =
+			config.agentRuntimeScheduler ??
+			new AgentRuntimeScheduler({
+				workspacePath: this._cwd,
+				runId: this.sessionId,
+				statePath: schedulerArtifactDir ? join(schedulerArtifactDir, "agent-runtime-scheduler.json") : undefined,
+			});
 		// A resumed child may have replied before this process started; false would
 		// claim knowledge that is not present in the session transcript.
 		this._repliedToParentSinceTask =
@@ -8685,7 +8700,11 @@ export class AgentSession {
 			})),
 			"rlm.find_models": createRlmFindModelsHostHandler((query, limit) => this.findRlmModels(query, limit)),
 			"rlm.list_subagents": createRlmListSubagentsHostHandler(() => this.listRlmSubagents()),
-			"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) => this.deleteRlmSubagent(target)),
+			"rlm.delete_subagent": createRlmDeleteSubagentHostHandler((target) =>
+				this.deleteInactiveRlmSubagentByTarget(target),
+			),
+			"rlm.cancel_subagent": createRlmCancelSubagentHostHandler((target) => this.cancelRlmSubagent(target)),
+			"rlm.scheduler_summary": createRlmSchedulerSummaryHostHandler(() => this.getAgentRuntimeSchedulerSummary()),
 			"model.info": async () => ({
 				id: this.model?.id ?? null,
 				provider: this.model?.provider ?? null,
@@ -8936,6 +8955,7 @@ export class AgentSession {
 	}): CreateRlmSubagentRuntimeOptions {
 		return {
 			parentSession: this,
+			agentRuntimeScheduler: this._agentRuntimeScheduler,
 			id: options.id,
 			prompt: options.prompt,
 			sessionName: options.sessionName,
@@ -9014,6 +9034,7 @@ export class AgentSession {
 			allowedToolNames: options.allowedToolNames,
 			includeGoals: options.includeGoals,
 			includeCompactSkill: options.includeCompactSkill,
+			agentRuntimeScheduler: options.agentRuntimeScheduler,
 			rlmDepth: options.rlmDepth,
 			rlmMaxDepth: options.rlmMaxDepth,
 			rlmSessionDir: options.sessionDir,
@@ -9046,6 +9067,8 @@ export class AgentSession {
 		}
 		run.status = "cancelled";
 		run.error = reason;
+		this._agentRuntimeScheduler.cancelAgent(run.id, reason);
+		this._agentRuntimeScheduler.transitionTask(run.id, "cancelled", reason);
 		run.publication.reject(new Error(reason));
 		run.abort();
 		// Surface the cancellation immediately; the run's own terminal update is
@@ -9083,6 +9106,14 @@ export class AgentSession {
 	/** Current direct-child registry for the model-facing rlm.list_subagents API. */
 	async listRlmSubagents(): Promise<RlmListSubagentsResult> {
 		return this._buildRlmSubagentList(await this._agentMessageController?.listAgents());
+	}
+
+	getAgentRuntimeSchedulerSummary(): AgentRuntimeSchedulerSummary {
+		return this._agentRuntimeScheduler.summary();
+	}
+
+	getAgentRuntimeScheduler(): AgentRuntimeScheduler {
+		return this._agentRuntimeScheduler;
 	}
 
 	private _buildRlmSubagentList(listedAgents?: AgentSessionMessageListResult): RlmListSubagentsResult {
@@ -9290,6 +9321,29 @@ export class AgentSession {
 		}
 		const subagent = directMatches[0] ?? (await this._resolveDirectRlmSubagent(target));
 		return this._trackRlmSubagentDeletion(subagent, () => this._deleteResolvedRlmSubagent(subagent));
+	}
+
+	/** Cleanup for the model-facing delete API. Active work requires explicit cancellation first. */
+	async deleteInactiveRlmSubagentByTarget(target: string): Promise<RlmDeleteSubagentResult> {
+		const subagent = await this._resolveDirectRlmSubagent(target);
+		if (subagent.status === "running") {
+			throw new Error(
+				`Cannot delete running RLM subagent "${subagent.session_name}"; use rlm.cancel_subagent(...) first`,
+			);
+		}
+		return this.deleteRlmSubagent(subagent.rlm_child_id);
+	}
+
+	/** Explicitly cancel one running direct child while retaining its scheduler audit record. */
+	async cancelRlmSubagent(target: string): Promise<RlmCancelSubagentResult> {
+		const subagent = await this._resolveDirectRlmSubagent(target);
+		if (subagent.status !== "running") {
+			return { subagent, outcome: "already_terminal" };
+		}
+		if (!this.cancelRlmChildRun(subagent.rlm_child_id, "Cancelled by parent orchestrator")) {
+			throw new Error(`Running RLM subagent "${subagent.session_name}" is not cancellable in this runtime`);
+		}
+		return { subagent, outcome: "cancelled" };
 	}
 
 	private async _trackRlmSubagentDeletion(
@@ -9657,6 +9711,17 @@ export class AgentSession {
 			abort: noopRlmChildAbort,
 			publication: createAgentMessageDeferred(),
 		};
+		this._agentRuntimeScheduler.registerTask({
+			id: run.id,
+			objective: prompt,
+			status: "queued",
+		});
+		this._agentRuntimeScheduler.registerAgent({
+			id: run.id,
+			taskId: run.id,
+			parentAgentId: this.sessionId,
+			sessionName,
+		});
 		const throwIfCancelled = () => {
 			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
 		};
@@ -9740,8 +9805,11 @@ export class AgentSession {
 				publishChildSession(child);
 				throwIfCancelled();
 				run.status = "running";
+				this._agentRuntimeScheduler.markAgentRunning(run.id, child.sessionId);
+				this._agentRuntimeScheduler.transitionTask(run.id, "running");
 				emitChildUpdate();
 				const unsubscribeChildEvents = child.subscribe((event) => {
+					this._agentRuntimeScheduler.recordAgentHeartbeat(run.id);
 					if (event.type === "rlm_child_update") {
 						this._emit(event);
 						return;
@@ -9832,6 +9900,8 @@ export class AgentSession {
 				});
 				if (run.error) throw new Error(run.error);
 				run.status = "done";
+				this._agentRuntimeScheduler.completeAgent(run.id);
+				this._agentRuntimeScheduler.transitionTask(run.id, "completed");
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();
@@ -9861,6 +9931,15 @@ export class AgentSession {
 				if (run.status !== "cancelled") {
 					run.status = "error";
 					run.error = runError.message;
+					const schedulerAgent = this._agentRuntimeScheduler.getAgent(run.id);
+					if (
+						schedulerAgent?.status === "admitted" ||
+						schedulerAgent?.status === "running" ||
+						schedulerAgent?.status === "recovering"
+					) {
+						this._agentRuntimeScheduler.failAgent(run.id, runError.message);
+						this._agentRuntimeScheduler.transitionTask(run.id, "failed", runError.message);
+					}
 				}
 				durationMs = Date.now() - startedAt;
 				activity = undefined;

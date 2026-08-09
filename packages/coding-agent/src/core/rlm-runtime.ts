@@ -1,5 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
+import type { AgentRuntimeScheduler, AgentRuntimeSchedulerSummary } from "./agent-runtime-scheduler.js";
 import type { AgentSession } from "./agent-session.js";
 import type { ToolDefinition } from "./extensions/index.js";
 import type { HostRequestHandler } from "./kernel/index.js";
@@ -38,6 +39,11 @@ export interface RlmDeleteSubagentResult {
 	outcome?: "deleted" | "skipped_running";
 }
 
+export interface RlmCancelSubagentResult {
+	subagent: RlmSubagentRegistryEntry;
+	outcome: "cancelled" | "already_terminal";
+}
+
 export interface RlmModelMatch {
 	provider: string;
 	id: string;
@@ -52,6 +58,8 @@ export interface RlmFindModelsResult {
 export type RlmRunHandler = (request: RlmRunRequest) => Promise<Record<string, unknown>>;
 export type RlmListSubagentsHandler = () => RlmListSubagentsResult | Promise<RlmListSubagentsResult>;
 export type RlmDeleteSubagentHandler = (target: string) => Promise<RlmDeleteSubagentResult>;
+export type RlmCancelSubagentHandler = (target: string) => Promise<RlmCancelSubagentResult>;
+export type RlmSchedulerSummaryHandler = () => AgentRuntimeSchedulerSummary | Promise<AgentRuntimeSchedulerSummary>;
 export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindModelsResult | Promise<RlmFindModelsResult>;
 
 const RLM_SUBAGENT_SESSION_NAME_MAX_LENGTH = 64;
@@ -198,12 +206,28 @@ export function createRlmDeleteSubagentHostHandler(handler: RlmDeleteSubagentHan
 	};
 }
 
+/** Cancel one running direct child without conflating cancellation with cleanup. */
+export function createRlmCancelSubagentHostHandler(handler: RlmCancelSubagentHandler): HostRequestHandler {
+	return async (payload) => {
+		if (typeof payload.target !== "string" || !payload.target.trim()) {
+			throw new Error("rlm.cancel_subagent target must be a non-empty string");
+		}
+		return (await handler(payload.target.trim())) as unknown as Record<string, unknown>;
+	};
+}
+
+/** Expose the host-owned scheduler summary to the current orchestrator. */
+export function createRlmSchedulerSummaryHostHandler(handler: RlmSchedulerSummaryHandler): HostRequestHandler {
+	return async () => (await handler()) as unknown as Record<string, unknown>;
+}
+
 export interface RlmSubagentRuntime {
 	session: AgentSession;
 }
 
 export interface CreateRlmSubagentRuntimeOptions {
 	parentSession: AgentSession;
+	agentRuntimeScheduler?: AgentRuntimeScheduler;
 	id: string;
 	prompt: string;
 	sessionName: string;

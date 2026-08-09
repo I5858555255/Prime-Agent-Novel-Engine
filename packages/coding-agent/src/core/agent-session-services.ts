@@ -4,6 +4,7 @@ import type { Model, ServiceTier } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.js";
 import type { AgentSessionMessageController } from "./agent-messages.js";
 import type { AgentObserveController } from "./agent-observe.js";
+import type { AgentRuntimeScheduler } from "./agent-runtime-scheduler.js";
 import type { AgentExecutionMode } from "./agent-session-config.js";
 import { installAgentTraceUpload } from "./agent-traces.js";
 import { AuthStorage } from "./auth-storage.js";
@@ -79,6 +80,7 @@ export interface AgentSessionCreationOptions {
 	rlmParentNodeId?: string;
 	rlmParentAgent?: string;
 	subagentRuntimeHost?: SubagentRuntimeHost;
+	agentRuntimeScheduler?: AgentRuntimeScheduler;
 	rlmHeartbeatController?: AgentRlmHeartbeatController;
 	prewarmIpythonKernel?: boolean;
 	autonomous?: AgentAutonomousConfig;
@@ -296,6 +298,7 @@ export async function createAgentSessionFromServices(
 		rlmParentNodeId: options.rlmParentNodeId,
 		rlmParentAgent: options.rlmParentAgent,
 		subagentRuntimeHost: options.subagentRuntimeHost,
+		agentRuntimeScheduler: options.agentRuntimeScheduler,
 		rlmHeartbeatController: options.rlmHeartbeatController,
 		sessionStartEvent: options.sessionStartEvent,
 		prewarmIpythonKernel: options.prewarmIpythonKernel,
