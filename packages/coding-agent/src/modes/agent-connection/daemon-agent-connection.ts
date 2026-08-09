@@ -409,6 +409,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.lastEventSequence = maxEventSequence(this.lastEventSequence, getAttachLastEventSequence(result));
 		if ("snapshot" in result) {
 			const appliedActiveSessionId = this.activeSessionId;
+			const preAwaitSnapshot = this.latestSnapshot;
 			const snapshot = result.snapshotStream
 				? await this.waitForSnapshot(result.snapshotStream.id)
 				: result.snapshot;
@@ -418,14 +419,31 @@ export class DaemonAgentConnection implements AgentConnection {
 				// would describe a session this connection no longer shows.
 				throw new Error(`Session attach superseded: binding moved from ${appliedActiveSessionId}`);
 			}
-			this.latestSnapshot = mapDaemonSessionSnapshot(snapshot, result.replay);
-			if (this.lastEventSequence !== undefined) {
-				this.latestSnapshot.lastEventSequence = this.lastEventSequence;
+			// The daemon can deliver the attach snapshot's end frame and a queued
+			// catch-up resync in one socket read; the resync then lands on the
+			// published binding via completeSnapshotAssembly before this
+			// continuation resumes. Newest wins by event sequence: overwriting
+			// it with the older attach snapshot would drop the intervening
+			// events. The identity check comes first because a sequence is only
+			// comparable within one session: an unchanged snapshot here can
+			// still describe the previous binding (its sequence is unrelated).
+			const concurrentSeq = this.latestSnapshot?.lastEventSequence;
+			const keepConcurrentlyAppliedSnapshot =
+				this.latestSnapshotIsFresh &&
+				this.latestSnapshot !== undefined &&
+				this.latestSnapshot !== preAwaitSnapshot &&
+				concurrentSeq !== undefined &&
+				(snapshot.lastEventSequence === undefined || concurrentSeq > snapshot.lastEventSequence);
+			if (!keepConcurrentlyAppliedSnapshot) {
+				this.latestSnapshot = mapDaemonSessionSnapshot(snapshot, result.replay);
+				if (this.lastEventSequence !== undefined) {
+					this.latestSnapshot.lastEventSequence = this.lastEventSequence;
+				}
+				if (this.lastEventCursor) {
+					this.latestSnapshot.lastEventCursor = this.lastEventCursor;
+				}
+				this.latestSnapshotIsFresh = true;
 			}
-			if (this.lastEventCursor) {
-				this.latestSnapshot.lastEventCursor = this.lastEventCursor;
-			}
-			this.latestSnapshotIsFresh = true;
 		} else {
 			this.latestSnapshot = undefined;
 			this.latestSnapshotIsFresh = false;

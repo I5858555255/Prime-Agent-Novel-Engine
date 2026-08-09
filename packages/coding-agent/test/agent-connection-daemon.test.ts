@@ -1841,6 +1841,99 @@ describe("DaemonAgentConnection", () => {
 		);
 	});
 
+	it("keeps a newer catch-up applied to the published binding while the attach snapshot was streaming", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const catchupMessages: AgentMessage[] = [{ role: "user", content: "post-publication-catch-up", timestamp: 12 }];
+		let revivedSnapshotHeader: Record<string, unknown> | undefined;
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			revivedSnapshotHeader = snapshotHeader;
+			// No frames yet: the attach response resolves, the continuation
+			// publishes the revived binding and parks on waitForSnapshot.
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-post-pub", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(1),
+		);
+		// One socket read delivers the attach snapshot end AND the queued
+		// catch-up resync: both land on the (already published) revived binding
+		// before the waitForSnapshot continuation resumes.
+		fakeClient.emitMessage({
+			type: "session_snapshot_begin",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-post-pub",
+			snapshot: revivedSnapshotHeader as never,
+			messageCount: 0,
+			targetChunkBytes: 512 * 1024,
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_end",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-post-pub",
+			chunkCount: 0,
+			lastEventSequence: 23,
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_begin",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-post-pub-catchup",
+			snapshot: revivedSnapshotHeader as never,
+			messageCount: catchupMessages.length,
+			targetChunkBytes: 512 * 1024,
+			purpose: "resync",
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_chunk",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-post-pub-catchup",
+			index: 0,
+			messages: [catchupMessages[0]!],
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_end",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-post-pub-catchup",
+			chunkCount: 1,
+			lastEventSequence: 33,
+		});
+		await prompt;
+
+		// The newer resync must survive the attach continuation: the revival's
+		// own resync emission (served from the still-cached snapshot) must not
+		// regress to the older attach snapshot.
+		await vi.waitFor(() => {
+			const resyncs = events.filter(
+				(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+					event.type === "session_resynced",
+			);
+			expect(resyncs.length).toBeGreaterThan(0);
+			expect(resyncs[resyncs.length - 1]?.snapshot.messages).toEqual(catchupMessages);
+			expect(resyncs[resyncs.length - 1]?.snapshot.lastEventSequence).toBe(33);
+		});
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");
