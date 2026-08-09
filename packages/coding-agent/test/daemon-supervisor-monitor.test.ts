@@ -1919,10 +1919,16 @@ describe("daemon worker supervisor monitoring", () => {
 				activeSessionId,
 				new Map([[snapshotId, { transcript, result, incoming: false, retired: false }]]),
 			);
+			return { transcript, result };
 		};
-		cacheSnapshot("root-active", "root-snapshot");
-		cacheSnapshot("child-active", "child-snapshot");
-		cacheSnapshot("unrelated-active", "unrelated-snapshot");
+		const cachedSnapshots = new Map([
+			["root-active", cacheSnapshot("root-active", "root-snapshot")],
+			["child-active", cacheSnapshot("child-active", "child-snapshot")],
+			["unrelated-active", cacheSnapshot("unrelated-active", "unrelated-snapshot")],
+		]);
+		const unrelated = cachedSnapshots.get("unrelated-active")!;
+		unrelated.transcript.appendEncodedChunk(Buffer.from("unrelated\n"));
+		unrelated.transcript.markComplete();
 		const markInterrupted = vi.fn(async () => undefined);
 		const kill = vi.spyOn(process, "kill").mockReturnValue(true);
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
@@ -1933,19 +1939,41 @@ describe("daemon worker supervisor monitoring", () => {
 			recoverUncertainWorkerOperations(worker: RecoveryWorker, killWorkerProcess: boolean): Promise<void>;
 		};
 
+		const invalidationError = "Worker recovery dropped uncertain operations; snapshot cache invalidated";
+		const pendingReaders = new Map(
+			["root-active", "child-active"].map((activeSessionId) => {
+				const reader = cachedSnapshots.get(activeSessionId)!.transcript.waitForChunk(0);
+				return [activeSessionId, expect(reader).rejects.toThrow(invalidationError)] as const;
+			}),
+		);
+
 		try {
 			await supervisor.recoverUncertainWorkerOperations(worker, false);
 			expect(kill).not.toHaveBeenCalled();
 			expect(markInterrupted).toHaveBeenCalledTimes(1);
 			expect(markInterrupted).toHaveBeenCalledWith("/tmp/root.jsonl", "root-active", ["model_stream"]);
 			for (const activeSessionId of ["root-active", "child-active"]) {
+				await pendingReaders.get(activeSessionId);
+				const { transcript } = cachedSnapshots.get(activeSessionId)!;
+				expect(transcript.complete).toBe(false);
+				expect(() => transcript.retain()).toThrow(`Snapshot transcript ${transcript.snapshotId} was disposed`);
+				expect(() => transcript.appendEncodedChunk(Buffer.from("late\n"))).toThrow(
+					`Snapshot transcript ${transcript.snapshotId} is not writable`,
+				);
 				expect(worker.snapshotCache.has(activeSessionId)).toBe(false);
 				expect(worker.transcriptCaches.has(activeSessionId)).toBe(false);
 				expect(worker.snapshotGenerations.has(activeSessionId)).toBe(false);
 			}
-			expect(worker.snapshotCache.has("unrelated-active")).toBe(true);
-			expect(worker.transcriptCaches.has("unrelated-active")).toBe(true);
-			expect(worker.snapshotGenerations.has("unrelated-active")).toBe(true);
+			expect(worker.snapshotCache.get("unrelated-active")).toBe(unrelated.result);
+			expect(worker.transcriptCaches.get("unrelated-active")).toBe(unrelated.transcript);
+			expect(worker.snapshotGenerations.get("unrelated-active")).toBeDefined();
+			const releaseUnrelated = unrelated.transcript.retain();
+			try {
+				expect(unrelated.transcript.complete).toBe(true);
+				expect(unrelated.transcript.readChunk(0)).toEqual(Buffer.from("unrelated\n"));
+			} finally {
+				releaseUnrelated();
+			}
 		} finally {
 			kill.mockRestore();
 			rmSync(root, { recursive: true, force: true });
