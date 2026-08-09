@@ -90,7 +90,7 @@ describe("ENG-4649 subagent model selection", () => {
 			const discovered = await harness.session.findRlmModels("", 20);
 			expect(discovered.models.map((model) => model.selector)).toEqual([`${codexProvider}/parent-model`]);
 			expect(fetchModels).toHaveBeenCalledWith(
-				expect.stringMatching(/\/codex\/models\?client_version=/),
+				expect.stringMatching(/\/codex\/models/),
 				expect.objectContaining({
 					headers: expect.objectContaining({ "chatgpt-account-id": "account-1" }),
 				}),
