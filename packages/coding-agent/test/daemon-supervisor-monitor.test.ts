@@ -25,6 +25,7 @@ import {
 	type DaemonWorkerFrameHeader,
 } from "../src/modes/daemon/daemon-worker-protocol.js";
 import { MutationDrainLatch } from "../src/modes/daemon/mutation-drain-latch.js";
+import { SnapshotTranscriptCache } from "../src/modes/daemon/snapshot-transcript-cache.js";
 import { WorkerRecoveryJournal } from "../src/modes/daemon/worker-recovery-journal.js";
 import type { PrivateFrame } from "../src/modes/session-worker/private-framing.js";
 import { createDeferred } from "./suite/scheduling.js";
@@ -1850,7 +1851,13 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(client.attachedActiveSessionIds).toEqual(new Set());
 	});
 
-	it("marks each busy worker session interrupted independently", async () => {
+	it("invalidates every uncertain worker session cache independently", async () => {
+		type SnapshotGeneration = {
+			transcript: SnapshotTranscriptCache;
+			result: DaemonAttachResult;
+			incoming: boolean;
+			retired: boolean;
+		};
 		type RecoveryWorker = {
 			descriptor: {
 				workerId: string;
@@ -1859,9 +1866,9 @@ describe("daemon worker supervisor monitoring", () => {
 				recoveryJournalPath: string;
 				orphanProcessJournalPath: string;
 			};
-			snapshotCache: Map<string, unknown>;
-			transcriptCaches: Map<string, unknown>;
-			snapshotGenerations: Map<string, unknown>;
+			snapshotCache: Map<string, DaemonAttachResult>;
+			transcriptCaches: Map<string, SnapshotTranscriptCache>;
+			snapshotGenerations: Map<string, Map<string, SnapshotGeneration>>;
 		};
 		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-recovery-test-"));
 		const journalPath = join(root, "worker.recovery.jsonl");
@@ -1888,7 +1895,6 @@ describe("daemon worker supervisor monitoring", () => {
 		journal.record({
 			activeSessionId: "child-active",
 			sessionId: "child-session",
-			sessionFile: "/tmp/child.jsonl",
 			busy: true,
 			operation: "tool_execution",
 		});
@@ -1904,6 +1910,19 @@ describe("daemon worker supervisor monitoring", () => {
 			transcriptCaches: new Map(),
 			snapshotGenerations: new Map(),
 		};
+		const cacheSnapshot = (activeSessionId: string, snapshotId: string) => {
+			const transcript = new SnapshotTranscriptCache({ activeSessionId, snapshotId, cacheRoot: root });
+			const result = { snapshotStream: { id: snapshotId } } as DaemonAttachResult;
+			worker.snapshotCache.set(activeSessionId, result);
+			worker.transcriptCaches.set(activeSessionId, transcript);
+			worker.snapshotGenerations.set(
+				activeSessionId,
+				new Map([[snapshotId, { transcript, result, incoming: false, retired: false }]]),
+			);
+		};
+		cacheSnapshot("root-active", "root-snapshot");
+		cacheSnapshot("child-active", "child-snapshot");
+		cacheSnapshot("unrelated-active", "unrelated-snapshot");
 		const markInterrupted = vi.fn(async () => undefined);
 		const kill = vi.spyOn(process, "kill").mockReturnValue(true);
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
@@ -1917,9 +1936,16 @@ describe("daemon worker supervisor monitoring", () => {
 		try {
 			await supervisor.recoverUncertainWorkerOperations(worker, false);
 			expect(kill).not.toHaveBeenCalled();
-			expect(markInterrupted).toHaveBeenCalledTimes(2);
+			expect(markInterrupted).toHaveBeenCalledTimes(1);
 			expect(markInterrupted).toHaveBeenCalledWith("/tmp/root.jsonl", "root-active", ["model_stream"]);
-			expect(markInterrupted).toHaveBeenCalledWith("/tmp/child.jsonl", "child-active", ["tool_execution"]);
+			for (const activeSessionId of ["root-active", "child-active"]) {
+				expect(worker.snapshotCache.has(activeSessionId)).toBe(false);
+				expect(worker.transcriptCaches.has(activeSessionId)).toBe(false);
+				expect(worker.snapshotGenerations.has(activeSessionId)).toBe(false);
+			}
+			expect(worker.snapshotCache.has("unrelated-active")).toBe(true);
+			expect(worker.transcriptCaches.has("unrelated-active")).toBe(true);
+			expect(worker.snapshotGenerations.has("unrelated-active")).toBe(true);
 		} finally {
 			kill.mockRestore();
 			rmSync(root, { recursive: true, force: true });
