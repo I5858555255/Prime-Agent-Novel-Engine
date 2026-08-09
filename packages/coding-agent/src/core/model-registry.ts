@@ -3,6 +3,7 @@
  */
 
 import { Buffer } from "node:buffer";
+import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	type AnthropicMessagesCompat,
@@ -27,7 +28,7 @@ import { dirname, join } from "path";
 import { type Static, type TProperties, Type } from "typebox";
 import type { Validator } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
-import { getAgentDir, VERSION } from "../config.js";
+import { getAgentDir } from "../config.js";
 import type { AuthSourceToken, AuthStatus, AuthStorage } from "./auth-storage.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "./prime-inference-auth.js";
 import {
@@ -372,6 +373,30 @@ function readOpenAICodexAccountId(token: string): string | undefined {
 	}
 }
 
+let codexClientVersion: string | undefined;
+
+function getCodexClientVersion(): string | undefined {
+	if (codexClientVersion !== undefined) return codexClientVersion;
+	try {
+		const output = execSync("codex --version", { encoding: "utf-8", timeout: 3_000 }).trim();
+		const match = /(\d+\.\d+\.\d+)/.exec(output);
+		if (match) {
+			codexClientVersion = match[1];
+			return codexClientVersion;
+		}
+	} catch {}
+	try {
+		const output = execSync("openai-codex --version", { encoding: "utf-8", timeout: 3_000 }).trim();
+		const match = /(\d+\.\d+\.\d+)/.exec(output);
+		if (match) {
+			codexClientVersion = match[1];
+			return codexClientVersion;
+		}
+	} catch {}
+	codexClientVersion = null!;
+	return undefined;
+}
+
 function openAICodexModelsUrl(baseUrl: string): string {
 	const normalized = baseUrl.replace(/\/+$/, "");
 	let path: string;
@@ -383,7 +408,10 @@ function openAICodexModelsUrl(baseUrl: string): string {
 		path = `${normalized}/codex/models`;
 	}
 	const url = new URL(path);
-	url.searchParams.set("client_version", VERSION);
+	const clientVersion = getCodexClientVersion();
+	if (clientVersion) {
+		url.searchParams.set("client_version", clientVersion);
+	}
 	return url.toString();
 }
 
