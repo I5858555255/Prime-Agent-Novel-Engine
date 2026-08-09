@@ -1043,6 +1043,28 @@ describe("DaemonAgentConnection", () => {
 		});
 	});
 
+	it("completes an owned revived session when the post-revival attach fails", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+			ownedSession: true,
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.attachFailures = 1;
+
+		await expect(connection.prompt("continue")).rejects.toThrow("Unknown active session: active-1");
+		// An owned revived worker must not outlive the failed revival: the
+		// failed/superseded attach releases it with complete_owned_session in
+		// addition to the detach.
+		await vi.waitFor(() => {
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "complete_owned_session", activeSessionId: "active-revived" }),
+			);
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+			);
+		});
+	});
+
 	it("ignores an unknown-session error whose id the attempted id merely prefixes", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptResponseError = "Unknown active session: active-10";

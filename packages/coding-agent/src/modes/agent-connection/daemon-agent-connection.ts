@@ -945,8 +945,10 @@ export class DaemonAgentConnection implements AgentConnection {
 				if (this.activeSessionId !== revivedActiveSessionId) {
 					// The attach did not publish the revived binding (transient
 					// failure or supersession); drop any server-side attachment
-					// bookkeeping the request may have registered before failing.
-					void this.requestOk({ type: "detach", activeSessionId: revivedActiveSessionId }).catch(() => undefined);
+					// bookkeeping the request may have registered before failing,
+					// and complete an owned revived worker so it cannot outlive
+					// the failed revival.
+					this.releaseRevivedSession(revivedActiveSessionId);
 					throw error;
 				}
 				// The attach response was applied — the binding is published and
