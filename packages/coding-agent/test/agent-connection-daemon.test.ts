@@ -2258,6 +2258,7 @@ describe("DaemonAgentConnection", () => {
 
 	it("does not detach a sibling's attachment when a superseded revival had a duplicate attach", async () => {
 		const fakeClient = new FakeDaemonClient();
+		fakeClient.serverCapabilities.add("attach_ownership");
 		// A sibling connection on the shared client already holds the
 		// attachment for the session the revival will resume.
 		const sibling = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-revived");
@@ -2323,7 +2324,7 @@ describe("DaemonAgentConnection", () => {
 		await vi.waitFor(() => expect(siblingEvents.some((event) => event.type === "session_event")).toBe(true));
 	});
 
-	it("defaults to not detaching when an older daemon omits attach ownership", async () => {
+	it("keeps the legacy detach when the daemon cannot report attach ownership", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.omitWasAttached = true;
 		let emitRevivedSnapshot = () => {};
@@ -2372,11 +2373,14 @@ describe("DaemonAgentConnection", () => {
 		emitRevivedSnapshot();
 		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
 
-		// Without the revision-15 ownership report the client cannot prove the
-		// attach created the socket entry, so the conservative default keeps
-		// the possible sibling attachment (accepting a stale entry instead).
-		expect(fakeClient.requests).not.toContainEqual(
-			expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+		// A daemon that cannot report attach ownership gets the historical
+		// unconditional detach: skipping it would leave a stale attachment
+		// that blocks the revived worker's idle eviction until the socket
+		// closes, which is worse than the pre-existing shared-client edge.
+		await vi.waitFor(() =>
+			expect(fakeClient.requests).toContainEqual(
+				expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+			),
 		);
 	});
 
@@ -2458,6 +2462,36 @@ describe("DaemonAgentConnection", () => {
 		} finally {
 			vi.unstubAllEnvs();
 		}
+	});
+
+	it("drops the invocation cwd when reviving a transcript adopted by a session switch", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+			reviveConfig: { cwd: "/tmp/original-project", model: "test-provider/test-model" } as never,
+		});
+		// An in-worker switch replaces the transcript without changing the
+		// active id; the invocation config's cwd belongs to the previous
+		// project.
+		fakeClient.emitMessage({
+			type: "session_replaced",
+			activeSessionId: "active-1",
+			state: createConnectionState("active-1", "session-b"),
+			messages: [],
+		});
+		await vi.waitFor(() => expect(fakeClient.requests.length).toBeGreaterThan(0));
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue");
+
+		const create = fakeClient.requests.find((request) => request.type === "create");
+		// The switched transcript revives in ITS own directory: the stale cwd
+		// would act as an explicit override into the previous project, while
+		// the rest of the invocation config still applies.
+		expect(create).toMatchObject({
+			sessionPath: "/tmp/session-b.jsonl",
+			config: { model: "test-provider/test-model" },
+		});
+		expect(create && "config" in create ? create.config?.cwd : "present").toBeUndefined();
 	});
 
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {

@@ -98,7 +98,12 @@ export type DaemonServerCapability =
 	// identity). Clients must check before sending.
 	| "transient_bash"
 	| "session_input_admission"
-	| "prompt_admission_cancellation";
+	| "prompt_admission_cancellation"
+	// Attach results report wasAttached (whether the attach created the
+	// socket's attachment entry). Clients must check before relying on the
+	// field for cleanup decisions; without it they fall back to the legacy
+	// unconditional detach.
+	| "attach_ownership";
 
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
 
@@ -136,6 +141,7 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	"transient_bash",
 	"session_input_admission",
 	"prompt_admission_cancellation",
+	"attach_ownership",
 ];
 
 export interface DaemonRuntimeIdentity {

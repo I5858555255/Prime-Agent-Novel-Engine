@@ -241,6 +241,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private reconnectPromise?: Promise<void>;
 	private reviveSession?: { promise: Promise<RevivedSessionBinding>; sourceActiveSessionId: string };
 	private lastAttachCreatedAttachment = false;
+	private reviveConfigSessionFile: string | undefined;
 	private readonly definitiveRequestErrors = new WeakSet<Error>();
 	private disposing = false;
 	private disposed = false;
@@ -414,6 +415,10 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.attachedSessionId = summary.sessionId;
 		this.attachedSessionFile =
 			summary.sessionFile ?? ("snapshot" in result ? result.snapshot.state.sessionFile : undefined);
+		// The invocation's reviveConfig was computed for the transcript this
+		// connection first attached to; later transcripts (session switches)
+		// must not inherit its cwd.
+		this.reviveConfigSessionFile ??= this.attachedSessionFile;
 		this.captureDaemonLogPath();
 		this.updateReconnectFailed = false;
 		this.terminalCloseEmitted = false;
@@ -1011,9 +1016,23 @@ export class DaemonAgentConnection implements AgentConnection {
 			// regardless: without it the worker starts under the daemon's default
 			// policy and assertTelemetryAttachAllowed rejects the attach after
 			// the worker already launched.
-			const reviveConfig = this.options.reviveConfig
+			let invocationConfig = this.options.reviveConfig;
+			if (
+				invocationConfig?.cwd !== undefined &&
+				this.reviveConfigSessionFile !== undefined &&
+				this.reviveConfigSessionFile !== sessionFile
+			) {
+				// A session switch replaced the transcript this config was
+				// computed for; its cwd would act as an explicit override and run
+				// the retried prompt's tools in the previous project. Dropping it
+				// resumes in the switched transcript's own directory, matching
+				// standard resume semantics.
+				const { cwd: _previousCwd, ...transcriptNeutralConfig } = invocationConfig;
+				invocationConfig = transcriptNeutralConfig;
+			}
+			const reviveConfig = invocationConfig
 				? {
-						...this.options.reviveConfig,
+						...invocationConfig,
 						...(this.options.telemetryDisabled ? { telemetryDisabled: true as const } : {}),
 					}
 				: this.options.telemetryDisabled
@@ -1057,9 +1076,15 @@ export class DaemonAgentConnection implements AgentConnection {
 				// and the response's wasAttached tells whether that attach CREATED
 				// the socket's attachment entry - a sibling connection may already
 				// have held it, in which case a detach would remove the sibling's
-				// subscription rather than ours.
+				// subscription rather than ours. Reliance on the field is gated on
+				// the negotiated capability: a pre-revision-15 daemon never
+				// reports ownership, and skipping the detach there would leave a
+				// stale attachment that blocks the worker's idle eviction until
+				// the socket closes - so legacy daemons keep the historical
+				// unconditional detach instead.
 				const attachAcquired =
-					DaemonAgentConnection.isAttachSupersededError(error) && this.lastAttachCreatedAttachment;
+					DaemonAgentConnection.isAttachSupersededError(error) &&
+					(this.client.supportsServerCapability("attach_ownership") ? this.lastAttachCreatedAttachment : true);
 				if (this.disposed || this.disposing) {
 					this.releaseRevivedSession(revivedActiveSessionId, attachAcquired);
 					throw error;
@@ -1103,8 +1128,12 @@ export class DaemonAgentConnection implements AgentConnection {
 			if (this.disposed) {
 				// The attach succeeded, but it only ACQUIRED the attachment when it
 				// created the socket entry; a sibling's pre-existing attachment
-				// must survive this cleanup.
-				this.releaseRevivedSession(revivedActiveSessionId, this.lastAttachCreatedAttachment);
+				// must survive this cleanup. Without the negotiated ownership
+				// report, legacy daemons keep the historical unconditional detach.
+				this.releaseRevivedSession(
+					revivedActiveSessionId,
+					this.client.supportsServerCapability("attach_ownership") ? this.lastAttachCreatedAttachment : true,
+				);
 				throw new Error("Connection was disposed during session revival");
 			}
 			if (sourceActiveSessionId !== revivedActiveSessionId) {
