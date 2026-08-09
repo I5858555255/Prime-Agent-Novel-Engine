@@ -226,6 +226,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly snapshotAssemblies = new Map<string, DaemonSnapshotAssembly>();
 	private readonly completedSnapshots = new Map<string, DaemonSessionSnapshot>();
 	private readonly pendingBindingCatchupSnapshots = new Map<string, DaemonSessionSnapshot>();
+	private readonly pendingBindingCatchupFailures = new Set<string>();
 	private readonly pendingReattachActiveSessionIds = new Set<string>();
 	private readonly snapshotRecoveryPromises = new Map<string, Promise<void>>();
 	private readonly ignoredSnapshotIds = new Set<string>();
@@ -333,14 +334,23 @@ export class DaemonAgentConnection implements AgentConnection {
 			const catchup = this.pendingBindingCatchupSnapshots.get(this.activeSessionId);
 			if (catchup) {
 				this.pendingBindingCatchupSnapshots.delete(this.activeSessionId);
+				this.pendingBindingCatchupFailures.delete(this.activeSessionId);
 				this.applyReplacementSnapshot(catchup);
+			} else if (this.pendingBindingCatchupFailures.delete(this.activeSessionId)) {
+				// A catch-up FAILED while the target was pending and no later one
+				// succeeded: the cached attach snapshot predates the events that
+				// catch-up carried. Invalidate it so the transition's mandatory
+				// read actually re-reads from the daemon instead of serving the
+				// stale cache.
+				this.latestSnapshotIsFresh = false;
 			}
 		} finally {
 			if (admitPendingTarget) {
 				// A failed or superseded transition discards its buffered
-				// catch-up along with the admission.
+				// catch-up and failure marker along with the admission.
 				this.pendingReattachActiveSessionIds.delete(targetActiveSessionId);
 				this.pendingBindingCatchupSnapshots.delete(targetActiveSessionId);
+				this.pendingBindingCatchupFailures.delete(targetActiveSessionId);
 			}
 		}
 	}
@@ -1760,9 +1770,15 @@ export class DaemonAgentConnection implements AgentConnection {
 			// Recovery re-reads state for the PUBLISHED binding; running it for a
 			// pending transition target would query the old (typically archived)
 			// selector and could emit a terminal close while the transition can
-			// still succeed. A failed pending catch-up needs no recovery: once
-			// the binding publishes, the transition re-reads fresh state anyway,
-			// and on supersession the buffered state is discarded.
+			// still succeed. A failed pending catch-up needs no recovery: the
+			// failure is recorded so the transition invalidates its cached
+			// attach snapshot at publication and re-reads fresh state, and on
+			// supersession the marker is discarded.
+			const isPendingCatchupFailure =
+				(purpose === "replacement" || purpose === "resync") && message.activeSessionId !== this.activeSessionId;
+			if (isPendingCatchupFailure && this.pendingReattachActiveSessionIds.has(message.activeSessionId)) {
+				this.pendingBindingCatchupFailures.add(message.activeSessionId);
+			}
 			const recoveryPromise =
 				(purpose === "replacement" || purpose === "resync") && message.activeSessionId === this.activeSessionId
 					? this.recoverFailedSnapshot(purpose, snapshotError)
@@ -2056,6 +2072,7 @@ export class DaemonAgentConnection implements AgentConnection {
 		this.snapshotAssemblies.clear();
 		this.completedSnapshots.clear();
 		this.pendingBindingCatchupSnapshots.clear();
+		this.pendingBindingCatchupFailures.clear();
 		this.snapshotRecoveryPromises.clear();
 		this.ignoredSnapshotIds.clear();
 	}
@@ -2223,8 +2240,10 @@ export class DaemonAgentConnection implements AgentConnection {
 					// a still-pending binding target has no waiter: buffer the
 					// newest one per target so the attach can apply it once the
 					// binding publishes, instead of losing the intervening events
-					// behind the older attach snapshot.
+					// behind the older attach snapshot. A success supersedes any
+					// earlier failed catch-up for the target.
 					this.pendingBindingCatchupSnapshots.set(message.activeSessionId, snapshot);
+					this.pendingBindingCatchupFailures.delete(message.activeSessionId);
 				}
 			}
 		}

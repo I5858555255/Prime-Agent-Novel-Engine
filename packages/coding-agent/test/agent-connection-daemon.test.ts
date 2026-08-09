@@ -1643,6 +1643,106 @@ describe("DaemonAgentConnection", () => {
 		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
 		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1", "active-revived"]);
 		await vi.waitFor(() => expect(events.some((event) => event.type === "session_resynced")).toBe(true));
+		// The failed catch-up carried events the cached attach snapshot predates;
+		// the revival's resync must come from a fresh daemon read, not the cache.
+		const resynced = events.find(
+			(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+				event.type === "session_resynced",
+		);
+		expect(resynced?.snapshot.messages).toEqual([{ role: "user", content: "current prompt", timestamp: 4 }]);
+	});
+
+	it("prefers a later successful catch-up over an earlier failed one for a pending target", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const catchupMessages: AgentMessage[] = [{ role: "user", content: "caught-up-after-failure", timestamp: 11 }];
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23, {
+				state: createConnectionState(command.activeSessionId, "session-revived"),
+			});
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			queueMicrotask(() => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-attach3",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-attach3",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-catchup-fail2",
+					snapshot: snapshotHeader,
+					messageCount: 1,
+					targetChunkBytes: 512 * 1024,
+					purpose: "resync",
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_failed",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-catchup-fail2",
+					error: "catch-up encoder failed",
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-catchup-late",
+					snapshot: snapshotHeader,
+					messageCount: catchupMessages.length,
+					targetChunkBytes: 512 * 1024,
+					purpose: "resync",
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_chunk",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-catchup-late",
+					index: 0,
+					messages: [catchupMessages[0]!],
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-catchup-late",
+					chunkCount: 1,
+					lastEventSequence: 31,
+				});
+			});
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-revive-attach3", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue");
+
+		await vi.waitFor(() => expect(events.some((event) => event.type === "session_resynced")).toBe(true));
+		const resynced = events.find(
+			(event): event is Extract<AgentConnectionEvent, { type: "session_resynced" }> =>
+				event.type === "session_resynced",
+		);
+		// Newest wins: the successful catch-up supersedes the earlier failure, is
+		// applied from the buffer, and no re-read is forced.
+		expect(resynced?.snapshot.messages).toEqual(catchupMessages);
+		expect(resynced?.snapshot.lastEventSequence).toBe(31);
+		expect(fakeClient.requests.filter((request) => request.type === "get_connection_state")).toHaveLength(0);
 	});
 
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
