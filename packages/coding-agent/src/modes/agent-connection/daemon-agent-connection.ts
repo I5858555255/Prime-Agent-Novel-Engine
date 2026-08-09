@@ -1076,7 +1076,11 @@ export class DaemonAgentConnection implements AgentConnection {
 				// worker matches the selector anymore.
 				void this.requestOk({ type: "detach", activeSessionId: sourceActiveSessionId }).catch(() => undefined);
 			}
-			if (snapshot && this.activeSessionId === revivedActiveSessionId) {
+			// The emission must verify the full binding identity, not just the
+			// id: an in-worker switch landing during the snapshot read keeps the
+			// active id but replaces the transcript, and emitting the pre-switch
+			// snapshot after its session_replaced would revert the window.
+			if (snapshot && this.matchesRevivedBinding(revivedBinding)) {
 				void this.emit({ type: "session_resynced", snapshot });
 			}
 			return revivedBinding;

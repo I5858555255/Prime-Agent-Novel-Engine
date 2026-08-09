@@ -1375,6 +1375,10 @@ describe("DaemonAgentConnection", () => {
 			releaseStateRead = resolve;
 		});
 		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
 		fakeClient.deadActiveSessionIds.add("active-1");
 
 		const prompt = connection.prompt("continue");
@@ -1415,6 +1419,11 @@ describe("DaemonAgentConnection", () => {
 		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
 		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
 		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1"]);
+		// And the revival's own resync must not follow the session_replaced
+		// with a pre-switch snapshot, which would revert the window to the
+		// replaced transcript.
+		expect(events.some((event) => event.type === "session_replaced")).toBe(true);
+		expect(events.filter((event) => event.type === "session_resynced")).toHaveLength(0);
 	});
 
 	it("carries the telemetry opt-out into the revived worker's create command", async () => {
