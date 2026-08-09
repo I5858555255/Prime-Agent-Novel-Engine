@@ -14,6 +14,7 @@ import {
 	getLocalHarnessStateDir,
 	getRefinementHistory,
 	getRefinementHistoryPath,
+	type HarnessEntry,
 	type HarnessState,
 	inferRefinementResultScope,
 	loadGlobalRefinementHistory,
@@ -27,6 +28,7 @@ import {
 	type RefinementResult,
 	refineHarness,
 	saveHarnessState,
+	selectOverviewEntries,
 } from "../src/core/refinement/index.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
 
@@ -1515,5 +1517,134 @@ describe("global refinement history", () => {
 		});
 
 		expect(plan.rollbackScope).toBe("global");
+	});
+});
+
+describe("selectOverviewEntries", () => {
+	const budget = { detailBudget: 100_000, maxContentLength: 180, reservedRecentSlots: 6 };
+
+	function entry(overrides: Partial<HarnessEntry> & Pick<HarnessEntry, "id">): HarnessEntry {
+		return {
+			kind: "memory",
+			title: overrides.id,
+			content: `content for ${overrides.id}`,
+			path: `memory/${overrides.id}.md`,
+			scope: "global",
+			reference: {},
+			arguments: {},
+			metadata: {},
+			source: "test",
+			created_at: "2026-06-01T00:00:00.000Z",
+			updated_at: "2026-06-01T00:00:00.000Z",
+			version: 1,
+			...overrides,
+		};
+	}
+
+	const ids = (entries: readonly HarnessEntry[]): string[] => entries.map((item) => item.id);
+
+	it("returns nothing for an empty store", () => {
+		expect(selectOverviewEntries([], budget)).toEqual({ detailed: [], listed: [] });
+	});
+
+	it("ranks the most recently updated entry first even when its path sorts last", () => {
+		const entries = [
+			entry({ id: "a-old", path: "memory/a.md" }),
+			entry({ id: "z-new", path: "memory/z.md", updated_at: "2026-06-09T00:00:00.000Z" }),
+			entry({ id: "b-old", path: "memory/b.md" }),
+		];
+
+		expect(ids(selectOverviewEntries(entries, budget).detailed)).toEqual(["z-new", "a-old", "b-old"]);
+	});
+
+	it("breaks updated_at ties on version, then on the path/title/id ordering", () => {
+		const entries = [
+			entry({ id: "c", path: "memory/c.md" }),
+			entry({ id: "a", path: "memory/a.md" }),
+			entry({ id: "b", path: "memory/b.md", version: 4 }),
+		];
+
+		expect(ids(selectOverviewEntries(entries, budget).detailed)).toEqual(["b", "a", "c"]);
+	});
+
+	it("ranks entries with a missing or unparseable updated_at last without throwing", () => {
+		const entries = [
+			entry({ id: "broken", updated_at: "not a timestamp" }),
+			entry({ id: "missing", updated_at: undefined as unknown as string }),
+			entry({ id: "dated" }),
+		];
+
+		expect(ids(selectOverviewEntries(entries, budget).detailed)).toEqual(["dated", "broken", "missing"]);
+	});
+
+	it("stops filling detail at reservedRecentSlots and lists the rest in rank order", () => {
+		const entries = Array.from({ length: 10 }, (_, index) => entry({ id: `mem-${index}` }));
+
+		const { detailed, listed } = selectOverviewEntries(entries, { ...budget, reservedRecentSlots: 3 });
+
+		expect(ids(detailed)).toEqual(["mem-0", "mem-1", "mem-2"]);
+		expect(ids(listed)).toEqual(["mem-3", "mem-4", "mem-5", "mem-6", "mem-7", "mem-8", "mem-9"]);
+	});
+
+	it("lists everything when no detail slots are reserved", () => {
+		const entries = [entry({ id: "a" }), entry({ id: "b" })];
+
+		const { detailed, listed } = selectOverviewEntries(entries, { ...budget, reservedRecentSlots: 0 });
+
+		expect(detailed).toEqual([]);
+		expect(ids(listed)).toEqual(["a", "b"]);
+	});
+
+	it("stops adding detail once the character budget is spent", () => {
+		const entries = Array.from({ length: 6 }, (_, index) => entry({ id: `mem-${index}`, content: "x".repeat(500) }));
+
+		const { detailed, listed } = selectOverviewEntries(entries, { ...budget, detailBudget: 500 });
+
+		expect(ids(detailed)).toEqual(["mem-0", "mem-1"]);
+		expect(listed).toHaveLength(4);
+		expect(detailed.length + listed.length).toBe(entries.length);
+	});
+
+	it("always keeps the top-ranked entry in detail, however small the budget", () => {
+		const entries = [
+			entry({ id: "old", path: "memory/a.md", content: "y".repeat(500) }),
+			entry({ id: "new", path: "memory/z.md", content: "x".repeat(500), updated_at: "2026-06-09T00:00:00.000Z" }),
+		];
+
+		const { detailed, listed } = selectOverviewEntries(entries, { ...budget, detailBudget: 1 });
+
+		expect(ids(detailed)).toEqual(["new"]);
+		expect(ids(listed)).toEqual(["old"]);
+	});
+
+	it("produces identical output for the same entries in a different input order", () => {
+		const entries = Array.from({ length: 20 }, (_, index) =>
+			entry({
+				id: `mem-${String(index).padStart(2, "0")}`,
+				path: `memory/${String.fromCharCode(97 + (index % 7))}/lesson-${index}.md`,
+				version: (index % 3) + 1,
+				updated_at: `2026-06-0${(index % 5) + 1}T00:00:00.000Z`,
+			}),
+		);
+
+		const first = selectOverviewEntries(entries, budget);
+		const again = selectOverviewEntries(entries, budget);
+		const reversed = selectOverviewEntries([...entries].reverse(), budget);
+
+		expect(ids(again.detailed)).toEqual(ids(first.detailed));
+		expect(ids(again.listed)).toEqual(ids(first.listed));
+		expect(ids(reversed.detailed)).toEqual(ids(first.detailed));
+		expect(ids(reversed.listed)).toEqual(ids(first.listed));
+	});
+
+	it("does not reorder the caller's array", () => {
+		const entries = [
+			entry({ id: "a", path: "memory/a.md" }),
+			entry({ id: "z", path: "memory/z.md", updated_at: "2026-06-09T00:00:00.000Z" }),
+		];
+
+		selectOverviewEntries(entries, budget);
+
+		expect(ids(entries)).toEqual(["a", "z"]);
 	});
 });

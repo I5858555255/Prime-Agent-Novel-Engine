@@ -3,7 +3,12 @@
  */
 
 import { buildChildAgentDoctrine, buildRlmPrompt, buildSubagentGuidance } from "./prompts/index.js";
-import { formatHarnessStateForPrompt, type HarnessState, REFINE_SKILL_NAME } from "./refinement/index.js";
+import {
+	formatHarnessStateForPrompt,
+	type HarnessOverviewLimits,
+	type HarnessState,
+	REFINE_SKILL_NAME,
+} from "./refinement/index.js";
 import { formatSkillsForPrompt, getPythonSkillRuntimeInfo, type Skill } from "./skills.js";
 
 export interface BuildSystemPromptOptions {
@@ -33,6 +38,8 @@ export interface BuildSystemPromptOptions {
 	rlmParentAgent?: string;
 	/** Global harness state to inject as compact persistent context. */
 	harnessState?: HarnessState;
+	/** Overrides for how much of the harness state is rendered. Unset falls back to the render defaults. */
+	harnessOverview?: HarnessOverviewLimits;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -68,6 +75,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
 	const visiblePythonSkillImportNames = getPythonSkillRuntimeInfo(visibleSkills).map((skill) => skill.importName);
 	const hasRefineSkill = visibleSkills.some((skill) => skill.name === REFINE_SKILL_NAME);
+	// Shared by both render paths below so the custom-prompt branch and the default branch can never
+	// drift apart on harness limits.
+	const harnessOverviewOptions = {
+		...options.harnessOverview,
+		includeIpythonExamples: hasIpython,
+		includeShellExamples: hasBash,
+		includeRefineExamples: hasIpython && hasRefineSkill,
+	};
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -103,7 +118,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 
 		if (harnessState) {
-			prompt += `\n\n${formatHarnessStateForPrompt(harnessState, { includeIpythonExamples: hasIpython, includeShellExamples: hasBash, includeRefineExamples: hasIpython && hasRefineSkill })}`;
+			prompt += `\n\n${formatHarnessStateForPrompt(harnessState, harnessOverviewOptions)}`;
 		}
 
 		if (appendSection) {
@@ -138,7 +153,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	}
 
 	if (harnessState) {
-		prompt += `\n\n${formatHarnessStateForPrompt(harnessState, { includeIpythonExamples: hasIpython, includeShellExamples: hasBash, includeRefineExamples: hasIpython && hasRefineSkill })}`;
+		prompt += `\n\n${formatHarnessStateForPrompt(harnessState, harnessOverviewOptions)}`;
 	}
 
 	const guidelines = formatPromptGuidelines(promptGuidelines);

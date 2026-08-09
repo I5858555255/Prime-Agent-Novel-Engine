@@ -27,6 +27,13 @@ export interface AutoRefineSettings {
 	cooldownMs?: number; // default: 20 minutes
 }
 
+export interface ContinualHarnessSettings {
+	maxEntriesPerKind?: number; // default: 6 - entries per kind rendered with their content
+	maxContentLength?: number; // default: 180 - characters kept per rendered content value
+	detailBudget?: number; // default: 4000 - characters spent on content-bearing entries per kind
+	maxListedEntries?: number; // default: 200 - one-line stubs per kind; 0 renders an overflow count instead
+}
+
 export interface ProviderRetrySettings {
 	timeoutMs?: number; // SDK/provider request timeout in milliseconds
 	maxRetries?: number; // SDK/provider retry attempts
@@ -135,6 +142,7 @@ export interface Settings {
 	theme?: string;
 	compaction?: CompactionSettings;
 	autoRefine?: AutoRefineSettings;
+	continualHarness?: ContinualHarnessSettings;
 	agentTraces?: AgentTracesSettings;
 	telemetry?: TelemetrySettings;
 	branchSummary?: BranchSummarySettings;
@@ -176,6 +184,18 @@ export interface TelemetrySettings {
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
+/**
+ * Resolve a positive numeric setting. Non-numeric, non-finite, and out-of-range values fall back to
+ * the default rather than reaching the prompt, where a zero or negative limit would render an empty
+ * or malformed continual harness section.
+ */
+function resolvePositiveSetting(value: number | undefined, fallback: number, minimum = 1): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return fallback;
+	}
+	return Math.max(minimum, Math.floor(value));
+}
+
 function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	const result: Settings = { ...base };
 
@@ -894,6 +914,22 @@ export class SettingsManager {
 				0,
 				typeof cooldownMs === "number" && Number.isFinite(cooldownMs) ? cooldownMs : 20 * 60_000,
 			),
+		};
+	}
+
+	getContinualHarnessSettings(): {
+		maxEntriesPerKind: number;
+		maxContentLength: number;
+		detailBudget: number;
+		maxListedEntries: number;
+	} {
+		const harness = this.settings.continualHarness;
+		return {
+			maxEntriesPerKind: resolvePositiveSetting(harness?.maxEntriesPerKind, 6),
+			maxContentLength: resolvePositiveSetting(harness?.maxContentLength, 180),
+			detailBudget: resolvePositiveSetting(harness?.detailBudget, 4000),
+			// 0 is meaningful here: it turns the stub menu off and restores the overflow count.
+			maxListedEntries: resolvePositiveSetting(harness?.maxListedEntries, 200, 0),
 		};
 	}
 

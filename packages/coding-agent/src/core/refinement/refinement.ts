@@ -26,6 +26,8 @@ const REFINEMENT_HISTORY_FILE_NAME = "refinements.jsonl";
 const DEFAULT_OVERVIEW_ENTRY_LIMIT = 6;
 const DEFAULT_OVERVIEW_REFINEMENT_LIMIT = 5;
 const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
+const DEFAULT_OVERVIEW_DETAIL_BUDGET = 4000;
+const DEFAULT_OVERVIEW_LISTED_LIMIT = 200;
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
@@ -426,12 +428,104 @@ function compactText(text: string, maxLength: number): string {
 	return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
+/** Numeric limits for the continual harness overview rendered into the system prompt. */
+export interface HarnessOverviewLimits {
+	/** Entries per kind rendered with their content. Default: 6. */
+	maxEntriesPerKind?: number;
+	/** Characters kept per rendered content, `ref=`, and `args=` value. Default: 180. */
+	maxContentLength?: number;
+	/** Characters spent on content-bearing entries per kind. Default: 4000. */
+	detailBudget?: number;
+	/** One-line stubs rendered per kind after the content-bearing entries. Default: 200. */
+	maxListedEntries?: number;
+}
+
+function overviewStubLine(entry: HarnessEntry): string {
+	return `- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})`;
+}
+
+function overviewDetailLine(entry: HarnessEntry, maxContentLength: number): string {
+	const argumentsText =
+		entry.kind === "skill" && Object.keys(entry.arguments).length > 0
+			? ` args=${compactText(JSON.stringify(entry.arguments), maxContentLength)}`
+			: "";
+	const referenceText =
+		entry.kind === "skill" && Object.keys(entry.reference).length > 0
+			? ` ref=${compactText(JSON.stringify(entry.reference), maxContentLength)}`
+			: "";
+	return `${overviewStubLine(entry)}${referenceText}${argumentsText}: ${compactText(entry.content, maxContentLength)}`;
+}
+
+// `loadHarnessState` copies timestamps from disk without validating them, and the TypeScript and
+// Python writers emit different ISO forms ("...Z" vs "...+00:00"), so rank on the parsed epoch
+// rather than the raw string. Missing or unparseable timestamps rank last.
+function overviewRecency(entry: HarnessEntry): number {
+	const parsed = Date.parse(entry.updated_at);
+	return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+function compareOverviewEntries(a: HarnessEntry, b: HarnessEntry): number {
+	const aRecency = overviewRecency(a);
+	const bRecency = overviewRecency(b);
+	if (aRecency !== bRecency) {
+		return bRecency > aRecency ? 1 : -1;
+	}
+	const aVersion = Number.isFinite(a.version) ? a.version : 0;
+	const bVersion = Number.isFinite(b.version) ? b.version : 0;
+	if (aVersion !== bVersion) {
+		return bVersion - aVersion;
+	}
+	return [a.path, a.title, a.id].join("\0").localeCompare([b.path, b.title, b.id].join("\0"));
+}
+
+/**
+ * Rank harness entries for the system-prompt overview and split them into content-bearing entries
+ * and one-line stubs.
+ *
+ * Ranking is `updated_at` descending, then `version` descending, then the historical
+ * `[path, title, id]` ordering so entries written in the same millisecond stay stable. The function
+ * is pure - no clock, no filesystem, no randomness - so two renders of the same `harness_state.json`
+ * are byte-identical.
+ *
+ * `opts.query` is accepted and deliberately unused. It is the seam for a future relevance- or
+ * utility-ranked selection policy, so that policy can land without changing this signature or its
+ * call sites.
+ */
+export function selectOverviewEntries(
+	entries: readonly HarnessEntry[],
+	opts: {
+		detailBudget: number;
+		maxContentLength: number;
+		reservedRecentSlots: number;
+		query?: string;
+	},
+): { detailed: HarnessEntry[]; listed: HarnessEntry[] } {
+	const { detailBudget, maxContentLength, reservedRecentSlots } = opts;
+	const detailed: HarnessEntry[] = [];
+	const listed: HarnessEntry[] = [];
+	let spent = 0;
+	let budgetExhausted = false;
+	for (const entry of [...entries].sort(compareOverviewEntries)) {
+		if (!budgetExhausted && detailed.length < reservedRecentSlots) {
+			const line = overviewDetailLine(entry, maxContentLength);
+			// The top-ranked entry always keeps its content, so a tight budget can never hide the
+			// lesson a refinement just wrote.
+			if (detailed.length === 0 || spent + line.length <= detailBudget) {
+				detailed.push(entry);
+				spent += line.length;
+				continue;
+			}
+			budgetExhausted = true;
+		}
+		listed.push(entry);
+	}
+	return { detailed, listed };
+}
+
 export function formatHarnessStateForPrompt(
 	state: HarnessState,
-	options: {
-		maxEntriesPerKind?: number;
+	options: HarnessOverviewLimits & {
 		maxRefinements?: number;
-		maxContentLength?: number;
 		includeIpythonExamples?: boolean;
 		includeShellExamples?: boolean;
 		includeRefineExamples?: boolean;
@@ -440,6 +534,8 @@ export function formatHarnessStateForPrompt(
 	const maxEntriesPerKind = options.maxEntriesPerKind ?? DEFAULT_OVERVIEW_ENTRY_LIMIT;
 	const maxRefinements = options.maxRefinements ?? DEFAULT_OVERVIEW_REFINEMENT_LIMIT;
 	const maxContentLength = options.maxContentLength ?? DEFAULT_OVERVIEW_CONTENT_LIMIT;
+	const detailBudget = options.detailBudget ?? DEFAULT_OVERVIEW_DETAIL_BUDGET;
+	const maxListedEntries = options.maxListedEntries ?? DEFAULT_OVERVIEW_LISTED_LIMIT;
 	const includeIpythonExamples = options.includeIpythonExamples ?? true;
 	const includeRefineExamples = options.includeRefineExamples ?? includeIpythonExamples;
 	const lines = [
@@ -464,37 +560,33 @@ export function formatHarnessStateForPrompt(
 
 	let totalEntries = 0;
 	for (const kind of Object.keys(state.entries) as RefinementKind[]) {
-		const entries = Object.values(state.entries[kind]).sort((a, b) =>
-			[a.path, a.title, a.id].join("\0").localeCompare([b.path, b.title, b.id].join("\0")),
-		);
-		totalEntries += entries.length;
+		const kindEntries = Object.values(state.entries[kind]);
+		totalEntries += kindEntries.length;
 		// Render subagent specs as a task-shaped roster the model can match against — the
 		// analogue of Claude Code's agent-type menu — rather than a bare count. In
 		// IPython sessions, include the native `rlm` invocation hint.
-		if (kind === "subagent" && entries.length > 0 && includeIpythonExamples) {
+		if (kind === "subagent" && kindEntries.length > 0 && includeIpythonExamples) {
 			lines.push(
-				`${kind}: ${entries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
+				`${kind}: ${kindEntries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
 			);
 		} else {
-			lines.push(`${kind}: ${entries.length}`);
+			lines.push(`${kind}: ${kindEntries.length}`);
 		}
-		for (const entry of entries.slice(0, maxEntriesPerKind)) {
-			const argumentsText =
-				entry.kind === "skill" && Object.keys(entry.arguments).length > 0
-					? ` args=${compactText(JSON.stringify(entry.arguments), maxContentLength)}`
-					: "";
-			const referenceText =
-				entry.kind === "skill" && Object.keys(entry.reference).length > 0
-					? ` ref=${compactText(JSON.stringify(entry.reference), maxContentLength)}`
-					: "";
-			lines.push(
-				`- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${compactText(
-					entry.content,
-					maxContentLength,
-				)}`,
-			);
+		const { detailed, listed } = selectOverviewEntries(kindEntries, {
+			detailBudget,
+			maxContentLength,
+			reservedRecentSlots: maxEntriesPerKind,
+		});
+		for (const entry of detailed) {
+			lines.push(overviewDetailLine(entry, maxContentLength));
 		}
-		const overflow = entries.length - Math.min(entries.length, maxEntriesPerKind);
+		// Everything the detail budget could not afford still gets an addressable one-line stub, so
+		// the model can reach it with `rlm.harness.get(kind, "<scope>:<id>")` instead of only being
+		// told a count. Only entries past the stub ceiling collapse back into that count.
+		for (const entry of listed.slice(0, Math.max(0, maxListedEntries))) {
+			lines.push(overviewStubLine(entry));
+		}
+		const overflow = Math.max(0, listed.length - Math.max(0, maxListedEntries));
 		if (overflow > 0) {
 			lines.push(`- +${overflow} more ${kind} entries`);
 		}

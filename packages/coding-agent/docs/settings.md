@@ -126,6 +126,37 @@ prime-agent --offline
 }
 ```
 
+### Continual Harness
+
+Controls how much of the continual harness (`/refine` prompt notes, memories, skills, and subagent
+specs) is rendered into the system prompt. Entries are ranked by `updated_at`, then `version`, then
+path, so the most recently refined entry always keeps its content. Every entry that does not fit the
+detail budget is still listed as a one-line stub carrying its `scope:id`, which is the address
+`rlm.harness.get(kind, "global:<id>")` accepts.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `continualHarness.maxEntriesPerKind` | number | `6` | Entries per kind rendered with their content |
+| `continualHarness.maxContentLength` | number | `180` | Characters kept per rendered content, `ref=`, and `args=` value |
+| `continualHarness.detailBudget` | number | `4000` | Characters spent on content-bearing entries per kind |
+| `continualHarness.maxListedEntries` | number | `200` | One-line stubs rendered per kind after the content-bearing entries |
+
+`detailBudget` does not bind at the default `maxEntriesPerKind`; it is the ceiling that keeps a
+raised `maxEntriesPerKind` from dominating the prompt. The top-ranked entry always keeps its content
+regardless of the budget. Entries beyond `maxListedEntries` collapse into a `+N more <kind> entries`
+count; setting it to `0` turns the stub list off entirely and restores the count-only overview.
+
+```json
+{
+  "continualHarness": {
+    "maxEntriesPerKind": 6,
+    "maxContentLength": 180,
+    "detailBudget": 4000,
+    "maxListedEntries": 200
+  }
+}
+```
+
 ### Branch Summary
 
 | Setting | Type | Default | Description |
