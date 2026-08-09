@@ -129,6 +129,9 @@ describe("agents view reply on inactive sessions", () => {
 			"wake up",
 			"steer",
 			expect.objectContaining({ activeSessionId: "active-9" }),
+			// The delivery connection revives with the config the resume just
+			// created with, not one recomputed from the live summary.
+			expect.any(Object),
 		);
 		expect(self.selectSummary).toHaveBeenCalledWith(expect.objectContaining({ activeSessionId: "active-9" }));
 		expect(self.inactiveAgentIdentities).not.toContain("file:/tmp/sessions/saved-1.jsonl");
@@ -176,6 +179,7 @@ describe("agents view reply on inactive sessions", () => {
 			"wake up",
 			undefined,
 			expect.objectContaining({ activeSessionId: "active-9" }),
+			expect.any(Object),
 		);
 		expect(self.inactiveAgentIdentities).not.toContain("file:/tmp/sessions/saved-1.jsonl");
 	});
@@ -350,6 +354,7 @@ describe("agents view reply on inactive sessions", () => {
 			"wake up",
 			undefined,
 			expect.objectContaining({ activeSessionId: "active-new" }),
+			expect.any(Object),
 		);
 		expect(self.sendPrompt).not.toHaveBeenCalledWith("active-dead", expect.anything(), expect.anything());
 	});
@@ -373,6 +378,7 @@ describe("agents view reply on inactive sessions", () => {
 			"hello",
 			undefined,
 			expect.objectContaining({ activeSessionId: "active-1" }),
+			undefined,
 		);
 
 		liveSummary = summary({ activeSessionId: "active-1", lifecycle: "live", isStreaming: true });
@@ -382,6 +388,7 @@ describe("agents view reply on inactive sessions", () => {
 			"change course",
 			"steer",
 			expect.objectContaining({ activeSessionId: "active-1" }),
+			undefined,
 		);
 
 		await invoke("sendReply", self, target(), "later please", "followUp");
@@ -390,6 +397,7 @@ describe("agents view reply on inactive sessions", () => {
 			"later please",
 			"followUp",
 			expect.objectContaining({ activeSessionId: "active-1" }),
+			undefined,
 		);
 
 		expect(request).not.toHaveBeenCalled();

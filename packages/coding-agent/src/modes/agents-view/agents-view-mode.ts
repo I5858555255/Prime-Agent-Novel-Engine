@@ -1745,6 +1745,7 @@ export class AgentsViewMode implements Component, Focusable {
 		let activeSessionId = currentSummary.activeSessionId;
 		let liveSummary = activeSessionId ? currentSummary : undefined;
 		let cwdFallbackNotice: string | undefined;
+		let resumedReviveConfig: AgentSessionRuntimeConfig | undefined;
 		let didResume = false;
 		try {
 			if (!activeSessionId) {
@@ -1762,6 +1763,10 @@ export class AgentsViewMode implements Component, Focusable {
 				// streaming state for scheduling the prompt.
 				liveSummary = resumed.summary;
 				cwdFallbackNotice = resumed.cwdFallbackNotice;
+				// The config the resume just created with (including any fallback
+				// cwd for a missing recorded directory) also governs a revival of
+				// the delivery connection.
+				resumedReviveConfig = resumed.reviveConfig;
 				this.inactiveAgentIdentities.delete(getSummaryIdentity(target.summary));
 				// The resume and delivery still belong to this submission, but selection
 				// belongs to the current composer. Do not steal it after cancellation.
@@ -1769,7 +1774,7 @@ export class AgentsViewMode implements Component, Focusable {
 			}
 			const behavior = delivery === "followUp" ? "followUp" : liveSummary?.isStreaming ? "steer" : undefined;
 			this.setStatusMessage("Sending reply...");
-			await this.sendPrompt(activeSessionId, text, behavior, liveSummary ?? target.summary);
+			await this.sendPrompt(activeSessionId, text, behavior, liveSummary ?? target.summary, resumedReviveConfig);
 			// The fallback-directory notice must outlive the transient send statuses.
 			if (cwdFallbackNotice) this.setStatusMessage(cwdFallbackNotice, { sticky: true });
 			else this.setStatusMessage("Reply sent");
@@ -2119,20 +2124,25 @@ export class AgentsViewMode implements Component, Focusable {
 		message: string,
 		streamingBehavior?: "steer" | "followUp",
 		targetSummary?: SessionSummary,
+		reviveConfig?: AgentSessionRuntimeConfig,
 	): Promise<void> {
 		if (this.options.config.telemetryDisabled) {
 			const client = await this.connectDedicatedClient();
+			// The reply's revival fallback must recreate with the agents-view
+			// launch context, not daemon defaults. A config carried from the
+			// resume that just ran wins: recomputing from the now-live summary
+			// would strip a fallback cwd the resume was opened with (its
+			// recorded directory is missing), and revival would fail on it.
+			const revivalConfig =
+				reviveConfig ??
+				(targetSummary ? agentsViewSessionRuntimeConfig(this.options.config, targetSummary) : undefined);
 			const connection = await DaemonAgentConnection.attach(client, activeSessionId, {
 				closeClientOnDispose: true,
 				supportsExtensionUi: false,
 				recoverDaemon: this.options.recoverDaemon,
 				reconnectTimeoutMs: this.options.reconnectTimeoutMs,
 				telemetryDisabled: true,
-				// The reply's revival fallback must recreate with the agents-view
-				// launch context, not daemon defaults.
-				...(targetSummary
-					? { reviveConfig: agentsViewSessionRuntimeConfig(this.options.config, targetSummary) }
-					: {}),
+				...(revivalConfig ? { reviveConfig: revivalConfig } : {}),
 			});
 			try {
 				await connection.prompt(message, streamingBehavior === undefined ? undefined : { streamingBehavior });
