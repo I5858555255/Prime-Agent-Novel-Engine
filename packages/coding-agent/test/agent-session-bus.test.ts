@@ -171,10 +171,24 @@ describe("agent session bus", () => {
 		}));
 		const handlers = createAgentMessageHostHandlers({
 			roster: () => ({
-				current: { name: "builder", id: "builder", depth: 1 },
+				current: { name: "builder", id: "builder", cwd: "/projects/builder", depth: 1 },
 				entries: [
-					{ relationship: "parent", name: "root", id: "root", depth: 0, status: "running" },
-					{ relationship: "sibling", name: "reviewer", id: "sibling", depth: 1, status: "idle" },
+					{
+						relationship: "parent",
+						name: "root",
+						id: "root",
+						cwd: "/projects/root",
+						depth: 0,
+						status: "running",
+					},
+					{
+						relationship: "sibling",
+						name: "reviewer",
+						id: "sibling",
+						cwd: "/projects/reviewer",
+						depth: 1,
+						status: "idle",
+					},
 					{ relationship: "child", name: "tester", id: "child", depth: 2, status: "inactive" },
 				],
 			}),
@@ -211,6 +225,15 @@ describe("agent session bus", () => {
 				receiver_name: "reviewer",
 			}),
 		).rejects.toThrow("broadcast cannot be combined with receiver_role/receiver_name");
+		expect(sendAgentMessage).not.toHaveBeenCalled();
+
+		await expect(
+			handlers["agent_message.send"]!({
+				message: "do not route by cwd",
+				receiver_role: "sibling",
+				receiver_name: "/projects/reviewer",
+			}),
+		).rejects.toThrow('No sibling matches "/projects/reviewer"');
 		expect(sendAgentMessage).not.toHaveBeenCalled();
 	});
 
@@ -397,29 +420,93 @@ describe("agent session bus", () => {
 
 	it("builds a sorted nuclear-family roster with inactive members", () => {
 		const catalog = [
-			{ id: "root", name: "orchestrator", depth: 0, status: "running" as const, sessionPath: "/root" },
+			{
+				id: "root",
+				name: "orchestrator",
+				cwd: "/projects/root",
+				depth: 0,
+				status: "running" as const,
+				sessionPath: "/root",
+			},
 			{
 				id: "current",
 				name: "builder",
+				cwd: "/projects/builder",
 				depth: 1,
 				status: "idle" as const,
 				parentSessionPath: "/root",
 				sessionPath: "/builder",
 			},
-			{ id: "sibling-z", name: "zeta", depth: 1, status: "running" as const, parentSessionPath: "/root" },
-			{ id: "sibling-a", name: "alpha", depth: 1, status: "inactive" as const, parentSessionPath: "/root" },
-			{ id: "child-z", name: "tester", depth: 2, status: "inactive" as const, parentSessionPath: "/builder" },
-			{ id: "child-a", name: "reviewer", depth: 2, status: "idle" as const, parentSessionPath: "/builder" },
-			{ id: "cousin", name: "ignored", depth: 2, status: "idle" as const, parentSessionPath: "/other" },
+			{
+				id: "sibling-z",
+				name: "zeta",
+				cwd: "/projects/zeta",
+				depth: 1,
+				status: "running" as const,
+				parentSessionPath: "/root",
+			},
+			{
+				id: "sibling-a",
+				name: "alpha",
+				cwd: "",
+				depth: 1,
+				status: "inactive" as const,
+				parentSessionPath: "/root",
+			},
+			{
+				id: "child-z",
+				name: "tester",
+				cwd: "/projects/tester",
+				depth: 2,
+				status: "inactive" as const,
+				parentSessionPath: "/builder",
+			},
+			{
+				id: "child-a",
+				name: "reviewer",
+				cwd: "/projects/reviewer",
+				depth: 2,
+				status: "idle" as const,
+				parentSessionPath: "/builder",
+			},
+			{
+				id: "cousin",
+				name: "ignored",
+				cwd: "/projects/cousin",
+				depth: 2,
+				status: "idle" as const,
+				parentSessionPath: "/other",
+			},
 		];
 
 		expect(buildAgentFamilyRoster(catalog[1]!, catalog)).toEqual({
-			current: { name: "builder", id: "current", depth: 1 },
+			current: { name: "builder", id: "current", cwd: "/projects/builder", depth: 1 },
 			entries: [
-				{ relationship: "parent", name: "orchestrator", id: "root", depth: 0, status: "running" },
+				{
+					relationship: "parent",
+					name: "orchestrator",
+					id: "root",
+					cwd: "/projects/root",
+					depth: 0,
+					status: "running",
+				},
 				{ relationship: "sibling", name: "alpha", id: "sibling-a", depth: 1, status: "inactive" },
-				{ relationship: "sibling", name: "zeta", id: "sibling-z", depth: 1, status: "running" },
-				{ relationship: "child", name: "reviewer", id: "child-a", depth: 2, status: "idle" },
+				{
+					relationship: "sibling",
+					name: "zeta",
+					id: "sibling-z",
+					cwd: "/projects/zeta",
+					depth: 1,
+					status: "running",
+				},
+				{
+					relationship: "child",
+					name: "reviewer",
+					id: "child-a",
+					cwd: "/projects/reviewer",
+					depth: 2,
+					status: "idle",
+				},
 				{ relationship: "child", name: "tester", id: "child-z", depth: 2, status: "inactive" },
 			],
 		});
