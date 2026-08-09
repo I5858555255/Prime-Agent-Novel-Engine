@@ -59,6 +59,7 @@ class FakeDaemonClient {
 	createGate: Promise<void> | undefined;
 	revivedAttachGate: Promise<void> | undefined;
 	switchSessionAlreadyActiveId: string | undefined;
+	switchSessionSucceeds = false;
 	connectionStateFailures = 0;
 	cancelPromptAdmissionStatus: "cancelled" | "owned" | "unknown" = "owned";
 	serverCapabilities = new Set<string>();
@@ -508,6 +509,9 @@ class FakeDaemonClient {
 					data: createAttachResult(command.targetActiveSessionId, command.clientId, command.capabilities, 30),
 				};
 			case "switch_session":
+				if (this.switchSessionSucceeds) {
+					return { type: "response", command: command.type, success: true, data: { cancelled: false } };
+				}
 				if (this.switchSessionAlreadyActiveId) {
 					return {
 						type: "response",
@@ -2557,6 +2561,37 @@ describe("DaemonAgentConnection", () => {
 		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
 		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
 		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1"]);
+	});
+
+	it("revives a switched transcript with the fallback cwd it was opened with", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.switchSessionSucceeds = true;
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+			reviveConfig: { cwd: "/tmp/original-project", model: "test-provider/test-model" } as never,
+		});
+		// The user resumes a transcript whose recorded directory is missing,
+		// selecting a fallback cwd - the switch only succeeds because of it.
+		await connection.switchSession("/tmp/session-b.jsonl", { cwdOverride: "/tmp/fallback-b" });
+		fakeClient.emitMessage({
+			type: "session_replaced",
+			activeSessionId: "active-1",
+			state: createConnectionState("active-1", "session-b"),
+			messages: [],
+		});
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.some((request) => request.type === "switch_session")).toBe(true),
+		);
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue");
+
+		// Reviving the switched transcript must reuse the selected fallback
+		// cwd: without it the recreate fails on the missing recorded directory
+		// and the prompt dead-ends again.
+		expect(fakeClient.requests.find((request) => request.type === "create")).toMatchObject({
+			sessionPath: "/tmp/session-b.jsonl",
+			config: { model: "test-provider/test-model", cwd: "/tmp/fallback-b" },
+		});
 	});
 
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {

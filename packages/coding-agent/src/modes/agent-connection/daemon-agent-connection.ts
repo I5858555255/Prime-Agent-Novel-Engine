@@ -243,6 +243,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private lastAttachCreatedAttachment = false;
 	private reviveConfigSessionFile: string | undefined;
 	private lastAttachPublishedIdentity: { sessionId: string; sessionFile: string | undefined } | undefined;
+	private switchCwdOverride: { sessionPath: string; cwd: string } | undefined;
 	private readonly definitiveRequestErrors = new WeakSet<Error>();
 	private disposing = false;
 	private disposed = false;
@@ -1036,6 +1037,12 @@ export class DaemonAgentConnection implements AgentConnection {
 				const { cwd: _previousCwd, ...transcriptNeutralConfig } = invocationConfig;
 				invocationConfig = transcriptNeutralConfig;
 			}
+			if (this.switchCwdOverride?.sessionPath === sessionFile) {
+				// The transcript only opened because the user selected a fallback
+				// cwd for its missing recorded directory; the recreate needs the
+				// same override or it fails on that directory again.
+				invocationConfig = { ...(invocationConfig ?? {}), cwd: this.switchCwdOverride.cwd };
+			}
 			const reviveConfig = invocationConfig
 				? {
 						...invocationConfig,
@@ -1586,12 +1593,21 @@ export class DaemonAgentConnection implements AgentConnection {
 	): Promise<{ cancelled: boolean }> {
 		const sourceActiveSessionId = this.activeSessionId;
 		try {
-			return await this.requestData<{ cancelled: boolean }>({
+			const result = await this.requestData<{ cancelled: boolean }>({
 				type: "switch_session",
 				activeSessionId: sourceActiveSessionId,
 				sessionPath,
 				cwdOverride: options?.cwdOverride,
 			});
+			if (!result.cancelled) {
+				// A transcript switched in with a user-selected fallback cwd only
+				// opened BECAUSE of that override (its recorded directory is
+				// missing). Reviving it later must reuse the same override or the
+				// recreate fails on the missing directory and the prompt
+				// dead-ends again.
+				this.switchCwdOverride = options?.cwdOverride ? { sessionPath, cwd: options.cwdOverride } : undefined;
+			}
+			return result;
 		} catch (error) {
 			if (!(error instanceof SessionAlreadyActiveError) || !error.activeSessionId) {
 				throw error;
