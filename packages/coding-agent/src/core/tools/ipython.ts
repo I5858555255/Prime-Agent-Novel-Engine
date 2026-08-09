@@ -671,6 +671,13 @@ export function createIpythonToolDefinition(
 		parameters: ipythonSchema,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
 			let hasWorkingMessage = false;
+			const captures = [
+				artifactStore.createCapture("stdout"),
+				artifactStore.createCapture("stderr"),
+				artifactStore.createCapture("result"),
+				artifactStore.createCapture("traceback"),
+			] as const;
+			const [stdoutCapture, stderrCapture, resultCapture, tracebackCapture] = captures;
 			const setToolWorkingMessage = (message?: string) => {
 				setWorkingMessage(ctx, message);
 				hasWorkingMessage = message !== undefined;
@@ -685,10 +692,6 @@ export function createIpythonToolDefinition(
 
 			try {
 				const code = applyShellSettingsToBashMagicCell(params.code, options);
-				const stdoutCapture = artifactStore.createCapture("stdout");
-				const stderrCapture = artifactStore.createCapture("stderr");
-				const resultCapture = artifactStore.createCapture("result");
-				const tracebackCapture = artifactStore.createCapture("traceback");
 				const { result: r, kernelRestarted } = await executeWithBusyKernelChoice(
 					provisioner,
 					reportStartupProgress,
@@ -757,6 +760,7 @@ export function createIpythonToolDefinition(
 					isError: r.status === "error" || r.status === "aborted",
 				};
 			} finally {
+				for (const capture of captures) capture.dispose();
 				if (hasWorkingMessage) {
 					setToolWorkingMessage();
 				}

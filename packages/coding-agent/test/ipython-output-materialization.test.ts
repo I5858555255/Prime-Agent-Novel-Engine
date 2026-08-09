@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -94,5 +94,29 @@ describe("IPython oversized output materialization", () => {
 		expect(response.details.error?.evalue).not.toBe(fullEvalue);
 		expect(response.details.error?.evalue).toContain("output omitted");
 		expect(encoded).not.toContain(fullEvalue);
+	});
+
+	it("disposes spilled captures when execution is rejected", async () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-ipython-output-rejected-"));
+		roots.push(root);
+		const fullStdout = "private rejected output\n".repeat(200);
+		const execute = async (_code: string, executeOptions: ExecuteOptions): Promise<ExecuteResult> => {
+			executeOptions.onStream?.(fullStdout, "stdout");
+			throw new Error("execution rejected");
+		};
+		const fakeProvisioner = {
+			ensure: async () => ({ execute }),
+			registerHostHandlers: () => {},
+		} as unknown as IpythonKernelProvisioner;
+		const tool = createIpythonToolDefinition(process.cwd(), {
+			provisioner: fakeProvisioner,
+			snapshotDir: root,
+			outputMaterialization: { inlineChars: 32, previewChars: 32 },
+		});
+
+		await expect(
+			tool.execute("call-rejected", { code: "print('large')" }, undefined, undefined, undefined as never),
+		).rejects.toThrow("execution rejected");
+		expect(readdirSync(join(root, "ipython-output", ".tmp"))).toHaveLength(0);
 	});
 });
