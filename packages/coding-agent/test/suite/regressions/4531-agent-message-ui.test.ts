@@ -1,6 +1,6 @@
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
-import { Container, type TUI } from "@earendil-works/pi-tui";
+import { Container, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -297,10 +297,22 @@ describe("ENG-4531 agent message UI", () => {
 
 	it.each([
 		["received", "parent", { sessionName: "Planner" }, "from parent Planner"],
+		[
+			"received",
+			"parent",
+			{ sessionName: "Planner", activeSessionId: "parent-active", sessionId: "parent-session" },
+			"from parent Planner",
+		],
 		["received", "parent", {}, "from parent unknown"],
 		["sent", "parent", { activeSessionId: "parent-active" }, "to parent parent-active"],
 		["sent", "parent", {}, "to parent unknown"],
 		["received", "sibling", { clientId: "sibling-client" }, "from sibling sibling-client"],
+		[
+			"received",
+			"sibling",
+			{ activeSessionId: "sibling-active", sessionId: "sibling-session", clientId: "sibling-client" },
+			"from sibling sibling-session",
+		],
 		["received", "sibling", {}, "from sibling unknown"],
 		["sent", "sibling", { sessionId: "sibling-session" }, "to sibling sibling-session"],
 		["sent", "sibling", {}, "to sibling unknown"],
@@ -469,6 +481,39 @@ describe("ENG-4531 agent message UI", () => {
 		const expanded = new AgentMessageComponent(sibling);
 		expanded.setExpanded(true);
 		expect(render(expanded)).toContain("Agent message received · from sibling Peer");
+	});
+
+	it("renders durable ids for unnamed endpoints without overflowing narrow rows", () => {
+		const sessionId = "019fe4ce-27cb-7729-b0a8-67ba371295f6";
+		const received = new AgentMessageComponent(
+			createAgentSessionMessage({
+				...createPayload("Cross-project update."),
+				from: { activeSessionId: "45bde5c6b273", sessionId },
+				fromRelationship: "sibling",
+			}),
+		);
+		const sent = new IPythonCellComponent({
+			code: 'await agent_message.send("Cross-project update.", receiver_role="sibling", receiver_name="peer")',
+			executionStarted: true,
+			details: {
+				status: "ok",
+				sentAgentMessages: [
+					{
+						id: "agentmsg_4531_durable",
+						message: "Cross-project update.",
+						deliveryStatus: "delivered",
+						receiverRole: "sibling",
+						target: { activeSessionId: "45bde5c6b273", sessionId },
+					},
+				],
+			},
+		});
+
+		expect(stripAnsi(received.render(120).join("\n"))).toContain(`from sibling ${sessionId}`);
+		expect(stripAnsi(sent.render(120).join("\n"))).toContain(`to sibling ${sessionId}`);
+		for (const line of [...received.render(60), ...sent.render(60)]) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+		}
 	});
 
 	it("renders a compact row and an aligned multiline gutter when expanded", () => {
