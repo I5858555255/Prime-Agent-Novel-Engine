@@ -1033,4 +1033,168 @@ describe("TUI fullscreen mode", () => {
 
 		tui.stop();
 	});
+
+	it("double-click selects a word", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello world foo bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Screen row 3 = transcript line 15 ("hello world foo bar")
+		// "world" is at cols 6-10 (0-based). Click at col 7 -> SGR col=8, row=4.
+		// First click (press + release)
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+
+		// Second click (press + release) -- double-click
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, ["world"]);
+
+		tui.stop();
+	});
+
+	it("triple-click selects a full line", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello world foo bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Triple-click at the same position
+		// Click 1
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+		// Click 2 (double-click)
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+		copies.length = 0; // double-click already copied the word
+		// Click 3 (triple-click)
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, ["hello world foo bar"]);
+
+		tui.stop();
+	});
+
+	it("double-click and drag extends selection by words", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello world foo bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Double-click on "world" then drag right into "foo" without releasing
+		// Click 1
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+		// Click 2 -- double-click starts word selection
+		terminal.sendInput("\x1b[<0;8;4M");
+		// Drag to "foo" at col 13 -> SGR col=14
+		terminal.sendInput("\x1b[<32;14;4M");
+		// Release
+		terminal.sendInput("\x1b[<0;14;4m");
+		await terminal.waitForRender();
+
+		// Should select "world foo" (word boundary snapping)
+		assert.deepStrictEqual(copies, ["world foo"]);
+
+		tui.stop();
+	});
+
+	it("double-click and drag left extends backward by words", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello world foo bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Double-click on "world" then drag left into "hello"
+		// Click 1
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+		// Click 2 -- double-click starts word selection
+		terminal.sendInput("\x1b[<0;8;4M");
+		// Drag left to "hello" at col 2 -> SGR col=3
+		terminal.sendInput("\x1b[<32;3;4M");
+		// Release
+		terminal.sendInput("\x1b[<0;3;4m");
+		await terminal.waitForRender();
+
+		// Should select "hello world" (from start of "hello" to end of "world")
+		assert.deepStrictEqual(copies, ["hello world"]);
+
+		tui.stop();
+	});
+
+	it("click count resets after the double-click interval", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello world foo bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// First click
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+
+		// Wait past the 500ms double-click interval
+		await new Promise((resolve) => setTimeout(resolve, 600));
+
+		// Second click -- should be treated as a new single click, not a double-click
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+
+		// No word selection -- single click copies nothing
+		assert.deepStrictEqual(copies, []);
+
+		tui.stop();
+	});
+
+	it("click count resets on a different row", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello world foo bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Click at row 4, col 8
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+
+		// Click at row 5, col 8 -- different row
+		terminal.sendInput("\x1b[<0;8;5M");
+		terminal.sendInput("\x1b[<0;8;5m");
+		await terminal.waitForRender();
+
+		// No word selection
+		assert.deepStrictEqual(copies, []);
+
+		tui.stop();
+	});
 });

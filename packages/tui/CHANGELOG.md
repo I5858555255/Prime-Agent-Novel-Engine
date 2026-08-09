@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added double-click word selection, triple-click line selection, and word-granularity drag selection in the fullscreen TUI.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
