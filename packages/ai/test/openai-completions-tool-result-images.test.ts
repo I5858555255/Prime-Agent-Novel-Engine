@@ -31,6 +31,7 @@ const compat: Required<OpenAICompletionsCompat> = {
 	requiresReasoningContentOnAssistantMessages: false,
 	thinkingFormat: "openai",
 	openRouterRouting: {},
+	openRouterWebSearch: {},
 	vercelGatewayRouting: {},
 	zaiToolStream: false,
 	supportsStrictMode: true,

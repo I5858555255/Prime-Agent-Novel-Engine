@@ -663,6 +663,27 @@ describe("ModelRegistry", () => {
 			expect(compat?.openRouterRouting).toEqual({ only: ["amazon-bedrock"] });
 		});
 
+		test("model override enables OpenRouter server-side web search", () => {
+			writeRawModelsJson({
+				openrouter: {
+					modelOverrides: {
+						"anthropic/claude-sonnet-4": {
+							compat: {
+								openRouterWebSearch: { engine: "exa", max_results: 3 },
+							},
+						},
+					},
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const sonnet = getModelsForProvider(registry, "openrouter").find(
+				(model) => model.id === "anthropic/claude-sonnet-4",
+			);
+			const compat = sonnet?.compat as OpenAICompletionsCompat | undefined;
+			expect(compat?.openRouterWebSearch).toEqual({ engine: "exa", max_results: 3 });
+		});
+
 		test("model override deep merges compat settings", () => {
 			writeRawModelsJson({
 				openrouter: {

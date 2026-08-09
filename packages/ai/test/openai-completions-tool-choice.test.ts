@@ -156,6 +156,44 @@ describe("openai-completions tool_choice", () => {
 		expect("strict" in (tool ?? {})).toBe(false);
 	});
 
+	it("adds configured OpenRouter web search beside function tools", async () => {
+		const baseModel = getModel("openrouter", "anthropic/claude-sonnet-4")!;
+		const model = {
+			...baseModel,
+			compat: {
+				...baseModel.compat,
+				openRouterWebSearch: { engine: "exa", max_results: 3, max_total_results: 9 },
+			},
+		} as const;
+		const tools: Tool[] = [
+			{
+				name: "ping",
+				description: "Ping tool",
+				parameters: Type.Object({ ok: Type.Boolean() }),
+			},
+		];
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Search for current information", timestamp: Date.now() }],
+				tools,
+			},
+			{ apiKey: "test" },
+		).result();
+
+		const params = mockState.lastParams as {
+			tools?: Array<{ type: string; parameters?: Record<string, unknown>; function?: { name: string } }>;
+		};
+		expect(params.tools).toEqual([
+			expect.objectContaining({ type: "function", function: expect.objectContaining({ name: "ping" }) }),
+			{
+				type: "openrouter:web_search",
+				parameters: { engine: "exa", max_results: 3, max_total_results: 9 },
+			},
+		]);
+	});
+
 	it("keeps normal reasoning_effort for groq models without compat mapping", async () => {
 		const model = getModel("groq", "openai/gpt-oss-20b")!;
 		let payload: unknown;

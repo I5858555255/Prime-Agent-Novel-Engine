@@ -392,6 +392,33 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 
 `cacheControlFormat: "anthropic"` is for OpenAI-compatible providers that expose Anthropic-style prompt caching through `cache_control` markers on text content and tool definitions.
 
+### OpenRouter Server-Side Web Search
+
+OpenRouter's deprecated `:online` model suffix has been replaced by its `openrouter:web_search` server tool. Enable it for a built-in OpenRouter model with a `modelOverrides` entry:
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "modelOverrides": {
+        "anthropic/claude-sonnet-4": {
+          "compat": {
+            "openRouterWebSearch": {
+              "engine": "auto",
+              "max_results": 5,
+              "max_uses": 3,
+              "max_total_results": 15
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Prime Agent adds the server tool to requests for that model alongside its own function tools. OpenRouter executes searches itself when the model decides they are needed. The optional settings mirror OpenRouter's web-search parameters: `engine`, `mode`, `max_results`, `max_uses`, `max_total_results`, `search_context_size`, `max_characters`, `allowed_domains`, `excluded_domains`, and `user_location`.
+
 Example:
 
 ```json

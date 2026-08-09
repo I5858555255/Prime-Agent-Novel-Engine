@@ -312,6 +312,8 @@ export interface OpenAICompletionsCompat {
 	thinkingFormat?: "openai" | "openrouter" | "deepseek" | "zai" | "qwen" | "qwen-chat-template";
 	/** OpenRouter-specific routing preferences. Only used when baseUrl points to OpenRouter. */
 	openRouterRouting?: OpenRouterRouting;
+	/** OpenRouter server-side web search configuration. Only used when baseUrl points to OpenRouter. */
+	openRouterWebSearch?: OpenRouterWebSearch;
 	/** Vercel AI Gateway routing preferences. Only used when baseUrl points to Vercel AI Gateway. */
 	vercelGatewayRouting?: VercelGatewayRouting;
 	/** Whether z.ai supports top-level `tool_stream: true` for streaming tool call deltas. Default: false. */
@@ -421,6 +423,29 @@ export interface OpenRouterRouting {
 				/** Maximum latency in seconds at the 99th percentile. */
 				p99?: number;
 		  };
+}
+
+/**
+ * Configuration for OpenRouter's server-side `openrouter:web_search` tool.
+ * @see https://openrouter.ai/docs/guides/features/server-tools/web-search
+ */
+export interface OpenRouterWebSearch {
+	engine?: "auto" | "native" | "exa" | "firecrawl" | "parallel" | "perplexity";
+	mode?: "instant" | "fast" | "auto" | "deep-lite" | "deep" | "deep-reasoning" | "turbo" | "basic" | "advanced";
+	max_results?: number;
+	max_uses?: number;
+	max_total_results?: number;
+	search_context_size?: "low" | "medium" | "high";
+	max_characters?: number;
+	allowed_domains?: string[];
+	excluded_domains?: string[];
+	user_location?: {
+		type: "approximate";
+		city?: string;
+		region?: string;
+		country?: string;
+		timezone?: string;
+	};
 }
 
 /**

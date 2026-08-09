@@ -21,6 +21,7 @@ import type {
 	Message,
 	Model,
 	OpenAICompletionsCompat,
+	OpenRouterWebSearch,
 	SimpleStreamOptions,
 	StopReason,
 	StreamFunction,
@@ -85,8 +86,12 @@ interface OpenAICompatCacheControl {
 	ttl?: string;
 }
 
-type ResolvedOpenAICompletionsCompat = Omit<Required<OpenAICompletionsCompat>, "cacheControlFormat"> & {
+type ResolvedOpenAICompletionsCompat = Omit<
+	Required<OpenAICompletionsCompat>,
+	"cacheControlFormat" | "openRouterWebSearch"
+> & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
+	openRouterWebSearch?: OpenAICompletionsCompat["openRouterWebSearch"];
 };
 
 type ChatCompletionInstructionMessageParam = ChatCompletionDeveloperMessageParam | ChatCompletionSystemMessageParam;
@@ -97,6 +102,11 @@ type ChatCompletionTextPartWithCacheControl = ChatCompletionContentPartText & {
 
 type ChatCompletionToolWithCacheControl = OpenAI.Chat.Completions.ChatCompletionTool & {
 	cache_control?: OpenAICompatCacheControl;
+};
+
+type OpenRouterWebSearchTool = {
+	type: "openrouter:web_search";
+	parameters?: OpenRouterWebSearch;
 };
 
 function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention {
@@ -557,6 +567,8 @@ function buildParams(
 		applyAnthropicCacheControl(messages, params.tools, cacheControl);
 	}
 
+	appendOpenRouterWebSearchTool(params, model);
+
 	if (options?.toolChoice) {
 		params.tool_choice = options.toolChoice;
 	}
@@ -613,6 +625,23 @@ function buildParams(
 	}
 
 	return params;
+}
+
+function appendOpenRouterWebSearchTool(
+	params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
+	model: Model<"openai-completions">,
+): void {
+	const webSearch = model.compat?.openRouterWebSearch;
+	if (!webSearch || !model.baseUrl.includes("openrouter.ai")) {
+		return;
+	}
+
+	const tools = (params.tools ?? []) as Array<OpenAI.Chat.Completions.ChatCompletionTool | OpenRouterWebSearchTool>;
+	tools.push({
+		type: "openrouter:web_search",
+		...(Object.keys(webSearch).length > 0 ? { parameters: webSearch } : {}),
+	});
+	(params as unknown as { tools: typeof tools }).tools = tools;
 }
 
 function getCompatCacheControl(

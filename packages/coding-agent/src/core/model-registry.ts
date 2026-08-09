@@ -83,6 +83,48 @@ const OpenRouterRoutingSchema = Type.Object({
 	preferred_max_latency: Type.Optional(Type.Union([Type.Number(), PercentileCutoffsSchema])),
 });
 
+const OpenRouterWebSearchSchema = Type.Object({
+	engine: Type.Optional(
+		Type.Union([
+			Type.Literal("auto"),
+			Type.Literal("native"),
+			Type.Literal("exa"),
+			Type.Literal("firecrawl"),
+			Type.Literal("parallel"),
+			Type.Literal("perplexity"),
+		]),
+	),
+	mode: Type.Optional(
+		Type.Union([
+			Type.Literal("instant"),
+			Type.Literal("fast"),
+			Type.Literal("auto"),
+			Type.Literal("deep-lite"),
+			Type.Literal("deep"),
+			Type.Literal("deep-reasoning"),
+			Type.Literal("turbo"),
+			Type.Literal("basic"),
+			Type.Literal("advanced"),
+		]),
+	),
+	max_results: Type.Optional(Type.Integer({ minimum: 1, maximum: 25 })),
+	max_uses: Type.Optional(Type.Integer({ minimum: 1 })),
+	max_total_results: Type.Optional(Type.Integer({ minimum: 1 })),
+	search_context_size: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
+	max_characters: Type.Optional(Type.Integer({ minimum: 1, maximum: 100_000 })),
+	allowed_domains: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	excluded_domains: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	user_location: Type.Optional(
+		Type.Object({
+			type: Type.Literal("approximate"),
+			city: Type.Optional(Type.String()),
+			region: Type.Optional(Type.String()),
+			country: Type.Optional(Type.String()),
+			timezone: Type.Optional(Type.String()),
+		}),
+	),
+});
+
 // Schema for Vercel AI Gateway routing preferences
 const VercelGatewayRoutingSchema = Type.Object({
 	only: Type.Optional(Type.Array(Type.String())),
@@ -123,6 +165,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	),
 	cacheControlFormat: Type.Optional(Type.Literal("anthropic")),
 	openRouterRouting: Type.Optional(OpenRouterRoutingSchema),
+	openRouterWebSearch: Type.Optional(OpenRouterWebSearchSchema),
 	vercelGatewayRouting: Type.Optional(VercelGatewayRoutingSchema),
 	supportsStrictMode: Type.Optional(Type.Boolean()),
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
