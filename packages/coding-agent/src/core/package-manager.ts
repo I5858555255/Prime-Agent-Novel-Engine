@@ -434,9 +434,15 @@ function collectAncestorAgentsSkillDirs(startDir: string): string[] {
 	const skillDirs: string[] = [];
 	const resolvedStartDir = resolve(startDir);
 	const gitRepoRoot = findGitRepoRoot(resolvedStartDir);
+	const homeDir = resolve(getHomeDir());
 
 	let dir = resolvedStartDir;
 	while (true) {
+		// Stop before reaching the home directory: ~/.agents/skills is user-scope,
+		// not project-scope, and is added separately by the caller.
+		if (dir === homeDir) {
+			break;
+		}
 		skillDirs.push(join(dir, ".agents", "skills"));
 		if (gitRepoRoot && dir === gitRepoRoot) {
 			break;
@@ -2179,9 +2185,7 @@ export class DefaultPackageManager implements PackageManager {
 			themes: join(projectBaseDir, "themes"),
 		};
 		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
-		const projectAgentsSkillDirs = collectAncestorAgentsSkillDirs(this.cwd).filter(
-			(dir) => resolve(dir) !== resolve(userAgentsSkillsDir),
-		);
+		const projectAgentsSkillDirs = collectAncestorAgentsSkillDirs(this.cwd);
 
 		const addResources = (
 			resourceType: ResourceType,
