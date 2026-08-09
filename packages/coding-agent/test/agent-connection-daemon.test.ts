@@ -1397,6 +1397,70 @@ describe("DaemonAgentConnection", () => {
 		expect(prompts[prompts.length - 1]).toMatchObject({ activeSessionId: "active-b" });
 	});
 
+	it("drops non-snapshot frames addressed to a pending revival target", async () => {
+		const fakeClient = new FakeDaemonClient();
+		let emitRevivedSnapshot = () => {};
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23);
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			emitRevivedSnapshot = () => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-filter",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-revive-filter",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+			};
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-revive-filter", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		const events: AgentConnectionEvent[] = [];
+		connection.subscribe((event) => {
+			events.push(event);
+		});
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.switchSessionAlreadyActiveId = "active-b";
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(1),
+		);
+		// The switch supersedes the revival while its snapshot is still in
+		// flight; the revived id stays admitted (pending) until the waiter
+		// finishes. Live frames addressed to it must be dropped: admitting the
+		// session_closed would emit a terminal close for a session this window
+		// is no longer showing.
+		await connection.switchSession("/tmp/session-b.jsonl");
+		fakeClient.emitMessage({ type: "session_closed", activeSessionId: "active-revived", reason: "killed" });
+		emitRevivedSnapshot();
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+
+		expect(events.filter((event) => event.type === "closed")).toHaveLength(0);
+		await connection.prompt("next");
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts[prompts.length - 1]).toMatchObject({ activeSessionId: "active-b" });
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");

@@ -2215,13 +2215,21 @@ export class DaemonAgentConnection implements AgentConnection {
 		if (!("activeSessionId" in message)) {
 			return false;
 		}
+		if (message.activeSessionId === this.activeSessionId) {
+			return true;
+		}
 		// A binding transition's target is admitted alongside the published
-		// binding: the daemon starts streaming the target's attach snapshot in
-		// the same socket buffer as the attach response, so its frames can be
-		// parsed before the awaiting continuation publishes the new binding.
+		// binding, but ONLY for snapshot transfer frames: the daemon starts
+		// streaming the target's attach snapshot in the same socket buffer as
+		// the attach response, so those frames can be parsed before the
+		// awaiting continuation publishes the new binding. Live frames
+		// (session_event, session_status, session_closed, ...) for a pending
+		// target must not be processed against the published binding — after a
+		// supersession they belong to a session this window no longer shows.
 		return (
-			message.activeSessionId === this.activeSessionId ||
-			(message.activeSessionId !== undefined && this.pendingReattachActiveSessionIds.has(message.activeSessionId))
+			message.activeSessionId !== undefined &&
+			this.pendingReattachActiveSessionIds.has(message.activeSessionId) &&
+			isSnapshotTransferMessage(message)
 		);
 	}
 
@@ -2287,6 +2295,15 @@ export class DaemonAgentConnection implements AgentConnection {
 			this.activeSideQuestionIds.delete(event.id);
 		}
 	}
+}
+
+function isSnapshotTransferMessage(message: DaemonOutbound): boolean {
+	return (
+		message.type === "session_snapshot_begin" ||
+		message.type === "session_snapshot_chunk" ||
+		message.type === "session_snapshot_end" ||
+		message.type === "session_snapshot_failed"
+	);
 }
 
 function readCreatedActiveSessionId(value: unknown): string {
