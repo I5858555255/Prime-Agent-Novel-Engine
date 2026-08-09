@@ -6534,6 +6534,7 @@ export class InteractiveMode {
 		this.seedSubagentSummary(snapshot.children);
 		this.setSessionHasMessages(context.messages.length > 0);
 		this.applyConnectionStateSnapshot(state);
+		this.syncWorkingLoader();
 		await this.renderSessionContext(context, {
 			updateFooter: true,
 			populateHistory: true,
