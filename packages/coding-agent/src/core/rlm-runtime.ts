@@ -1,5 +1,11 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { type Api, getSupportedThinkingLevels, type Model, type ServiceTier } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	getSupportedThinkingLevels,
+	MODEL_THINKING_LEVELS,
+	type Model,
+	type ServiceTier,
+} from "@earendil-works/pi-ai";
 import type { AgentSession } from "./agent-session.js";
 import type { ToolDefinition } from "./extensions/index.js";
 import type { HostRequestHandler } from "./kernel/index.js";
@@ -92,15 +98,7 @@ export function normalizeRequestedRlmSubagentModel(value: unknown): string | und
 	return model;
 }
 
-export const RLM_THINKING_LEVELS: readonly ThinkingLevel[] = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-];
+export const RLM_THINKING_LEVELS: readonly ThinkingLevel[] = MODEL_THINKING_LEVELS;
 
 /** Resolve the canonical child thinking levels allowed by both the model and user settings. */
 export function getRlmThinkingLevels(model: Model<Api>, configuredLevels?: readonly ThinkingLevel[]): ThinkingLevel[] {

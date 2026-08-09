@@ -17,12 +17,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getMarkdownTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { type Api, type Message, type Model, StringEnum } from "@earendil-works/pi-ai";
+import {
+	type ExtensionAPI,
+	getMarkdownTheme,
+	type ModelRegistry,
+	resolveCliModel,
+	withFileMutationQueue,
+} from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { type AgentConfig, buildAgentProcessArgs } from "./agent-config.js";
+import { type AgentConfig, buildAgentProcessArgs, resolveAgentProcessConfig } from "./agent-config.js";
 import { type AgentScope, discoverAgents } from "./agents.js";
 
 export { buildAgentProcessArgs } from "./agent-config.js";
@@ -49,6 +54,8 @@ function formatUsageStats(
 		turns?: number;
 	},
 	model?: string,
+	thinking?: string,
+	requestedThinking?: string,
 ): string {
 	const parts: string[] = [];
 	if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
@@ -61,6 +68,13 @@ function formatUsageStats(
 		parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
 	}
 	if (model) parts.push(model);
+	if (thinking) {
+		parts.push(
+			requestedThinking && requestedThinking !== thinking
+				? `thinking:${thinking}←${requestedThinking}`
+				: `thinking:${thinking}`,
+		);
+	}
 	return parts.join(" ");
 }
 
@@ -119,6 +133,8 @@ interface SingleResult {
 	stderr: string;
 	usage: UsageStats;
 	model?: string;
+	thinking?: string;
+	requestedThinking?: string;
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
@@ -209,6 +225,8 @@ type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 async function runSingleAgent(
 	defaultCwd: string,
 	agents: AgentConfig[],
+	modelRegistry: ModelRegistry,
+	currentModel: Model<Api> | undefined,
 	agentName: string,
 	task: string,
 	cwd: string | undefined,
@@ -233,7 +251,23 @@ async function runSingleAgent(
 		};
 	}
 
-	const args = buildAgentProcessArgs(agent);
+	const processResolution = resolveAgentProcessConfig(agent, currentModel, (selector) =>
+		resolveCliModel({ cliModel: selector, modelRegistry }),
+	);
+	if (!processResolution.ok) {
+		return {
+			agent: agent.name,
+			agentSource: agent.source,
+			task,
+			exitCode: 1,
+			messages: [],
+			stderr: processResolution.error,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+			model: agent.model,
+			step,
+		};
+	}
+	const args = buildAgentProcessArgs(agent, processResolution.config);
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
@@ -246,7 +280,9 @@ async function runSingleAgent(
 		messages: [],
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: agent.model,
+		model: processResolution.config.model ?? agent.model,
+		thinking: processResolution.config.thinking,
+		requestedThinking: processResolution.requestedThinking,
 		step,
 	};
 
@@ -493,6 +529,8 @@ export default function (pi: ExtensionAPI) {
 					const result = await runSingleAgent(
 						ctx.cwd,
 						agents,
+						ctx.modelRegistry,
+						ctx.model,
 						step.agent,
 						taskWithContext,
 						step.cwd,
@@ -567,6 +605,8 @@ export default function (pi: ExtensionAPI) {
 					const result = await runSingleAgent(
 						ctx.cwd,
 						agents,
+						ctx.modelRegistry,
+						ctx.model,
 						t.agent,
 						t.task,
 						t.cwd,
@@ -607,6 +647,8 @@ export default function (pi: ExtensionAPI) {
 				const result = await runSingleAgent(
 					ctx.cwd,
 					agents,
+					ctx.modelRegistry,
+					ctx.model,
 					params.agent,
 					params.task,
 					params.cwd,
@@ -744,7 +786,7 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 						}
 					}
-					const usageStr = formatUsageStats(r.usage, r.model);
+					const usageStr = formatUsageStats(r.usage, r.model, r.thinking, r.requestedThinking);
 					if (usageStr) {
 						container.addChild(new Spacer(1));
 						container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
@@ -760,7 +802,7 @@ export default function (pi: ExtensionAPI) {
 					text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
 					if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
 				}
-				const usageStr = formatUsageStats(r.usage, r.model);
+				const usageStr = formatUsageStats(r.usage, r.model, r.thinking, r.requestedThinking);
 				if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
 				return new Text(text, 0, 0);
 			}
@@ -829,7 +871,7 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 						}
 
-						const stepUsage = formatUsageStats(r.usage, r.model);
+						const stepUsage = formatUsageStats(r.usage, r.model, r.thinking, r.requestedThinking);
 						if (stepUsage) container.addChild(new Text(theme.fg("dim", stepUsage), 0, 0));
 					}
 
@@ -914,7 +956,7 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 						}
 
-						const taskUsage = formatUsageStats(r.usage, r.model);
+						const taskUsage = formatUsageStats(r.usage, r.model, r.thinking, r.requestedThinking);
 						if (taskUsage) container.addChild(new Text(theme.fg("dim", taskUsage), 0, 0));
 					}
 

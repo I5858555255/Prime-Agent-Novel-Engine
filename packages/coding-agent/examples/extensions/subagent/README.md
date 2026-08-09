@@ -12,7 +12,8 @@ file-defined agent profiles and explicit single, parallel, or chained workflows.
 - **Streaming output**: See tool calls and progress as they happen
 - **Parallel streaming**: All parallel tasks stream updates simultaneously
 - **Markdown rendering**: Final output rendered with proper formatting (expanded view)
-- **Usage tracking**: Shows turns, tokens, cost, and context usage per agent
+- **Usage tracking**: Shows turns, tokens, cost, context usage, and effective thinking per agent
+- **Model-aware effort**: Resolves each profile's preferred thinking against live model configuration
 - **Abort support**: Ctrl+C propagates to kill subagent processes
 
 ## Structure
@@ -141,7 +142,7 @@ thinking: low
 System prompt for the agent goes here.
 ```
 
-`thinking` is optional. The extension passes the string to the child process as `--thinking <level>` instead of maintaining its own level list. The child validates it and resolves the effective level from the selected model's configured capabilities and `thinkingLevelMap`. Omit it to use the child process's normal configured default. Non-string and empty values are rejected while loading the profile.
+`thinking` is an optional preferred effort. At execution time the extension resolves the profile model through Prime Agent's model registry, reads its configured capabilities and `thinkingLevelMap`, and clamps the preference to the nearest supported level before passing `--model <provider/model>` and `--thinking <level>` to the child. If the profile omits `model`, the active model is used and pinned for that child. A dedicated `thinking` field takes precedence over a `:level` suffix in `model`; without `thinking`, the model selector is preserved unchanged. The result's usage line shows the effective level and the original preference when it was adjusted. Omit `thinking` to use the child process's normal configured default. Unknown level names and model resolution warnings fail execution; non-string and empty values are rejected while loading the profile.
 
 **Locations:**
 - `~/.prime/agent/agents/*.md` - User-level (always loaded)

@@ -44,6 +44,7 @@ import {
 	cleanupSessionResources,
 	getSupportedThinkingLevels,
 	isContextOverflow,
+	MODEL_THINKING_LEVELS,
 	modelsAreEqual,
 	resetApiProviders,
 	supportsFastMode,
@@ -960,9 +961,6 @@ interface RlmSubagentModelSelection {
 // ============================================================================
 // Constants
 // ============================================================================
-
-/** Standard thinking levels */
-const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** Cap on the post-compaction kernel namespace probe so a wedged kernel can't stall recovery. */
 const KERNEL_STATE_LISTING_TIMEOUT_MS = 5000;
@@ -6860,7 +6858,7 @@ export class AgentSession {
 	 * The provider will clamp to what the specific model supports internally.
 	 */
 	getAvailableThinkingLevels(): ThinkingLevel[] {
-		if (!this.model) return THINKING_LEVELS;
+		if (!this.model) return [...MODEL_THINKING_LEVELS] as ThinkingLevel[];
 		return getSupportedThinkingLevels(this.model) as ThinkingLevel[];
 	}
 
