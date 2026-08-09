@@ -293,6 +293,14 @@ export interface DaemonAttachResult {
 		messageCount: number;
 		targetChunkBytes: number;
 	};
+	/**
+	 * False when this attach created the socket's attachment entry for the
+	 * session, true when the socket was already attached (a sibling
+	 * connection on the shared client). Lets a failed transition decide
+	 * whether a cleanup detach would remove its own registration or a
+	 * sibling's. Absent on older daemons.
+	 */
+	wasAttached?: boolean;
 	client: {
 		id: DaemonClientId;
 		capabilities: DaemonClientCapability[];

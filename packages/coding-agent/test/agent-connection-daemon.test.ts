@@ -53,6 +53,7 @@ class FakeDaemonClient {
 	promptError: Error | undefined;
 	promptResponseError: string | undefined;
 	readonly deadActiveSessionIds = new Set<string>();
+	readonly attachedIds = new Set<string>();
 	createResponseError: string | undefined;
 	createGate: Promise<void> | undefined;
 	revivedAttachGate: Promise<void> | undefined;
@@ -154,14 +155,22 @@ class FakeDaemonClient {
 						error: "Unknown active session: missing",
 					};
 				}
-				return {
-					type: "response",
-					command: command.type,
-					success: true,
-					data:
-						this.attachResultFactory?.(command) ??
-						createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12),
-				};
+				{
+					// Mirror the supervisor's per-socket attachment Set: wasAttached
+					// reports whether this attach created the entry.
+					const wasAttached = this.attachedIds.has(command.activeSessionId);
+					this.attachedIds.add(command.activeSessionId);
+					return {
+						type: "response",
+						command: command.type,
+						success: true,
+						data: {
+							...(this.attachResultFactory?.(command) ??
+								createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12)),
+							wasAttached,
+						},
+					};
+				}
 			case "get_queue":
 				return {
 					type: "response",
@@ -402,7 +411,11 @@ class FakeDaemonClient {
 			case "set_scoped_models":
 			case "rename_saved_session":
 			case "extension_ui_response":
+				return { type: "response", command: command.type, success: true };
 			case "detach":
+				if (typeof command.activeSessionId === "string") {
+					this.attachedIds.delete(command.activeSessionId);
+				}
 				return { type: "response", command: command.type, success: true };
 			case "cancel_rlm_child":
 				if (command.childId === "stale-daemon") {
@@ -2239,6 +2252,73 @@ describe("DaemonAgentConnection", () => {
 				{ role: "user", content: "current prompt", timestamp: 4 },
 			]);
 		});
+	});
+
+	it("does not detach a sibling's attachment when a superseded revival had a duplicate attach", async () => {
+		const fakeClient = new FakeDaemonClient();
+		// A sibling connection on the shared client already holds the
+		// attachment for the session the revival will resume.
+		const sibling = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-revived");
+		const siblingEvents: AgentConnectionEvent[] = [];
+		sibling.subscribe((event) => {
+			siblingEvents.push(event);
+		});
+		let emitRevivedSnapshot = () => {};
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 23);
+			const { messages: _messages, ...snapshotHeader } = full.snapshot;
+			emitRevivedSnapshot = () => {
+				fakeClient.emitMessage({
+					type: "session_snapshot_begin",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-dup-attach",
+					snapshot: snapshotHeader,
+					messageCount: 0,
+					targetChunkBytes: 512 * 1024,
+				});
+				fakeClient.emitMessage({
+					type: "session_snapshot_end",
+					activeSessionId: command.activeSessionId,
+					snapshotId: "snapshot-dup-attach",
+					chunkCount: 0,
+					lastEventSequence: 23,
+				});
+			};
+			return {
+				...full,
+				snapshot: { ...full.snapshot, messages: [] },
+				snapshotStream: { id: "snapshot-dup-attach", messageCount: 0, targetChunkBytes: 512 * 1024 },
+			};
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		fakeClient.switchSessionAlreadyActiveId = "active-b";
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "attach" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(2),
+		);
+		// The switch supersedes the revival while its snapshot streams. The
+		// revival's attach got a response, but it was a DUPLICATE attach
+		// (wasAttached) - the socket entry belongs to the sibling, and the
+		// cleanup must not remove it.
+		await connection.switchSession("/tmp/session-b.jsonl");
+		emitRevivedSnapshot();
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+
+		expect(fakeClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+		);
+		// The sibling must still be live on the shared socket.
+		emitSequencedQueueUpdate(fakeClient, "active-revived", 24);
+		await vi.waitFor(() => expect(siblingEvents.some((event) => event.type === "session_event")).toBe(true));
 	});
 
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {

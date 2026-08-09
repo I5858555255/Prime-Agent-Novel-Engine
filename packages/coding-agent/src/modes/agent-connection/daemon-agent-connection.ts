@@ -232,6 +232,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly ignoredSnapshotIds = new Set<string>();
 	private reconnectPromise?: Promise<void>;
 	private reviveSession?: { promise: Promise<RevivedSessionBinding>; sourceActiveSessionId: string };
+	private lastAttachCreatedAttachment = false;
 	private readonly definitiveRequestErrors = new WeakSet<Error>();
 	private disposing = false;
 	private disposed = false;
@@ -386,6 +387,12 @@ export class DaemonAgentConnection implements AgentConnection {
 							...resumeCursor,
 						},
 		});
+		// Recorded before any supersession throw: cleanup paths need to know
+		// whether THIS attach created the socket's attachment entry (a sibling
+		// connection on the shared client may already hold it, in which case a
+		// detach would remove the sibling's subscription). Older daemons omit
+		// the field; the conservative default is "did not create it".
+		this.lastAttachCreatedAttachment = "wasAttached" in result && result.wasAttached === false;
 		if (this.activeSessionId !== entryActiveSessionId) {
 			throw new Error(`Session attach superseded: binding moved from ${entryActiveSessionId}`);
 		}
@@ -1024,8 +1031,12 @@ export class DaemonAgentConnection implements AgentConnection {
 				await this.attachSessionBinding(revivedActiveSessionId, true);
 			} catch (error) {
 				// Supersede errors are thrown after a successful attach response,
-				// so only they prove this revival acquired the attachment.
-				const attachAcquired = DaemonAgentConnection.isAttachSupersededError(error);
+				// and the response's wasAttached tells whether that attach CREATED
+				// the socket's attachment entry - a sibling connection may already
+				// have held it, in which case a detach would remove the sibling's
+				// subscription rather than ours.
+				const attachAcquired =
+					DaemonAgentConnection.isAttachSupersededError(error) && this.lastAttachCreatedAttachment;
 				if (this.disposed || this.disposing) {
 					this.releaseRevivedSession(revivedActiveSessionId, attachAcquired);
 					throw error;
@@ -1067,7 +1078,10 @@ export class DaemonAgentConnection implements AgentConnection {
 			}
 			this.activeSideQuestionIds.clear();
 			if (this.disposed) {
-				this.releaseRevivedSession(revivedActiveSessionId, true);
+				// The attach succeeded, but it only ACQUIRED the attachment when it
+				// created the socket entry; a sibling's pre-existing attachment
+				// must survive this cleanup.
+				this.releaseRevivedSession(revivedActiveSessionId, this.lastAttachCreatedAttachment);
 				throw new Error("Connection was disposed during session revival");
 			}
 			if (sourceActiveSessionId !== revivedActiveSessionId) {
