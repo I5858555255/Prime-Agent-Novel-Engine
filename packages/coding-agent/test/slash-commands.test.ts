@@ -95,6 +95,15 @@ describe("built-in slash commands", () => {
 		expect(builtinSlashCommandTakesArgument("new")).toBe(true);
 		expect(builtinSlashCommandTakesArgument("clear")).toBe(false);
 	});
+
+	test("exposes /resume for switching to a saved session by path or ID", () => {
+		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "resume")).toMatchObject({
+			description: "Resume a saved session by path or session ID",
+			argumentHint: "<path|id>",
+			takesArgument: true,
+		});
+		expect(builtinSlashCommandTakesArgument("resume")).toBe(true);
+	});
 });
 
 describe("slash command aliases", () => {

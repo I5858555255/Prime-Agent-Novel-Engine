@@ -4671,6 +4671,15 @@ export class InteractiveMode {
 					this.editor.setText("");
 					return;
 				}
+				if (commandName === "resume") {
+					this.editor.setText("");
+					if (!commandArgs) {
+						this.showError("Usage: /resume <path|id>");
+						return;
+					}
+					await this.handleResumeSession(commandArgs);
+					return;
+				}
 				if (commandName === "share" && !commandArgs) {
 					await this.handleShareCommand();
 					this.editor.setText("");

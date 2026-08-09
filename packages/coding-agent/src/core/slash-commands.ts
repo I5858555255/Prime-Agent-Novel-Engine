@@ -102,6 +102,12 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		argumentHint: "<path.jsonl>",
 		takesArgument: true,
 	},
+	{
+		name: "resume",
+		description: "Resume a saved session by path or session ID",
+		argumentHint: "<path|id>",
+		takesArgument: true,
+	},
 	{ name: "share", description: "Share session as a secret GitHub gist" },
 	{ name: "copy", description: "Copy last agent message to clipboard" },
 	{
