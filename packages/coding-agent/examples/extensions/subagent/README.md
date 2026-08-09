@@ -141,7 +141,7 @@ thinking: low
 System prompt for the agent goes here.
 ```
 
-`thinking` is optional and accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. The extension passes it to the child process as `--thinking <level>`. Omit it to use the child process's normal configured default. Profiles with an invalid value are not loaded; a valid level may still be adjusted by normal model/provider capability handling.
+`thinking` is optional. The extension passes the string to the child process as `--thinking <level>` instead of maintaining its own level list. The child validates it and resolves the effective level from the selected model's configured capabilities and `thinkingLevelMap`. Omit it to use the child process's normal configured default. Non-string and empty values are rejected while loading the profile.
 
 **Locations:**
 - `~/.prime/agent/agents/*.md` - User-level (always loaded)
@@ -154,9 +154,9 @@ Project agents override user agents with the same name when `agentScope: "both"`
 | Agent | Purpose | Model | Thinking | Tools |
 |-------|---------|-------|----------|-------|
 | `scout` | Fast codebase recon | Haiku | low | bash |
-| `planner` | Implementation plans | Sonnet | default | bash |
-| `reviewer` | Code review | Sonnet | default | bash |
-| `worker` | General-purpose | Sonnet | default | (all default) |
+| `planner` | Implementation plans | Sonnet | high | bash |
+| `reviewer` | Code review | Sonnet | high | bash |
+| `worker` | General-purpose | Sonnet | medium | (all default) |
 
 ## Workflow Prompts
 

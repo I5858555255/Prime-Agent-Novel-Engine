@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
 	type AgentConfig,
@@ -5,8 +6,6 @@ import {
 	parseAgentConfig,
 } from "../examples/extensions/subagent/agent-config.js";
 import { parseFrontmatter } from "../src/utils/frontmatter.js";
-
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 function parseProfile(thinkingLine?: string): AgentConfig | undefined {
 	const thinkingBlock = thinkingLine ? `${thinkingLine}\n` : "";
@@ -17,16 +16,33 @@ function parseProfile(thinkingLine?: string): AgentConfig | undefined {
 }
 
 describe("subagent example extension profiles", () => {
-	it("loads every canonical thinking level and preserves omission", () => {
-		for (const thinking of THINKING_LEVELS) {
-			expect(parseProfile(`thinking: "${thinking}"`)?.thinking).toBe(thinking);
-		}
+	it("defers string thinking validation to the child model configuration", () => {
+		expect(parseProfile('thinking: " high "')?.thinking).toBe("high");
+		expect(parseProfile('thinking: "future-level"')?.thinking).toBe("future-level");
 		expect(parseProfile()?.thinking).toBeUndefined();
 	});
 
-	it("rejects profiles with invalid thinking values", () => {
-		for (const thinkingLine of ['thinking: "ultra"', "thinking: 42", "thinking: [high]", 'thinking: "--tools"']) {
+	it("rejects non-string or empty thinking values", () => {
+		for (const thinkingLine of ["thinking: 42", "thinking: [high]", 'thinking: ""', 'thinking: "   "']) {
 			expect(parseProfile(thinkingLine)).toBeUndefined();
+		}
+	});
+
+	it("configures thinking for every bundled sample profile", () => {
+		const expected = {
+			scout: "low",
+			planner: "high",
+			reviewer: "high",
+			worker: "medium",
+		};
+		for (const [name, thinking] of Object.entries(expected)) {
+			const content = readFileSync(
+				new URL(`../examples/extensions/subagent/agents/${name}.md`, import.meta.url),
+				"utf8",
+			);
+			const { frontmatter, body } = parseFrontmatter(content);
+			const agent = parseAgentConfig(frontmatter, body, "project", `${name}.md`);
+			expect(agent?.thinking).toBe(thinking);
 		}
 	});
 

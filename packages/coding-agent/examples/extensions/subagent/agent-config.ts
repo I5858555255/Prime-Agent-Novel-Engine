@@ -1,7 +1,3 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-
-const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
 export type AgentScope = "user" | "project" | "both";
 
 export interface AgentConfig {
@@ -9,14 +5,10 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
-	thinking?: ThinkingLevel;
+	thinking?: string;
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
-}
-
-function isThinkingLevel(value: unknown): value is ThinkingLevel {
-	return typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel);
 }
 
 export function parseAgentConfig(
@@ -30,7 +22,10 @@ export function parseAgentConfig(
 	if (typeof name !== "string" || !name || typeof description !== "string" || !description) {
 		return undefined;
 	}
-	if (frontmatter.thinking !== undefined && !isThinkingLevel(frontmatter.thinking)) {
+	if (
+		frontmatter.thinking !== undefined &&
+		(typeof frontmatter.thinking !== "string" || !frontmatter.thinking.trim())
+	) {
 		return undefined;
 	}
 
@@ -47,7 +42,7 @@ export function parseAgentConfig(
 		description,
 		tools: tools && tools.length > 0 ? tools : undefined,
 		model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
-		thinking: frontmatter.thinking,
+		thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking.trim() : undefined,
 		systemPrompt: body,
 		source,
 		filePath,
