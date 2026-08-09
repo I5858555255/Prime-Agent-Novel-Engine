@@ -25,6 +25,7 @@ import {
 	type DaemonWorkerFrameHeader,
 } from "../src/modes/daemon/daemon-worker-protocol.js";
 import { MutationDrainLatch } from "../src/modes/daemon/mutation-drain-latch.js";
+import { SnapshotTranscriptCache } from "../src/modes/daemon/snapshot-transcript-cache.js";
 import { WorkerRecoveryJournal } from "../src/modes/daemon/worker-recovery-journal.js";
 import type { PrivateFrame } from "../src/modes/session-worker/private-framing.js";
 import { createDeferred } from "./suite/scheduling.js";
@@ -1850,7 +1851,13 @@ describe("daemon worker supervisor monitoring", () => {
 		expect(client.attachedActiveSessionIds).toEqual(new Set());
 	});
 
-	it("marks each busy worker session interrupted independently", async () => {
+	it("invalidates every uncertain worker session cache independently", async () => {
+		type SnapshotGeneration = {
+			transcript: SnapshotTranscriptCache;
+			result: DaemonAttachResult;
+			incoming: boolean;
+			retired: boolean;
+		};
 		type RecoveryWorker = {
 			descriptor: {
 				workerId: string;
@@ -1859,6 +1866,9 @@ describe("daemon worker supervisor monitoring", () => {
 				recoveryJournalPath: string;
 				orphanProcessJournalPath: string;
 			};
+			snapshotCache: Map<string, DaemonAttachResult>;
+			transcriptCaches: Map<string, SnapshotTranscriptCache>;
+			snapshotGenerations: Map<string, Map<string, SnapshotGeneration>>;
 		};
 		const root = mkdtempSync(join(tmpdir(), "prime-supervisor-recovery-test-"));
 		const journalPath = join(root, "worker.recovery.jsonl");
@@ -1885,7 +1895,6 @@ describe("daemon worker supervisor monitoring", () => {
 		journal.record({
 			activeSessionId: "child-active",
 			sessionId: "child-session",
-			sessionFile: "/tmp/child.jsonl",
 			busy: true,
 			operation: "tool_execution",
 		});
@@ -1897,7 +1906,29 @@ describe("daemon worker supervisor monitoring", () => {
 				recoveryJournalPath: journalPath,
 				orphanProcessJournalPath: orphanJournalPath,
 			},
+			snapshotCache: new Map(),
+			transcriptCaches: new Map(),
+			snapshotGenerations: new Map(),
 		};
+		const cacheSnapshot = (activeSessionId: string, snapshotId: string) => {
+			const transcript = new SnapshotTranscriptCache({ activeSessionId, snapshotId, cacheRoot: root });
+			const result = { snapshotStream: { id: snapshotId } } as DaemonAttachResult;
+			worker.snapshotCache.set(activeSessionId, result);
+			worker.transcriptCaches.set(activeSessionId, transcript);
+			worker.snapshotGenerations.set(
+				activeSessionId,
+				new Map([[snapshotId, { transcript, result, incoming: false, retired: false }]]),
+			);
+			return { transcript, result };
+		};
+		const cachedSnapshots = new Map([
+			["root-active", cacheSnapshot("root-active", "root-snapshot")],
+			["child-active", cacheSnapshot("child-active", "child-snapshot")],
+			["unrelated-active", cacheSnapshot("unrelated-active", "unrelated-snapshot")],
+		]);
+		const unrelated = cachedSnapshots.get("unrelated-active")!;
+		unrelated.transcript.appendEncodedChunk(Buffer.from("unrelated\n"));
+		unrelated.transcript.markComplete();
 		const markInterrupted = vi.fn(async () => undefined);
 		const kill = vi.spyOn(process, "kill").mockReturnValue(true);
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
@@ -1908,12 +1939,41 @@ describe("daemon worker supervisor monitoring", () => {
 			recoverUncertainWorkerOperations(worker: RecoveryWorker, killWorkerProcess: boolean): Promise<void>;
 		};
 
+		const invalidationError = "Worker recovery dropped uncertain operations; snapshot cache invalidated";
+		const pendingReaders = new Map(
+			["root-active", "child-active"].map((activeSessionId) => {
+				const reader = cachedSnapshots.get(activeSessionId)!.transcript.waitForChunk(0);
+				return [activeSessionId, expect(reader).rejects.toThrow(invalidationError)] as const;
+			}),
+		);
+
 		try {
 			await supervisor.recoverUncertainWorkerOperations(worker, false);
 			expect(kill).not.toHaveBeenCalled();
-			expect(markInterrupted).toHaveBeenCalledTimes(2);
+			expect(markInterrupted).toHaveBeenCalledTimes(1);
 			expect(markInterrupted).toHaveBeenCalledWith("/tmp/root.jsonl", "root-active", ["model_stream"]);
-			expect(markInterrupted).toHaveBeenCalledWith("/tmp/child.jsonl", "child-active", ["tool_execution"]);
+			for (const activeSessionId of ["root-active", "child-active"]) {
+				await pendingReaders.get(activeSessionId);
+				const { transcript } = cachedSnapshots.get(activeSessionId)!;
+				expect(transcript.complete).toBe(false);
+				expect(() => transcript.retain()).toThrow(`Snapshot transcript ${transcript.snapshotId} was disposed`);
+				expect(() => transcript.appendEncodedChunk(Buffer.from("late\n"))).toThrow(
+					`Snapshot transcript ${transcript.snapshotId} is not writable`,
+				);
+				expect(worker.snapshotCache.has(activeSessionId)).toBe(false);
+				expect(worker.transcriptCaches.has(activeSessionId)).toBe(false);
+				expect(worker.snapshotGenerations.has(activeSessionId)).toBe(false);
+			}
+			expect(worker.snapshotCache.get("unrelated-active")).toBe(unrelated.result);
+			expect(worker.transcriptCaches.get("unrelated-active")).toBe(unrelated.transcript);
+			expect(worker.snapshotGenerations.get("unrelated-active")).toBeDefined();
+			const releaseUnrelated = unrelated.transcript.retain();
+			try {
+				expect(unrelated.transcript.complete).toBe(true);
+				expect(unrelated.transcript.readChunk(0)).toEqual(Buffer.from("unrelated\n"));
+			} finally {
+				releaseUnrelated();
+			}
 		} finally {
 			kill.mockRestore();
 			rmSync(root, { recursive: true, force: true });

@@ -2854,6 +2854,7 @@ export class DaemonSupervisor {
 		if (uncertain.length === 0) {
 			return;
 		}
+		const uncertainActiveSessionIds = new Set(uncertain.map((record) => record.activeSessionId));
 		const interruptedSessions = new Map<
 			string,
 			{ activeSessionId: string; sessionFile: string; operations: Set<string> }
@@ -2892,6 +2893,13 @@ export class DaemonSupervisor {
 				busy: false,
 				operation: "recovery_hold",
 			});
+		}
+		for (const activeSessionId of uncertainActiveSessionIds) {
+			this.failWorkerSnapshotCache(
+				worker,
+				activeSessionId,
+				new Error("Worker recovery dropped uncertain operations; snapshot cache invalidated"),
+			);
 		}
 		this.log(
 			`Recovered worker ${worker.descriptor.workerId} without replaying uncertain operations: ${uncertain
