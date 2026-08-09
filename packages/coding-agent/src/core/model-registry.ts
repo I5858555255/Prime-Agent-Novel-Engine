@@ -23,6 +23,7 @@ import {
 import { registerBuiltinMcpOAuthProviders } from "@earendil-works/pi-ai/mcp";
 import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { minimatch } from "minimatch";
 import { dirname, join } from "path";
 import { type Static, type TProperties, Type } from "typebox";
 import type { Validator } from "typebox/compile";
@@ -444,6 +445,7 @@ export class ModelRegistry {
 	private constructor(
 		readonly authStorage: AuthStorage,
 		private modelsJsonPath: string | undefined,
+		private modelAllowlist: readonly string[] | undefined,
 	) {
 		this.loadModels();
 	}
@@ -452,12 +454,16 @@ export class ModelRegistry {
 		this.onOAuthProvidersReset = hook;
 	}
 
-	static create(authStorage: AuthStorage, modelsJsonPath: string = join(getAgentDir(), "models.json")): ModelRegistry {
-		return new ModelRegistry(authStorage, modelsJsonPath);
+	static create(
+		authStorage: AuthStorage,
+		modelsJsonPath: string = join(getAgentDir(), "models.json"),
+		modelAllowlist?: readonly string[],
+	): ModelRegistry {
+		return new ModelRegistry(authStorage, modelsJsonPath, modelAllowlist);
 	}
 
 	static inMemory(authStorage: AuthStorage): ModelRegistry {
-		return new ModelRegistry(authStorage, undefined);
+		return new ModelRegistry(authStorage, undefined, undefined);
 	}
 
 	/**
@@ -758,7 +764,7 @@ export class ModelRegistry {
 	 * If models.json had errors, returns only built-in models.
 	 */
 	getAll(): Model<Api>[] {
-		return this.models;
+		return this.models.filter((model) => this.isModelAllowed(model));
 	}
 
 	/**
@@ -766,7 +772,7 @@ export class ModelRegistry {
 	 * This is a fast check that doesn't refresh OAuth tokens.
 	 */
 	getAvailable(): Model<Api>[] {
-		return this.models.filter((model) => {
+		return this.getAll().filter((model) => {
 			if (
 				isPrivatePrimeInferenceModel(model) &&
 				!this.explicitPrivatePrimeInferenceModelIds.has(model.id) &&
@@ -945,7 +951,7 @@ export class ModelRegistry {
 			availableModels.filter(isPrivatePrimeInferenceModel).map((model) => `${model.provider}/${model.id}`),
 		);
 		return {
-			models: this.models.filter(
+			models: this.getAll().filter(
 				(model) =>
 					!isPrivatePrimeInferenceModel(model) || availablePrivateModels.has(`${model.provider}/${model.id}`),
 			),
@@ -1017,14 +1023,33 @@ export class ModelRegistry {
 	 * Find a model by provider and ID.
 	 */
 	find(provider: string, modelId: string): Model<Api> | undefined {
-		return this.models.find((m) => m.provider === provider && m.id === modelId);
+		return this.getAll().find((m) => m.provider === provider && m.id === modelId);
 	}
 
 	/**
 	 * Get API key for a model.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
-		return this.authStorage.hasAuth(model.provider) || this.hasConfiguredProviderRequestAuth(model.provider);
+		return (
+			this.isModelAllowed(model) &&
+			(this.authStorage.hasAuth(model.provider) || this.hasConfiguredProviderRequestAuth(model.provider))
+		);
+	}
+
+	private isModelAllowed(model: Model<Api>): boolean {
+		if (this.modelAllowlist === undefined) return true;
+		const provider = model.provider.toLowerCase();
+		const modelId = model.id.toLowerCase();
+		const fullId = `${provider}/${modelId}`;
+		return this.modelAllowlist.some((pattern) => {
+			const normalized = pattern.trim().toLowerCase();
+			return (
+				normalized === provider ||
+				minimatch(provider, normalized, { nocase: true }) ||
+				minimatch(modelId, normalized, { nocase: true }) ||
+				minimatch(fullId, normalized, { nocase: true })
+			);
+		});
 	}
 
 	private fingerprintProviderRequestAuthSource(source: ProviderRequestAuthSource["source"], material: string): string {
@@ -1295,6 +1320,9 @@ export class ModelRegistry {
 	 * Get API key and request headers for a model.
 	 */
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
+		if (!this.isModelAllowed(model)) {
+			return { ok: false, error: `Model "${model.provider}/${model.id}" is not enabled by modelAllowlist` };
+		}
 		try {
 			const providerConfig = this.providerRequestConfigs.get(model.provider);
 			const authStorageAuth = await this.authStorage.getApiKeyWithSourceToken(model.provider, {

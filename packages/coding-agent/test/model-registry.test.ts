@@ -61,6 +61,48 @@ describe("ModelRegistry", () => {
 		return value.replace(/\\/g, "/").replace(/"/g, '\\"');
 	}
 
+	describe("model allowlist", () => {
+		test("omitting the allowlist preserves the full built-in catalog", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+			expect(registry.getAll().length).toBeGreaterThan(1);
+			expect(registry.find("openai", "gpt-5.1")).toBeDefined();
+		});
+
+		test("filters providers and models from discovery", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath, ["anthropic/claude-sonnet-4-5"]);
+
+			expect(
+				registry.getAll().every((model) => model.provider === "anthropic" && model.id === "claude-sonnet-4-5"),
+			).toBe(true);
+			expect(registry.find("openai", "gpt-5.1")).toBeUndefined();
+		});
+
+		test("supports provider and glob patterns", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath, ["openai"]);
+			const openAiModels = registry.getAll().filter((model) => model.provider === "openai");
+
+			expect(openAiModels.length).toBeGreaterThan(0);
+		});
+
+		test("blocks direct requests for disallowed models", async () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath, ["anthropic/*"]);
+			const model = registry.find("openai", "gpt-5.1");
+			const allModelsModel = registry.getAll().find((candidate) => candidate.provider === "anthropic");
+
+			expect(model).toBeUndefined();
+			expect(allModelsModel).toBeDefined();
+			if (!allModelsModel) throw new Error("Expected an allowed model");
+			const disallowedModel = {
+				...allModelsModel,
+				provider: "openai",
+			};
+			const result = await registry.getApiKeyAndHeaders(disallowedModel);
+
+			expect(result.ok).toBe(false);
+		});
+	});
+
 	/** Create a baseUrl-only override (no custom models) */
 	function overrideConfig(baseUrl: string, headers?: Record<string, string>) {
 		return { baseUrl, ...(headers && { headers }) };

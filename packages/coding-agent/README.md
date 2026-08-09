@@ -114,6 +114,23 @@ See [docs/providers.md](docs/providers.md) for detailed setup instructions.
 
 **Custom providers & models:** Add providers via `~/.prime/agent/models.json` if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
 
+**Explicit provider/model control:** Environment-backed providers are discovered automatically by default. To opt in
+to only the providers or models you want to use, set `modelAllowlist` in `~/.prime/agent/settings.json` or the
+project settings file:
+
+```json
+{
+  "modelAllowlist": [
+    "anthropic/claude-sonnet-4-5",
+    "prime-inference"
+  ]
+}
+```
+
+Entries can be provider names, model IDs, or `provider/model` glob patterns. Models outside the list are hidden and
+cannot be selected or used, even when their API keys are present. An empty list disables all providers. See
+[docs/models.md](docs/models.md#restricting-providers-and-models) for details.
+
 ## Interactive Mode
 
 <p align="center"><img src="docs/images/interactive-mode.png" alt="Interactive Mode" width="600"></p>
