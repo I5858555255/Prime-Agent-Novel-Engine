@@ -11,7 +11,7 @@
  * compiled Bun binary), keyed off the __PI_BUNDLED__ define below, so extension
  * imports of pi packages share the bundle's module instances.
  */
-import { chmodSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,15 @@ try {
 rmSync(outdir, { recursive: true, force: true });
 
 await build({
-	entryPoints: [join(packageDir, "dist", "cli.js")],
+	entryPoints: [
+		{ in: join(packageDir, "dist", "cli.js"), out: "cli" },
+		// pi-ai imports the Bedrock provider through a variable specifier to keep
+		// the AWS SDK out of browser bundles, so esbuild cannot discover it and
+		// emits no chunk -- leaving the runtime import pointing at a file that was
+		// never written. Declaring it as an entry emits it under the exact name the
+		// runtime looks for, while splitting keeps it a lazily loaded chunk.
+		{ in: join(packageDir, "scripts", "bedrock-bundle-entry.js"), out: "amazon-bedrock" },
+	],
 	outdir,
 	bundle: true,
 	splitting: true,
@@ -49,4 +57,14 @@ await build({
 });
 
 chmodSync(join(outdir, "cli.js"), 0o755);
+
+// esbuild cannot see the Bedrock provider import (variable specifier), so it
+// cannot warn when the chunk is absent. Without this guard a bundle whose
+// runtime import resolves to a missing file ships silently, and every Bedrock
+// model fails with "module.streamSimple is not a function".
+const bedrockOutput = join(outdir, "amazon-bedrock.js");
+if (!existsSync(bedrockOutput)) {
+	throw new Error(`bundle is missing ${bedrockOutput}; Bedrock models would fail at runtime`);
+}
+
 console.log("bundled dist/cli.js -> dist/bundle/");
