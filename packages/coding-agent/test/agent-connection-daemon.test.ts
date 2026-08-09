@@ -2682,6 +2682,42 @@ describe("DaemonAgentConnection", () => {
 		);
 	});
 
+	it("drops the launch cwd when a fileless chat later revives a resumed transcript", async () => {
+		const fakeClient = new FakeDaemonClient();
+		// A --no-session chat: the initial attach has no session file.
+		fakeClient.attachResultFactory = (command) => {
+			const full = createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			if (command.activeSessionId !== "active-1") {
+				return full;
+			}
+			const state = { ...full.snapshot.state, sessionFile: undefined };
+			return { ...full, snapshot: { ...full.snapshot, state, summary: { ...full.snapshot.summary } } };
+		};
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+			reviveConfig: { cwd: "/tmp/launch-dir", model: "test-provider/test-model" } as never,
+		});
+		fakeClient.attachResultFactory = undefined;
+		// The user resumes a saved transcript in-worker; the launch cwd belongs
+		// to the fileless session, not to this transcript.
+		fakeClient.emitMessage({
+			type: "session_replaced",
+			activeSessionId: "active-1",
+			state: createConnectionState("active-1", "session-b"),
+			messages: [],
+		});
+		await vi.waitFor(() => expect(fakeClient.requests.length).toBeGreaterThan(0));
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		await connection.prompt("continue");
+
+		const create = fakeClient.requests.find((request) => request.type === "create");
+		expect(create).toMatchObject({
+			sessionPath: "/tmp/session-b.jsonl",
+			config: { model: "test-provider/test-model" },
+		});
+		expect(create && "config" in create ? create.config?.cwd : "present").toBeUndefined();
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");

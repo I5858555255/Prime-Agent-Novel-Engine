@@ -241,7 +241,8 @@ export class DaemonAgentConnection implements AgentConnection {
 	private reconnectPromise?: Promise<void>;
 	private reviveSession?: { promise: Promise<RevivedSessionBinding>; sourceActiveSessionId: string };
 	private lastAttachCreatedAttachment = false;
-	private reviveConfigSessionFile: string | undefined;
+	/** undefined = not yet captured; null = captured for a fileless (in-memory) session. */
+	private reviveConfigSessionFile: string | null | undefined;
 	private lastAttachPublishedIdentity: { sessionId: string; sessionFile: string | undefined } | undefined;
 	private switchCwdOverride: { sessionPath: string; cwd: string } | undefined;
 	private readonly definitiveRequestErrors = new WeakSet<Error>();
@@ -419,8 +420,9 @@ export class DaemonAgentConnection implements AgentConnection {
 			summary.sessionFile ?? ("snapshot" in result ? result.snapshot.state.sessionFile : undefined);
 		// The invocation's reviveConfig was computed for the transcript this
 		// connection first attached to; later transcripts (session switches)
-		// must not inherit its cwd.
-		this.reviveConfigSessionFile ??= this.attachedSessionFile;
+		// must not inherit its cwd. A fileless first attach (--no-session)
+		// records null so a transcript resumed later still counts as foreign.
+		this.reviveConfigSessionFile ??= this.attachedSessionFile ?? null;
 		// Recorded before the snapshot await below: a replacement snapshot
 		// landing mid-stream can rewrite the attached identity, and a caller
 		// capturing it afterwards would adopt the switched transcript as its
