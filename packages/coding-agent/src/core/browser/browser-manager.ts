@@ -395,14 +395,15 @@ export class BrowserManager {
 	private async _withTargetLock<T>(targetId: string, fn: () => Promise<T>): Promise<T> {
 		const previous = this._locks.get(targetId) ?? Promise.resolve();
 		const next = previous.then(fn, fn);
-		this._locks.set(
-			targetId,
-			next.catch(() => {}),
-		);
+		// Store a single reference and compare against THAT — storing
+		// next.catch(...) inline and comparing to `next` never matches, so the
+		// entry was never cleaned up and the chain grew on every operation.
+		const stored = next.catch(() => {});
+		this._locks.set(targetId, stored);
 		try {
 			return await next;
 		} finally {
-			if (this._locks.get(targetId) === next) {
+			if (this._locks.get(targetId) === stored) {
 				this._locks.delete(targetId);
 			}
 		}
