@@ -353,7 +353,8 @@ export class TUI extends Container {
 	private static readonly DOUBLE_CLICK_MS = 500;
 	private lastClickTime = 0;
 	private lastClickRow = -1;
-	private lastClickCol = -1;
+	private lastClickWordStart = -1;
+	private lastClickWordEnd = -1;
 	private clickCount = 0;
 	private selectionAutoScrollTimer: NodeJS.Timeout | undefined;
 	private selectionAutoScrollDirection: SelectionScrollDirection | null = null;
@@ -798,20 +799,23 @@ export class TUI extends Container {
 		this.selectionAutoScrollTimer.unref();
 	}
 
-	private countClick(screenRow: number, screenCol: number): number {
+	private countClick(screenRow: number, screenCol: number, viewport: FullscreenViewport): number {
 		const now = Date.now();
-		if (
-			now - this.lastClickTime <= TUI.DOUBLE_CLICK_MS &&
+		const word = viewport.wordRangeAt(screenRow, screenCol);
+		const sameWord =
 			screenRow === this.lastClickRow &&
-			screenCol === this.lastClickCol
-		) {
+			word !== null &&
+			word.start === this.lastClickWordStart &&
+			word.end === this.lastClickWordEnd;
+		if (now - this.lastClickTime <= TUI.DOUBLE_CLICK_MS && sameWord) {
 			this.clickCount = (this.clickCount % 3) + 1;
 		} else {
 			this.clickCount = 1;
 		}
 		this.lastClickTime = now;
 		this.lastClickRow = screenRow;
-		this.lastClickCol = screenCol;
+		this.lastClickWordStart = word?.start ?? screenCol;
+		this.lastClickWordEnd = word?.end ?? screenCol;
 		return this.clickCount;
 	}
 
@@ -924,7 +928,7 @@ export class TUI extends Container {
 					this.scrollBy(TUI.WHEEL_SCROLL_LINES);
 				} else if (event.button === MOUSE_BUTTON_LEFT && event.press && !event.motion) {
 					this.stopSelectionAutoScroll();
-					const clicks = this.countClick(event.y - 1, event.x - 1);
+					const clicks = this.countClick(event.y - 1, event.x - 1, viewport);
 					let began = false;
 					if (clicks === 2) {
 						began = viewport.beginWordSelection(event.y - 1, event.x - 1);

@@ -1197,4 +1197,161 @@ describe("TUI fullscreen mode", () => {
 
 		tui.stop();
 	});
+
+	it("double-click and drag across lines extends by words", async () => {
+		const testLines = lines(20);
+		testLines[14] = "alpha beta gamma";
+		testLines[15] = "delta epsilon zeta";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Double-click on "beta" (line 14, col 7 → SGR col 8, row 3)
+		// Click 1
+		terminal.sendInput("\x1b[<0;8;3M");
+		terminal.sendInput("\x1b[<0;8;3m");
+		await terminal.waitForRender();
+		// Click 2 -- double-click starts word selection on "beta"
+		terminal.sendInput("\x1b[<0;8;3M");
+		// Drag to "epsilon" (line 15, col 10 → SGR col 11, row 4)
+		terminal.sendInput("\x1b[<32;11;4M");
+		// Release
+		terminal.sendInput("\x1b[<0;11;4m");
+		await terminal.waitForRender();
+
+		// Should select from "beta" start through "epsilon" end, spanning both lines
+		assert.deepStrictEqual(copies, ["beta gamma\ndelta epsilon"]);
+
+		tui.stop();
+	});
+
+	it("triple-click and drag extends by whole lines", async () => {
+		const testLines = lines(20);
+		testLines[14] = "alpha beta gamma";
+		testLines[15] = "delta epsilon zeta";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Triple-click on line 14 (col 3, row 3 → SGR col 4, row 3)
+		// Click 1
+		terminal.sendInput("\x1b[<0;4;3M");
+		terminal.sendInput("\x1b[<0;4;3m");
+		await terminal.waitForRender();
+		// Click 2 (double-click)
+		terminal.sendInput("\x1b[<0;4;3M");
+		terminal.sendInput("\x1b[<0;4;3m");
+		await terminal.waitForRender();
+		copies.length = 0;
+		// Click 3 (triple-click -- selects full line)
+		terminal.sendInput("\x1b[<0;4;3M");
+		// Drag down to line 15 (col 5, row 4 → SGR col 6, row 4)
+		terminal.sendInput("\x1b[<32;6;4M");
+		// Release
+		terminal.sendInput("\x1b[<0;6;4m");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, ["alpha beta gamma\ndelta epsilon zeta"]);
+
+		tui.stop();
+	});
+
+	it("double-clicking whitespace copies nothing", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello world foo bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Double-click on the space between "hello" and "world" (col 5 → SGR col 6, row 4)
+		// Click 1
+		terminal.sendInput("\x1b[<0;6;4M");
+		terminal.sendInput("\x1b[<0;6;4m");
+		await terminal.waitForRender();
+		// Click 2
+		terminal.sendInput("\x1b[<0;6;4M");
+		terminal.sendInput("\x1b[<0;6;4m");
+		await terminal.waitForRender();
+
+		// Whitespace selection trims to null -- nothing copied
+		assert.deepStrictEqual(copies, []);
+
+		tui.stop();
+	});
+
+	it("double-click selects CJK wide-character words", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello \u4e16\u754c bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// "世界" occupies visible cols 6-9. Click at col 7 → SGR col 8, row 4.
+		// Click 1
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+		// Click 2
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copies, ["\u4e16\u754c"]);
+
+		tui.stop();
+	});
+
+	it("selection remains highlighted after mouse release", async () => {
+		const testLines = lines(20);
+		testLines[15] = "hello world foo bar";
+		const { terminal, tui, chat, dock } = setup(testLines);
+		const copies: string[] = [];
+		tui.onCopy = (text) => copies.push(text);
+		tui.enterFullscreen({ scroll: [chat], dock });
+		await terminal.waitForRender();
+
+		// Drag-select "hello" (cols 0-4 on line 15 = screen row 3)
+		// SGR col 1 → internal col 0, SGR col 6 → internal col 5
+		terminal.sendInput("\x1b[<0;1;4M");
+		terminal.sendInput("\x1b[<32;6;4M");
+		await terminal.waitForRender();
+
+		// Release
+		terminal.sendInput("\x1b[<0;6;4m");
+		await terminal.waitForRender();
+
+		// Text was copied
+		assert.deepStrictEqual(copies, ["hello"]);
+
+		// Selection highlight persists after release — force a full repaint
+		// and verify the highlight is re-applied
+		terminal.clearWrites();
+		terminal.resize(40, 11);
+		await terminal.waitForRender();
+		assert.ok(terminal.getWrites().includes("\x1b[7m"), "selection highlight visible after release");
+
+		// A plain click clears the persisted selection
+		terminal.clearWrites();
+		terminal.resize(40, 10);
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<0;8;4M");
+		terminal.sendInput("\x1b[<0;8;4m");
+		await terminal.waitForRender();
+
+		// Force repaint to check the highlight is gone
+		terminal.clearWrites();
+		terminal.resize(40, 11);
+		await terminal.waitForRender();
+		assert.ok(!terminal.getWrites().includes("\x1b[7m"), "selection cleared by plain click");
+
+		tui.stop();
+	});
 });
