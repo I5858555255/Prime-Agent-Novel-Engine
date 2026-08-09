@@ -1314,6 +1314,69 @@ describe("DaemonAgentConnection", () => {
 		});
 	});
 
+	it("does not retry into a transcript replaced by an in-worker switch during revival", async () => {
+		const fakeClient = new FakeDaemonClient();
+		fakeClient.attachResultFactory = (command) => {
+			if (command.activeSessionId !== "active-revived") {
+				return createAttachResult(command.activeSessionId, command.clientId, command.capabilities, 12);
+			}
+			// Bare-summary attach: the revival's snapshot comes from separate
+			// reads, giving a concurrent in-worker switch a window to land
+			// during the revival's tail.
+			return {
+				id: command.activeSessionId,
+				activeSessionId: command.activeSessionId,
+				sessionId: "session-revived",
+				sessionFile: "/tmp/session-current.jsonl",
+			} as unknown as DaemonAttachResult;
+		};
+		let releaseStateRead = () => {};
+		fakeClient.connectionStateGate = new Promise<void>((resolve) => {
+			releaseStateRead = resolve;
+		});
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(
+				fakeClient.requests.filter(
+					(request) => request.type === "get_connection_state" && request.activeSessionId === "active-revived",
+				),
+			).toHaveLength(1),
+		);
+		// An in-worker switch replaces the runtime transcript WITHOUT changing
+		// the active-session id: the daemon streams a replacement snapshot for
+		// the newly selected session under the same id.
+		const replacement = createAttachResult("active-revived", undefined, undefined, 40, {
+			state: createConnectionState("active-revived", "session-b"),
+		});
+		const { messages: _replacementMessages, ...replacementHeader } = replacement.snapshot;
+		fakeClient.emitMessage({
+			type: "session_snapshot_begin",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-inworker-switch",
+			snapshot: replacementHeader,
+			messageCount: 0,
+			targetChunkBytes: 512 * 1024,
+			purpose: "replacement",
+		});
+		fakeClient.emitMessage({
+			type: "session_snapshot_end",
+			activeSessionId: "active-revived",
+			snapshotId: "snapshot-inworker-switch",
+			chunkCount: 0,
+			lastEventSequence: 40,
+		});
+		releaseStateRead();
+
+		// The failed prompt targeted the revived transcript; re-sending it now
+		// would inject it into the switched one. Surface the original error.
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts.map((request) => request.activeSessionId)).toEqual(["active-1"]);
+	});
+
 	it("carries the telemetry opt-out into the revived worker's create command", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {

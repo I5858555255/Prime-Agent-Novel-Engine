@@ -231,7 +231,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	private readonly snapshotRecoveryPromises = new Map<string, Promise<void>>();
 	private readonly ignoredSnapshotIds = new Set<string>();
 	private reconnectPromise?: Promise<void>;
-	private reviveSession?: { promise: Promise<string>; sourceActiveSessionId: string };
+	private reviveSession?: { promise: Promise<RevivedSessionBinding>; sourceActiveSessionId: string };
 	private readonly definitiveRequestErrors = new WeakSet<Error>();
 	private disposing = false;
 	private disposed = false;
@@ -888,20 +888,22 @@ export class DaemonAgentConnection implements AgentConnection {
 				throw error;
 			}
 			if (this.activeSessionId === attemptedActiveSessionId) {
-				let revivedActiveSessionId: string;
+				let revived: RevivedSessionBinding;
 				try {
-					revivedActiveSessionId = await this.reviveFromSavedSession();
+					revived = await this.reviveFromSavedSession();
 				} catch {
 					// Surface the original unknown-session error: it names the session
 					// the caller targeted, which is more actionable than a revival
 					// failure for a session that may have been deleted outright.
 					throw error;
 				}
-				// A transition that lands between the revival resolving and this
-				// continuation running (e.g. a switch to an already-active session)
-				// rebinds the connection; sending the failed prompt there would
-				// inject it into another transcript.
-				if (this.activeSessionId !== revivedActiveSessionId) {
+				// A transition that lands during the revival's tail or between it
+				// resolving and this continuation running rebinds the connection —
+				// or, for an in-worker session switch, replaces the transcript
+				// WITHOUT changing the active id. Verify the full identity before
+				// re-sending; injecting the prompt into another transcript is
+				// worse than surfacing the original error.
+				if (!this.matchesRevivedBinding(revived)) {
 					throw error;
 				}
 				await this.promptWithAdmissionCancellation(type, message, options);
@@ -915,17 +917,32 @@ export class DaemonAgentConnection implements AgentConnection {
 			if (!revival || revival.sourceActiveSessionId !== attemptedActiveSessionId) {
 				throw error;
 			}
-			let revivedActiveSessionId: string;
+			let revived: RevivedSessionBinding;
 			try {
-				revivedActiveSessionId = await revival.promise;
+				revived = await revival.promise;
 			} catch {
 				throw error;
 			}
-			if (this.activeSessionId !== revivedActiveSessionId) {
+			if (!this.matchesRevivedBinding(revived)) {
 				throw error;
 			}
 			await this.promptWithAdmissionCancellation(type, message, options);
 		}
+	}
+
+	/**
+	 * Whether the connection still shows the exact binding a revival resolved
+	 * with: same active id AND same transcript identity. An in-worker session
+	 * switch replaces the transcript while keeping the active id, so the id
+	 * comparison alone would let a failed prompt retry into the newly
+	 * selected transcript.
+	 */
+	private matchesRevivedBinding(revived: RevivedSessionBinding): boolean {
+		return (
+			this.activeSessionId === revived.activeSessionId &&
+			this.attachedSessionId === revived.sessionId &&
+			this.attachedSessionFile === revived.sessionFile
+		);
 	}
 
 	private canReviveFromSavedSession(error: unknown, attemptedActiveSessionId: string): boolean {
@@ -954,7 +971,7 @@ export class DaemonAgentConnection implements AgentConnection {
 	 * update recovery). A revival superseded by such a transition fails and
 	 * leaves the newer binding untouched.
 	 */
-	private reviveFromSavedSession(): Promise<string> {
+	private reviveFromSavedSession(): Promise<RevivedSessionBinding> {
 		if (this.reviveSession) {
 			return this.reviveSession.promise;
 		}
@@ -1025,6 +1042,15 @@ export class DaemonAgentConnection implements AgentConnection {
 				// and lose the prompt; fall through to the snapshot reads below,
 				// which recover or schedule a background resync.
 			}
+			// Capture the transcript identity the attach established: an
+			// in-worker session switch replaces the runtime transcript without
+			// changing the active-session id, so the retry must verify this
+			// identity — not just the id — before re-sending the prompt.
+			const revivedBinding: RevivedSessionBinding = {
+				activeSessionId: revivedActiveSessionId,
+				sessionId: this.attachedSessionId,
+				sessionFile: this.attachedSessionFile,
+			};
 			let snapshot: AgentConnectionSnapshot | undefined;
 			try {
 				snapshot = await this.getInitialSnapshot();
@@ -1050,7 +1076,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			if (snapshot && this.activeSessionId === revivedActiveSessionId) {
 				void this.emit({ type: "session_resynced", snapshot });
 			}
-			return revivedActiveSessionId;
+			return revivedBinding;
 		})().finally(() => {
 			if (this.reviveSession?.promise === revival) {
 				this.reviveSession = undefined;
@@ -2402,6 +2428,17 @@ function isSnapshotTransferMessage(message: DaemonOutbound): boolean {
 		message.type === "session_snapshot_end" ||
 		message.type === "session_snapshot_failed"
 	);
+}
+
+/**
+ * The identity a revival resolved with: the retry must verify not just the
+ * active id but the transcript identity, because an in-worker session switch
+ * replaces the runtime transcript without changing the active-session id.
+ */
+interface RevivedSessionBinding {
+	activeSessionId: string;
+	sessionId: string | undefined;
+	sessionFile: string | undefined;
 }
 
 function readCreatedActiveSessionId(value: unknown): string {
