@@ -981,8 +981,14 @@ export class DaemonAgentConnection implements AgentConnection {
 			if (this.activeSessionId !== sourceActiveSessionId) {
 				// A concurrent transition rebound the connection while the daemon
 				// was resuming the session; the newer binding wins. The revived
-				// worker stays resident for the idle sweeps unless it is owned.
-				this.releaseRevivedSession(revivedActiveSessionId);
+				// worker stays resident for the idle sweeps unless it is owned —
+				// but when the concurrent transition bound this connection to the
+				// SAME session the create just revived (a switch to the saved
+				// session file), releasing it would detach the currently
+				// published binding and leave the connection deaf to its events.
+				if (this.activeSessionId !== revivedActiveSessionId) {
+					this.releaseRevivedSession(revivedActiveSessionId);
+				}
 				throw new Error(`Session revival superseded: binding moved from ${sourceActiveSessionId}`);
 			}
 			try {

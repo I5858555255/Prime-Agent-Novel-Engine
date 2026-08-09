@@ -1174,6 +1174,40 @@ describe("DaemonAgentConnection", () => {
 		expect(prompts.every((request) => request.activeSessionId !== "active-revived")).toBe(true);
 	});
 
+	it("does not release the revived session when a concurrent switch published the same binding", async () => {
+		const fakeClient = new FakeDaemonClient();
+		const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1");
+		fakeClient.deadActiveSessionIds.add("active-1");
+		// The concurrent switch lands on the SAME session the create revives:
+		// the daemon reports it as already active under the revived id.
+		fakeClient.switchSessionAlreadyActiveId = "active-revived";
+		let releaseCreate = () => {};
+		fakeClient.createGate = new Promise<void>((resolve) => {
+			releaseCreate = resolve;
+		});
+
+		const prompt = connection.prompt("continue");
+		await vi.waitFor(() =>
+			expect(fakeClient.requests.filter((request) => request.type === "create")).toHaveLength(1),
+		);
+		await connection.switchSession("/tmp/session-current.jsonl");
+		releaseCreate();
+		await expect(prompt).rejects.toThrow("Unknown active session: active-1");
+
+		// The switch owns the binding and it IS the revived session: releasing
+		// it would detach the currently published binding and leave the
+		// connection deaf to daemon events.
+		await connection.prompt("next");
+		expect(fakeClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "detach", activeSessionId: "active-revived" }),
+		);
+		expect(fakeClient.requests).not.toContainEqual(
+			expect.objectContaining({ type: "complete_owned_session", activeSessionId: "active-revived" }),
+		);
+		const prompts = fakeClient.requests.filter((request) => request.type === "prompt");
+		expect(prompts[prompts.length - 1]).toMatchObject({ activeSessionId: "active-revived" });
+	});
+
 	it("admits revived-session snapshot frames that arrive before the attach response continuation", async () => {
 		const fakeClient = new FakeDaemonClient();
 		const messages: AgentMessage[] = [{ role: "user", content: "revived history", timestamp: 1 }];
