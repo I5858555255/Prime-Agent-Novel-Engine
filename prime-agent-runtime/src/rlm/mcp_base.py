@@ -263,7 +263,10 @@ class McpIntegration:
                     t.name: {
                         "name": t.name,
                         "description": getattr(t, "description", "") or "",
-                        "inputSchema": getattr(t, "inputSchema", None) or {},
+                        # mcp.types.Tool uses snake_case attrs; inputSchema is only the JSON alias.
+                        "inputSchema": getattr(t, "input_schema", None)
+                        or getattr(t, "inputSchema", None)
+                        or {},
                     }
                     for t in resp.tools
                 }
