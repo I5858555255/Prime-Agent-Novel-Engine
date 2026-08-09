@@ -2427,6 +2427,39 @@ describe("DaemonAgentConnection", () => {
 		expect(resyncs).toHaveLength(0);
 	});
 
+	it("recreates the revived session with the invocation's launch context", async () => {
+		const fakeClient = new FakeDaemonClient();
+		vi.stubEnv("HERDR_PANE_ID", "pane-42");
+		try {
+			const connection = await DaemonAgentConnection.attach(asDaemonClient(fakeClient), "active-1", {
+				sendClientEnv: true,
+				reviveConfig: {
+					cwd: "/tmp/project",
+					model: "test-provider/test-model",
+					systemPromptOverride: "custom prompt",
+				} as never,
+			});
+			fakeClient.deadActiveSessionIds.add("active-1");
+
+			await connection.prompt("continue");
+
+			// The original launch context travels with the recreate: runtime
+			// config and the client environment, so the revived worker does not
+			// silently run under daemon defaults.
+			expect(fakeClient.requests.find((request) => request.type === "create")).toMatchObject({
+				sessionPath: "/tmp/session-current.jsonl",
+				config: {
+					cwd: "/tmp/project",
+					model: "test-provider/test-model",
+					systemPromptOverride: "custom prompt",
+				},
+				env: { HERDR_PANE_ID: "pane-42" },
+			});
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("treats a lost prompt response plus unknown cancellation as uncertain", async () => {
 		const fakeClient = new FakeDaemonClient();
 		fakeClient.promptError = new Error("lost response");
