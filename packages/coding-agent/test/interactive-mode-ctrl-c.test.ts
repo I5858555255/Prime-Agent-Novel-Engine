@@ -157,7 +157,7 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		expect(mode.shutdown).not.toHaveBeenCalled();
 	});
 
-	it("cancels an active /refine command without clearing queued prompts or the draft", () => {
+	it("cancels an active /refine command and restores queued prompts to the editor", () => {
 		const mode = createInteractiveFake({ editorText: "draft" });
 		mode.connectionState.sessionActions = {
 			queuedCount: 1,
@@ -169,9 +169,7 @@ describe("InteractiveMode interrupt shortcuts", () => {
 		Reflect.get(InteractiveMode.prototype, "handleCtrlC").call(mode);
 
 		expect(mode.agentConnection.abort).toHaveBeenCalledOnce();
-		expect(mode.agentConnection.abortAndClearQueue).not.toHaveBeenCalled();
-		expect(mode.restoreQueuedMessagesToEditor).not.toHaveBeenCalled();
-		expect(mode.editor.getText()).toBe("draft");
+		expect(mode.restoreQueuedMessagesToEditor).toHaveBeenCalledWith({ abort: true });
 	});
 
 	it("does not use the full-session abort for other active commands", () => {
