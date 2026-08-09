@@ -193,6 +193,23 @@ describe("slash command aliases", () => {
 			isAlias: true,
 		});
 	});
+
+	test("resolves /exit to /quit through the alias path", () => {
+		const parsed = parseSlashCommand("/exit");
+
+		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "quit")).toMatchObject({
+			aliases: ["exit"],
+		});
+		expect(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "exit")).toBeUndefined();
+		expect(isBuiltinSlashCommandName("exit")).toBe(true);
+		expect(resolveBuiltinSlashCommandName("exit")).toBe("quit");
+		expect(resolveSlashCommand(parsed!)).toEqual({
+			name: "quit",
+			args: "",
+			originalName: "exit",
+			isAlias: true,
+		});
+	});
 });
 
 describe("session slash commands", () => {
