@@ -139,11 +139,23 @@ class McpIntegration:
     #: Optional env var holding a static bearer token (used instead of auth.json OAuth).
     bearer_token_env: str | None = None
 
+    #: Per-integration host bridge timeout in seconds. ``None`` uses the runtime
+    #: default or the ``RLM_HOST_REQUEST_TIMEOUT`` environment override.
+    host_request_timeout: float | None = None
+
     def __init__(self) -> None:
         if not self.server:
             raise ValueError(f"{type(self).__name__} must set a non-empty `server`")
         self._tools: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
+
+    async def _host_request(
+        self,
+        request_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Forward a host request with this integration's timeout policy."""
+        return await host_request(request_type, payload, timeout=self.host_request_timeout)
 
     # -- credentials --------------------------------------------------------
 
@@ -185,7 +197,7 @@ class McpIntegration:
         if _read_auth(self._provider_id) is not None:
             refresh_error: Exception | None = None
             try:
-                await host_request("mcp.refresh", {"server": self.server})
+                await self._host_request("mcp.refresh", {"server": self.server})
             except RuntimeError as exc:
                 refresh_error = exc
             token = self._token()
@@ -204,7 +216,7 @@ class McpIntegration:
     async def _resolve_host_config(self) -> dict[str, Any]:
         """Read host transport metadata without importing or holding a live client."""
         try:
-            cfg = await host_request("mcp.config", {"server": self.server})
+            cfg = await self._host_request("mcp.config", {"server": self.server})
         except RuntimeError:
             return {}
         if isinstance(cfg, dict) and cfg.get("enabled") is False:
@@ -297,7 +309,7 @@ class McpIntegration:
             if self._tools is not None:
                 return config
             if self._is_host_bridge_config(config):
-                payload = await host_request("mcp.list_tools", {"server": self.server})
+                payload = await self._host_request("mcp.list_tools", {"server": self.server})
                 tools = payload.get("tools") if isinstance(payload, dict) else None
                 if not isinstance(tools, list):
                     raise RuntimeError("mcp.list_tools returned an invalid tools list")
@@ -336,7 +348,7 @@ class McpIntegration:
         if not self._tool_allowed_from_config(tool, config):
             raise PermissionError(f"MCP tool '{tool}' is not allowed by settings")
         if self._is_host_bridge_config(config):
-            payload = await host_request(
+            payload = await self._host_request(
                 "mcp.call_tool",
                 {"server": self.server, "tool": tool, "arguments": arguments or {}},
             )

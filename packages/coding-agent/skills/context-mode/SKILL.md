@@ -82,8 +82,8 @@ Discover schemas with `list_tools()` before calling. This skill permits only:
 ```python
 summary = await context_mode.ctx_execute_file(
     path="logs/server.log",
-    language="text",
-    code="Summarize errors by root cause; return at most ten findings.",
+    language="python",
+    code="errors=[l for l in FILE_CONTENT.splitlines() if 'ERROR' in l]; print(len(errors)); print('\\n'.join(errors[:10]))",
     intent="Find the first recurring production failure."
 )
 

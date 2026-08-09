@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import os
 import sys
 import types
 from dataclasses import dataclass
@@ -22,6 +24,30 @@ except Exception:  # pragma: no cover - only available in kernels
     get_ipython = None  # type: ignore[assignment]
 
 HOST_COMM_TARGET = "host.request"
+DEFAULT_HOST_REQUEST_TIMEOUT_SECONDS = 300.0
+_HOST_REQUEST_TIMEOUT_ENV = "RLM_HOST_REQUEST_TIMEOUT"
+
+
+def _resolve_host_request_timeout(timeout: float | None) -> float:
+    """Resolve a positive host-request timeout from an explicit value or env."""
+    if timeout is not None:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise TypeError(f"timeout must be a number or None, got {type(timeout).__name__}")
+        value = float(timeout)
+    else:
+        raw = os.environ.get(_HOST_REQUEST_TIMEOUT_ENV, "").strip()
+        if not raw:
+            return DEFAULT_HOST_REQUEST_TIMEOUT_SECONDS
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"{_HOST_REQUEST_TIMEOUT_ENV} must be a positive number of seconds"
+            ) from exc
+
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("host request timeout must be a finite non-negative number")
+    return value
 
 
 @dataclass(frozen=True)
@@ -81,13 +107,20 @@ def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
     )
 
 
-async def host_request(request_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+async def host_request(
+    request_type: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    timeout: float | None = None,
+) -> dict[str, Any]:
     """Send a typed request to the Prime Agent host and await its reply.
 
     This is the kernel side of the generic host bridge: Python skills call
     ``await host_request("<type>", {...})`` and the TypeScript host dispatches
-    on the type. Raises RuntimeError when the host reports an error or when no
-    handler for the type is registered in this session.
+    on the type. Requests are bounded by ``timeout`` seconds; when omitted,
+    ``RLM_HOST_REQUEST_TIMEOUT`` overrides the default 300-second budget.
+    Raises RuntimeError when the host reports an error or when no handler for
+    the type is registered in this session.
     """
     if not isinstance(request_type, str) or not request_type:
         raise TypeError("request_type must be a non-empty str")
@@ -95,11 +128,33 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
         raise TypeError(f"payload must be a dict or None, got {type(payload).__name__}")
     if Comm is None:
         raise RuntimeError("Jupyter comm support is unavailable in this kernel")
+    timeout_seconds = _resolve_host_request_timeout(timeout)
     _install_control_comm_handlers()
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[dict[str, Any]] = loop.create_future()
     comm = Comm(target_name=HOST_COMM_TARGET, primary=False)
+    comm_closed = False
+
+    def _close_comm() -> None:
+        nonlocal comm_closed
+        if comm_closed:
+            return
+        comm_closed = True
+        try:
+            comm.close()
+        except Exception:
+            # A late callback must never turn a completed request into an
+            # event-loop exception. The close attempt is still idempotent.
+            pass
+
+    def _schedule(callback) -> None:
+        try:
+            loop.call_soon_threadsafe(callback)
+        except RuntimeError:
+            # The loop may have been closed after cancellation while a comm
+            # callback was already in flight. The comm still needs closing.
+            _close_comm()
 
     def _on_msg(msg: dict[str, Any]) -> None:
         content = msg.get("content", {})
@@ -110,34 +165,52 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
         status = reply.get("status")
         if status == "ok":
             def _resolve_result() -> None:
-                if not future.done():
-                    future.set_result({k: v for k, v in reply.items() if k != "status"})
-                    comm.close()
+                try:
+                    if not future.done():
+                        future.set_result({k: v for k, v in reply.items() if k != "status"})
+                finally:
+                    _close_comm()
 
-            loop.call_soon_threadsafe(_resolve_result)
+            _schedule(_resolve_result)
             return
         if status == "error":
             message = reply.get("error") or f"host request {request_type} failed"
-            def _resolve_error() -> None:
-                if not future.done():
-                    future.set_exception(RuntimeError(str(message)))
-                    comm.close()
 
-            loop.call_soon_threadsafe(_resolve_error)
+            def _resolve_error() -> None:
+                try:
+                    if not future.done():
+                        future.set_exception(RuntimeError(str(message)))
+                finally:
+                    _close_comm()
+
+            _schedule(_resolve_error)
             return
 
         unexpected = f"host request {request_type} returned unexpected status: {status!r}"
+
         def _resolve_unexpected() -> None:
-            if not future.done():
-                future.set_exception(RuntimeError(unexpected))
-                comm.close()
+            try:
+                if not future.done():
+                    future.set_exception(RuntimeError(unexpected))
+            finally:
+                _close_comm()
 
-        loop.call_soon_threadsafe(_resolve_unexpected)
+        _schedule(_resolve_unexpected)
 
-    comm.on_msg(_on_msg)
-    # request_type goes last so a payload "type" key cannot reroute the request.
-    comm.open(data={**(payload or {}), "type": request_type})
-    return await future
+    try:
+        comm.on_msg(_on_msg)
+        # request_type goes last so a payload "type" key cannot reroute the request.
+        comm.open(data={**(payload or {}), "type": request_type})
+        try:
+            return await asyncio.wait_for(future, timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"host request {request_type} timed out after {timeout_seconds:g}s"
+            ) from exc
+        except asyncio.CancelledError as exc:
+            raise asyncio.CancelledError(f"host request {request_type} was cancelled") from exc
+    finally:
+        _close_comm()
 
 
 async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:

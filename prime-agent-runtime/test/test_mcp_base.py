@@ -9,6 +9,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest import mock
 
+import rlm as rlm_module
 from rlm import mcp_base
 from rlm.mcp_base import McpIntegration, McpToolError, NotEnabled
 
@@ -47,6 +48,72 @@ class _FakeSession:
 class _Integration(McpIntegration):
     server = "demo"
     url = "https://example.test/mcp"
+
+
+class _FakeComm:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self._on_msg = None
+        self.close_calls = 0
+        self.open_data = None
+        type(self).instances.append(self)
+
+    def on_msg(self, callback):
+        self._on_msg = callback
+
+    def open(self, data=None):
+        self.open_data = data
+
+    def close(self):
+        self.close_calls += 1
+
+    def deliver(self, data):
+        assert self._on_msg is not None
+        self._on_msg({"content": {"data": data}})
+
+
+class HostRequestTest(unittest.TestCase):
+    def setUp(self):
+        _FakeComm.instances.clear()
+
+    def test_timeout_uses_env_override_and_closes_comm(self):
+        async def exercise():
+            with mock.patch.object(rlm_module, "Comm", _FakeComm), mock.patch.dict(
+                "os.environ", {"RLM_HOST_REQUEST_TIMEOUT": "0.01"}
+            ):
+                with self.assertRaisesRegex(TimeoutError, "mcp.timeout"):
+                    await rlm_module.host_request("mcp.timeout")
+
+        _run(exercise())
+        self.assertEqual(len(_FakeComm.instances), 1)
+        self.assertEqual(_FakeComm.instances[0].close_calls, 1)
+
+    def test_cancellation_closes_comm_and_names_request(self):
+        async def exercise():
+            with mock.patch.object(rlm_module, "Comm", _FakeComm):
+                task = asyncio.create_task(rlm_module.host_request("mcp.cancel"))
+                await asyncio.sleep(0)
+                task.cancel()
+                with self.assertRaisesRegex(asyncio.CancelledError, "mcp.cancel"):
+                    await task
+
+        _run(exercise())
+        self.assertEqual(len(_FakeComm.instances), 1)
+        self.assertEqual(_FakeComm.instances[0].close_calls, 1)
+
+    def test_late_reply_after_timeout_is_ignored_and_does_not_reclose(self):
+        async def exercise():
+            with mock.patch.object(rlm_module, "Comm", _FakeComm):
+                with self.assertRaises(TimeoutError):
+                    await rlm_module.host_request("mcp.late", timeout=0.01)
+                comm = _FakeComm.instances[0]
+                comm.deliver({"status": "ok", "value": "late"})
+                await asyncio.sleep(0)
+                self.assertEqual(comm.close_calls, 1)
+
+        _run(exercise())
 
 
 class McpIntegrationTest(unittest.TestCase):
@@ -94,7 +161,7 @@ class McpIntegrationTest(unittest.TestCase):
             {"type": "oauth", "access": "old", "refresh": "r", "expires": (time.time() - 10) * 1000}
         )
 
-        async def fake_host_request(req_type, payload):
+        async def fake_host_request(req_type, payload, **kwargs):
             self.assertEqual(req_type, "mcp.refresh")
             self.assertEqual(payload, {"server": "demo"})
             # Simulate the host rewriting auth.json with a fresh token.
@@ -113,7 +180,7 @@ class McpIntegrationTest(unittest.TestCase):
             {"type": "oauth", "access": "stale", "refresh": "r", "expires": (time.time() - 10) * 1000}
         )
 
-        async def fake_host_request(req_type, payload):
+        async def fake_host_request(req_type, payload, **kwargs):
             return {}  # no-op: token stays expired
 
         with mock.patch.object(mcp_base, "host_request", fake_host_request):
@@ -127,7 +194,7 @@ class McpIntegrationTest(unittest.TestCase):
             {"type": "oauth", "access": "stale", "refresh": "r", "expires": (time.time() - 10) * 1000}
         )
 
-        async def failing_host_request(req_type, payload):
+        async def failing_host_request(req_type, payload, **kwargs):
             raise RuntimeError("network down")
 
         with mock.patch.object(mcp_base, "host_request", failing_host_request):
@@ -163,7 +230,9 @@ class McpIntegrationTest(unittest.TestCase):
         self._write_auth(
             {"type": "oauth", "access": "t", "refresh": "r", "expires": (time.time() + 3600) * 1000}
         )
-        with self._patch_session(session):
+        with self._patch_session(session), mock.patch.object(
+            _Integration, "_resolve_host_config", new=mock.AsyncMock(return_value={})
+        ):
             integration = _Integration()
             out = _run(integration.list_issues(team="Eng"))
         self.assertEqual(out, {"issues": [1, 2]})
@@ -174,7 +243,9 @@ class McpIntegrationTest(unittest.TestCase):
         self._write_auth(
             {"type": "oauth", "access": "t", "refresh": "r", "expires": (time.time() + 3600) * 1000}
         )
-        with self._patch_session(session):
+        with self._patch_session(session), mock.patch.object(
+            _Integration, "_resolve_host_config", new=mock.AsyncMock(return_value={})
+        ):
             integration = _Integration()
             with self.assertRaises(AttributeError) as ctx:
                 _run(integration.nonexistent_tool())
@@ -202,7 +273,7 @@ class McpIntegrationTest(unittest.TestCase):
             {"type": "oauth", "access": "tok-xyz", "refresh": "r", "expires": (time.time() + 3600) * 1000}
         )
 
-        async def fake_host_request(req_type, payload):
+        async def fake_host_request(req_type, payload, **kwargs):
             return {}  # no host URL override; _resolve_url falls back to self.url
 
         with mock.patch.object(mcp_base, "host_request", fake_host_request), \
@@ -254,7 +325,7 @@ class McpIntegrationTest(unittest.TestCase):
         self.assertIsNotNone(captured["http_client"])
 
     def test_resolve_config_denies_an_explicitly_disabled_server(self):
-        async def host_disabled(req_type, payload):
+        async def host_disabled(req_type, payload, **kwargs):
             return {"enabled": False}
 
         with mock.patch.object(mcp_base, "host_request", host_disabled):
@@ -264,7 +335,7 @@ class McpIntegrationTest(unittest.TestCase):
     def test_stdio_bridge_uses_host_process_without_opening_python_sessions(self):
         calls = []
 
-        async def host_request_bridge(req_type, payload):
+        async def host_request_bridge(req_type, payload, **kwargs):
             calls.append((req_type, payload))
             if req_type == "mcp.config":
                 return {"type": "stdio", "bridge": "host"}
@@ -284,10 +355,39 @@ class McpIntegrationTest(unittest.TestCase):
             ["mcp.config", "mcp.list_tools", "mcp.config", "mcp.call_tool"],
         )
 
+    def test_host_request_timeout_propagates_through_bridge_calls(self):
+        calls = []
+
+        async def host_request_bridge(req_type, payload, **kwargs):
+            calls.append((req_type, kwargs.get("timeout")))
+            if req_type == "mcp.config":
+                return {"type": "stdio", "bridge": "host"}
+            if req_type == "mcp.list_tools":
+                return {"tools": [{"name": "echo", "description": "", "inputSchema": {}}]}
+            if req_type == "mcp.call_tool":
+                return {"result": {"structuredContent": {"ok": True}, "content": []}}
+            raise AssertionError(req_type)
+
+        with mock.patch.object(mcp_base, "host_request", host_request_bridge):
+            integration = _Integration()
+            integration.host_request_timeout = 0.25
+            self.assertEqual(_run(integration.list_tools())[0]["name"], "echo")
+            self.assertEqual(_run(integration.call_tool("echo")), {"ok": True})
+
+        self.assertEqual(
+            calls,
+            [
+                ("mcp.config", 0.25),
+                ("mcp.list_tools", 0.25),
+                ("mcp.config", 0.25),
+                ("mcp.call_tool", 0.25),
+            ],
+        )
+
     def test_list_tools_resolves_filter_config_once_for_many_tools(self):
         calls = []
 
-        async def host_request_many_tools(req_type, payload):
+        async def host_request_many_tools(req_type, payload, **kwargs):
             calls.append((req_type, payload))
             if req_type == "mcp.config":
                 return {
@@ -311,7 +411,7 @@ class McpIntegrationTest(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ["mcp.config", "mcp.list_tools"])
 
     def test_host_bridge_parses_error_result(self):
-        async def host_request_error(req_type, payload):
+        async def host_request_error(req_type, payload, **kwargs):
             if req_type == "mcp.config":
                 return {"type": "stdio", "bridge": "host"}
             return {"result": {"isError": True, "content": [{"text": "boom"}]}}
@@ -321,10 +421,10 @@ class McpIntegrationTest(unittest.TestCase):
                 _run(_Integration().call_tool("echo"))
 
     def test_resolve_config_prefers_host_override_and_headers(self):
-        async def host_with_override(req_type, payload):
+        async def host_with_override(req_type, payload, **kwargs):
             return {"url": "https://override.test/mcp", "headers": {"X-Extra": "1"}}
 
-        async def host_empty(req_type, payload):
+        async def host_empty(req_type, payload, **kwargs):
             return {}
 
         with mock.patch.object(mcp_base, "host_request", host_with_override):
@@ -344,7 +444,7 @@ class McpIntegrationTest(unittest.TestCase):
             "blocked": {"name": "blocked", "description": "", "inputSchema": {}},
         }
 
-        async def host_config(req_type, payload):
+        async def host_config(req_type, payload, **kwargs):
             self.assertEqual(req_type, "mcp.config")
             return {"url": _Integration.url, "enabledTools": ["allowed"]}
 

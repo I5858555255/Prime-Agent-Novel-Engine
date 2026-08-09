@@ -6,6 +6,7 @@
 - Added bounded IPython output artifacts with opaque retrieval handles for oversized stdout, stderr, results, and tracebacks.
 - Added bundled `jcodemunch` and `context-mode` Python skills enabled by default through lazy host-managed stdio defaults, with HTTP overrides, curated tool surfaces, and graceful unavailable diagnostics.
 - Fixed host-managed stdio MCP sidecars crashing on closed stdin, retrying possibly delivered tool calls, accepting invalid handshakes/settings, or returning before process cleanup completed.
+- Fixed Python host bridge requests waiting forever or leaking comms after timeouts and cancellation, and corrected the bundled Context Mode file-processing example.
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
 

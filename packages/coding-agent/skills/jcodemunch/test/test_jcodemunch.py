@@ -106,9 +106,11 @@ class JCodeMunchTest(unittest.TestCase):
 
     def test_host_stdio_dispatches_list_and_call_without_opening_http_session(self):
         integration = jcodemunch.JCodeMunch()
+        integration.host_request_timeout = 12.5
         calls = []
 
-        async def host_request_bridge(req_type, payload):
+        async def host_request_bridge(req_type, payload, *, timeout):
+            self.assertEqual(timeout, 12.5)
             calls.append((req_type, payload))
             if req_type == "mcp.config":
                 return {
