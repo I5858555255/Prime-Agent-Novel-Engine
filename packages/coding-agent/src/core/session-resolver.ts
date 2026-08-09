@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { matchesSavedSessionSelector, normalizeSessionId } from "./session-id.js";
 import type { SessionInfo } from "./session-manager.js";
 import { SessionManager } from "./session-manager.js";
@@ -110,10 +111,14 @@ export function findClosestSessionId(
 
 function resolveExactMatch(selector: string, sessions: readonly SessionInfo[]): SessionInfo | undefined {
 	const normalizedSelector = normalizeSessionId(selector);
-	return resolveUniqueMatch(
-		selector,
-		sessions.filter((session) => normalizeSessionId(session.id) === normalizedSelector),
-	);
+	const matches = sessions.filter((session) => normalizeSessionId(session.id) === normalizedSelector);
+	if (matches.length > 1) {
+		const canonicalMatches = matches.filter((session) => basename(session.path) === `${session.id}.jsonl`);
+		if (canonicalMatches.length === 1) {
+			return canonicalMatches[0];
+		}
+	}
+	return resolveUniqueMatch(selector, matches);
 }
 
 function resolvePartialMatch(selector: string, sessions: readonly SessionInfo[]): SessionInfo | undefined {

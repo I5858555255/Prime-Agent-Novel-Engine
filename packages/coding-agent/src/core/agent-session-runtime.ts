@@ -671,11 +671,14 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		const lease = this.acquireReplacementLease(destinationPath);
 		let sessionManager: SessionManager;
 		try {
-			if (resolve(destinationPath) !== resolvedPath) {
+			const copied = resolve(destinationPath) !== resolvedPath;
+			if (copied) {
 				copyFileSync(resolvedPath, destinationPath);
 			}
 
-			sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
+			sessionManager = copied
+				? SessionManager.openImportedCopy(destinationPath, sessionDir, cwdOverride)
+				: SessionManager.open(destinationPath, sessionDir, cwdOverride);
 			assertSessionCwdExists(sessionManager, this.cwd);
 		} catch (error) {
 			this.releaseUncommittedLease(lease);

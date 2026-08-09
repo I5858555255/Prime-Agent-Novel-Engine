@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
@@ -117,5 +117,35 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		runtimeHost.setBeforeSessionInvalidate(undefined);
 		const leaseRoot = join(runtimeHost.services.agentDir, "session-leases");
 		expect(readdirSync(leaseRoot).filter((entry) => entry.endsWith(".lock"))).toHaveLength(1);
+	});
+
+	it("assigns a new session ID to each imported copy", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => undefined);
+		const cwd = runtimeHost.session.sessionManager.getCwd();
+		const sourceId = "019fd5bd-5738-752e-95c8-fdfb3e710b31";
+		const header = JSON.stringify({
+			type: "session",
+			version: 3,
+			id: sourceId,
+			timestamp: "2026-08-01T00:00:00.000Z",
+			cwd,
+		});
+		const firstSource = join(cwd, "first-import.jsonl");
+		const secondSource = join(cwd, "second-import.jsonl");
+		writeFileSync(firstSource, `${header}\n`);
+		writeFileSync(secondSource, `${header}\n`);
+
+		await runtimeHost.importFromJsonl(firstSource);
+		const firstImportedId = runtimeHost.session.sessionId;
+		const firstImportedFile = runtimeHost.session.sessionFile!;
+		await runtimeHost.importFromJsonl(secondSource);
+		const secondImportedId = runtimeHost.session.sessionId;
+		const secondImportedFile = runtimeHost.session.sessionFile!;
+
+		expect(firstImportedId).not.toBe(sourceId);
+		expect(secondImportedId).not.toBe(sourceId);
+		expect(secondImportedId).not.toBe(firstImportedId);
+		expect(JSON.parse(readFileSync(firstImportedFile, "utf8").split("\n")[0]!).id).toBe(firstImportedId);
+		expect(JSON.parse(readFileSync(secondImportedFile, "utf8").split("\n")[0]!).id).toBe(secondImportedId);
 	});
 });
