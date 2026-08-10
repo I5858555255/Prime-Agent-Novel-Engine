@@ -12,6 +12,7 @@ Extensions are TypeScript modules that extend Prime Agent's behavior. They can s
 - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
+- **Kernel access** - Execute code in the session IPython kernel via `pi.kernel.execute()`
 - **Session persistence** - Store state that survives restarts via `pi.appendEntry()`
 - **Custom rendering** - Control how tool calls/results and messages appear in TUI
 
@@ -1480,6 +1481,30 @@ Execute a shell command.
 const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 // result.stdout, result.stderr, result.code, result.killed
 ```
+
+### pi.kernel.execute(code, options?)
+
+Execute a Python code cell in the session's persistent IPython kernel — the same kernel the built-in `ipython` tool uses. Variables, imports, and running tasks persist across calls and are visible to both the extension and the agent's `ipython` tool. The kernel starts lazily on first use.
+
+```typescript
+const result = await pi.kernel.execute("print(2 + 2)");
+// result.stdout === "4\n"
+// result.status === "ok" | "error" | "aborted"
+// result.error?.ename / result.error?.evalue on failure
+
+// Keep state for later calls (and for the agent's ipython tool)
+await pi.kernel.execute("answer = 6 * 7");
+const next = await pi.kernel.execute("print(answer)");
+```
+
+**Options:**
+- `signal` - `AbortSignal`; aborting interrupts the kernel via the control channel.
+- `onStream(chunk, name)` - Receive raw stdout/stderr chunks as the cell runs.
+- `maxOutputChars` - Cap stdout / stderr / result characters (default 65536).
+
+Calls are serialized against the kernel's execution queue, so an extension call waits for any agent `ipython` cell that is still running (and vice versa). A cell that keeps running after an interrupt rejects with `KernelBusyAfterInterruptError`; the caller decides whether to wait and retry.
+
+Useful for extensions that need shared Python state with the agent (scratch buffers, data loaders, long-running task orchestration) without going through the LLM.
 
 ### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)
 

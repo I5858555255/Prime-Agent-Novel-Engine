@@ -9,7 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { createExtensionRuntime, discoverAndLoadExtensions } from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
-import type { ExtensionActions, ExtensionContextActions, ProviderConfig } from "../src/core/extensions/types.js";
+import type {
+	ExtensionActions,
+	ExtensionContextActions,
+	KernelExecuteOptions,
+	ProviderConfig,
+} from "../src/core/extensions/types.js";
 import { KeybindingsManager, type KeyId } from "../src/core/keybindings.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -54,6 +59,7 @@ describe("ExtensionRunner", () => {
 	const extensionActions: ExtensionActions = {
 		sendMessage: () => {},
 		sendUserMessage: () => {},
+		executeKernel: async () => ({ stdout: "", stderr: "", status: "ok", durationMs: 0 }),
 		appendEntry: () => {},
 		setSessionName: () => {},
 		getSessionName: () => undefined,
@@ -709,6 +715,60 @@ describe("ExtensionRunner", () => {
 			);
 
 			await expect(runtime.setSessionName("duplicate")).rejects.toBe(failure);
+		});
+
+		it("routes pi.kernel.execute through the bound kernel action", async () => {
+			const executeKernel = vi.fn(async (code: string, _options?: KernelExecuteOptions) => ({
+				stdout: `ran: ${code}`,
+				stderr: "",
+				result: "7",
+				status: "ok" as const,
+				durationMs: 1,
+			}));
+			const extCode = `
+				export default function(pi) {
+					pi.registerCommand("run-kernel", {
+						description: "Run code in the IPython kernel",
+						handler: async (args, ctx) => {
+							const result = await pi.kernel.execute(args, { maxOutputChars: 123 });
+							ctx.ui.notify(result.stdout + " " + result.status, "info");
+						},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "kernel-access.ts"), extCode);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.bindCore({ ...extensionActions, executeKernel }, extensionContextActions);
+
+			const command = runner.getCommand("run-kernel")!;
+			const ctx = runner.createCommandContext();
+			await command.handler("print(3 + 4)", ctx);
+
+			expect(executeKernel).toHaveBeenCalledWith("print(3 + 4)", { maxOutputChars: 123 });
+		});
+
+		it("throws when pi.kernel.execute is called before bindCore", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.registerCommand("run-kernel", {
+						description: "Run code in the IPython kernel",
+						handler: async (args) => {
+							return await pi.kernel.execute(args);
+						},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "kernel-unbound.ts"), extCode);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+			const command = runner.getCommand("run-kernel")!;
+			await expect(command.handler("print(1)", runner.createCommandContext())).rejects.toThrow(
+				"Extension runtime not initialized",
+			);
 		});
 	});
 
