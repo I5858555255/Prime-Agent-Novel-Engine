@@ -1941,6 +1941,67 @@ describe("daemon worker supervisor monitoring", () => {
 		}
 	});
 
+	it("retries SIGKILL after a transient identity outage at the deadline", async () => {
+		vi.useFakeTimers();
+		const worker = {
+			descriptor: {
+				workerId: "worker-kill-retry",
+				pid: 111_119,
+				processStartId: "proc:original",
+				rootActiveSessionId: "active-1",
+				stopRequestedAt: new Date().toISOString(),
+			},
+			intentionalStop: true,
+			stopRevision: 0,
+			stopFinalization: undefined as Promise<void> | undefined,
+		};
+		const workers = new Map([[worker.descriptor.workerId, worker]]);
+		const stopWorker = vi.fn(async () => {
+			workers.delete(worker.descriptor.workerId);
+		});
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers,
+			shuttingDown: false,
+			stopWorker,
+			persistWorker: vi.fn(),
+			log: vi.fn(),
+			reportCleanupFailure: vi.fn(),
+		}) as {
+			scheduleWorkerStopFinalization(target: object): void;
+		};
+		const childProcessModule = await import("../src/utils/child-process.js");
+		const sessionLeaseModule = await import("../src/core/session-lease.js");
+		const existsSpy = vi.spyOn(childProcessModule, "processIdExists").mockReturnValue(true);
+		let alive = true;
+		const aliveSpy = vi.spyOn(childProcessModule, "isProcessAlive").mockImplementation(() => alive);
+		const killSpy = vi.spyOn(childProcessModule, "signalProcessGroupOrProcess").mockImplementation((_pid, signal) => {
+			if (signal === "SIGKILL") {
+				alive = false;
+			}
+		});
+		// Identity observation is down when the SIGKILL deadline passes...
+		const startIdSpy = vi.spyOn(sessionLeaseModule, "getProcessStartId").mockReturnValue(undefined);
+		try {
+			supervisor.scheduleWorkerStopFinalization(worker);
+			const finalization = worker.stopFinalization;
+
+			await vi.advanceTimersByTimeAsync(8000);
+			expect(killSpy).not.toHaveBeenCalled();
+
+			// ...but once identity is observable again, escalation still fires.
+			startIdSpy.mockReturnValue("proc:original");
+			await vi.advanceTimersByTimeAsync(5000);
+			await finalization;
+			expect(killSpy).toHaveBeenCalledWith(worker.descriptor.pid, "SIGKILL");
+			expect(stopWorker).toHaveBeenCalled();
+		} finally {
+			existsSpy.mockRestore();
+			aliveSpy.mockRestore();
+			killSpy.mockRestore();
+			startIdSpy.mockRestore();
+		}
+	});
+
 	it("keeps waiting when process identity is transiently unobservable", async () => {
 		vi.useFakeTimers();
 		const worker = {
@@ -2449,6 +2510,87 @@ describe("daemon worker supervisor monitoring", () => {
 		await supervisor.attachClient(client, { type: "attach", activeSessionId });
 
 		expect(seed).toHaveBeenCalledWith(activeSessionId, streamingMessage);
+	});
+
+	it("rejects an opted-out attach to a telemetry-enabled worker", async () => {
+		const activeSessionId = "active-telemetry-enabled";
+		const summary = {
+			id: activeSessionId,
+			activeSessionId,
+			lifecycle: "live",
+			activity: "idle",
+			isSessionActive: false,
+			sessionId: "session-telemetry-enabled",
+			cwd: "/tmp/project",
+			isStreaming: false,
+			isCompacting: false,
+			attachedClients: 0,
+			messageCount: 0,
+			sessionActions: { queuedCount: 0, steering: [], followUps: [] },
+		} satisfies SessionSummary;
+		const worker = {
+			descriptor: {
+				workerId: "worker-telemetry-enabled",
+				lifecycle: "ready",
+				pid: 1234,
+				createCommand: { type: "create", config: {} },
+			},
+			summaries: new Map([[activeSessionId, summary]]),
+		};
+		const client = {
+			id: "client-1",
+			capabilities: new Set<string>(),
+			supportsExtensionUi: false,
+			attachedActiveSessionIds: new Set<string>(),
+		};
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			clients: new Set([client]),
+		}) as {
+			attachClient(
+				attachClient: typeof client,
+				command: { type: "attach"; activeSessionId: string; telemetryDisabled?: true },
+			): Promise<unknown>;
+		};
+
+		await expect(
+			supervisor.attachClient(client, { type: "attach", activeSessionId, telemetryDisabled: true }),
+		).rejects.toThrow("Cannot attach to this active agent while telemetry is disabled");
+		expect(client.attachedActiveSessionIds).toEqual(new Set());
+	});
+
+	it("does not reveal an owned session's telemetry policy to another client", async () => {
+		const activeSessionId = "private-owned-active";
+		const worker = {
+			descriptor: {
+				workerId: "private-owned-worker",
+				ownerClientId: "owner-client",
+				rootActiveSessionId: activeSessionId,
+				lifecycle: "ready",
+				pid: 1234,
+				createCommand: { type: "create", config: {} },
+			},
+		};
+		const client = {
+			id: "other-client",
+			capabilities: new Set<string>(),
+			supportsExtensionUi: false,
+			attachedActiveSessionIds: new Set<string>(),
+		};
+		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			workers: new Map([[worker.descriptor.workerId, worker]]),
+			clients: new Set([client]),
+			protocolClientIds: new Map(),
+		}) as {
+			attachClient(
+				attachClient: typeof client,
+				command: { type: "attach"; activeSessionId: string; telemetryDisabled?: true },
+			): Promise<unknown>;
+		};
+
+		await expect(
+			supervisor.attachClient(client, { type: "attach", activeSessionId, telemetryDisabled: true }),
+		).rejects.toThrow(`Unknown active session: ${activeSessionId}`);
 	});
 
 	it("catches up only after worker events are skipped behind a backpressured write", async () => {
