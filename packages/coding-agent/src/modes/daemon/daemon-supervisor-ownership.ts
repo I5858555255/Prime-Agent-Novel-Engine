@@ -22,6 +22,10 @@ const REGISTRY_LOCK_UPDATE_MS = 1000;
 const REGISTRY_LOCK_RETRIES = 500;
 const REGISTRY_LOCK_RETRY_MS = 10;
 const STARTUP_FENCE_POLL_MS = 250;
+// The registry lives under the OS temp directory, which macOS prunes of entries that
+// have not been touched for ~3 days. Rewrite our own entry well inside that window so
+// a long-lived supervisor never ages out of its own registry.
+const OWNER_RECORD_REFRESH_MS = 60 * 60 * 1000;
 const SHUTDOWN_ADMISSION_FILE_NAME = "shutdown-admission.json";
 const SHUTDOWN_ADMISSION_LEASE_MS = 5000;
 const SHUTDOWN_ADMISSION_REFRESH_MS = 1000;
@@ -120,21 +124,66 @@ class DaemonShutdownAdmissionError extends Error {
 
 class DaemonSupervisorOwnership {
 	private released = false;
+	private refreshPromise?: Promise<void>;
+	private readonly refreshTimer: ReturnType<typeof setInterval>;
 
 	constructor(
 		readonly record: DaemonSupervisorOwnerRecord,
 		private readonly registryDir: string,
 		private readonly ownerDirectory: string,
-	) {}
+	) {
+		this.refreshTimer = setInterval(() => {
+			this.refreshPromise ??= this.reassertOwnerRecord()
+				.catch(() => undefined)
+				.finally(() => {
+					this.refreshPromise = undefined;
+				});
+		}, OWNER_RECORD_REFRESH_MS);
+		this.refreshTimer.unref();
+	}
 
 	async assertCurrent(): Promise<void> {
 		if (this.released) {
 			throw new DaemonSupervisorOwnershipLostError(this.record.generation);
 		}
 		const current = readOwnerRecord(this.ownerDirectory);
-		if (!current || !sameOwnerRecord(current, this.record)) {
+		if (current && sameOwnerRecord(current, this.record)) {
+			return;
+		}
+		// A record that belongs to someone else means we genuinely lost ownership, but a
+		// *missing* record does not: the registry lives under the OS temp directory, so an
+		// external pruner can delete a live supervisor's entry. Recover it under the guard
+		// instead of failing every subsequent command for the rest of the process lifetime.
+		await this.reassertOwnerRecord();
+	}
+
+	private async reassertOwnerRecord(): Promise<void> {
+		if (this.released) {
 			throw new DaemonSupervisorOwnershipLostError(this.record.generation);
 		}
+		await withDaemonSupervisorRegistryGuard(this.registryDir, () => {
+			const current = readOwnerRecord(this.ownerDirectory);
+			if (current && !sameOwnerRecord(current, this.record)) {
+				throw new DaemonSupervisorOwnershipLostError(this.record.generation);
+			}
+			if (!current) {
+				// Only restore the entry if no live supervisor claimed our socket or
+				// descriptor directory in the meantime; if one did, ownership is really gone.
+				for (const directory of listOwnerDirectories(this.registryDir)) {
+					if (directory === this.ownerDirectory) {
+						continue;
+					}
+					const other = readOwnerRecord(directory);
+					if (other && ownerConflicts(other, this.record) && isProcessIdentityAlive(other)) {
+						throw new DaemonSupervisorOwnershipLostError(this.record.generation);
+					}
+				}
+			}
+			this.record.updatedAt = new Date().toISOString();
+			mkdirSync(this.ownerDirectory, { recursive: true, mode: 0o700 });
+			writeOwnerScope(this.ownerDirectory, this.record);
+			writeOwnerRecord(this.ownerDirectory, this.record);
+		});
 	}
 
 	async updatePhase(phase: DaemonSupervisorOwnerPhase): Promise<void> {
@@ -160,6 +209,8 @@ class DaemonSupervisorOwnership {
 		if (this.released) {
 			return;
 		}
+		clearInterval(this.refreshTimer);
+		await this.refreshPromise;
 		let releasedDirectory: string | undefined;
 		try {
 			await withDaemonSupervisorRegistryGuard(this.registryDir, () => {
