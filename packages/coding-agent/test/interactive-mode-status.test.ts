@@ -1102,6 +1102,7 @@ describe("InteractiveMode pending bash components", () => {
 			},
 		} as unknown as InteractiveMode;
 
+		Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: unknown): void }).subscribeToAgent.call(
 			fakeThis,
 		);
@@ -1307,6 +1308,7 @@ describe("InteractiveMode connection events", () => {
 			showError: vi.fn(),
 		};
 
+		Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
 			fakeThis,
 		);
@@ -1356,6 +1358,7 @@ describe("InteractiveMode connection events", () => {
 			showError: vi.fn(),
 		};
 
+		Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
 			fakeThis,
 		);
@@ -1405,6 +1408,7 @@ describe("InteractiveMode connection events", () => {
 			handleConnectionExtensionUiRequest: vi.fn(),
 			showError: vi.fn(),
 		};
+		Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
 			fakeThis,
 		);
@@ -1587,6 +1591,7 @@ describe("InteractiveMode connection events", () => {
 			ui: { requestRender: vi.fn() },
 			showError: vi.fn(),
 		};
+		Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
 		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
 			fakeThis,
 		);
@@ -1598,6 +1603,411 @@ describe("InteractiveMode connection events", () => {
 
 		expect(fakeThis.handleEvent).not.toHaveBeenCalled();
 		expect(fakeThis.renderInitialMessages).toHaveBeenCalledOnce();
+	});
+
+	test("coalesces active progress and flushes its latest state before a terminal event", async () => {
+		vi.useFakeTimers();
+		try {
+			type Event = { type: "session_event"; event: AgentConnectionSessionEvent };
+			let listener: ((event: Event) => Promise<void>) | undefined;
+			const handled: string[] = [];
+			const fakeThis = {
+				agentConnection: {
+					subscribe: (callback: (event: Event) => Promise<void>) => {
+						listener = callback;
+						return vi.fn();
+					},
+				},
+				sessionEventQueue: Promise.resolve(),
+				sessionEventGeneration: 0,
+				progressFlushGeneration: 0,
+				progressFlushStopped: false,
+				handleEvent: vi.fn(async (event: { type: string; partialResult?: { content: unknown[] } }) => {
+					handled.push(
+						event.type === "tool_execution_update" ? String(event.partialResult?.content[0]) : event.type,
+					);
+				}),
+				showError: vi.fn(),
+			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+			(
+				InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }
+			).subscribeToAgent.call(fakeThis);
+
+			const progress = (value: string) =>
+				listener?.({
+					type: "session_event",
+					event: {
+						type: "tool_execution_update",
+						toolCallId: "tool-1",
+						partialResult: { content: [value] },
+					},
+				} as unknown as Event);
+			progress("first");
+			progress("latest");
+			expect(vi.getTimerCount()).toBe(1);
+			expect(
+				(
+					fakeThis as unknown as {
+						pendingProgressEvents?: Map<string, { partialResult?: { content: string[] } }>;
+					}
+				).pendingProgressEvents?.get("tool:tool-1"),
+			).toMatchObject({ partialResult: { content: ["latest"] } });
+
+			const terminal = listener?.({
+				type: "session_event",
+				event: { type: "agent_end" } as AgentConnectionSessionEvent,
+			});
+			await terminal;
+			expect(handled).toEqual(["latest", "agent_end"]);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("retains independent progress entities, coalesces by key, and flushes retained event order", async () => {
+		vi.useFakeTimers();
+		try {
+			type Event = { type: "session_event"; event: AgentConnectionSessionEvent };
+			let listener: ((event: Event) => Promise<void>) | undefined;
+			const handled: string[] = [];
+			const fakeThis = {
+				agentConnection: {
+					subscribe: (callback: (event: Event) => Promise<void>) => {
+						listener = callback;
+						return vi.fn();
+					},
+				},
+				sessionEventQueue: Promise.resolve(),
+				sessionEventGeneration: 0,
+				progressFlushGeneration: 0,
+				progressFlushStopped: false,
+				handleEvent: vi.fn(
+					async (event: { type: string; toolCallId?: string; partialResult?: { content: string[] } }) => {
+						handled.push(
+							event.type === "tool_execution_update"
+								? `${event.toolCallId}:${event.partialResult?.content[0]}`
+								: event.type,
+						);
+					},
+				),
+				showError: vi.fn(),
+			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+			(
+				InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }
+			).subscribeToAgent.call(fakeThis);
+
+			const progress = (toolCallId: string, value: string) =>
+				listener?.({
+					type: "session_event",
+					event: {
+						type: "tool_execution_update",
+						toolCallId,
+						partialResult: { content: [value] },
+					},
+				} as unknown as Event);
+			progress("tool-a", "first");
+			progress("tool-b", "only");
+			progress("tool-a", "latest");
+
+			expect([
+				...(fakeThis as unknown as { pendingProgressEvents: Map<string, unknown> }).pendingProgressEvents.keys(),
+			]).toEqual(["tool:tool-b", "tool:tool-a"]);
+			await listener?.({ type: "session_event", event: { type: "agent_end" } as AgentConnectionSessionEvent });
+			expect(handled).toEqual(["tool-b:only", "tool-a:latest", "agent_end"]);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("bounds distinct progress coalescing without dropping ordered newest updates", async () => {
+		vi.useFakeTimers();
+		try {
+			type Event = { type: "session_event"; event: AgentConnectionSessionEvent };
+			let listener: ((event: Event) => Promise<void>) | undefined;
+			const attempted: string[] = [];
+			const showError = vi.fn();
+			const fakeThis = {
+				agentConnection: {
+					subscribe: (callback: (event: Event) => Promise<void>) => {
+						listener = callback;
+						return vi.fn();
+					},
+				},
+				sessionEventQueue: Promise.resolve(),
+				sessionEventGeneration: 0,
+				progressFlushGeneration: 0,
+				progressFlushStopped: false,
+				handleEvent: vi.fn(async (event: { type: string; toolCallId?: string }) => {
+					const id = event.toolCallId ?? event.type;
+					attempted.push(id);
+					if (id === "tool-64") throw new Error("bounded flush failed");
+				}),
+				showError,
+			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+			(
+				InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }
+			).subscribeToAgent.call(fakeThis);
+			const progress = (toolCallId: string) =>
+				listener?.({
+					type: "session_event",
+					event: { type: "tool_execution_update", toolCallId, partialResult: { content: [] } },
+				} as unknown as Event);
+
+			let observedPendingHighWater = 0;
+			// 129 is one more than MAX_PENDING_PROGRESS_EVENTS. The 129th distinct
+			// key must synchronously drain the first ordered batch rather than evict it.
+			for (let index = 0; index <= 128; index++) {
+				await progress(`tool-${index}`);
+				observedPendingHighWater = Math.max(
+					observedPendingHighWater,
+					(fakeThis as unknown as { pendingProgressEvents: Map<unknown, unknown> }).pendingProgressEvents.size,
+				);
+			}
+			expect(observedPendingHighWater).toBe(128);
+			expect(
+				(fakeThis as unknown as { pendingProgressEvents: Map<unknown, unknown> }).pendingProgressEvents.size,
+			).toBe(1);
+
+			await (fakeThis as unknown as { sessionEventQueue: Promise<void> }).sessionEventQueue;
+			await vi.runAllTimersAsync();
+			await (fakeThis as unknown as { sessionEventQueue: Promise<void> }).sessionEventQueue;
+			expect(attempted).toEqual(Array.from({ length: 129 }, (_, index) => `tool-${index}`));
+			expect(showError).toHaveBeenCalledWith("bounded flush failed");
+
+			// A failed entry never poisons the existing UI tail; a later scheduled
+			// flush still runs after the bounded batch has drained.
+			await progress("tool-recovered");
+			await vi.runAllTimersAsync();
+			await (fakeThis as unknown as { sessionEventQueue: Promise<void> }).sessionEventQueue;
+			expect(attempted).toEqual([...Array.from({ length: 129 }, (_, index) => `tool-${index}`), "tool-recovered"]);
+			expect(
+				(fakeThis as unknown as { pendingProgressEvents: Map<unknown, unknown> }).pendingProgressEvents.size,
+			).toBe(0);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("preserves a cap-drained pre-replacement batch ahead of replacement while new generation progress remains live", async () => {
+		vi.useFakeTimers();
+		try {
+			type Event =
+				| { type: "session_event"; event: AgentConnectionSessionEvent }
+				| { type: "session_replaced"; state: AgentConnectionState };
+			let listener: ((event: Event) => Promise<void>) | undefined;
+			const handled: string[] = [];
+			const fakeThis = {
+				agentConnection: {
+					subscribe: (callback: (event: Event) => Promise<void>) => {
+						listener = callback;
+						return vi.fn();
+					},
+				},
+				sessionEventQueue: Promise.resolve(),
+				sessionEventGeneration: 0,
+				progressFlushGeneration: 0,
+				progressFlushStopped: false,
+				handleEvent: vi.fn(async (event: { type: string; toolCallId?: string }) => {
+					handled.push(event.toolCallId ?? event.type);
+				}),
+				resetSideQuestion: vi.fn(),
+				resetExtensionUI: vi.fn(),
+				applyConnectionStateSnapshot: vi.fn(),
+				resetCurrentSessionRenderState: vi.fn(),
+				rebindCurrentSession: vi.fn(async () => {}),
+				renderInitialMessages: vi.fn(async () => {
+					handled.push("session_replaced");
+				}),
+				ui: { requestRender: vi.fn() },
+				showError: vi.fn(),
+			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+			(
+				InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }
+			).subscribeToAgent.call(fakeThis);
+			const progress = (toolCallId: string) =>
+				listener?.({
+					type: "session_event",
+					event: { type: "tool_execution_update", toolCallId, partialResult: { content: [] } },
+				} as Event);
+
+			// The 129th distinct entity drains the first full batch. Immediately replace
+			// before any queued handler can run, reproducing the cap/replacement race.
+			for (let index = 0; index <= 128; index++) progress(`old-${index}`);
+			const replacement = listener?.({ type: "session_replaced", state: createConnectionState() });
+			await replacement;
+			expect(handled).toEqual([...Array.from({ length: 129 }, (_, index) => `old-${index}`), "session_replaced"]);
+
+			// The replacement still fences the old session while admitting new progress.
+			await progress("new-generation");
+			await vi.runAllTimersAsync();
+			await (fakeThis as unknown as { sessionEventQueue: Promise<void> }).sessionEventQueue;
+			expect(handled).toEqual([
+				...Array.from({ length: 129 }, (_, index) => `old-${index}`),
+				"session_replaced",
+				"new-generation",
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("surfaces timer and explicit progress flush failures while recovering the queue", async () => {
+		vi.useFakeTimers();
+		try {
+			type Event = { type: "session_event"; event: AgentConnectionSessionEvent };
+			let listener: ((event: Event) => Promise<void>) | undefined;
+			const showError = vi.fn();
+			const handled: string[] = [];
+			const fakeThis = {
+				agentConnection: {
+					subscribe: (callback: (event: Event) => Promise<void>) => {
+						listener = callback;
+						return vi.fn();
+					},
+				},
+				sessionEventQueue: Promise.resolve(),
+				sessionEventGeneration: 0,
+				progressFlushGeneration: 0,
+				progressFlushStopped: false,
+				handleEvent: vi.fn(async (event: { type: string; toolCallId?: string }) => {
+					if (event.toolCallId === "timer-failure") throw new Error("timer flush failed");
+					if (event.toolCallId === "explicit-failure") throw new Error("explicit flush failed");
+					handled.push(event.toolCallId ?? event.type);
+				}),
+				showError,
+			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+			(
+				InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }
+			).subscribeToAgent.call(fakeThis);
+			const progress = (toolCallId: string) =>
+				listener?.({
+					type: "session_event",
+					event: { type: "tool_execution_update", toolCallId, partialResult: { content: [] } },
+				} as unknown as Event);
+
+			progress("timer-failure");
+			await vi.runAllTimersAsync();
+			await (fakeThis as unknown as { sessionEventQueue: Promise<void> }).sessionEventQueue;
+			expect(showError).toHaveBeenCalledWith("timer flush failed");
+
+			progress("explicit-failure");
+			await listener?.({ type: "session_event", event: { type: "agent_end" } as AgentConnectionSessionEvent });
+			expect(showError).toHaveBeenCalledWith("explicit flush failed");
+			expect(handled).toEqual(["agent_end"]);
+
+			progress("recovered");
+			await vi.runAllTimersAsync();
+			await (fakeThis as unknown as { sessionEventQueue: Promise<void> }).sessionEventQueue;
+			expect(handled).toEqual(["agent_end", "recovered"]);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("invalidates retained progress before UI stop so no stale callback mutates the UI", async () => {
+		vi.useFakeTimers();
+		try {
+			const handleEvent = vi.fn(async () => {});
+			const fakeThis = {
+				sessionEventQueue: Promise.resolve(),
+				sessionEventGeneration: 0,
+				progressFlushGeneration: 0,
+				progressFlushStopped: false,
+				handleEvent,
+				unregisterSignalHandlers: vi.fn(),
+				clearCtrlCExitHint: vi.fn(),
+				clearEscapeRepeat: vi.fn(),
+				settingsManager: { getShowTerminalProgress: () => false },
+				ui: { terminal: { setProgress: vi.fn() } },
+				stopWorkingLoader: vi.fn(),
+				endFeatureHintRun: vi.fn(),
+				stopWorkingPulse: vi.fn(),
+				stopGoalTrayTimer: vi.fn(),
+				closeHeartbeatManager: vi.fn(),
+				clearExtensionTerminalInputListeners: vi.fn(),
+				footer: { dispose: vi.fn() },
+				footerDataProvider: { dispose: vi.fn() },
+				isInitialized: false,
+			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+			const queueProgressEvent = (
+				InteractiveMode.prototype as unknown as {
+					queueProgressEvent(this: typeof fakeThis, event: AgentConnectionSessionEvent, generation: number): void;
+				}
+			).queueProgressEvent;
+			queueProgressEvent.call(fakeThis, { type: "tool_execution_update" } as AgentConnectionSessionEvent, 0);
+			expect(vi.getTimerCount()).toBe(1);
+			(InteractiveMode.prototype as unknown as { stop(this: typeof fakeThis): void }).stop.call(fakeThis);
+			await vi.runAllTimersAsync();
+			await fakeThis.sessionEventQueue;
+			expect(handleEvent).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("invalidates old-generation progress before a replacement and does not rearm it", async () => {
+		vi.useFakeTimers();
+		try {
+			type Event =
+				| { type: "session_event"; event: AgentConnectionSessionEvent }
+				| { type: "session_replaced"; state: AgentConnectionState };
+			let listener: ((event: Event) => Promise<void>) | undefined;
+			const handled: string[] = [];
+			const fakeThis = {
+				agentConnection: {
+					subscribe: (callback: (event: Event) => Promise<void>) => {
+						listener = callback;
+						return vi.fn();
+					},
+				},
+				sessionEventQueue: Promise.resolve(),
+				sessionEventGeneration: 0,
+				progressFlushGeneration: 0,
+				progressFlushStopped: false,
+				handleEvent: vi.fn(async (event: { type: string; partialResult?: { content: unknown[] } }) => {
+					handled.push(
+						event.type === "tool_execution_update" ? String(event.partialResult?.content[0]) : event.type,
+					);
+				}),
+				resetSideQuestion: vi.fn(),
+				resetExtensionUI: vi.fn(),
+				applyConnectionStateSnapshot: vi.fn(),
+				resetCurrentSessionRenderState: vi.fn(),
+				rebindCurrentSession: vi.fn(async () => {}),
+				renderInitialMessages: vi.fn(async () => {}),
+				ui: { requestRender: vi.fn() },
+				showError: vi.fn(),
+			};
+			Object.setPrototypeOf(fakeThis, InteractiveMode.prototype);
+			(
+				InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }
+			).subscribeToAgent.call(fakeThis);
+			listener?.({
+				type: "session_event",
+				event: { type: "tool_execution_update", toolCallId: "tool-1", partialResult: { content: ["old"] } },
+			} as unknown as Event);
+			expect(vi.getTimerCount()).toBe(1);
+			await listener?.({ type: "session_replaced", state: createConnectionState() });
+			await vi.runAllTimersAsync();
+			expect(handled).toEqual(["old"]);
+			expect(
+				(fakeThis as unknown as { pendingProgressEvents?: Map<unknown, unknown> }).pendingProgressEvents?.size ?? 0,
+			).toBe(0);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

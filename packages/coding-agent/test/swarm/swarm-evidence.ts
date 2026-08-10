@@ -347,6 +347,33 @@ const SAFE_EVIDENCE_KEYS = new Set([
 	"version",
 	"inputPerMillionTokens",
 	"outputPerMillionTokens",
+	// C02 test-only, content-free event-loop evidence fields. Their values are
+	// validated below rather than accepting arbitrary benchmark metadata.
+	"c02Fanout",
+	"c02WarmupRepetitions",
+	"c02MeasuredRepetitions",
+	"c02ParentPendingHighWater",
+	"c02UiPendingHighWater",
+	"c02SlowCatchupPendingHighWater",
+	"c02SlowCatchupScheduleHighWater",
+	"c02SlowCatchupPromiseHighWater",
+	"c02TimersScheduled",
+	"c02TimersCancelled",
+	"c02TimersFired",
+	"c02TerminalDeliveries",
+	"c02HealthyAttachmentLive",
+	"c02HookErrors",
+	"c02ObserverErrors",
+	"c02BeforeToolVetoes",
+	"c02DroppedReplaceableProgress",
+	"c02TeardownPending",
+	"c02DelayP50Milliseconds",
+	"c02DelayP95Milliseconds",
+	"c02DelayP99Milliseconds",
+	"c02DelayMaxMilliseconds",
+	"c02EnvironmentNodeMajor",
+	"c02EnvironmentProcessorCount",
+	"c02EnvironmentPlatformKnown",
 ]);
 function safeEvidenceString(value: string, key?: string): boolean {
 	return (
@@ -385,7 +412,11 @@ export function redactEvidence<T>(value: T, key?: string, redactObjectKeys = fal
 	if (Array.isArray(value)) return value.map((item) => redactEvidence(item, undefined, redactObjectKeys)) as T;
 	if (isRecord(value)) {
 		const entries = Object.entries(value).map(([entryKey, item]) => {
-			const safeKey = !redactObjectKeys && SAFE_EVIDENCE_KEYS.has(entryKey);
+			// C02 is the sole test-only extension to the otherwise opaque metadata bag.
+			// Its fixed keys and numeric/status values are checked by verifyC02Metadata.
+			const safeKey =
+				(!redactObjectKeys && SAFE_EVIDENCE_KEYS.has(entryKey)) ||
+				(key === "metadata" && C02_METADATA_KEYS.has(entryKey));
 			return [
 				safeKey ? entryKey : REDACTED,
 				redactEvidence(item, safeKey ? entryKey : undefined, redactObjectKeys || key === "metadata"),
@@ -515,7 +546,7 @@ function publicConfig(config: SwarmBenchmarkConfig): Omit<SwarmManifest, "finger
 		assignments,
 		faultSchedule: faults,
 		priceCard: redactEvidence(config.priceCard),
-		metadata: redactEvidence(config.metadata ?? {}, undefined, true),
+		metadata: redactEvidence(config.metadata ?? {}, "metadata", true),
 	};
 }
 /** Creates a public, content-free manifest whose fingerprint is recomputable from disk. */
@@ -846,6 +877,91 @@ function parseCanonicalJsonl(raw: string, label: string): unknown[] {
 		return parsed;
 	});
 }
+const C02_NUMERIC_METADATA_KEYS = [
+	"c02Fanout",
+	"c02WarmupRepetitions",
+	"c02MeasuredRepetitions",
+	"c02EnvironmentNodeMajor",
+	"c02EnvironmentProcessorCount",
+] as const;
+const C02_NUMERIC_ARRAY_METADATA_KEYS = [
+	"c02ParentPendingHighWater",
+	"c02UiPendingHighWater",
+	"c02SlowCatchupPendingHighWater",
+	"c02SlowCatchupScheduleHighWater",
+	"c02SlowCatchupPromiseHighWater",
+	"c02TimersScheduled",
+	"c02TimersCancelled",
+	"c02TimersFired",
+	"c02TerminalDeliveries",
+	"c02HealthyAttachmentLive",
+	"c02HookErrors",
+	"c02ObserverErrors",
+	"c02BeforeToolVetoes",
+	"c02DroppedReplaceableProgress",
+	"c02TeardownPending",
+	"c02DelayP50Milliseconds",
+	"c02DelayP95Milliseconds",
+	"c02DelayP99Milliseconds",
+	"c02DelayMaxMilliseconds",
+] as const;
+const C02_BOOLEAN_METADATA_KEYS = ["c02EnvironmentPlatformKnown"] as const;
+const C02_METADATA_KEYS: ReadonlySet<string> = new Set([
+	...C02_NUMERIC_METADATA_KEYS,
+	...C02_NUMERIC_ARRAY_METADATA_KEYS,
+	...C02_BOOLEAN_METADATA_KEYS,
+]);
+
+/** Keeps C02's test-only metrics named, numeric/status-only, and schema-closed. */
+function verifyC02Metadata(metadata: Record<string, unknown>): void {
+	const present = Object.keys(metadata).filter((key) => key.startsWith("c02"));
+	if (present.length === 0) return;
+	assert(present.length === C02_METADATA_KEYS.size, "incomplete C02 event-loop metadata");
+	assert(
+		present.every((key) => C02_METADATA_KEYS.has(key)),
+		"unknown C02 event-loop metadata",
+	);
+	for (const key of C02_NUMERIC_METADATA_KEYS)
+		assert(
+			typeof metadata[key] === "number" && Number.isSafeInteger(metadata[key]) && (metadata[key] as number) >= 0,
+			`invalid C02 metric: ${key}`,
+		);
+	for (const key of C02_NUMERIC_ARRAY_METADATA_KEYS)
+		assert(
+			Array.isArray(metadata[key]) &&
+				metadata[key].length === 3 &&
+				metadata[key].every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0),
+			`invalid C02 metric samples: ${key}`,
+		);
+	for (const key of C02_BOOLEAN_METADATA_KEYS)
+		assert(typeof metadata[key] === "boolean", `invalid C02 status: ${key}`);
+
+	assert(metadata.c02Fanout === 64, "C02 evidence requires 64 streams");
+	assert(metadata.c02WarmupRepetitions === 1, "C02 evidence requires one excluded warmup");
+	assert(metadata.c02MeasuredRepetitions === 3, "C02 evidence requires three measured repetitions");
+	const sample = (key: (typeof C02_NUMERIC_ARRAY_METADATA_KEYS)[number]) => metadata[key] as number[];
+	for (let index = 0; index < 3; index++) {
+		assert(sample("c02ParentPendingHighWater")[index] === 64, "invalid C02 owner coalescer bound");
+		assert(sample("c02UiPendingHighWater")[index] <= 1, "invalid C02 UI coalescer bound");
+		assert(sample("c02SlowCatchupPendingHighWater")[index] <= 1, "invalid C02 slow attachment bound");
+		assert(sample("c02SlowCatchupScheduleHighWater")[index] === 1, "invalid C02 slow scheduler bound");
+		assert(sample("c02SlowCatchupPromiseHighWater")[index] === 1, "invalid C02 slow latch bound");
+		assert(
+			sample("c02TimersScheduled")[index] === sample("c02TimersCancelled")[index] + sample("c02TimersFired")[index],
+			"invalid C02 timer accounting",
+		);
+		assert(sample("c02TerminalDeliveries")[index] === 64, "invalid C02 terminal delivery count");
+		assert(sample("c02HealthyAttachmentLive")[index] === 1, "invalid C02 healthy attachment delivery");
+		assert(sample("c02HookErrors")[index] === 1, "invalid C02 after-hook isolation result");
+		assert(sample("c02ObserverErrors")[index] >= 1, "invalid C02 observer isolation result");
+		assert(sample("c02BeforeToolVetoes")[index] === 1, "invalid C02 before-hook veto result");
+		assert(sample("c02DroppedReplaceableProgress")[index] === 63, "invalid C02 UI replacement count");
+		assert(sample("c02TeardownPending")[index] === 0, "invalid C02 teardown result");
+		assert(sample("c02DelayP99Milliseconds")[index] <= 50, "C02 p99 delay threshold exceeded");
+		assert(sample("c02DelayMaxMilliseconds")[index] <= 100, "C02 max delay threshold exceeded");
+	}
+}
+
 function requireManifest(manifest: unknown): asserts manifest is SwarmManifest & { artifacts: EvidenceArtifact[] } {
 	assert(isRecord(manifest), "manifest must be an object");
 	assert(
@@ -874,6 +990,7 @@ function requireManifest(manifest: unknown): asserts manifest is SwarmManifest &
 		"invalid artifact bundle identity",
 	);
 	assertContentFree(manifest);
+	verifyC02Metadata(manifest.metadata as Record<string, unknown>);
 	const attemptIds = new Set<string>();
 	for (const assignment of manifest.assignments as Record<string, unknown>[]) {
 		assert(isRecord(assignment) && isRecord(assignment.requested), "invalid assignment provenance");
