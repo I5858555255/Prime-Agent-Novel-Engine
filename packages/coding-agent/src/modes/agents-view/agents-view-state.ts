@@ -425,6 +425,24 @@ export function buildUnifiedSessionIndex(records: readonly UnifiedSessionRecord[
 	return { byKey, childrenByParent };
 }
 
+/**
+ * Row identities flip when a session gains a sessionFile (active→persisted) or
+ * is re-attached; the old identity survives as an alias. Rewrite stale entries
+ * in a persisted identity set to the current record identity. Entries with no
+ * alias match are kept: their record may not have streamed in yet.
+ */
+export function migrateAgentsViewIdentitySet(
+	identities: Set<string>,
+	byKey: ReadonlyMap<string, UnifiedSessionRecord>,
+): void {
+	for (const identity of [...identities]) {
+		const record = byKey.get(identity);
+		if (!record || record.identity === identity) continue;
+		identities.delete(identity);
+		identities.add(record.identity);
+	}
+}
+
 function findScopeRecord(
 	scope: AgentsViewScopeKey,
 	byKey: ReadonlyMap<string, UnifiedSessionRecord>,

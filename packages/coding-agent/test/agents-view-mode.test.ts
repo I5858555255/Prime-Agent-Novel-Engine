@@ -12,7 +12,7 @@ import {
 	createInitialAgentsViewPersistentState,
 	runAgentsViewMode,
 } from "../src/modes/agents-view/agents-view-mode.js";
-import { resolveAgentsViewLeftResult } from "../src/modes/agents-view/agents-view-state.js";
+import { type AgentsViewRow, resolveAgentsViewLeftResult } from "../src/modes/agents-view/agents-view-state.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
 import type { InteractiveModeUiServices } from "../src/modes/interactive/interactive-mode-services.js";
 import { stopThemeWatcher } from "../src/modes/interactive/theme/theme.js";
@@ -545,6 +545,79 @@ describe("AgentsViewMode", () => {
 		} finally {
 			stopThemeWatcher();
 		}
+	});
+
+	it("keeps subagent expansion across the active-to-persisted identity flip", () => {
+		const rowsOf = (self: Record<string, unknown>) => Reflect.get(self, "rows") as AgentsViewRow[];
+		const buildView = (expand: boolean) => {
+			const parent = summary({
+				id: "root-active",
+				activeSessionId: "root-active",
+				sessionId: "root-session",
+				sessionFile: undefined,
+				runtimeKind: "top-level",
+			});
+			const child = summary({
+				id: "child-active",
+				activeSessionId: "child-active",
+				sessionId: "child-session",
+				sessionFile: undefined,
+				runtimeKind: "subagent",
+				parentSessionId: "root-session",
+				parentActiveSessionId: "root-active",
+			});
+			const expandedSubagentParents = new Set<string>();
+			const self: Record<string, unknown> = {
+				persistentState: {},
+				lastListedSummaries: [parent, child],
+				savedSessions: [],
+				heartbeats: [],
+				inactiveAgentIdentities: new Set(),
+				pendingDeleteAgent: undefined,
+				liveCatalogReady: true,
+				savedCatalogReady: true,
+				expandedSubagentParents,
+				programShownParents: new Set(),
+				editor: { getText: () => "" },
+				getFilteredRecords: () => Reflect.get(self, "scopedRecords"),
+				applyPendingAncestorExpansion: vi.fn(),
+				restoreSelection: vi.fn(),
+				ui: { requestRender: vi.fn() },
+				setStatusMessage: vi.fn(),
+				withPendingDeleteSession: (sessions: SessionSummary[]) => sessions,
+			};
+			invoke("reconcileCatalogs", self);
+			if (expand) {
+				const parentRow = rowsOf(self).find(
+					(row) => row.kind === "agent" && row.summary.sessionId === "root-session",
+				);
+				expect(parentRow?.identity).toBe("session:root-session");
+				expandedSubagentParents.add(parentRow!.identity);
+				invoke("reconcileCatalogs", self);
+				expect(rowsOf(self).some((row) => row.kind === "subagent-summary" && row.expanded)).toBe(true);
+			}
+			// The runtime flushes the session file; the record identity flips to file:.
+			self.lastListedSummaries = [{ ...parent, sessionFile: "/tmp/root.jsonl" }, child];
+			invoke("reconcileCatalogs", self);
+			return { self, expandedSubagentParents };
+		};
+
+		const expandedView = buildView(true);
+		const expandedRows = rowsOf(expandedView.self);
+		expect(
+			expandedRows.find((row) => row.kind === "agent" && row.summary.sessionId === "root-session")?.identity,
+		).toBe("file:/tmp/root.jsonl");
+		expect(expandedRows.some((row) => row.kind === "subagent-summary" && row.expanded)).toBe(true);
+		expect(expandedRows.some((row) => row.kind === "subagent" && row.summary.sessionId === "child-session")).toBe(
+			true,
+		);
+		expect([...expandedView.expandedSubagentParents]).toEqual(["file:/tmp/root.jsonl"]);
+
+		const collapsedView = buildView(false);
+		const collapsedRows = rowsOf(collapsedView.self);
+		expect(collapsedRows.some((row) => row.kind === "subagent-summary" && row.expanded)).toBe(false);
+		expect(collapsedRows.some((row) => row.kind === "subagent")).toBe(false);
+		expect(collapsedView.expandedSubagentParents.size).toBe(0);
 	});
 
 	it("toggles subagent list expansion from the summary row", () => {
