@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -37,8 +38,115 @@ describe("parseAgentCronSchedule", () => {
 		expect(parsed.nextRunAt.toISOString()).toBe("2026-01-01T12:34:30.000Z");
 	});
 
-	it("rejects unsupported cron syntax", () => {
-		expect(() => parseAgentCronSchedule("0 9 * * MON", start)).toThrow("Invalid cron number");
+	it("rejects malformed cron syntax", () => {
+		expect(() => parseAgentCronSchedule("0 9 * * MONDAY", start)).toThrow("Invalid cron number or name");
+	});
+});
+
+describe("five-field cron semantics", () => {
+	it("finds leap-day schedules from multiple non-leap years", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "0 0 29 2 *", after: "2025-03-01T00:00:00.000Z" },
+				{ expression: "0 0 29 2 *", after: "2026-03-01T00:00:00.000Z" },
+				{ expression: "0 0 29 2 *", after: "2027-03-01T00:00:00.000Z" },
+			]),
+		).toEqual(["2028-02-29T00:00:00.000Z", "2028-02-29T00:00:00.000Z", "2028-02-29T00:00:00.000Z"]);
+	});
+
+	it("skips months that do not contain the requested day", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "0 0 31 * *", after: "2026-02-01T00:00:00.000Z" },
+				{ expression: "0 0 31 * *", after: "2026-04-01T00:00:00.000Z" },
+			]),
+		).toEqual(["2026-03-31T00:00:00.000Z", "2026-05-31T00:00:00.000Z"]);
+	});
+
+	it("uses Vixie day-field combination rules", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "0 0 1 * 1", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "0 0 1 * 1", after: "2026-01-31T00:00:00.000Z" },
+				{ expression: "0 0 * * 1", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "0 0 */2 * 1", after: "2026-01-05T00:00:00.000Z" },
+			]),
+		).toEqual([
+			"2026-01-05T00:00:00.000Z",
+			"2026-02-01T00:00:00.000Z",
+			"2026-01-05T00:00:00.000Z",
+			"2026-01-19T00:00:00.000Z",
+		]);
+	});
+
+	it("accepts both Sunday numbers and case-insensitive weekday names", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "0 0 * * 0", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "0 0 * * 7", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "0 0 * * sun", after: "2026-01-01T00:00:00.000Z" },
+			]),
+		).toEqual(["2026-01-04T00:00:00.000Z", "2026-01-04T00:00:00.000Z", "2026-01-04T00:00:00.000Z"]);
+	});
+
+	it("supports lists, ranges, steps, month names, weekday names, and standard aliases", () => {
+		expect(
+			parseCronCasesInTimeZone("UTC", [
+				{ expression: "15 9-17/4 * JAN,MAR MON-FRI", after: "2026-01-05T09:15:00.000Z" },
+				{ expression: "@yearly", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@annually", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@monthly", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@weekly", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@daily", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@midnight", after: "2026-01-01T00:00:00.000Z" },
+				{ expression: "@hourly", after: "2026-01-01T00:00:00.000Z" },
+			]),
+		).toEqual([
+			"2026-01-05T13:15:00.000Z",
+			"2027-01-01T00:00:00.000Z",
+			"2027-01-01T00:00:00.000Z",
+			"2026-02-01T00:00:00.000Z",
+			"2026-01-04T00:00:00.000Z",
+			"2026-01-02T00:00:00.000Z",
+			"2026-01-02T00:00:00.000Z",
+			"2026-01-01T01:00:00.000Z",
+		]);
+	});
+
+	it("rejects malformed fields and unsupported reboot aliases", () => {
+		for (const expression of [
+			"0 0 * *",
+			"0 0 * * MONDAY",
+			"0 0 * * 1-5/0",
+			"0 0 * * 1/2",
+			"0 0 * * 1//2",
+			"0 0 * * 1,",
+			"0 0 * 13 *",
+			"@reboot",
+		]) {
+			expect(() => parseAgentCronSchedule(expression, start), expression).toThrow();
+		}
+	});
+
+	it("terminates impossible schedules after a complete Gregorian cycle", () => {
+		expect(() => parseAgentCronSchedule("0 0 31 2 *", start)).toThrow("no future occurrence in a 400-year");
+	});
+
+	it("skips nonexistent DST wall times in the host timezone", () => {
+		expect(
+			parseCronCasesInTimeZone("America/New_York", [
+				{ expression: "30 2 * * *", after: "2026-03-07T08:00:00.000Z" },
+			]),
+		).toEqual(["2026-03-09T06:30:00.000Z"]);
+	});
+
+	it("runs repeated DST wall times once at the earlier occurrence", () => {
+		expect(
+			parseCronCasesInTimeZone("America/New_York", [
+				{ expression: "30 1 * * *", after: "2026-10-31T06:00:00.000Z" },
+				{ expression: "30 1 * * *", after: "2026-11-01T05:30:00.000Z" },
+			]),
+		).toEqual(["2026-11-01T05:30:00.000Z", "2026-11-02T06:30:00.000Z"]);
 	});
 });
 
@@ -392,6 +500,130 @@ describe("AgentCronJobStore", () => {
 			id: heartbeat.id,
 			status: "paused",
 			updatedAt: "2026-01-01T12:35:00.000Z",
+		});
+	});
+
+	it("normalizes legacy active cron schedules once before scheduler startup", () => {
+		const storePath = makeStorePath(tempDirs);
+		const normalizationNow = new Date(2026, 0, 1, 0, 0);
+		const legacyNextRunAt = new Date(2026, 5, 1, 0, 0).toISOString();
+		const activeCron = makePersistedScheduleJob("active-cron", {
+			nextRunAt: legacyNextRunAt,
+			schedule: { kind: "cron", expression: "0 0 1 * 1" },
+		});
+		const pausedCron = makePersistedScheduleJob("paused-cron", {
+			status: "paused",
+			nextRunAt: legacyNextRunAt,
+			schedule: { kind: "cron", expression: "0 0 1 * 1" },
+		});
+		const activeOnce = makePersistedScheduleJob("active-once", {
+			nextRunAt: legacyNextRunAt,
+			schedule: { kind: "once", expression: "at 2026-06-01T00:00:00.000Z" },
+		});
+		writeFileSync(
+			storePath,
+			`${JSON.stringify({ jobs: [activeCron, pausedCron, activeOnce], dispatches: [] }, null, 2)}\n`,
+		);
+		const staleWriter = new AgentCronJobStore(storePath);
+		const staleSnapshot = staleWriter.list();
+		const store = new AgentCronJobStore(storePath);
+		const scheduler = new AgentCronScheduler(store, {
+			now: () => normalizationNow,
+			runJob: async () => undefined,
+		});
+
+		scheduler.start();
+		scheduler.stop();
+
+		const expectedNextRunAt = new Date(2026, 0, 5, 0, 0).toISOString();
+		expect(store.list().find((job) => job.id === activeCron.id)).toMatchObject({
+			nextRunAt: expectedNextRunAt,
+			updatedAt: normalizationNow.toISOString(),
+		});
+		expect(store.list().find((job) => job.id === pausedCron.id)).toEqual(pausedCron);
+		expect(store.list().find((job) => job.id === activeOnce.id)).toEqual(activeOnce);
+		expect(JSON.parse(readFileSync(storePath, "utf8"))).toMatchObject({ scheduleSemanticsRevision: 1 });
+		writeJobsForTest(staleWriter, staleSnapshot);
+		expect(store.list().find((job) => job.id === activeCron.id)).toMatchObject({
+			nextRunAt: expectedNextRunAt,
+			updatedAt: normalizationNow.toISOString(),
+		});
+		expect(JSON.parse(readFileSync(storePath, "utf8"))).toMatchObject({ scheduleSemanticsRevision: 1 });
+
+		const secondScheduler = new AgentCronScheduler(store, {
+			now: () => new Date(2026, 0, 2, 0, 0),
+			runJob: async () => undefined,
+		});
+		secondScheduler.start();
+		secondScheduler.stop();
+		expect(store.list().find((job) => job.id === activeCron.id)).toMatchObject({
+			nextRunAt: expectedNextRunAt,
+			updatedAt: normalizationNow.toISOString(),
+		});
+	});
+
+	it("normalizes a legacy session artifact registered after the scheduler starts empty", () => {
+		const root = makeTempDir(tempDirs);
+		const sessionId = "late-session";
+		const artifactDir = join(root, "session-artifacts", sessionId);
+		const artifactPath = join(artifactDir, SESSION_SCHEDULED_JOBS_FILENAME);
+		const normalizationNow = new Date(2026, 0, 1, 0, 0);
+		const activeCron = makePersistedScheduleJob("late-active-cron", {
+			sessionId,
+			nextRunAt: new Date(2026, 5, 1, 0, 0).toISOString(),
+			schedule: { kind: "cron", expression: "0 0 1 * 1" },
+		});
+		mkdirSync(artifactDir, { recursive: true });
+		writeFileSync(artifactPath, `${JSON.stringify({ jobs: [activeCron], dispatches: [] }, null, 2)}\n`);
+		const store = AgentCronJobStore.forSessionArtifacts();
+		const scheduler = new AgentCronScheduler(store, {
+			now: () => normalizationNow,
+			runJob: async () => undefined,
+		});
+		scheduler.start();
+
+		expect(store.registerSessionArtifact(sessionId, artifactDir)).toBe(true);
+		expect(store.recoverSessionArtifact(sessionId, normalizationNow)).toEqual([]);
+		scheduler.wake();
+		expect(store.list()).toEqual([
+			expect.objectContaining({
+				id: activeCron.id,
+				nextRunAt: new Date(2026, 0, 5, 0, 0).toISOString(),
+				updatedAt: normalizationNow.toISOString(),
+			}),
+		]);
+		expect(JSON.parse(readFileSync(artifactPath, "utf8"))).toMatchObject({ scheduleSemanticsRevision: 1 });
+
+		const normalizedFile = readFileSync(artifactPath, "utf8");
+		expect(store.registerSessionArtifact(sessionId, artifactDir)).toBe(false);
+		expect(store.recoverSessionArtifact(sessionId, new Date(2026, 0, 2, 0, 0))).toEqual([]);
+		scheduler.start();
+		scheduler.stop();
+		expect(readFileSync(artifactPath, "utf8")).toBe(normalizedFile);
+	});
+
+	it("preserves one overdue legacy cron occurrence for normal claiming", async () => {
+		const storePath = makeStorePath(tempDirs);
+		const now = new Date(2026, 0, 6, 0, 0);
+		const overdue = makePersistedScheduleJob("overdue-cron", {
+			nextRunAt: new Date(2026, 0, 5, 0, 0).toISOString(),
+			schedule: { kind: "cron", expression: "0 0 1 * 1" },
+		});
+		writeFileSync(storePath, `${JSON.stringify({ jobs: [overdue], dispatches: [] }, null, 2)}\n`);
+		const store = new AgentCronJobStore(storePath);
+		const startup = new AgentCronScheduler(store, { now: () => now, runJob: async () => undefined });
+		startup.start();
+		startup.stop();
+		expect(store.list()[0]?.nextRunAt).toBe(overdue.nextRunAt);
+
+		const runJob = vi.fn(async () => undefined);
+		const runner = new AgentCronScheduler(store, { now: () => now, runJob });
+		expect(await runner.runDue(now)).toBe(1);
+		expect(await runner.runDue(now)).toBe(0);
+		expect(runJob).toHaveBeenCalledOnce();
+		expect(store.list()[0]).toMatchObject({
+			nextRunAt: new Date(2026, 0, 12, 0, 0).toISOString(),
+			runCount: 1,
 		});
 	});
 
@@ -1495,4 +1727,41 @@ function makeTempDir(tempDirs: string[]): string {
 	const dir = mkdtempSync(join(tmpdir(), "prime-agent-cron-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function makePersistedScheduleJob(id: string, overrides: Partial<AgentCronJob> = {}): AgentCronJob {
+	return {
+		id,
+		status: "active",
+		activeSessionId: "active-1",
+		sessionId: "session-1",
+		sessionFile: "/tmp/session.jsonl",
+		cwd: "/tmp/project",
+		prompt: `run ${id}`,
+		schedule: { kind: "cron", expression: "0 0 * * *" },
+		createdAt: "2025-01-01T00:00:00.000Z",
+		updatedAt: "2025-01-01T00:00:00.000Z",
+		runCount: 0,
+		...overrides,
+	};
+}
+
+function parseCronCasesInTimeZone(
+	timeZone: string,
+	cases: ReadonlyArray<{ expression: string; after: string }>,
+): string[] {
+	const moduleUrl = new URL("../src/core/cron-jobs.ts", import.meta.url).href;
+	const script = `
+		import { parseAgentCronSchedule } from ${JSON.stringify(moduleUrl)};
+		const cases = ${JSON.stringify(cases)};
+		process.stdout.write(JSON.stringify(cases.map(({ expression, after }) =>
+			parseAgentCronSchedule(expression, new Date(after)).nextRunAt.toISOString()
+		)));
+	`;
+	const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+		cwd: new URL("..", import.meta.url),
+		env: { ...process.env, TZ: timeZone },
+		encoding: "utf8",
+	});
+	return JSON.parse(output) as string[];
 }
