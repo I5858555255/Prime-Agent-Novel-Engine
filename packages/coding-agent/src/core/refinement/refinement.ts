@@ -26,8 +26,15 @@ const REFINEMENT_HISTORY_FILE_NAME = "refinements.jsonl";
 const DEFAULT_OVERVIEW_ENTRY_LIMIT = 6;
 const DEFAULT_OVERVIEW_REFINEMENT_LIMIT = 5;
 const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
-const DEFAULT_OVERVIEW_DETAIL_BUDGET = 4000;
+// The detail tier is already bounded by maxEntriesPerKind, so a character budget there could only
+// ever render fewer content-bearing entries than the caller asked for. It stays off by default and
+// is an opt-in rail for callers that raise maxEntriesPerKind.
+const DEFAULT_OVERVIEW_DETAIL_BUDGET = Number.POSITIVE_INFINITY;
 const DEFAULT_OVERVIEW_LISTED_LIMIT = 200;
+// Hard clip on an assembled stub line. The stub menu is the one tier that grows with the store, so
+// clipping the whole line bounds `id`, `title`, and `path` together and pins the tier's cost at
+// maxListedEntries * (OVERVIEW_STUB_LINE_LIMIT + 1) characters per kind, whatever the entries hold.
+const OVERVIEW_STUB_LINE_LIMIT = 160;
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
@@ -428,20 +435,46 @@ function compactText(text: string, maxLength: number): string {
 	return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
-/** Numeric limits for the continual harness overview rendered into the system prompt. */
+/**
+ * Numeric limits for the continual harness overview rendered into the system prompt.
+ *
+ * Values are normalized by the renderer, so a caller-supplied `NaN`, `Infinity`, negative, or
+ * fractional limit falls back or clamps instead of reaching the prompt.
+ */
 export interface HarnessOverviewLimits {
 	/** Entries per kind rendered with their content. Default: 6. */
 	maxEntriesPerKind?: number;
 	/** Characters kept per rendered content, `ref=`, and `args=` value. Default: 180. */
 	maxContentLength?: number;
-	/** Characters spent on content-bearing entries per kind. Default: 4000. */
+	/**
+	 * Characters spent on content-bearing entries per kind. Unset means no character rail:
+	 * `maxEntriesPerKind` alone decides how many entries keep their content.
+	 */
 	detailBudget?: number;
 	/** One-line stubs rendered per kind after the content-bearing entries. Default: 200. */
 	maxListedEntries?: number;
 }
 
-function overviewStubLine(entry: HarnessEntry): string {
+/**
+ * Clamp a caller-supplied numeric limit. `formatHarnessStateForPrompt` and `selectOverviewEntries`
+ * are exported, so a limit arriving as `NaN` must not flow into a `slice` bound or an overflow
+ * count, where it would silently drop entries and suppress the `+N more` line that reports them.
+ */
+function resolveOverviewLimit(value: number | undefined, fallback: number, minimum = 1): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return fallback;
+	}
+	return Math.max(minimum, Math.floor(value));
+}
+
+function overviewHeadline(entry: HarnessEntry): string {
 	return `- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})`;
+}
+
+// Clipped because the stub menu scales with the store; `overviewDetailLine` deliberately leaves the
+// headline alone so a store that fits in the detail tier renders the same lines it did before.
+function overviewStubLine(entry: HarnessEntry): string {
+	return compactText(overviewHeadline(entry), OVERVIEW_STUB_LINE_LIMIT);
 }
 
 function overviewDetailLine(entry: HarnessEntry, maxContentLength: number): string {
@@ -453,7 +486,7 @@ function overviewDetailLine(entry: HarnessEntry, maxContentLength: number): stri
 		entry.kind === "skill" && Object.keys(entry.reference).length > 0
 			? ` ref=${compactText(JSON.stringify(entry.reference), maxContentLength)}`
 			: "";
-	return `${overviewStubLine(entry)}${referenceText}${argumentsText}: ${compactText(entry.content, maxContentLength)}`;
+	return `${overviewHeadline(entry)}${referenceText}${argumentsText}: ${compactText(entry.content, maxContentLength)}`;
 }
 
 // `loadHarnessState` copies timestamps from disk without validating them, and the TypeScript and
@@ -462,6 +495,10 @@ function overviewDetailLine(entry: HarnessEntry, maxContentLength: number): stri
 function overviewRecency(entry: HarnessEntry): number {
 	const parsed = Date.parse(entry.updated_at);
 	return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+function overviewTiebreakKey(entry: HarnessEntry): string {
+	return [entry.path, entry.title, entry.id, entry.scope ?? "global"].join("\0");
 }
 
 function compareOverviewEntries(a: HarnessEntry, b: HarnessEntry): number {
@@ -475,17 +512,27 @@ function compareOverviewEntries(a: HarnessEntry, b: HarnessEntry): number {
 	if (aVersion !== bVersion) {
 		return bVersion - aVersion;
 	}
-	return [a.path, a.title, a.id].join("\0").localeCompare([b.path, b.title, b.id].join("\0"));
+	// Compare code points rather than `localeCompare`: the overview is an internal ordering that must
+	// not shift with the machine's ICU locale, because prompt caching keys on the rendered bytes.
+	// `scope` completes the order - `mergeHarnessStates` can produce local/global pairs that agree on
+	// path, title, and id, and without it those pairs compare equal and rank by input order.
+	const aKey = overviewTiebreakKey(a);
+	const bKey = overviewTiebreakKey(b);
+	if (aKey === bKey) {
+		return 0;
+	}
+	return aKey < bKey ? -1 : 1;
 }
 
 /**
  * Rank harness entries for the system-prompt overview and split them into content-bearing entries
  * and one-line stubs.
  *
- * Ranking is `updated_at` descending, then `version` descending, then the historical
- * `[path, title, id]` ordering so entries written in the same millisecond stay stable. The function
- * is pure - no clock, no filesystem, no randomness - so two renders of the same `harness_state.json`
- * are byte-identical.
+ * Ranking is `updated_at` descending, then `version` descending, then a code-point comparison of
+ * `[path, title, id, scope]` so entries written in the same millisecond have a total order. The
+ * function is pure and depends on nothing but its arguments - no clock, no filesystem, no
+ * randomness, and no ambient locale - so two renders of the same `harness_state.json` are
+ * byte-identical on any machine.
  *
  * `opts.query` is accepted and deliberately unused. It is the seam for a future relevance- or
  * utility-ranked selection policy, so that policy can land without changing this signature or its
@@ -494,13 +541,15 @@ function compareOverviewEntries(a: HarnessEntry, b: HarnessEntry): number {
 export function selectOverviewEntries(
 	entries: readonly HarnessEntry[],
 	opts: {
-		detailBudget: number;
-		maxContentLength: number;
-		reservedRecentSlots: number;
+		detailBudget?: number;
+		maxContentLength?: number;
+		reservedRecentSlots?: number;
 		query?: string;
-	},
+	} = {},
 ): { detailed: HarnessEntry[]; listed: HarnessEntry[] } {
-	const { detailBudget, maxContentLength, reservedRecentSlots } = opts;
+	const detailBudget = resolveOverviewLimit(opts.detailBudget, DEFAULT_OVERVIEW_DETAIL_BUDGET);
+	const maxContentLength = resolveOverviewLimit(opts.maxContentLength, DEFAULT_OVERVIEW_CONTENT_LIMIT);
+	const reservedRecentSlots = resolveOverviewLimit(opts.reservedRecentSlots, DEFAULT_OVERVIEW_ENTRY_LIMIT, 0);
 	const detailed: HarnessEntry[] = [];
 	const listed: HarnessEntry[] = [];
 	let spent = 0;
@@ -531,11 +580,12 @@ export function formatHarnessStateForPrompt(
 		includeRefineExamples?: boolean;
 	} = {},
 ): string {
-	const maxEntriesPerKind = options.maxEntriesPerKind ?? DEFAULT_OVERVIEW_ENTRY_LIMIT;
-	const maxRefinements = options.maxRefinements ?? DEFAULT_OVERVIEW_REFINEMENT_LIMIT;
-	const maxContentLength = options.maxContentLength ?? DEFAULT_OVERVIEW_CONTENT_LIMIT;
-	const detailBudget = options.detailBudget ?? DEFAULT_OVERVIEW_DETAIL_BUDGET;
-	const maxListedEntries = options.maxListedEntries ?? DEFAULT_OVERVIEW_LISTED_LIMIT;
+	const maxEntriesPerKind = resolveOverviewLimit(options.maxEntriesPerKind, DEFAULT_OVERVIEW_ENTRY_LIMIT);
+	const maxRefinements = resolveOverviewLimit(options.maxRefinements, DEFAULT_OVERVIEW_REFINEMENT_LIMIT, 0);
+	const maxContentLength = resolveOverviewLimit(options.maxContentLength, DEFAULT_OVERVIEW_CONTENT_LIMIT);
+	const detailBudget = resolveOverviewLimit(options.detailBudget, DEFAULT_OVERVIEW_DETAIL_BUDGET);
+	// 0 is meaningful: it turns the stub menu off and restores the count-only overview.
+	const maxListedEntries = resolveOverviewLimit(options.maxListedEntries, DEFAULT_OVERVIEW_LISTED_LIMIT, 0);
 	const includeIpythonExamples = options.includeIpythonExamples ?? true;
 	const includeRefineExamples = options.includeRefineExamples ?? includeIpythonExamples;
 	const lines = [
@@ -580,13 +630,14 @@ export function formatHarnessStateForPrompt(
 		for (const entry of detailed) {
 			lines.push(overviewDetailLine(entry, maxContentLength));
 		}
-		// Everything the detail budget could not afford still gets an addressable one-line stub, so
-		// the model can reach it with `rlm.harness.get(kind, "<scope>:<id>")` instead of only being
-		// told a count. Only entries past the stub ceiling collapse back into that count.
-		for (const entry of listed.slice(0, Math.max(0, maxListedEntries))) {
+		// Everything past maxEntriesPerKind still gets an addressable one-line stub, so the model can
+		// reach it with `rlm.harness.get(kind, "<scope>:<id>")` instead of only being told a count.
+		// Only entries past the stub ceiling collapse back into that count.
+		const stubCount = Math.min(listed.length, maxListedEntries);
+		for (const entry of listed.slice(0, stubCount)) {
 			lines.push(overviewStubLine(entry));
 		}
-		const overflow = Math.max(0, listed.length - Math.max(0, maxListedEntries));
+		const overflow = listed.length - stubCount;
 		if (overflow > 0) {
 			lines.push(`- +${overflow} more ${kind} entries`);
 		}

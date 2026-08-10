@@ -130,28 +130,35 @@ prime-agent --offline
 
 Controls how much of the continual harness (`/refine` prompt notes, memories, skills, and subagent
 specs) is rendered into the system prompt. Entries are ranked by `updated_at`, then `version`, then
-path, so the most recently refined entry always keeps its content. Every entry that does not fit the
-detail budget is still listed as a one-line stub carrying its `scope:id`, which is the address
+path, so the most recently refined entry always keeps its content. Every entry past
+`maxEntriesPerKind` is still listed as a one-line stub carrying its `scope:id`, which is the address
 `rlm.harness.get(kind, "global:<id>")` accepts.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `continualHarness.maxEntriesPerKind` | number | `6` | Entries per kind rendered with their content |
 | `continualHarness.maxContentLength` | number | `180` | Characters kept per rendered content, `ref=`, and `args=` value |
-| `continualHarness.detailBudget` | number | `4000` | Characters spent on content-bearing entries per kind |
+| `continualHarness.detailBudget` | number | unset | Optional ceiling on the characters spent on content-bearing entries per kind |
 | `continualHarness.maxListedEntries` | number | `200` | One-line stubs rendered per kind after the content-bearing entries |
 
-`detailBudget` does not bind at the default `maxEntriesPerKind`; it is the ceiling that keeps a
-raised `maxEntriesPerKind` from dominating the prompt. The top-ranked entry always keeps its content
-regardless of the budget. Entries beyond `maxListedEntries` collapse into a `+N more <kind> entries`
+`maxEntriesPerKind` decides how many entries keep their content; a store with that many entries or
+fewer renders every one of them in full. `detailBudget` is unset by default and is an opt-in rail
+for operators who raise `maxEntriesPerKind` a long way: when it is set, entries that do not fit drop
+to a stub instead, except the top-ranked one, which always keeps its content.
+
+Stub lines are clipped to 160 characters each, so the stub menu costs at most
+`maxListedEntries * 161` characters per kind - 32,200 at the default, whatever the stored titles,
+paths, and ids look like. Entries beyond `maxListedEntries` collapse into a `+N more <kind> entries`
 count; setting it to `0` turns the stub list off entirely and restores the count-only overview.
+
+Values that are not finite positive numbers fall back to the defaults above rather than reaching the
+prompt.
 
 ```json
 {
   "continualHarness": {
     "maxEntriesPerKind": 6,
     "maxContentLength": 180,
-    "detailBudget": 4000,
     "maxListedEntries": 200
   }
 }

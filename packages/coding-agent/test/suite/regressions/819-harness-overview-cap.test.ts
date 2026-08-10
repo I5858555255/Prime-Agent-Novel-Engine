@@ -1,9 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ENV_AGENT_DIR } from "../../../src/config.js";
 import {
-	formatHarnessStateForPrompt,
+	getGlobalHarnessStateDir,
 	type HarnessEntry,
 	type HarnessState,
+	saveHarnessState,
 } from "../../../src/core/refinement/index.js";
+import type { ContinualHarnessSettings } from "../../../src/core/settings-manager.js";
+import { createHarness, type Harness } from "../harness.js";
 
 // Fixture from issue #819: 48 memory entries spread across the alphabet plus one entry that was
 // written last, carries the highest version, and whose path sorts near the end. On main the
@@ -68,13 +75,50 @@ function issue819State(): HarnessState {
 	};
 }
 
+/** The harness section of a built system prompt, which is what the model actually receives. */
+function harnessOverview(systemPrompt: string): string {
+	const start = systemPrompt.indexOf("# Continual Harness State");
+	expect(start).toBeGreaterThanOrEqual(0);
+	return systemPrompt.slice(start);
+}
+
 function renderedIds(overview: string): string[] {
 	return Array.from(overview.matchAll(/^- \[global:([^\]]+)\]/gm), (match) => match[1]);
 }
 
-describe("#819 harness overview cap", () => {
-	it("renders the most recently written entry with its content", () => {
-		const overview = formatHarnessStateForPrompt(issue819State());
+describe("regression #819: harness overview cap", () => {
+	const harnesses: Harness[] = [];
+	let agentDir: string;
+	let previousAgentDir: string | undefined;
+
+	beforeEach(() => {
+		agentDir = join(tmpdir(), `pi-819-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(agentDir, { recursive: true });
+		previousAgentDir = process.env[ENV_AGENT_DIR];
+		process.env[ENV_AGENT_DIR] = agentDir;
+		saveHarnessState(getGlobalHarnessStateDir(agentDir), issue819State());
+	});
+
+	afterEach(() => {
+		while (harnesses.length > 0) {
+			harnesses.pop()?.cleanup();
+		}
+		if (previousAgentDir === undefined) {
+			delete process.env[ENV_AGENT_DIR];
+		} else {
+			process.env[ENV_AGENT_DIR] = previousAgentDir;
+		}
+		rmSync(agentDir, { recursive: true, force: true });
+	});
+
+	async function createSession(continualHarness?: ContinualHarnessSettings): Promise<string> {
+		const harness = await createHarness(continualHarness ? { settings: { continualHarness } } : {});
+		harnesses.push(harness);
+		return harnessOverview(harness.session.systemPrompt);
+	}
+
+	it("renders the most recently written entry with its content", async () => {
+		const overview = await createSession();
 
 		expect(overview).toContain(
 			`- [global:mem-new] workspace-resolver-fix (memory/w/workspace-resolver-fix.md, v7): ${NEWEST_CONTENT}`,
@@ -82,30 +126,30 @@ describe("#819 harness overview cap", () => {
 		expect(renderedIds(overview)[0]).toBe("mem-new");
 	});
 
-	it("names every stored entry so the model can address it by id", () => {
-		const state = issue819State();
-		const overview = formatHarnessStateForPrompt(state);
+	it("names every stored entry so the model can address it by id", async () => {
+		const overview = await createSession();
 		const ids = renderedIds(overview);
 
 		expect(ids).toHaveLength(49);
-		for (const id of Object.keys(state.entries.memory)) {
-			expect(overview).toContain(`[global:${id}]`);
-		}
+		expect(new Set(ids).size).toBe(49);
 		expect(overview).toContain("memory: 49");
 		expect(overview).not.toContain("more memory entries");
 	});
 
-	it("keeps the full menu under a bounded character budget", () => {
-		const overview = formatHarnessStateForPrompt(issue819State());
+	// The settings key is inert unless AgentSession hands it to buildSystemPrompt, so this asserts
+	// the handoff rather than the renderer: without it the defaults render six entries and 43 stubs.
+	it("applies continualHarness settings to the session's system prompt", async () => {
+		const overview = await createSession({ maxEntriesPerKind: 1, maxContentLength: 40, maxListedEntries: 0 });
 
-		// Measured 6,480 characters, against 3,951 on main for six named entries and 15,290 for the
-		// same store rendered with every body in full.
-		expect(overview.length).toBeLessThan(8_000);
+		expect(renderedIds(overview)).toEqual(["mem-new"]);
+		expect(overview).toContain(`${NEWEST_CONTENT.slice(0, 37)}...`);
+		expect(overview).toContain("- +48 more memory entries");
 	});
 
-	it("renders the same bytes on every call", () => {
-		const state = issue819State();
+	it("renders the same bytes on every session build", async () => {
+		const first = await createSession();
+		const again = await createSession();
 
-		expect(formatHarnessStateForPrompt(state)).toBe(formatHarnessStateForPrompt(state));
+		expect(again).toBe(first);
 	});
 });

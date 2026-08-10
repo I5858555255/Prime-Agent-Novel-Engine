@@ -1637,6 +1637,49 @@ describe("selectOverviewEntries", () => {
 		expect(ids(reversed.listed)).toEqual(ids(first.listed));
 	});
 
+	it("orders equal-ranked entries by code point, not by the machine's locale", () => {
+		// "z" (U+007A) sorts before "ä" (U+00E4) by code point. `localeCompare` disagrees, and disagrees
+		// with itself across locales: en-US puts "ä" first, sv-SE puts "z" first. Pinning the code-point
+		// order is what makes the render identical on every machine, which prompt caching depends on.
+		const entries = [entry({ id: "umlaut", path: "memory/\u00e4.md" }), entry({ id: "zed", path: "memory/z.md" })];
+
+		expect(ids(selectOverviewEntries(entries, budget).detailed)).toEqual(["zed", "umlaut"]);
+		expect(ids(selectOverviewEntries([...entries].reverse(), budget).detailed)).toEqual(["zed", "umlaut"]);
+	});
+
+	it("totally orders local and global entries that agree on path, title, and id", () => {
+		// `mergeHarnessStates` keeps both when a local entry shadows a global one, so this pair is
+		// reachable in a real store. Without `scope` in the tiebreak the two compare equal and the
+		// output follows input order.
+		const entries = [
+			entry({ id: "shared", title: "same", path: "memory/same.md", scope: "local" }),
+			entry({ id: "shared", title: "same", path: "memory/same.md", scope: "global" }),
+		];
+
+		const forward = selectOverviewEntries(entries, budget).detailed.map((item) => item.scope);
+		const reversed = selectOverviewEntries([...entries].reverse(), budget).detailed.map((item) => item.scope);
+
+		expect(forward).toEqual(["global", "local"]);
+		expect(reversed).toEqual(forward);
+	});
+
+	it("falls back to the render defaults for invalid numeric options", () => {
+		const entries = Array.from({ length: 10 }, (_, index) => entry({ id: `mem-${index}` }));
+
+		for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -1, undefined]) {
+			const { detailed, listed } = selectOverviewEntries(entries, {
+				detailBudget: invalid,
+				maxContentLength: invalid,
+				reservedRecentSlots: invalid,
+			});
+
+			// `reservedRecentSlots` is the one limit where 0 is a real request, so it clamps to 0 rather
+			// than to 1; `formatHarnessStateForPrompt` keeps its own floor of 1 on `maxEntriesPerKind`.
+			expect(detailed).toHaveLength(invalid === -1 ? 0 : 6);
+			expect(detailed.length + listed.length).toBe(entries.length);
+		}
+	});
+
 	it("does not reorder the caller's array", () => {
 		const entries = [
 			entry({ id: "a", path: "memory/a.md" }),
@@ -1646,5 +1689,139 @@ describe("selectOverviewEntries", () => {
 		selectOverviewEntries(entries, budget);
 
 		expect(ids(entries)).toEqual(["a", "z"]);
+	});
+});
+
+describe("formatHarnessStateForPrompt overview limits", () => {
+	const MARKER = "CONTENT-MARKER";
+	const KINDS = ["prompt", "memory", "skill", "subagent"] as const;
+
+	function entry(kind: RefinementKind, id: string, title: string, path: string): HarnessEntry {
+		return {
+			id,
+			kind,
+			title,
+			content: `${MARKER} for ${id}`,
+			path,
+			scope: "global",
+			reference: {},
+			arguments: {},
+			metadata: {},
+			source: "test",
+			created_at: "2026-06-01T00:00:00.000Z",
+			updated_at: "2026-06-01T00:00:00.000Z",
+			version: 1,
+		};
+	}
+
+	/** `count` ordinary memory entries, the shape a real store has. */
+	function memoryState(count: number): HarnessState {
+		const memory: Record<string, HarnessEntry> = {};
+		for (let index = 0; index < count; index++) {
+			const id = `mem-${String(index).padStart(4, "0")}`;
+			memory[id] = entry("memory", id, `lesson-${index}`, `memory/m/lesson-${index}.md`);
+		}
+		return { schema: 1, entries: { prompt: {}, memory, skill: {}, subagent: {} }, refinements: [] };
+	}
+
+	/** All four kinds filled with entries whose id, title, and path are `width` characters long. */
+	function adversarialState(perKind: number, width: number): HarnessState {
+		const state: HarnessState = {
+			schema: 1,
+			entries: { prompt: {}, memory: {}, skill: {}, subagent: {} },
+			refinements: [],
+		};
+		for (const kind of KINDS) {
+			for (let index = 0; index < perKind; index++) {
+				const id = `${"i".repeat(width)}-${kind}-${index}`;
+				state.entries[kind][id] = entry(
+					kind,
+					id,
+					`${"T".repeat(width)}-${index}`,
+					`${kind}/${"p".repeat(width)}.md`,
+				);
+			}
+		}
+		return state;
+	}
+
+	const entryLines = (overview: string): string[] => overview.split("\n").filter((line) => line.startsWith("- ["));
+	const detailLines = (overview: string): string[] => entryLines(overview).filter((line) => line.includes(MARKER));
+	const stubLines = (overview: string): string[] => entryLines(overview).filter((line) => !line.includes(MARKER));
+	const overflowCount = (overview: string, kind = "memory"): number =>
+		Array.from(overview.matchAll(new RegExp(`\\+(\\d+) more ${kind} entries`, "g")), (match) =>
+			Number(match[1]),
+		).reduce((total, value) => total + value, 0);
+
+	it("renders exactly maxEntriesPerKind content-bearing entries", () => {
+		const state = memoryState(50);
+
+		for (const maxEntriesPerKind of [1, 6, 20, 50, 80]) {
+			const overview = formatHarnessStateForPrompt(state, { maxEntriesPerKind });
+
+			expect(detailLines(overview)).toHaveLength(Math.min(maxEntriesPerKind, 50));
+		}
+	});
+
+	it("keeps every entry content-bearing at the default depth however long its title and path", () => {
+		const overview = formatHarnessStateForPrompt(adversarialState(6, 1_000));
+
+		expect(detailLines(overview)).toHaveLength(4 * 6);
+		expect(stubLines(overview)).toHaveLength(0);
+	});
+
+	it("bounds the stub menu in characters, not only in entries", () => {
+		const overview = formatHarnessStateForPrompt(adversarialState(5_000, 1_000));
+		const stubs = stubLines(overview);
+
+		expect(stubs).toHaveLength(4 * 200);
+		// The documented per-kind ceiling: maxListedEntries lines of at most 160 characters each.
+		expect(Math.max(...stubs.map((line) => line.length))).toBe(160);
+		expect(stubs.join("\n").length).toBeLessThanOrEqual(4 * 200 * 161);
+		for (const kind of KINDS) {
+			expect(overflowCount(overview, kind)).toBe(5_000 - 6 - 200);
+		}
+	});
+
+	it("does not spend more characters on stubs when entry metadata gets longer", () => {
+		const narrow = stubLines(formatHarnessStateForPrompt(adversarialState(300, 1_000)));
+		const wide = stubLines(formatHarnessStateForPrompt(adversarialState(300, 4_000)));
+
+		expect(wide.join("\n").length).toBe(narrow.join("\n").length);
+	});
+
+	it("keeps the addressable scope:id when it clips a stub line", () => {
+		const state = memoryState(0);
+		state.entries.memory["mem-long"] = entry("memory", "mem-long", "T".repeat(500), `memory/${"p".repeat(500)}.md`);
+		state.entries.memory["mem-short"] = entry("memory", "mem-short", "short", "memory/short.md");
+
+		const overview = formatHarnessStateForPrompt(state, { maxEntriesPerKind: 1 });
+		const [stub] = stubLines(overview);
+
+		expect(stub).toMatch(/^- \[global:mem-(long|short)\] /);
+		expect(stub.length).toBeLessThanOrEqual(160);
+	});
+
+	it("accounts for every entry under invalid numeric limits", () => {
+		const state = memoryState(10);
+		const invalid = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 0, 1.9];
+		const keys = ["maxEntriesPerKind", "maxContentLength", "detailBudget", "maxListedEntries"] as const;
+
+		for (const key of keys) {
+			for (const value of invalid) {
+				const overview = formatHarnessStateForPrompt(state, { [key]: value });
+				const accounted = detailLines(overview).length + stubLines(overview).length + overflowCount(overview);
+
+				expect({ key, value, accounted }).toEqual({ key, value, accounted: 10 });
+				expect(overview).toContain("memory: 10");
+			}
+		}
+	});
+
+	it("still collapses the stub menu into a count when maxListedEntries is 0", () => {
+		const overview = formatHarnessStateForPrompt(memoryState(10), { maxListedEntries: 0 });
+
+		expect(stubLines(overview)).toHaveLength(0);
+		expect(overview).toContain("- +4 more memory entries");
 	});
 });

@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import type { HarnessOverviewLimits } from "./refinement/index.js";
 
 const RECENT_MODELS_LIMIT = 20;
 export const DEFAULT_IDLE_EVICTION_MINUTES = 90;
@@ -27,12 +28,12 @@ export interface AutoRefineSettings {
 	cooldownMs?: number; // default: 20 minutes
 }
 
-export interface ContinualHarnessSettings {
-	maxEntriesPerKind?: number; // default: 6 - entries per kind rendered with their content
-	maxContentLength?: number; // default: 180 - characters kept per rendered content value
-	detailBudget?: number; // default: 4000 - characters spent on content-bearing entries per kind
-	maxListedEntries?: number; // default: 200 - one-line stubs per kind; 0 renders an overflow count instead
-}
+/**
+ * How much of the continual harness is rendered into the system prompt. Aliased rather than
+ * redeclared so the settings key and the renderer cannot drift; see `HarnessOverviewLimits` for the
+ * per-field defaults and semantics.
+ */
+export type ContinualHarnessSettings = HarnessOverviewLimits;
 
 export interface ProviderRetrySettings {
 	timeoutMs?: number; // SDK/provider request timeout in milliseconds
@@ -184,18 +185,6 @@ export interface TelemetrySettings {
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
-/**
- * Resolve a positive numeric setting. Non-numeric, non-finite, and out-of-range values fall back to
- * the default rather than reaching the prompt, where a zero or negative limit would render an empty
- * or malformed continual harness section.
- */
-function resolvePositiveSetting(value: number | undefined, fallback: number, minimum = 1): number {
-	if (typeof value !== "number" || !Number.isFinite(value)) {
-		return fallback;
-	}
-	return Math.max(minimum, Math.floor(value));
-}
-
 function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	const result: Settings = { ...base };
 
@@ -917,20 +906,13 @@ export class SettingsManager {
 		};
 	}
 
-	getContinualHarnessSettings(): {
-		maxEntriesPerKind: number;
-		maxContentLength: number;
-		detailBudget: number;
-		maxListedEntries: number;
-	} {
-		const harness = this.settings.continualHarness;
-		return {
-			maxEntriesPerKind: resolvePositiveSetting(harness?.maxEntriesPerKind, 6),
-			maxContentLength: resolvePositiveSetting(harness?.maxContentLength, 180),
-			detailBudget: resolvePositiveSetting(harness?.detailBudget, 4000),
-			// 0 is meaningful here: it turns the stub menu off and restores the overflow count.
-			maxListedEntries: resolvePositiveSetting(harness?.maxListedEntries, 200, 0),
-		};
+	/**
+	 * Configured continual harness overview limits, unresolved. `formatHarnessStateForPrompt` owns the
+	 * defaults and the clamping, so an invalid value is normalized in exactly one place no matter
+	 * whether it arrived from settings.json or from a direct caller.
+	 */
+	getContinualHarnessSettings(): ContinualHarnessSettings {
+		return { ...this.settings.continualHarness };
 	}
 
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean } {

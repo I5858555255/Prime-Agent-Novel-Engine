@@ -276,89 +276,37 @@ describe("SettingsManager", () => {
 	});
 
 	describe("continualHarness", () => {
-		const defaults = { maxEntriesPerKind: 6, maxContentLength: 180, detailBudget: 4000, maxListedEntries: 200 };
-
-		it("defaults every limit when the key is absent", () => {
+		// The getter reports what is configured; `formatHarnessStateForPrompt` owns the defaults and the
+		// clamping, and `test/refinement.test.ts` covers invalid values there.
+		it("reports no limits when the key is absent", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
 
-			expect(manager.getContinualHarnessSettings()).toEqual(defaults);
+			expect(manager.getContinualHarnessSettings()).toEqual({});
 		});
 
-		it("preserves valid overrides and floors fractional values", () => {
+		it("merges project limits over global limits", () => {
 			writeFileSync(
 				join(agentDir, "settings.json"),
-				JSON.stringify({
-					continualHarness: {
-						maxEntriesPerKind: 20,
-						maxContentLength: 400,
-						detailBudget: 12_000,
-						maxListedEntries: 1000,
-					},
-				}),
+				JSON.stringify({ continualHarness: { maxEntriesPerKind: 20, maxListedEntries: 50 } }),
 			);
-			const manager = SettingsManager.create(projectDir, agentDir);
-
-			expect(manager.getContinualHarnessSettings()).toEqual({
-				maxEntriesPerKind: 20,
-				maxContentLength: 400,
-				detailBudget: 12_000,
-				maxListedEntries: 1000,
-			});
-
 			writeFileSync(
-				join(agentDir, "settings.json"),
-				JSON.stringify({ continualHarness: { maxEntriesPerKind: 7.9 } }),
-			);
-
-			expect(SettingsManager.create(projectDir, agentDir).getContinualHarnessSettings().maxEntriesPerKind).toBe(7);
-		});
-
-		it("falls back to defaults for non-numeric values", () => {
-			writeFileSync(
-				join(agentDir, "settings.json"),
-				JSON.stringify({
-					continualHarness: {
-						maxEntriesPerKind: "lots",
-						maxContentLength: null,
-						detailBudget: [],
-						maxListedEntries: "all",
-					},
-				}),
-			);
-
-			expect(SettingsManager.create(projectDir, agentDir).getContinualHarnessSettings()).toEqual(defaults);
-		});
-
-		it("ignores non-finite numeric values that parse to Infinity", () => {
-			// 1e999 is valid JSON that JSON.parse turns into Infinity.
-			writeFileSync(
-				join(agentDir, "settings.json"),
-				`{ "continualHarness": { "maxEntriesPerKind": 1e999, "detailBudget": 1e999 } }`,
-			);
-
-			expect(SettingsManager.create(projectDir, agentDir).getContinualHarnessSettings()).toEqual(defaults);
-		});
-
-		it("clamps zero and negative limits so the overview can never render empty", () => {
-			writeFileSync(
-				join(agentDir, "settings.json"),
-				JSON.stringify({
-					continualHarness: { maxEntriesPerKind: 0, maxContentLength: -5, detailBudget: -1, maxListedEntries: -3 },
-				}),
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({ continualHarness: { maxListedEntries: 0 } }),
 			);
 
 			expect(SettingsManager.create(projectDir, agentDir).getContinualHarnessSettings()).toEqual({
-				maxEntriesPerKind: 1,
-				maxContentLength: 1,
-				detailBudget: 1,
+				maxEntriesPerKind: 20,
 				maxListedEntries: 0,
 			});
 		});
 
-		it("keeps maxListedEntries: 0 as the opt-out that restores the overflow count", () => {
-			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ continualHarness: { maxListedEntries: 0 } }));
+		it("does not hand out a live reference to the loaded settings", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ continualHarness: { maxEntriesPerKind: 9 } }));
+			const manager = SettingsManager.create(projectDir, agentDir);
 
-			expect(SettingsManager.create(projectDir, agentDir).getContinualHarnessSettings().maxListedEntries).toBe(0);
+			manager.getContinualHarnessSettings().maxEntriesPerKind = 1;
+
+			expect(manager.getContinualHarnessSettings().maxEntriesPerKind).toBe(9);
 		});
 	});
 
