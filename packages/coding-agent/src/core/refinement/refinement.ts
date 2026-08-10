@@ -36,6 +36,12 @@ const DEFAULT_OVERVIEW_LISTED_LIMIT = 200;
 // small context window: 8,000 characters is about 2,000 tokens by the repository's chars/4
 // estimator, against models this repo ships with a 16,384-token window and smaller.
 const DEFAULT_OVERVIEW_LISTED_CHAR_BUDGET = 8000;
+// Prompt-size policy behind the context-aware menu cap. Chars-per-token matches the conservative
+// chars/4 estimator in compaction.ts, and the share holds half of the window back for the
+// conversation and the model's output. Both feed `affordableOverviewListedChars`, which is how the
+// 8,000-character default above degrades on models whose window cannot afford it.
+const OVERVIEW_CHARS_PER_TOKEN = 4;
+const OVERVIEW_PROMPT_WINDOW_SHARE = 0.5;
 // Target length for a stub line. The `[scope:id]` address is exempt - see `overviewStubLine`.
 const OVERVIEW_STUB_LINE_LIMIT = 160;
 // Shortest remainder worth appending after the address: one character plus the "..." marker.
@@ -321,8 +327,18 @@ export function loadHarnessState(
 			for (const [id, rawEntry] of Object.entries(records)) {
 				const entry = objectRecord(rawEntry);
 				if (!entry) continue;
+				// Mirror the Python loader in harness.py: these fields are interpolated into
+				// prompt lines, so an entry without string title/content is dropped rather than
+				// rendering "undefined" or crashing compactText, and id/kind come from the
+				// enclosing key so a rendered address always names a real store key.
+				if (typeof entry.title !== "string" || typeof entry.content !== "string") continue;
 				state.entries[kind][id] = {
 					...(entry as unknown as HarnessEntry),
+					id,
+					kind,
+					path: typeof entry.path === "string" ? entry.path : "general",
+					source: typeof entry.source === "string" ? entry.source : "agent",
+					version: normalizeEntryVersion(entry.version),
 					scope: normalizeHarnessScope(entry.scope, scope),
 					reference: objectRecord(entry.reference) ?? {},
 					arguments: objectRecord(entry.arguments) ?? {},
@@ -331,10 +347,53 @@ export function loadHarnessState(
 			}
 		}
 	}
-	if (Array.isArray(parsed.refinements)) {
-		state.refinements = parsed.refinements;
-	}
+	state.refinements = normalizeRefinementEvents(parsed.refinements);
 	return state;
+}
+
+function normalizeEntryVersion(value: unknown): number {
+	if (typeof value === "number" && Number.isFinite(value)) {
+		return value;
+	}
+	if (typeof value === "string") {
+		const parsed = Number.parseInt(value, 10);
+		if (Number.isFinite(parsed)) {
+			return parsed;
+		}
+	}
+	return 1;
+}
+
+/**
+ * Mirror the Python loader for refinement events: an event renders into the overview, so it must
+ * carry a string id and trigger plus a list of string changes. Anything else from disk is dropped
+ * rather than crashing the prompt build on `changes.length` or interpolating a non-string.
+ */
+function normalizeRefinementEvents(value: unknown): HarnessRefinementEvent[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const events: HarnessRefinementEvent[] = [];
+	for (const rawEvent of value) {
+		const event = objectRecord(rawEvent);
+		if (!event || typeof event.id !== "string" || typeof event.trigger !== "string") continue;
+		const changes =
+			typeof event.changes === "string"
+				? [event.changes]
+				: Array.isArray(event.changes)
+					? event.changes.map(String)
+					: undefined;
+		if (!changes) continue;
+		events.push({
+			id: event.id,
+			trigger: event.trigger,
+			changes,
+			evidence: typeof event.evidence === "string" ? event.evidence : "",
+			outcome: typeof event.outcome === "string" ? event.outcome : "",
+			created_at: typeof event.created_at === "string" ? event.created_at : "",
+		});
+	}
+	return events;
 }
 
 export function mergeHarnessStates(globalState: HarnessState, localState?: HarnessState): HarnessState {
@@ -432,12 +491,57 @@ export function mergeRefinementHistory(
 	return [...byId.values()];
 }
 
+function collapseWhitespace(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
 function compactText(text: string, maxLength: number): string {
-	const normalized = text.replace(/\s+/g, " ").trim();
+	const normalized = collapseWhitespace(text);
 	if (normalized.length <= maxLength) {
 		return normalized;
 	}
 	return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+// A rendered overview address is `[scope:id]` at the start of a line, and every read path -
+// `_strip_scope_prefix` in the Python harness above all - takes the id back verbatim, up to the
+// first "]". No escaping is decoded anywhere. An id carrying "[", "]", or a control character (a
+// newline above all) therefore renders as one or more addresses the store cannot resolve, which is
+// #819's unaddressable-stub defect reintroduced through data. The rule is shared with the Python
+// writer in prime-agent-runtime/src/rlm/harness.py.
+/** Whether an id round-trips through a rendered `[scope:id]` overview address. */
+export function isAddressableHarnessId(id: string): boolean {
+	if (id.length === 0) {
+		return false;
+	}
+	for (const char of id) {
+		const code = char.codePointAt(0) ?? 0;
+		if (code < 0x20 || code === 0x7f || char === "[" || char === "]") {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * The stub-menu budget `formatHarnessStateForPrompt` will actually use for a raw `maxListedChars`,
+ * applying the same fallback rules as the renderer: invalid values mean the 8,000-character
+ * default, and 0 means the menu is off.
+ */
+export function resolvedOverviewListedChars(maxListedChars: number | undefined): number {
+	return resolveOverviewLimit(maxListedChars, DEFAULT_OVERVIEW_LISTED_CHAR_BUDGET, 0);
+}
+
+/**
+ * The largest stub-menu budget a model's context window affords once the rest of the system prompt
+ * is spent. The window is in tokens; the estimate is the repository's conservative chars/4, and
+ * half of the window is held back for the conversation and the model's output, so the menu can
+ * never be the reason a supported small-context model overflows on its first request. Returns 0
+ * when the menu-free prompt alone reaches the allowance.
+ */
+export function affordableOverviewListedChars(contextWindow: number, promptCharsWithoutMenu: number): number {
+	const targetPromptChars = Math.floor(contextWindow * OVERVIEW_CHARS_PER_TOKEN * OVERVIEW_PROMPT_WINDOW_SHARE);
+	return Math.max(0, targetPromptChars - Math.max(0, promptCharsWithoutMenu));
 }
 
 /**
@@ -484,7 +588,9 @@ function resolveOverviewLimit(value: number | undefined, fallback: number, minim
 }
 
 function overviewHeadline(entry: HarnessEntry): string {
-	return `- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})`;
+	// Title and path are data from disk; collapsing whitespace keeps a multi-line title from
+	// fabricating overview rows the store does not contain.
+	return `- [${entry.scope ?? "global"}:${entry.id}] ${collapseWhitespace(`${entry.title} (${entry.path}, v${entry.version})`)}`;
 }
 
 /**
@@ -647,10 +753,16 @@ export function formatHarnessStateForPrompt(
 
 	const selections = (Object.keys(state.entries) as RefinementKind[]).map((kind) => {
 		const kindEntries = Object.values(state.entries[kind]);
+		// An id that cannot render as an exact `[scope:id]` address is never interpolated into the
+		// prompt: a "]" or newline inside it would advertise addresses the store cannot resolve.
+		// Such legacy entries stay in the `+N more` count and remain reachable through
+		// `rlm.harness.list()` and `delete()`, which is also the cleanup path for them.
+		const addressable = kindEntries.filter((entry) => isAddressableHarnessId(entry.id));
 		return {
 			kind,
 			count: kindEntries.length,
-			...selectOverviewEntries(kindEntries, {
+			unaddressable: kindEntries.length - addressable.length,
+			...selectOverviewEntries(addressable, {
 				detailBudget,
 				maxContentLength,
 				reservedRecentSlots: maxEntriesPerKind,
@@ -665,7 +777,7 @@ export function formatHarnessStateForPrompt(
 	const stubbedKinds = selections.filter((selection) => selection.listed.length > 0).length;
 	const stubBudget = stubbedKinds > 0 ? Math.floor(maxListedChars / stubbedKinds) : 0;
 
-	for (const { kind, count, detailed, listed } of selections) {
+	for (const { kind, count, unaddressable, detailed, listed } of selections) {
 		// Render subagent specs as a task-shaped roster the model can match against — the
 		// analogue of Claude Code's agent-type menu — rather than a bare count. In
 		// IPython sessions, include the native `rlm` invocation hint.
@@ -697,7 +809,7 @@ export function formatHarnessStateForPrompt(
 			spentOnStubs += line.length + 1;
 			stubCount++;
 		}
-		const overflow = listed.length - stubCount;
+		const overflow = listed.length - stubCount + unaddressable;
 		if (overflow > 0) {
 			lines.push(`- +${overflow} more ${kind} entries`);
 		}
@@ -709,12 +821,16 @@ export function formatHarnessStateForPrompt(
 	}
 
 	lines.push(`recent refinements: ${state.refinements.length}`);
-	for (const event of state.refinements.slice(-maxRefinements)) {
-		const changes = event.changes.length > 0 ? event.changes.join(", ") : "no applied edits";
+	// Event ids and change strings are data from disk. An unaddressable id would render a `[...]`
+	// tag that resolves to nothing, and a newline inside a change string would fabricate rows, so
+	// unrenderable events stay in the overflow count and the change list is collapsed to one line.
+	const renderableEvents = state.refinements.filter((event) => isAddressableHarnessId(event.id));
+	for (const event of renderableEvents.slice(-maxRefinements)) {
+		const changes = event.changes.length > 0 ? collapseWhitespace(event.changes.join(", ")) : "no applied edits";
 		const outcome = event.outcome ? `; outcome: ${compactText(event.outcome, maxContentLength)}` : "";
 		lines.push(`- [${event.id}] ${compactText(event.trigger, maxContentLength)}: ${changes}${outcome}`);
 	}
-	const refinementOverflow = state.refinements.length - Math.min(state.refinements.length, maxRefinements);
+	const refinementOverflow = state.refinements.length - Math.min(renderableEvents.length, maxRefinements);
 	if (refinementOverflow > 0) {
 		lines.push(`- +${refinementOverflow} older refinement events`);
 	}
@@ -737,8 +853,13 @@ function overviewForPrompt(state: HarnessState): string {
 				entry.kind === "skill" && Object.keys(entry.reference).length > 0
 					? ` ref=${JSON.stringify(entry.reference).slice(0, 240)}`
 					: "";
+			// The /refine planning prompt must still surface entries whose ids cannot render as
+			// plain addresses - proposing their deletion is the cleanup path - so those ids appear
+			// JSON-escaped. The refiner echoes the escaped literal back inside its JSON edit, and
+			// the parser decodes it to the exact stored id.
+			const address = isAddressableHarnessId(entry.id) ? entry.id : JSON.stringify(entry.id);
 			lines.push(
-				`- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${content}`,
+				`- [${entry.scope ?? "global"}:${address}] ${collapseWhitespace(`${entry.title} (${entry.path}, v${entry.version})`)}${referenceText}${argumentsText}: ${content}`,
 			);
 		}
 		if (entries.length > 40) {
@@ -877,6 +998,11 @@ function validateEdit(edit: RefinementEdit, computedId?: string): string | undef
 	if (edit.action !== "create" && !edit.id) {
 		return `${edit.action} requires id`;
 	}
+	// Delete stays exempt so an unaddressable id that reached a legacy state file can still be
+	// removed; create and update must not persist content under an id the overview cannot render.
+	if (edit.action !== "delete" && !isAddressableHarnessId(computedId ?? edit.id ?? "")) {
+		return `${edit.action} id must not contain "[", "]", or control characters`;
+	}
 	if (edit.action !== "delete" && (!edit.title || !edit.content)) {
 		return `${edit.action} requires title and content`;
 	}
@@ -915,7 +1041,10 @@ export function applyRefinementProposal(
 	const appliedEdits: AppliedRefinementEdit[] = [];
 	const proposalModifiedKeys = new Set<string>();
 	for (const edit of proposal.edits) {
-		const computedId = edit.id ?? (edit.action === "create" ? slug(edit.title ?? edit.kind, edit.kind) : undefined);
+		// `||` rather than `??`: an explicit empty id on create falls back to the title slug, the
+		// same way the Python writer's `id or _slug(...)` does, instead of minting an entry whose
+		// rendered address `[scope:]` resolves to nothing.
+		const computedId = edit.id || (edit.action === "create" ? slug(edit.title ?? edit.kind, edit.kind) : undefined);
 		const id = computedId ?? "";
 		const validationError = validateEdit(edit, id);
 		if (validationError) {

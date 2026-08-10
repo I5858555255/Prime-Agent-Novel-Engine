@@ -170,6 +170,27 @@ instead of being rendered in a broken form.
 Setting either `maxListedChars` or `maxListedEntries` to `0` turns the stub menu off entirely and
 restores the count-only overview.
 
+#### The context window caps the menu
+
+When the session's model is known, the menu budget is additionally capped by the model's context
+window: the prompt is rendered once with the menu off to measure everything else, and the menu gets
+at most the characters left before the whole system prompt would pass half the window, by the same
+chars/4 estimate. On the built-in 4,095-token model the menu-free default prompt already spends
+that allowance, so the menu stays off; an 8,192-token window affords roughly 1,500 characters of
+menu next to the default prompt; from 16,384 tokens up the full default budget fits. The cap also
+applies to an explicitly configured `maxListedChars`: a menu the window cannot afford would make
+every request fail, so it is never honored - lower it or write `0` to control the menu directly.
+The menu is re-budgeted when the session switches to a model with a different window.
+
+#### Entry ids must render as addresses
+
+A stub is only useful if its `[scope:id]` address resolves, so entry ids must not contain `[`,
+`]`, or control characters (newlines above all). Both writers - the TypeScript refiner and the
+Python `rlm.harness` - reject create/update edits carrying such an id. A legacy entry whose stored
+id predates the rule is never interpolated into the overview: it is reported only through the
+`+N more` count, stays reachable via `rlm.harness.list()`, and can still be deleted by its exact
+stored id.
+
 #### Invalid values
 
 Every key falls back to its default in the table above when the configured value is not a number,

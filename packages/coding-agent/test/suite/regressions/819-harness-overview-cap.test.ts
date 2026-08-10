@@ -203,4 +203,73 @@ describe("regression #819: harness overview cap", () => {
 
 		expect(again).toBe(first);
 	});
+
+	// The menu budget is capped by the session model's context window: the prompt is measured once
+	// with the menu off, and the menu gets only what remains before the whole prompt would pass half
+	// the window (chars/4). The repository ships a 4,095-token and an 8,192-token built-in model, so
+	// a fixed 8,000-character default alone regresses them - see models.generated.ts.
+	describe("context-window menu budget", () => {
+		beforeEach(() => {
+			saveHarnessState(getGlobalHarnessStateDir(agentDir), largeState(400));
+		});
+
+		async function windowedHarness(contextWindow: number): Promise<Harness> {
+			const harness = await createHarness({ models: [{ id: `faux-${contextWindow}`, contextWindow }] });
+			harnesses.push(harness);
+			return harness;
+		}
+
+		it("renders no stub menu when a 4,095-token window cannot afford one", async () => {
+			const harness = await windowedHarness(4_095);
+			const overview = harnessOverview(harness.session.systemPrompt);
+
+			// Byte-for-byte the count-only overview: on this model the menu must not cost a single
+			// character more than `maxListedChars: 0` does, which is main's prompt size.
+			expect(overview).toBe(await createSession({ maxListedChars: 0 }));
+			expect(overview.split("\n").filter(isStubLine)).toHaveLength(0);
+			expect(overview).toContain("more memory entries");
+		});
+
+		it("keeps an 8,192-token model's prompt small enough for an ordinary user message", async () => {
+			const harness = await windowedHarness(8_192);
+			const promptTokens = Math.ceil(harness.session.systemPrompt.length / 4);
+
+			// The report's failing scenario: a ~2,600-token user message fits next to the default
+			// prompt on main and must keep fitting here, before tool schemas and output allowance.
+			expect(promptTokens).toBeLessThanOrEqual(8_192 / 2);
+			expect(promptTokens + 2_600).toBeLessThanOrEqual(8_192);
+		});
+
+		it("leaves the full default menu to a 16,384-token window", async () => {
+			const harness = await windowedHarness(16_384);
+			const overview = harnessOverview(harness.session.systemPrompt);
+
+			// A 16k window affords the entire 8,000-character default, so the render must be
+			// identical to the uncapped default-model render: the cap only ever shrinks prompts on
+			// windows that cannot afford the configured menu.
+			expect(overview).toBe(await createSession());
+			expect(overview.split("\n").filter(isStubLine).length).toBeGreaterThan(0);
+		});
+
+		it("re-budgets the menu when the session switches to a small-window model", async () => {
+			const harness = await createHarness({
+				models: [
+					{ id: "faux-large", contextWindow: 128_000 },
+					{ id: "faux-small", contextWindow: 4_095 },
+				],
+			});
+			harnesses.push(harness);
+			const before = harnessOverview(harness.session.systemPrompt);
+			expect(before.split("\n").filter(isStubLine).length).toBeGreaterThan(0);
+
+			const smallModel = harness.getModel("faux-small");
+			expect(smallModel).toBeDefined();
+			if (!smallModel) return;
+			await harness.session.setModel(smallModel);
+			const after = harnessOverview(harness.session.systemPrompt);
+
+			expect(after.split("\n").filter(isStubLine)).toHaveLength(0);
+			expect(after.length).toBeLessThan(before.length);
+		});
+	});
 });
