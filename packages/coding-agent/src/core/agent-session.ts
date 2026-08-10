@@ -4306,8 +4306,25 @@ export class AgentSession {
 			rlmDepth: this._rlmDepth,
 			rlmParentAgent: this._rlmParentAgent,
 			harnessState: this._loadMergedHarnessState(),
+			harnessOverview: this.settingsManager.getContinualHarnessSettings(),
+			contextWindow: this.model?.contextWindow,
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
+	}
+
+	/**
+	 * The harness stub menu is budgeted against the model's context window, so a switch to a model
+	 * with a different window must re-render the system prompt - carrying a menu sized for a large
+	 * window into a small one would overflow it on the next request. Same-window switches skip the
+	 * rebuild: the rendered bytes could not change, and skipping keeps the prompt cache intact.
+	 */
+	private _refreshSystemPromptForContextWindow(previousContextWindow: number | undefined): void {
+		if (this.model?.contextWindow === previousContextWindow) {
+			return;
+		}
+		const oldBase = this._baseSystemPrompt;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._refreshExtensionSystemPrompt(this.agent.state.systemPrompt, oldBase);
 	}
 
 	// =========================================================================
@@ -6622,6 +6639,7 @@ export class AgentSession {
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		this._refreshSystemPromptForContextWindow(previousModel?.contextWindow);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
@@ -6697,6 +6715,7 @@ export class AgentSession {
 		this.agent.state.model = next.model;
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
 		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
+		this._refreshSystemPromptForContextWindow(currentModel?.contextWindow);
 
 		// Apply thinking level.
 		// - Explicit scoped model thinking level overrides current session level
@@ -6740,6 +6759,7 @@ export class AgentSession {
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+		this._refreshSystemPromptForContextWindow(currentModel?.contextWindow);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
@@ -8340,6 +8360,7 @@ export class AgentSession {
 		}
 
 		this.agent.state.model = refreshedModel;
+		this._refreshSystemPromptForContextWindow(currentModel.contextWindow);
 	}
 
 	private _bindExtensionCore(runner: ExtensionRunner): void {

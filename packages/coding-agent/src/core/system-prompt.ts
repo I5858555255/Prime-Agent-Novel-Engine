@@ -3,7 +3,14 @@
  */
 
 import { buildChildAgentDoctrine, buildRlmPrompt, buildSubagentGuidance } from "./prompts/index.js";
-import { formatHarnessStateForPrompt, type HarnessState, REFINE_SKILL_NAME } from "./refinement/index.js";
+import {
+	affordableOverviewListedChars,
+	formatHarnessStateForPrompt,
+	type HarnessOverviewLimits,
+	type HarnessState,
+	REFINE_SKILL_NAME,
+	resolvedOverviewListedChars,
+} from "./refinement/index.js";
 import { formatSkillsForPrompt, getPythonSkillRuntimeInfo, type Skill } from "./skills.js";
 
 export interface BuildSystemPromptOptions {
@@ -33,10 +40,51 @@ export interface BuildSystemPromptOptions {
 	rlmParentAgent?: string;
 	/** Global harness state to inject as compact persistent context. */
 	harnessState?: HarnessState;
+	/** Overrides for how much of the harness state is rendered. Unset falls back to the render defaults. */
+	harnessOverview?: HarnessOverviewLimits;
+	/**
+	 * Context window, in tokens, of the model this prompt is built for. When set, the harness stub
+	 * menu spends only what the window affords after every other section is rendered, so the whole
+	 * prompt stays within half the window by the repository's chars/4 estimate. The cap also
+	 * applies to an explicitly configured `maxListedChars`: a menu the window cannot fit would make
+	 * every request fail, so it is never honored. Unset (or non-positive) applies the configured or
+	 * default menu budget unchanged.
+	 */
+	contextWindow?: number;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
+	const harnessOverview = contextCappedHarnessOverview(options);
+	return renderSystemPrompt(harnessOverview === options.harnessOverview ? options : { ...options, harnessOverview });
+}
+
+/**
+ * Cap the harness stub menu to what the model's context window affords. The menu is the only part
+ * of the prompt that scales with the harness store, so it is budgeted last: the prompt is rendered
+ * once with the menu off to measure everything else, and the menu gets at most the characters left
+ * before the whole prompt would pass half the window. On a 4,095-token model the menu-free default
+ * prompt already spends that allowance, so the menu stays off; a 16,384-token window affords the
+ * full default budget.
+ */
+function contextCappedHarnessOverview(options: BuildSystemPromptOptions): HarnessOverviewLimits | undefined {
+	const { contextWindow, harnessState, harnessOverview } = options;
+	if (!harnessState || typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+		return harnessOverview;
+	}
+	const requested = resolvedOverviewListedChars(harnessOverview?.maxListedChars);
+	if (requested === 0) {
+		return harnessOverview;
+	}
+	const promptWithoutMenu = renderSystemPrompt({
+		...options,
+		harnessOverview: { ...harnessOverview, maxListedChars: 0 },
+	});
+	const affordable = affordableOverviewListedChars(contextWindow, promptWithoutMenu.length);
+	return affordable < requested ? { ...harnessOverview, maxListedChars: affordable } : harnessOverview;
+}
+
+function renderSystemPrompt(options: BuildSystemPromptOptions): string {
 	const {
 		customPrompt,
 		selectedTools,
@@ -68,6 +116,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
 	const visiblePythonSkillImportNames = getPythonSkillRuntimeInfo(visibleSkills).map((skill) => skill.importName);
 	const hasRefineSkill = visibleSkills.some((skill) => skill.name === REFINE_SKILL_NAME);
+	// Shared by both render paths below so the custom-prompt branch and the default branch can never
+	// drift apart on harness limits.
+	const harnessOverviewOptions = {
+		...options.harnessOverview,
+		includeIpythonExamples: hasIpython,
+		includeShellExamples: hasBash,
+		includeRefineExamples: hasIpython && hasRefineSkill,
+	};
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -103,7 +159,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 
 		if (harnessState) {
-			prompt += `\n\n${formatHarnessStateForPrompt(harnessState, { includeIpythonExamples: hasIpython, includeShellExamples: hasBash, includeRefineExamples: hasIpython && hasRefineSkill })}`;
+			prompt += `\n\n${formatHarnessStateForPrompt(harnessState, harnessOverviewOptions)}`;
 		}
 
 		if (appendSection) {
@@ -138,7 +194,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	}
 
 	if (harnessState) {
-		prompt += `\n\n${formatHarnessStateForPrompt(harnessState, { includeIpythonExamples: hasIpython, includeShellExamples: hasBash, includeRefineExamples: hasIpython && hasRefineSkill })}`;
+		prompt += `\n\n${formatHarnessStateForPrompt(harnessState, harnessOverviewOptions)}`;
 	}
 
 	const guidelines = formatPromptGuidelines(promptGuidelines);

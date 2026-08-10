@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import type { HarnessOverviewLimits } from "./refinement/index.js";
 
 const RECENT_MODELS_LIMIT = 20;
 export const DEFAULT_IDLE_EVICTION_MINUTES = 90;
@@ -26,6 +27,13 @@ export interface AutoRefineSettings {
 	compact?: boolean; // default: true
 	cooldownMs?: number; // default: 20 minutes
 }
+
+/**
+ * How much of the continual harness is rendered into the system prompt. Aliased rather than
+ * redeclared so the settings key and the renderer cannot drift; see `HarnessOverviewLimits` for the
+ * per-field defaults and semantics.
+ */
+export type ContinualHarnessSettings = HarnessOverviewLimits;
 
 export interface ProviderRetrySettings {
 	timeoutMs?: number; // SDK/provider request timeout in milliseconds
@@ -135,6 +143,7 @@ export interface Settings {
 	theme?: string;
 	compaction?: CompactionSettings;
 	autoRefine?: AutoRefineSettings;
+	continualHarness?: ContinualHarnessSettings;
 	agentTraces?: AgentTracesSettings;
 	telemetry?: TelemetrySettings;
 	branchSummary?: BranchSummarySettings;
@@ -895,6 +904,15 @@ export class SettingsManager {
 				typeof cooldownMs === "number" && Number.isFinite(cooldownMs) ? cooldownMs : 20 * 60_000,
 			),
 		};
+	}
+
+	/**
+	 * Configured continual harness overview limits, unresolved. `formatHarnessStateForPrompt` owns the
+	 * defaults and the clamping, so an invalid value is normalized in exactly one place no matter
+	 * whether it arrived from settings.json or from a direct caller.
+	 */
+	getContinualHarnessSettings(): ContinualHarnessSettings {
+		return { ...this.settings.continualHarness };
 	}
 
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean } {

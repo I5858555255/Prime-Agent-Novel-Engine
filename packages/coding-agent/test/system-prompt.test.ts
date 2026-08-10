@@ -426,7 +426,12 @@ describe("buildSystemPrompt", () => {
 		});
 
 		expect(prompt).toContain("memory: 8");
-		expect(prompt).toContain("- +2 more memory entries");
+		// The two entries past the detail budget stay addressable as named stubs instead of collapsing
+		// into an anonymous "+2 more memory entries" count. The trailing newline is what proves they
+		// are stubs: a detailed entry would continue with ": <content>".
+		expect(prompt).toContain("- [global:memory_6] Memory 6 (overflow, v1)\n");
+		expect(prompt).toContain("- [global:memory_7] Memory 7 (overflow, v1)\n");
+		expect(prompt).not.toContain("- +2 more memory entries");
 		expect(prompt).toContain(`${"x".repeat(177)}...`);
 		expect(prompt).not.toContain(longContent);
 	});

@@ -67,6 +67,22 @@ def _strip_scope_prefix(id: str | None, global_: bool) -> tuple[str | None, bool
     return id, global_
 
 
+def _is_addressable_id(id: str) -> bool:
+    # overview() renders entries as "[scope:id]" lines, and every read path takes the id
+    # back verbatim (slicing to the first "]") - no escaping is decoded anywhere. An id
+    # carrying "[", "]", or a control character (a newline above all) therefore renders as
+    # one or more addresses the store cannot resolve. The rule is shared with the
+    # TypeScript refiner (packages/coding-agent/src/core/refinement/refinement.ts).
+    return bool(id) and not any(ch in "[]" or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in id)
+
+
+def _validate_entry_id(id: str | None) -> str | None:
+    # None and "" fall back to a slug of the title, which is addressable by construction.
+    if id and not _is_addressable_id(id):
+        raise ValueError("harness entry id must not contain '[', ']', or control characters")
+    return id
+
+
 def _env_dir(name: str) -> str | None:
     # Set-but-empty env values must behave as unset; a bare "" would skip the
     # session-dir fallback and land local writes in the global agent-dir default.
@@ -315,6 +331,7 @@ class HarnessState:
         **kwargs: Any,
     ) -> HarnessEntry:
         id, global_ = _strip_scope_prefix(id, global_)
+        id = _validate_entry_id(id)
         if target := self._global_target(global_, kwargs):
             return target.upsert(
                 kind,
@@ -450,6 +467,7 @@ class HarnessState:
         **kwargs: Any,
     ) -> HarnessEntry:
         id, global_ = _strip_scope_prefix(id, global_)
+        id = _validate_entry_id(id)
         if target := self._global_target(global_, kwargs):
             return target.create(
                 kind,
@@ -497,6 +515,7 @@ class HarnessState:
         **kwargs: Any,
     ) -> HarnessEntry:
         id, global_ = _strip_scope_prefix(id, global_)
+        id = _validate_entry_id(id)
         if target := self._global_target(global_, kwargs):
             return target.update(
                 kind,
@@ -684,6 +703,7 @@ class HarnessState:
         global_: bool = False,
         **kwargs: Any,
     ) -> RefinementEvent:
+        id = _validate_entry_id(id)
         if target := self._global_target(global_, kwargs):
             return target.record_refinement(trigger, changes, evidence=evidence, outcome=outcome, id=id)
         self._ensure_local_writable()
@@ -734,10 +754,14 @@ class HarnessState:
             "receiver_role='child', receiver_name=handle.name) for follow-ups.",
         ]
         for kind in _KINDS:
-            records = self.list(kind)[:max_entries_per_kind]
+            # An id that cannot render as an exact [scope:id] address is never interpolated:
+            # a "]" or newline inside it would advertise addresses get() cannot resolve. Such
+            # legacy entries stay in the "+N more" count and remain reachable via list()/delete().
+            records = [entry for entry in self.list(kind) if _is_addressable_id(entry.id)]
+            records = records[:max_entries_per_kind]
             lines.append(f"{kind}: {len(self.entries[kind])}")
             for entry in records:
-                summary = entry.content.strip().replace("\n", " ")
+                summary = " ".join(entry.content.split())
                 if len(summary) > 120:
                     summary = f"{summary[:117]}..."
                 argument_summary = ""
@@ -752,8 +776,10 @@ class HarnessState:
                     if len(reference_text) > 120:
                         reference_text = f"{reference_text[:117]}..."
                     reference_summary = f" ref={reference_text}"
+                # Collapse whitespace so a multi-line title or path cannot fabricate rows.
+                headline = " ".join(f"{entry.title} ({entry.path}, v{entry.version})".split())
                 lines.append(
-                    f"  - [{entry.scope}:{entry.id}] {entry.title} ({entry.path}, v{entry.version})"
+                    f"  - [{entry.scope}:{entry.id}] {headline}"
                     f"{reference_summary}{argument_summary}: {summary}"
                 )
             overflow = len(self.entries[kind]) - len(records)
@@ -761,8 +787,10 @@ class HarnessState:
                 lines.append(f"  - +{overflow} more")
         if self.refinements:
             lines.append(f"refinements: {len(self.refinements)}")
-            for event in self.refinements[-5:]:
-                lines.append(f"  - [{event.id}] {event.trigger}: {', '.join(event.changes)}")
+            renderable = [event for event in self.refinements if _is_addressable_id(event.id)]
+            for event in renderable[-5:]:
+                event_summary = " ".join(f"{event.trigger}: {', '.join(event.changes)}".split())
+                lines.append(f"  - [{event.id}] {event_summary}")
         else:
             lines.append("refinements: 0")
         return "\n".join(lines)

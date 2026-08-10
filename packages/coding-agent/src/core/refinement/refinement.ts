@@ -26,6 +26,26 @@ const REFINEMENT_HISTORY_FILE_NAME = "refinements.jsonl";
 const DEFAULT_OVERVIEW_ENTRY_LIMIT = 6;
 const DEFAULT_OVERVIEW_REFINEMENT_LIMIT = 5;
 const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
+// The detail tier is already bounded by maxEntriesPerKind, so a character budget there could only
+// ever render fewer content-bearing entries than the caller asked for. It stays off by default and
+// is an opt-in rail for callers that raise maxEntriesPerKind.
+const DEFAULT_OVERVIEW_DETAIL_BUDGET = Number.POSITIVE_INFINITY;
+const DEFAULT_OVERVIEW_LISTED_LIMIT = 200;
+// One budget for the whole stub menu, not per kind. The stub tier is the only part of the overview
+// that grows with the store, so this is the number that decides whether the prompt still fits a
+// small context window: 8,000 characters is about 2,000 tokens by the repository's chars/4
+// estimator, against models this repo ships with a 16,384-token window and smaller.
+const DEFAULT_OVERVIEW_LISTED_CHAR_BUDGET = 8000;
+// Prompt-size policy behind the context-aware menu cap. Chars-per-token matches the conservative
+// chars/4 estimator in compaction.ts, and the share holds half of the window back for the
+// conversation and the model's output. Both feed `affordableOverviewListedChars`, which is how the
+// 8,000-character default above degrades on models whose window cannot afford it.
+const OVERVIEW_CHARS_PER_TOKEN = 4;
+const OVERVIEW_PROMPT_WINDOW_SHARE = 0.5;
+// Target length for a stub line. The `[scope:id]` address is exempt - see `overviewStubLine`.
+const OVERVIEW_STUB_LINE_LIMIT = 160;
+// Shortest remainder worth appending after the address: one character plus the "..." marker.
+const OVERVIEW_STUB_MIN_REMAINDER = 4;
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
@@ -307,8 +327,18 @@ export function loadHarnessState(
 			for (const [id, rawEntry] of Object.entries(records)) {
 				const entry = objectRecord(rawEntry);
 				if (!entry) continue;
+				// Mirror the Python loader in harness.py: these fields are interpolated into
+				// prompt lines, so an entry without string title/content is dropped rather than
+				// rendering "undefined" or crashing compactText, and id/kind come from the
+				// enclosing key so a rendered address always names a real store key.
+				if (typeof entry.title !== "string" || typeof entry.content !== "string") continue;
 				state.entries[kind][id] = {
 					...(entry as unknown as HarnessEntry),
+					id,
+					kind,
+					path: typeof entry.path === "string" ? entry.path : "general",
+					source: typeof entry.source === "string" ? entry.source : "agent",
+					version: normalizeEntryVersion(entry.version),
 					scope: normalizeHarnessScope(entry.scope, scope),
 					reference: objectRecord(entry.reference) ?? {},
 					arguments: objectRecord(entry.arguments) ?? {},
@@ -317,10 +347,53 @@ export function loadHarnessState(
 			}
 		}
 	}
-	if (Array.isArray(parsed.refinements)) {
-		state.refinements = parsed.refinements;
-	}
+	state.refinements = normalizeRefinementEvents(parsed.refinements);
 	return state;
+}
+
+function normalizeEntryVersion(value: unknown): number {
+	if (typeof value === "number" && Number.isFinite(value)) {
+		return value;
+	}
+	if (typeof value === "string") {
+		const parsed = Number.parseInt(value, 10);
+		if (Number.isFinite(parsed)) {
+			return parsed;
+		}
+	}
+	return 1;
+}
+
+/**
+ * Mirror the Python loader for refinement events: an event renders into the overview, so it must
+ * carry a string id and trigger plus a list of string changes. Anything else from disk is dropped
+ * rather than crashing the prompt build on `changes.length` or interpolating a non-string.
+ */
+function normalizeRefinementEvents(value: unknown): HarnessRefinementEvent[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const events: HarnessRefinementEvent[] = [];
+	for (const rawEvent of value) {
+		const event = objectRecord(rawEvent);
+		if (!event || typeof event.id !== "string" || typeof event.trigger !== "string") continue;
+		const changes =
+			typeof event.changes === "string"
+				? [event.changes]
+				: Array.isArray(event.changes)
+					? event.changes.map(String)
+					: undefined;
+		if (!changes) continue;
+		events.push({
+			id: event.id,
+			trigger: event.trigger,
+			changes,
+			evidence: typeof event.evidence === "string" ? event.evidence : "",
+			outcome: typeof event.outcome === "string" ? event.outcome : "",
+			created_at: typeof event.created_at === "string" ? event.created_at : "",
+		});
+	}
+	return events;
 }
 
 export function mergeHarnessStates(globalState: HarnessState, localState?: HarnessState): HarnessState {
@@ -418,28 +491,244 @@ export function mergeRefinementHistory(
 	return [...byId.values()];
 }
 
+function collapseWhitespace(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
 function compactText(text: string, maxLength: number): string {
-	const normalized = text.replace(/\s+/g, " ").trim();
+	const normalized = collapseWhitespace(text);
 	if (normalized.length <= maxLength) {
 		return normalized;
 	}
 	return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
+// A rendered overview address is `[scope:id]` at the start of a line, and every read path -
+// `_strip_scope_prefix` in the Python harness above all - takes the id back verbatim, up to the
+// first "]". No escaping is decoded anywhere. An id carrying "[", "]", or a control character (a
+// newline above all) therefore renders as one or more addresses the store cannot resolve, which is
+// #819's unaddressable-stub defect reintroduced through data. The rule is shared with the Python
+// writer in prime-agent-runtime/src/rlm/harness.py.
+/** Whether an id round-trips through a rendered `[scope:id]` overview address. */
+export function isAddressableHarnessId(id: string): boolean {
+	if (id.length === 0) {
+		return false;
+	}
+	for (const char of id) {
+		const code = char.codePointAt(0) ?? 0;
+		if (code < 0x20 || code === 0x7f || char === "[" || char === "]") {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * The stub-menu budget `formatHarnessStateForPrompt` will actually use for a raw `maxListedChars`,
+ * applying the same fallback rules as the renderer: invalid values mean the 8,000-character
+ * default, and 0 means the menu is off.
+ */
+export function resolvedOverviewListedChars(maxListedChars: number | undefined): number {
+	return resolveOverviewLimit(maxListedChars, DEFAULT_OVERVIEW_LISTED_CHAR_BUDGET, 0);
+}
+
+/**
+ * The largest stub-menu budget a model's context window affords once the rest of the system prompt
+ * is spent. The window is in tokens; the estimate is the repository's conservative chars/4, and
+ * half of the window is held back for the conversation and the model's output, so the menu can
+ * never be the reason a supported small-context model overflows on its first request. Returns 0
+ * when the menu-free prompt alone reaches the allowance.
+ */
+export function affordableOverviewListedChars(contextWindow: number, promptCharsWithoutMenu: number): number {
+	const targetPromptChars = Math.floor(contextWindow * OVERVIEW_CHARS_PER_TOKEN * OVERVIEW_PROMPT_WINDOW_SHARE);
+	return Math.max(0, targetPromptChars - Math.max(0, promptCharsWithoutMenu));
+}
+
+/**
+ * Numeric limits for the continual harness overview rendered into the system prompt.
+ *
+ * Every value is normalized by the renderer: anything that is not a number, is not finite, or is
+ * below the field's minimum falls back to the default documented on that field, so an invalid limit
+ * cannot reach the prompt as a `NaN` slice bound or silently disable a tier.
+ */
+export interface HarnessOverviewLimits {
+	/** Entries per kind rendered with their content. Minimum 1. Default: 6. */
+	maxEntriesPerKind?: number;
+	/** Characters kept per rendered content, `ref=`, and `args=` value. Minimum 1. Default: 180. */
+	maxContentLength?: number;
+	/**
+	 * Characters spent on content-bearing entries per kind. Minimum 1. Unset means no character rail:
+	 * `maxEntriesPerKind` alone decides how many entries keep their content.
+	 */
+	detailBudget?: number;
+	/** One-line stubs per kind after the content-bearing entries. Minimum 0. Default: 200. */
+	maxListedEntries?: number;
+	/**
+	 * Characters spent on the stub menu across all kinds, split evenly between the kinds that need
+	 * stubs. Minimum 0, where 0 disables the menu. Default: 8000.
+	 */
+	maxListedChars?: number;
+}
+
+/**
+ * Resolve a caller-supplied numeric limit. `formatHarnessStateForPrompt` and `selectOverviewEntries`
+ * are exported, so a limit arriving as `NaN` must not flow into a slice bound or an overflow count,
+ * where it would silently drop entries and suppress the `+N more` line that reports them.
+ *
+ * Out-of-range values fall back rather than clamping to the minimum: `maxListedEntries: -1` is a
+ * typo, and clamping it to 0 would turn the stub menu off with no diagnostic. An operator who wants
+ * it off writes 0, which is in range.
+ */
+function resolveOverviewLimit(value: number | undefined, fallback: number, minimum = 1): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return fallback;
+	}
+	const floored = Math.floor(value);
+	return floored >= minimum ? floored : fallback;
+}
+
+function overviewHeadline(entry: HarnessEntry): string {
+	// Title and path are data from disk; collapsing whitespace keeps a multi-line title from
+	// fabricating overview rows the store does not contain.
+	return `- [${entry.scope ?? "global"}:${entry.id}] ${collapseWhitespace(`${entry.title} (${entry.path}, v${entry.version})`)}`;
+}
+
+/**
+ * A stub the model can act on. The `[scope:id]` address is never truncated, because a clipped id
+ * addresses nothing and an unaddressable stub advertises knowledge that cannot be retrieved - the
+ * defect #819 is about. Only the title/path remainder absorbs the clip, so a long address costs
+ * more of the menu budget and therefore names fewer entries, which is the correct trade.
+ *
+ * `overviewDetailLine` leaves the headline alone entirely, so a store that fits in the detail tier
+ * renders the same lines it did before this ranking landed.
+ */
+function overviewStubLine(entry: HarnessEntry): string {
+	const address = `- [${entry.scope ?? "global"}:${entry.id}]`;
+	const room = OVERVIEW_STUB_LINE_LIMIT - address.length - 1;
+	if (room < OVERVIEW_STUB_MIN_REMAINDER) {
+		return address;
+	}
+	return `${address} ${compactText(`${entry.title} (${entry.path}, v${entry.version})`, room)}`;
+}
+
+function overviewDetailLine(entry: HarnessEntry, maxContentLength: number): string {
+	const argumentsText =
+		entry.kind === "skill" && Object.keys(entry.arguments).length > 0
+			? ` args=${compactText(JSON.stringify(entry.arguments), maxContentLength)}`
+			: "";
+	const referenceText =
+		entry.kind === "skill" && Object.keys(entry.reference).length > 0
+			? ` ref=${compactText(JSON.stringify(entry.reference), maxContentLength)}`
+			: "";
+	return `${overviewHeadline(entry)}${referenceText}${argumentsText}: ${compactText(entry.content, maxContentLength)}`;
+}
+
+// An ISO date-time carrying neither an offset nor a trailing "Z". `Date.parse` reads this form in
+// the host timezone, so the same state file would rank differently on two machines.
+const OFFSETLESS_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
+// `loadHarnessState` copies timestamps from disk without validating them, and the TypeScript and
+// Python writers emit different ISO forms ("...Z" vs "...+00:00"), so rank on the parsed epoch
+// rather than the raw string. An offsetless timestamp is read as UTC rather than as local time,
+// because ranking must not depend on the machine. Missing or unparseable timestamps rank last.
+function overviewRecency(entry: HarnessEntry): number {
+	const raw = entry.updated_at;
+	const normalized = typeof raw === "string" && OFFSETLESS_TIMESTAMP.test(raw) ? `${raw}Z` : raw;
+	const parsed = Date.parse(normalized);
+	return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+function overviewTiebreakKey(entry: HarnessEntry): string {
+	return [entry.path, entry.title, entry.id, entry.scope ?? "global"].join("\0");
+}
+
+function compareOverviewEntries(a: HarnessEntry, b: HarnessEntry): number {
+	const aRecency = overviewRecency(a);
+	const bRecency = overviewRecency(b);
+	if (aRecency !== bRecency) {
+		return bRecency > aRecency ? 1 : -1;
+	}
+	const aVersion = Number.isFinite(a.version) ? a.version : 0;
+	const bVersion = Number.isFinite(b.version) ? b.version : 0;
+	if (aVersion !== bVersion) {
+		return bVersion - aVersion;
+	}
+	// Compare code points rather than `localeCompare`: the overview is an internal ordering that must
+	// not shift with the machine's ICU locale, because prompt caching keys on the rendered bytes.
+	// `scope` completes the order - `mergeHarnessStates` can produce local/global pairs that agree on
+	// path, title, and id, and without it those pairs compare equal and rank by input order.
+	const aKey = overviewTiebreakKey(a);
+	const bKey = overviewTiebreakKey(b);
+	if (aKey === bKey) {
+		return 0;
+	}
+	return aKey < bKey ? -1 : 1;
+}
+
+/**
+ * Rank harness entries for the system-prompt overview and split them into content-bearing entries
+ * and one-line stubs.
+ *
+ * Ranking is `updated_at` descending, then `version` descending, then a code-point comparison of
+ * `[path, title, id, scope]` so entries written in the same millisecond have a total order. The
+ * function is pure and depends on nothing but its arguments - no clock, no filesystem, no
+ * randomness, and no ambient locale - so two renders of the same `harness_state.json` are
+ * byte-identical on any machine.
+ *
+ * `opts.query` is accepted and deliberately unused. It is the seam for a future relevance- or
+ * utility-ranked selection policy, so that policy can land without changing this signature or its
+ * call sites.
+ */
+export function selectOverviewEntries(
+	entries: readonly HarnessEntry[],
+	opts: {
+		detailBudget?: number;
+		maxContentLength?: number;
+		reservedRecentSlots?: number;
+		query?: string;
+	} = {},
+): { detailed: HarnessEntry[]; listed: HarnessEntry[] } {
+	const detailBudget = resolveOverviewLimit(opts.detailBudget, DEFAULT_OVERVIEW_DETAIL_BUDGET);
+	const maxContentLength = resolveOverviewLimit(opts.maxContentLength, DEFAULT_OVERVIEW_CONTENT_LIMIT);
+	const reservedRecentSlots = resolveOverviewLimit(opts.reservedRecentSlots, DEFAULT_OVERVIEW_ENTRY_LIMIT, 0);
+	const detailed: HarnessEntry[] = [];
+	const listed: HarnessEntry[] = [];
+	let spent = 0;
+	let budgetExhausted = false;
+	for (const entry of [...entries].sort(compareOverviewEntries)) {
+		if (!budgetExhausted && detailed.length < reservedRecentSlots) {
+			const line = overviewDetailLine(entry, maxContentLength);
+			// The top-ranked entry always keeps its content, so a tight budget can never hide the
+			// lesson a refinement just wrote.
+			if (detailed.length === 0 || spent + line.length <= detailBudget) {
+				detailed.push(entry);
+				spent += line.length;
+				continue;
+			}
+			budgetExhausted = true;
+		}
+		listed.push(entry);
+	}
+	return { detailed, listed };
+}
+
 export function formatHarnessStateForPrompt(
 	state: HarnessState,
-	options: {
-		maxEntriesPerKind?: number;
+	options: HarnessOverviewLimits & {
 		maxRefinements?: number;
-		maxContentLength?: number;
 		includeIpythonExamples?: boolean;
 		includeShellExamples?: boolean;
 		includeRefineExamples?: boolean;
 	} = {},
 ): string {
-	const maxEntriesPerKind = options.maxEntriesPerKind ?? DEFAULT_OVERVIEW_ENTRY_LIMIT;
-	const maxRefinements = options.maxRefinements ?? DEFAULT_OVERVIEW_REFINEMENT_LIMIT;
-	const maxContentLength = options.maxContentLength ?? DEFAULT_OVERVIEW_CONTENT_LIMIT;
+	const maxEntriesPerKind = resolveOverviewLimit(options.maxEntriesPerKind, DEFAULT_OVERVIEW_ENTRY_LIMIT);
+	const maxRefinements = resolveOverviewLimit(options.maxRefinements, DEFAULT_OVERVIEW_REFINEMENT_LIMIT, 0);
+	const maxContentLength = resolveOverviewLimit(options.maxContentLength, DEFAULT_OVERVIEW_CONTENT_LIMIT);
+	const detailBudget = resolveOverviewLimit(options.detailBudget, DEFAULT_OVERVIEW_DETAIL_BUDGET);
+	// 0 is meaningful on both stub limits: either one at 0 turns the menu off and restores the
+	// count-only overview.
+	const maxListedEntries = resolveOverviewLimit(options.maxListedEntries, DEFAULT_OVERVIEW_LISTED_LIMIT, 0);
+	const maxListedChars = resolveOverviewLimit(options.maxListedChars, DEFAULT_OVERVIEW_LISTED_CHAR_BUDGET, 0);
 	const includeIpythonExamples = options.includeIpythonExamples ?? true;
 	const includeRefineExamples = options.includeRefineExamples ?? includeIpythonExamples;
 	const lines = [
@@ -462,39 +751,65 @@ export function formatHarnessStateForPrompt(
 		"",
 	];
 
-	let totalEntries = 0;
-	for (const kind of Object.keys(state.entries) as RefinementKind[]) {
-		const entries = Object.values(state.entries[kind]).sort((a, b) =>
-			[a.path, a.title, a.id].join("\0").localeCompare([b.path, b.title, b.id].join("\0")),
-		);
-		totalEntries += entries.length;
+	const selections = (Object.keys(state.entries) as RefinementKind[]).map((kind) => {
+		const kindEntries = Object.values(state.entries[kind]);
+		// An id that cannot render as an exact `[scope:id]` address is never interpolated into the
+		// prompt: a "]" or newline inside it would advertise addresses the store cannot resolve.
+		// Such legacy entries stay in the `+N more` count and remain reachable through
+		// `rlm.harness.list()` and `delete()`, which is also the cleanup path for them.
+		const addressable = kindEntries.filter((entry) => isAddressableHarnessId(entry.id));
+		return {
+			kind,
+			count: kindEntries.length,
+			unaddressable: kindEntries.length - addressable.length,
+			...selectOverviewEntries(addressable, {
+				detailBudget,
+				maxContentLength,
+				reservedRecentSlots: maxEntriesPerKind,
+			}),
+		};
+	});
+	const totalEntries = selections.reduce((running, selection) => running + selection.count, 0);
+	// The stub menu gets one budget for the whole overview rather than a per-kind ceiling, so the
+	// worst case is a single number an operator can weigh against a context window. Splitting it
+	// between the kinds that actually need stubs keeps one large kind from starving the others, and
+	// leaves the budget undivided in the common case where only `memory` overflows.
+	const stubbedKinds = selections.filter((selection) => selection.listed.length > 0).length;
+	const stubBudget = stubbedKinds > 0 ? Math.floor(maxListedChars / stubbedKinds) : 0;
+
+	for (const { kind, count, unaddressable, detailed, listed } of selections) {
 		// Render subagent specs as a task-shaped roster the model can match against — the
 		// analogue of Claude Code's agent-type menu — rather than a bare count. In
 		// IPython sessions, include the native `rlm` invocation hint.
-		if (kind === "subagent" && entries.length > 0 && includeIpythonExamples) {
+		if (kind === "subagent" && count > 0 && includeIpythonExamples) {
 			lines.push(
-				`${kind}: ${entries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
+				`${kind}: ${count} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
 			);
 		} else {
-			lines.push(`${kind}: ${entries.length}`);
+			lines.push(`${kind}: ${count}`);
 		}
-		for (const entry of entries.slice(0, maxEntriesPerKind)) {
-			const argumentsText =
-				entry.kind === "skill" && Object.keys(entry.arguments).length > 0
-					? ` args=${compactText(JSON.stringify(entry.arguments), maxContentLength)}`
-					: "";
-			const referenceText =
-				entry.kind === "skill" && Object.keys(entry.reference).length > 0
-					? ` ref=${compactText(JSON.stringify(entry.reference), maxContentLength)}`
-					: "";
-			lines.push(
-				`- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${compactText(
-					entry.content,
-					maxContentLength,
-				)}`,
-			);
+		for (const entry of detailed) {
+			lines.push(overviewDetailLine(entry, maxContentLength));
 		}
-		const overflow = entries.length - Math.min(entries.length, maxEntriesPerKind);
+		// Everything past maxEntriesPerKind still gets an addressable one-line stub, so the model can
+		// reach it with `rlm.harness.get(kind, "<scope>:<id>")` instead of only being told a count.
+		// Entries the budget cannot afford are skipped rather than ending the menu, so one entry with a
+		// very long id costs itself and not everything ranked below it, and they land in the count.
+		let spentOnStubs = 0;
+		let stubCount = 0;
+		for (const entry of listed) {
+			if (stubCount >= maxListedEntries || spentOnStubs >= stubBudget) {
+				break;
+			}
+			const line = overviewStubLine(entry);
+			if (spentOnStubs + line.length + 1 > stubBudget) {
+				continue;
+			}
+			lines.push(line);
+			spentOnStubs += line.length + 1;
+			stubCount++;
+		}
+		const overflow = listed.length - stubCount + unaddressable;
 		if (overflow > 0) {
 			lines.push(`- +${overflow} more ${kind} entries`);
 		}
@@ -506,12 +821,16 @@ export function formatHarnessStateForPrompt(
 	}
 
 	lines.push(`recent refinements: ${state.refinements.length}`);
-	for (const event of state.refinements.slice(-maxRefinements)) {
-		const changes = event.changes.length > 0 ? event.changes.join(", ") : "no applied edits";
+	// Event ids and change strings are data from disk. An unaddressable id would render a `[...]`
+	// tag that resolves to nothing, and a newline inside a change string would fabricate rows, so
+	// unrenderable events stay in the overflow count and the change list is collapsed to one line.
+	const renderableEvents = state.refinements.filter((event) => isAddressableHarnessId(event.id));
+	for (const event of renderableEvents.slice(-maxRefinements)) {
+		const changes = event.changes.length > 0 ? collapseWhitespace(event.changes.join(", ")) : "no applied edits";
 		const outcome = event.outcome ? `; outcome: ${compactText(event.outcome, maxContentLength)}` : "";
 		lines.push(`- [${event.id}] ${compactText(event.trigger, maxContentLength)}: ${changes}${outcome}`);
 	}
-	const refinementOverflow = state.refinements.length - Math.min(state.refinements.length, maxRefinements);
+	const refinementOverflow = state.refinements.length - Math.min(renderableEvents.length, maxRefinements);
 	if (refinementOverflow > 0) {
 		lines.push(`- +${refinementOverflow} older refinement events`);
 	}
@@ -534,8 +853,13 @@ function overviewForPrompt(state: HarnessState): string {
 				entry.kind === "skill" && Object.keys(entry.reference).length > 0
 					? ` ref=${JSON.stringify(entry.reference).slice(0, 240)}`
 					: "";
+			// The /refine planning prompt must still surface entries whose ids cannot render as
+			// plain addresses - proposing their deletion is the cleanup path - so those ids appear
+			// JSON-escaped. The refiner echoes the escaped literal back inside its JSON edit, and
+			// the parser decodes it to the exact stored id.
+			const address = isAddressableHarnessId(entry.id) ? entry.id : JSON.stringify(entry.id);
 			lines.push(
-				`- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${content}`,
+				`- [${entry.scope ?? "global"}:${address}] ${collapseWhitespace(`${entry.title} (${entry.path}, v${entry.version})`)}${referenceText}${argumentsText}: ${content}`,
 			);
 		}
 		if (entries.length > 40) {
@@ -674,6 +998,11 @@ function validateEdit(edit: RefinementEdit, computedId?: string): string | undef
 	if (edit.action !== "create" && !edit.id) {
 		return `${edit.action} requires id`;
 	}
+	// Delete stays exempt so an unaddressable id that reached a legacy state file can still be
+	// removed; create and update must not persist content under an id the overview cannot render.
+	if (edit.action !== "delete" && !isAddressableHarnessId(computedId ?? edit.id ?? "")) {
+		return `${edit.action} id must not contain "[", "]", or control characters`;
+	}
 	if (edit.action !== "delete" && (!edit.title || !edit.content)) {
 		return `${edit.action} requires title and content`;
 	}
@@ -712,7 +1041,10 @@ export function applyRefinementProposal(
 	const appliedEdits: AppliedRefinementEdit[] = [];
 	const proposalModifiedKeys = new Set<string>();
 	for (const edit of proposal.edits) {
-		const computedId = edit.id ?? (edit.action === "create" ? slug(edit.title ?? edit.kind, edit.kind) : undefined);
+		// `||` rather than `??`: an explicit empty id on create falls back to the title slug, the
+		// same way the Python writer's `id or _slug(...)` does, instead of minting an entry whose
+		// rendered address `[scope:]` resolves to nothing.
+		const computedId = edit.id || (edit.action === "create" ? slug(edit.title ?? edit.kind, edit.kind) : undefined);
 		const id = computedId ?? "";
 		const validationError = validateEdit(edit, id);
 		if (validationError) {

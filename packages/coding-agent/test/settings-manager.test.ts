@@ -275,6 +275,41 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("continualHarness", () => {
+		// The getter reports what is configured; `formatHarnessStateForPrompt` owns the defaults and the
+		// clamping, and `test/refinement.test.ts` covers invalid values there.
+		it("reports no limits when the key is absent", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getContinualHarnessSettings()).toEqual({});
+		});
+
+		it("merges project limits over global limits", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ continualHarness: { maxEntriesPerKind: 20, maxListedEntries: 50 } }),
+			);
+			writeFileSync(
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({ continualHarness: { maxListedEntries: 0 } }),
+			);
+
+			expect(SettingsManager.create(projectDir, agentDir).getContinualHarnessSettings()).toEqual({
+				maxEntriesPerKind: 20,
+				maxListedEntries: 0,
+			});
+		});
+
+		it("does not hand out a live reference to the loaded settings", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ continualHarness: { maxEntriesPerKind: 9 } }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			manager.getContinualHarnessSettings().maxEntriesPerKind = 1;
+
+			expect(manager.getContinualHarnessSettings().maxEntriesPerKind).toBe(9);
+		});
+	});
+
 	describe("recentModels", () => {
 		it("records most-recently-used first, dedupes, and persists", async () => {
 			const manager = SettingsManager.create(projectDir, agentDir);

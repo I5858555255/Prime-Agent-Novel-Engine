@@ -1,0 +1,275 @@
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ENV_AGENT_DIR } from "../../../src/config.js";
+import {
+	getGlobalHarnessStateDir,
+	type HarnessEntry,
+	type HarnessState,
+	saveHarnessState,
+} from "../../../src/core/refinement/index.js";
+import type { ContinualHarnessSettings } from "../../../src/core/settings-manager.js";
+import { createHarness, type Harness } from "../harness.js";
+
+// Fixture from issue #819: 48 memory entries spread across the alphabet plus one entry that was
+// written last, carries the highest version, and whose path sorts near the end. On main the
+// overview sorts on [path, title, id] and keeps the first six, so the newest lesson never reaches
+// the prompt and the other 43 are reachable only as an anonymous "+43 more" count.
+const OLDER_AT = "2026-06-01T00:00:00.000Z";
+const NEWEST_AT = "2026-06-02T00:00:00.000Z";
+const NEWEST_CONTENT =
+	"CRITICAL, just learned: the resolver error is caused by a stale lockfile. Re-resolve from a clean cache.";
+
+function memoryEntry(
+	id: string,
+	title: string,
+	path: string,
+	content: string,
+	version: number,
+	updatedAt: string,
+): HarnessEntry {
+	return {
+		id,
+		kind: "memory",
+		title,
+		content,
+		path,
+		scope: "global",
+		reference: {},
+		arguments: {},
+		metadata: {},
+		source: "test",
+		created_at: OLDER_AT,
+		updated_at: updatedAt,
+		version,
+	};
+}
+
+/** A store far past the stub menu's budget, in every kind, with ordinary metadata. */
+function largeState(perKind: number): HarnessState {
+	const state: HarnessState = {
+		schema: 1,
+		entries: { prompt: {}, memory: {}, skill: {}, subagent: {} },
+		refinements: [],
+	};
+	for (const kind of ["prompt", "memory", "skill", "subagent"] as const) {
+		for (let i = 0; i < perKind; i++) {
+			const id = `${kind}-${String(i).padStart(4, "0")}`;
+			state.entries[kind][id] = {
+				...memoryEntry(id, `lesson-${i}`, `${kind}/m/lesson-${i}.md`, `Lesson body ${i}. `.repeat(13), 1, OLDER_AT),
+				kind,
+			};
+		}
+	}
+	return state;
+}
+
+function issue819State(): HarnessState {
+	const memory: Record<string, HarnessEntry> = {};
+	for (let i = 0; i < 48; i++) {
+		const letter = String.fromCharCode(97 + (i % 26));
+		const id = `mem-${String(i).padStart(3, "0")}`;
+		memory[id] = memoryEntry(
+			id,
+			`${letter}-lesson-${i}`,
+			`memory/${letter}/${letter}-lesson-${i}.md`,
+			`Older lesson ${i}. `.repeat(12),
+			1,
+			OLDER_AT,
+		);
+	}
+	memory["mem-new"] = memoryEntry(
+		"mem-new",
+		"workspace-resolver-fix",
+		"memory/w/workspace-resolver-fix.md",
+		NEWEST_CONTENT,
+		7,
+		NEWEST_AT,
+	);
+	return {
+		schema: 1,
+		entries: { prompt: {}, memory, skill: {}, subagent: {} },
+		refinements: [],
+	};
+}
+
+/** The harness section of a built system prompt, which is what the model actually receives. */
+function harnessOverview(systemPrompt: string): string {
+	const start = systemPrompt.indexOf("# Continual Harness State");
+	expect(start).toBeGreaterThanOrEqual(0);
+	return systemPrompt.slice(start);
+}
+
+/** A stub line: an entry line with no content after the version, so no ": " separator follows it. */
+function isStubLine(line: string): boolean {
+	return /^- \[(local|global):[^\]]+\]/.test(line) && !/, v\d+\)[^:]*: /.test(line);
+}
+
+function renderedIds(overview: string): string[] {
+	return Array.from(overview.matchAll(/^- \[global:([^\]]+)\]/gm), (match) => match[1]);
+}
+
+describe("regression #819: harness overview cap", () => {
+	const harnesses: Harness[] = [];
+	let agentDir: string;
+	let previousAgentDir: string | undefined;
+
+	beforeEach(() => {
+		agentDir = join(tmpdir(), `pi-819-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(agentDir, { recursive: true });
+		previousAgentDir = process.env[ENV_AGENT_DIR];
+		process.env[ENV_AGENT_DIR] = agentDir;
+		saveHarnessState(getGlobalHarnessStateDir(agentDir), issue819State());
+	});
+
+	afterEach(() => {
+		while (harnesses.length > 0) {
+			harnesses.pop()?.cleanup();
+		}
+		if (previousAgentDir === undefined) {
+			delete process.env[ENV_AGENT_DIR];
+		} else {
+			process.env[ENV_AGENT_DIR] = previousAgentDir;
+		}
+		rmSync(agentDir, { recursive: true, force: true });
+	});
+
+	async function createSession(continualHarness?: ContinualHarnessSettings): Promise<string> {
+		const harness = await createHarness(continualHarness ? { settings: { continualHarness } } : {});
+		harnesses.push(harness);
+		return harnessOverview(harness.session.systemPrompt);
+	}
+
+	it("renders the most recently written entry with its content", async () => {
+		const overview = await createSession();
+
+		expect(overview).toContain(
+			`- [global:mem-new] workspace-resolver-fix (memory/w/workspace-resolver-fix.md, v7): ${NEWEST_CONTENT}`,
+		);
+		expect(renderedIds(overview)[0]).toBe("mem-new");
+	});
+
+	it("names every stored entry so the model can address it by id", async () => {
+		const overview = await createSession();
+		const ids = renderedIds(overview);
+
+		expect(ids).toHaveLength(49);
+		expect(new Set(ids).size).toBe(49);
+		expect(overview).toContain("memory: 49");
+		expect(overview).not.toContain("more memory entries");
+	});
+
+	// The settings key is inert unless AgentSession hands it to buildSystemPrompt, so this asserts
+	// the handoff rather than the renderer: without it the defaults render six entries and 43 stubs.
+	it("applies continualHarness settings to the session's system prompt", async () => {
+		const overview = await createSession({ maxEntriesPerKind: 1, maxContentLength: 40, maxListedEntries: 0 });
+
+		expect(renderedIds(overview)).toEqual(["mem-new"]);
+		expect(overview).toContain(`${NEWEST_CONTENT.slice(0, 37)}...`);
+		expect(overview).toContain("- +48 more memory entries");
+	});
+
+	// `maxListedChars` is the limit that decides whether the prompt fits a context window, so it has
+	// to reach the session too, not only the renderer.
+	it("applies the stub menu budget from settings", async () => {
+		const overview = await createSession({ maxListedChars: 0 });
+
+		expect(renderedIds(overview)).toHaveLength(6);
+		expect(overview).toContain("- +43 more memory entries");
+	});
+
+	// #819's fix must not trade one unusable prompt for another. `models.generated.ts:1571` ships a
+	// model with a 16,384-token window, and the repository ships smaller ones still, so a store past
+	// the stub budget has to leave room for the conversation.
+	it("keeps the system prompt small enough for a 16k context window on a large store", async () => {
+		saveHarnessState(getGlobalHarnessStateDir(agentDir), largeState(400));
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		// The repository's conservative chars/4 estimator, as `estimateTokens` in compaction.ts uses.
+		const promptTokens = Math.ceil(harness.session.systemPrompt.length / 4);
+		const overview = harnessOverview(harness.session.systemPrompt);
+		const stubChars = overview.split("\n").filter(isStubLine).join("\n").length;
+
+		expect(promptTokens).toBeLessThan(8_000);
+		expect(stubChars).toBeLessThanOrEqual(8_000);
+		expect(overview).toContain("more memory entries");
+	});
+
+	it("renders the same bytes on every session build", async () => {
+		const first = await createSession();
+		const again = await createSession();
+
+		expect(again).toBe(first);
+	});
+
+	// The menu budget is capped by the session model's context window: the prompt is measured once
+	// with the menu off, and the menu gets only what remains before the whole prompt would pass half
+	// the window (chars/4). The repository ships a 4,095-token and an 8,192-token built-in model, so
+	// a fixed 8,000-character default alone regresses them - see models.generated.ts.
+	describe("context-window menu budget", () => {
+		beforeEach(() => {
+			saveHarnessState(getGlobalHarnessStateDir(agentDir), largeState(400));
+		});
+
+		async function windowedHarness(contextWindow: number): Promise<Harness> {
+			const harness = await createHarness({ models: [{ id: `faux-${contextWindow}`, contextWindow }] });
+			harnesses.push(harness);
+			return harness;
+		}
+
+		it("renders no stub menu when a 4,095-token window cannot afford one", async () => {
+			const harness = await windowedHarness(4_095);
+			const overview = harnessOverview(harness.session.systemPrompt);
+
+			// Byte-for-byte the count-only overview: on this model the menu must not cost a single
+			// character more than `maxListedChars: 0` does, which is main's prompt size.
+			expect(overview).toBe(await createSession({ maxListedChars: 0 }));
+			expect(overview.split("\n").filter(isStubLine)).toHaveLength(0);
+			expect(overview).toContain("more memory entries");
+		});
+
+		it("keeps an 8,192-token model's prompt small enough for an ordinary user message", async () => {
+			const harness = await windowedHarness(8_192);
+			const promptTokens = Math.ceil(harness.session.systemPrompt.length / 4);
+
+			// The report's failing scenario: a ~2,600-token user message fits next to the default
+			// prompt on main and must keep fitting here, before tool schemas and output allowance.
+			expect(promptTokens).toBeLessThanOrEqual(8_192 / 2);
+			expect(promptTokens + 2_600).toBeLessThanOrEqual(8_192);
+		});
+
+		it("leaves the full default menu to a 16,384-token window", async () => {
+			const harness = await windowedHarness(16_384);
+			const overview = harnessOverview(harness.session.systemPrompt);
+
+			// A 16k window affords the entire 8,000-character default, so the render must be
+			// identical to the uncapped default-model render: the cap only ever shrinks prompts on
+			// windows that cannot afford the configured menu.
+			expect(overview).toBe(await createSession());
+			expect(overview.split("\n").filter(isStubLine).length).toBeGreaterThan(0);
+		});
+
+		it("re-budgets the menu when the session switches to a small-window model", async () => {
+			const harness = await createHarness({
+				models: [
+					{ id: "faux-large", contextWindow: 128_000 },
+					{ id: "faux-small", contextWindow: 4_095 },
+				],
+			});
+			harnesses.push(harness);
+			const before = harnessOverview(harness.session.systemPrompt);
+			expect(before.split("\n").filter(isStubLine).length).toBeGreaterThan(0);
+
+			const smallModel = harness.getModel("faux-small");
+			expect(smallModel).toBeDefined();
+			if (!smallModel) return;
+			await harness.session.setModel(smallModel);
+			const after = harnessOverview(harness.session.systemPrompt);
+
+			expect(after.split("\n").filter(isStubLine)).toHaveLength(0);
+			expect(after.length).toBeLessThan(before.length);
+		});
+	});
+});
