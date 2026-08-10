@@ -240,6 +240,7 @@ export function summaryForUnifiedRecord(record: UnifiedSessionRecord): SessionSu
 			rlmDepth: record.daemon.rlmDepth ?? saved.rlmDepth,
 			created: record.daemon.created ?? saved.created.toISOString(),
 			modified: record.daemon.modified ?? saved.modified.toISOString(),
+			lastActivityAt: record.daemon.lastActivityAt ?? saved.modified.toISOString(),
 		};
 	}
 	const saved = record.saved;
@@ -263,6 +264,7 @@ export function summaryForUnifiedRecord(record: UnifiedSessionRecord): SessionSu
 		sessionActions: { queuedCount: 0, steering: [], followUps: [] },
 		created: saved.created.toISOString(),
 		modified: saved.modified.toISOString(),
+		lastActivityAt: saved.modified.toISOString(),
 		firstMessage: saved.firstMessage,
 		summary: saved.agentStatus?.summary,
 		taskState: saved.agentStatus?.taskState,
@@ -829,6 +831,13 @@ function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
 	const sectionDiff = sectionRank(a.section) - sectionRank(b.section);
 	if (sectionDiff !== 0) {
 		return sectionDiff;
+	}
+	// Running rows churn on every tool result; keep them frozen on created order (ENG-4650).
+	if (a.section !== "running") {
+		const activityDiff = getTimestamp(b.summary.lastActivityAt) - getTimestamp(a.summary.lastActivityAt);
+		if (activityDiff !== 0) {
+			return activityDiff;
+		}
 	}
 	const createdDiff = getTimestamp(b.summary.created) - getTimestamp(a.summary.created);
 	if (createdDiff !== 0) {
