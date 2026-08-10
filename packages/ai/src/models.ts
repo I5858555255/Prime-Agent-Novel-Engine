@@ -44,6 +44,15 @@ export function supportsFastMode<TApi extends Api>(model: Model<TApi>): boolean 
 	);
 }
 
+/** Whether the model supports Anthropic fast mode (speed="fast" + fast-mode-2026-02-01 beta). */
+export function supportsAnthropicFastMode<TApi extends Api>(model: Model<TApi>): boolean {
+	return (
+		model.provider === "anthropic" &&
+		model.api === "anthropic-messages" &&
+		(model.id === "claude-opus-5" || model.id === "claude-opus-4-8")
+	);
+}
+
 export interface CostOverrides {
 	cacheWrite?: number;
 }

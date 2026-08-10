@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { supportsFastMode } from "../src/models.js";
+import { supportsAnthropicFastMode, supportsFastMode } from "../src/models.js";
 import { buildBaseOptions } from "../src/providers/simple-options.js";
 import type { Api, Model } from "../src/types.js";
 
@@ -32,5 +32,26 @@ describe("Fast mode", () => {
 	it("forwards priority through simple stream options", () => {
 		const testModel = model("openai-codex", "gpt-5.5", "openai-codex-responses");
 		expect(buildBaseOptions(testModel, { serviceTier: "priority" }).serviceTier).toBe("priority");
+	});
+
+	// supportsAnthropicFastMode — separate from the Codex fast-mode/priority-tier gate
+	it.each(["claude-opus-5", "claude-opus-4-8"])("supportsAnthropicFastMode: supports %s", (id) => {
+		expect(supportsAnthropicFastMode(model("anthropic", id, "anthropic-messages"))).toBe(true);
+	});
+
+	it("supportsAnthropicFastMode: rejects unsupported Anthropic models", () => {
+		expect(supportsAnthropicFastMode(model("anthropic", "claude-opus-4-7", "anthropic-messages"))).toBe(false);
+		expect(supportsAnthropicFastMode(model("anthropic", "claude-sonnet-5", "anthropic-messages"))).toBe(false);
+		expect(supportsAnthropicFastMode(model("anthropic", "claude-haiku-4-5", "anthropic-messages"))).toBe(false);
+	});
+
+	it("supportsAnthropicFastMode: rejects anthropic models on wrong api", () => {
+		expect(supportsAnthropicFastMode(model("anthropic", "claude-opus-5", "openai-completions"))).toBe(false);
+	});
+
+	it("supportsFastMode: Anthropic models do NOT gate the Codex priority-tier", () => {
+		// supportsFastMode is used to gate serviceTier:"priority"; Anthropic uses speed="fast" instead
+		expect(supportsFastMode(model("anthropic", "claude-opus-5", "anthropic-messages"))).toBe(false);
+		expect(supportsFastMode(model("anthropic", "claude-opus-4-8", "anthropic-messages"))).toBe(false);
 	});
 });
