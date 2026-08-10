@@ -10,7 +10,11 @@ import type { SubagentRuntimeHost } from "../../core/rlm-runtime.js";
 import { createAgentConnectionState } from "../agent-connection/snapshot.js";
 import type { AgentConnectionState } from "../agent-connection/types.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
-import type { ActiveSessionState } from "./active-session-state.js";
+import {
+	type ActiveSessionState,
+	type DaemonExtensionUiNotification,
+	daemonClientSupportsExtensionUiForSession,
+} from "./active-session-state.js";
 import { execEnvForSession, withClientEnv } from "./daemon-client-env.js";
 import {
 	type DaemonExtensionUIResponse,
@@ -27,6 +31,9 @@ export interface ActiveSessionBindingCallbacks {
 }
 
 type BroadcastSessionEvent = Extract<DaemonOutbound, { type: "session_event" }>["event"];
+
+/** Retain the newest startup notifications without allowing an extension to grow daemon state unbounded. */
+export const MAX_PENDING_EXTENSION_UI_NOTIFICATIONS = 100;
 
 /**
  * message_update events carry the full partial assistant message twice: once
@@ -51,6 +58,9 @@ export async function bindActiveSessionState(
 	callbacks: ActiveSessionBindingCallbacks,
 ): Promise<void> {
 	const session = state.runtime.session;
+	if (state.unsubscribe) {
+		state.pendingExtensionUiNotifications = [];
+	}
 
 	session.setExecEnvProvider(() => execEnvForSession(state.clientEnv));
 	// Every runtime rebuild (new/switch/fork/import, subagent spawn) re-loads
@@ -126,16 +136,32 @@ function createExtensionUIContext(
 	state: ActiveSessionState,
 	broadcast: ActiveSessionBindingCallbacks["broadcast"],
 ): ExtensionUIContext {
+	const createUiRequest = (method: string, payload: Record<string, unknown>): DaemonExtensionUiNotification => ({
+		type: "extension_ui_request",
+		activeSessionId: state.activeSessionId,
+		id: randomUUID(),
+		method,
+		payload,
+	});
 	const emitUiRequest = (method: string, payload: Record<string, unknown>): string => {
-		const id = randomUUID();
-		broadcast(state, {
-			type: "extension_ui_request",
-			activeSessionId: state.activeSessionId,
-			id,
-			method,
-			payload,
-		});
-		return id;
+		const request = createUiRequest(method, payload);
+		broadcast(state, request);
+		return request.id;
+	};
+	const notify = (message: string, notifyType?: "info" | "warning" | "error"): string => {
+		const request = createUiRequest("notify", { message, notifyType });
+		if (hasExtensionUiClient(state)) {
+			state.hasAttachedExtensionUiClient = true;
+			broadcast(state, request);
+		} else if (state.hasAttachedExtensionUiClient !== true) {
+			state.pendingExtensionUiNotifications ??= [];
+			const pending = state.pendingExtensionUiNotifications;
+			if (pending.length >= MAX_PENDING_EXTENSION_UI_NOTIFICATIONS) {
+				pending.shift();
+			}
+			pending.push(request);
+		}
+		return request.id;
 	};
 
 	const dialogRequest = <T>(
@@ -197,7 +223,7 @@ function createExtensionUIContext(
 						? response.value
 						: undefined,
 			),
-		notify: (message, notifyType) => emitUiRequest("notify", { message, notifyType }),
+		notify,
 		onTerminalInput: () => () => {},
 		setStatus: (key, text) => emitUiRequest("setStatus", { statusKey: key, statusText: text }),
 		setWorkingMessage: (message) => emitUiRequest("setWorkingMessage", { message }),
@@ -250,5 +276,11 @@ function hasExtensionUiClientForMethod(state: ActiveSessionState, method: string
 	if (!isDaemonDialogExtensionUiRequest(method)) {
 		return state.clients.size > 0;
 	}
-	return [...state.clients].some((client) => client.supportsExtensionUi);
+	return hasExtensionUiClient(state);
+}
+
+function hasExtensionUiClient(state: ActiveSessionState): boolean {
+	return [...state.clients].some(
+		(client) => !client.socket.destroyed && daemonClientSupportsExtensionUiForSession(client, state.activeSessionId),
+	);
 }

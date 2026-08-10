@@ -133,6 +133,7 @@ import {
 	AmbiguousActiveSessionError,
 	createActiveSessionId,
 	type DaemonSocketClient,
+	daemonClientSupportsExtensionUiForSession,
 	resolveActiveSessionState,
 } from "./active-session-state.js";
 import { createCompactAssistantDelta } from "./compact-session-stream.js";
@@ -1212,6 +1213,8 @@ export class AgentDaemon {
 			clients: new Set(),
 			pendingAttaches: 0,
 			extensionUiRequests: new Map(),
+			pendingExtensionUiNotifications: [],
+			hasAttachedExtensionUiClient: false,
 			eventGeneration: createActiveSessionId(),
 			lastEventSequence: 0,
 			clientEnv,
@@ -3344,6 +3347,7 @@ export class AgentDaemon {
 					state.clients.add(client);
 					client.attachedActiveSessionIds.add(state.activeSessionId);
 					this.write(client, success(command.id, "attach", summaryForActiveSession(state)));
+					this.schedulePendingExtensionUiNotifications(state, client);
 					return;
 				}
 				case "worker_unsubscribe": {
@@ -3622,14 +3626,9 @@ export class AgentDaemon {
 						},
 					};
 					setImmediate(() => {
-						void this.streamWorkerSnapshot(
-							client,
-							streamedResult,
-							transcript,
-							"attach",
-							snapshotSignal,
-							true,
-						).catch((error) => this.log(`could not stream attach snapshot: ${String(error)}`));
+						void this.streamWorkerSnapshot(client, streamedResult, transcript, "attach", snapshotSignal, true)
+							.then(() => this.schedulePendingExtensionUiNotifications(state, client))
+							.catch((error) => this.log(`could not stream attach snapshot: ${String(error)}`));
 					});
 					return success(command.id, "attach", streamedResult);
 				}
@@ -3647,6 +3646,7 @@ export class AgentDaemon {
 						lastEventSequence: result.lastEventSequence,
 					});
 				}
+				this.schedulePendingExtensionUiNotifications(state, client);
 				return success(command.id, "attach", result);
 			}
 
@@ -6182,6 +6182,42 @@ export class AgentDaemon {
 		}
 	}
 
+	private schedulePendingExtensionUiNotifications(
+		state: ActiveSessionState,
+		preferredClient: DaemonSocketClient,
+	): void {
+		if (
+			preferredClient.socket.destroyed ||
+			!daemonClientSupportsExtensionUiForSession(preferredClient, state.activeSessionId)
+		) {
+			return;
+		}
+		state.hasAttachedExtensionUiClient = true;
+		const session = state.runtime.session;
+		setImmediate(() => {
+			if (this.sessions.get(state.activeSessionId) !== state || state.runtime.session !== session) {
+				return;
+			}
+			const client =
+				state.clients.has(preferredClient) &&
+				!preferredClient.socket.destroyed &&
+				daemonClientSupportsExtensionUiForSession(preferredClient, state.activeSessionId)
+					? preferredClient
+					: [...state.clients].find(
+							(candidate) =>
+								!candidate.socket.destroyed &&
+								daemonClientSupportsExtensionUiForSession(candidate, state.activeSessionId),
+						);
+			if (!client) {
+				return;
+			}
+			const pending = state.pendingExtensionUiNotifications?.splice(0) ?? [];
+			for (const notification of pending) {
+				this.write(client, this.addSessionEventMeta(state, notification));
+			}
+		});
+	}
+
 	private beginReplacementSnapshot(
 		client: DaemonSocketClient,
 		state: ActiveSessionState,
@@ -6683,10 +6719,6 @@ function daemonClientCapabilitiesForSession(
 	return client.capabilitiesByActiveSessionId?.get(activeSessionId) ?? client.capabilities;
 }
 
-function daemonClientSupportsExtensionUi(client: DaemonSocketClient, activeSessionId: string): boolean {
-	return client.capabilitiesByActiveSessionId?.get(activeSessionId)?.has("extension_ui") ?? client.supportsExtensionUi;
-}
-
 export function markClientSnapshotStreaming(client: DaemonSocketClient, activeSessionId: string): AbortSignal {
 	client.snapshotStreaming = true;
 	client.snapshotActiveSessionIds ??= new Set();
@@ -6731,6 +6763,7 @@ export function finishClientSnapshotStreaming(client: DaemonSocketClient, active
 }
 
 export function cancelPendingExtensionUiRequests(state: ActiveSessionState): void {
+	state.pendingExtensionUiNotifications = [];
 	const pendingRequests = [...state.extensionUiRequests.values()];
 	state.extensionUiRequests.clear();
 	for (const pending of pendingRequests) {
@@ -6783,8 +6816,8 @@ function isSequencedSessionOutbound(message: DaemonOutbound): message is Sequenc
 export function shouldSendDaemonOutboundToClient(client: DaemonSocketClient, message: DaemonOutbound): boolean {
 	return (
 		message.type !== "extension_ui_request" ||
-		!isDaemonDialogExtensionUiRequest(message.method) ||
-		daemonClientSupportsExtensionUi(client, message.activeSessionId)
+		(!isDaemonDialogExtensionUiRequest(message.method) && message.method !== "notify") ||
+		daemonClientSupportsExtensionUiForSession(client, message.activeSessionId)
 	);
 }
 
