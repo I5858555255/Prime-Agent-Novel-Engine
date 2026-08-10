@@ -66,6 +66,23 @@ export interface MarkdownSettings {
 
 export interface BundledSkillsSettings {
 	websearch?: boolean; // default: true
+	browser?: boolean; // default: true
+}
+
+/**
+ * Browser connection preference, persisted after the first-use prompt.
+ * - "attach": connect to the user's running browser (chrome://inspect checkbox)
+ * - "launch": managed Chromium with a dedicated profile dir
+ * - "endpoint": user-supplied DevTools HTTP endpoint (cdpUrl). The websocket
+ *   URL itself is per-launch (random UUID) and is NEVER persisted — it is
+ *   re-resolved via /json/version on every connect.
+ */
+export interface BrowserSettings {
+	mode?: "attach" | "launch" | "endpoint";
+	cdpUrl?: string;
+	binaryPath?: string;
+	/** attach mode only: which browser the user picked (e.g. "Microsoft Edge"), so reconnects prefer it over scan order. */
+	attachLabel?: string;
 }
 
 export interface WarningSettings {
@@ -163,6 +180,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
+	browser?: BrowserSettings; // Browser connection preference (attach / launch / endpoint)
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 }
 
@@ -1082,14 +1100,29 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getBundledSkills(): { websearch: boolean } {
+	getBundledSkills(): { websearch: boolean; browser: boolean } {
 		return {
 			websearch: this.settings.bundledSkills?.websearch ?? true,
+			browser: this.settings.bundledSkills?.browser ?? true,
 		};
 	}
 
 	getBundledWebsearchEnabled(): boolean {
 		return this.getBundledSkills().websearch;
+	}
+
+	getBundledBrowserEnabled(): boolean {
+		return this.getBundledSkills().browser;
+	}
+
+	getBrowserSettings(): BrowserSettings | undefined {
+		return this.settings.browser ? { ...this.settings.browser } : undefined;
+	}
+
+	setBrowserSettings(browser: BrowserSettings): void {
+		this.globalSettings.browser = { ...browser };
+		this.markModified("browser");
+		this.save();
 	}
 
 	getEnableBuiltinSkills(): boolean {
