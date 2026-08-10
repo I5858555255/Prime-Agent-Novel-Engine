@@ -58,8 +58,10 @@ export async function bindActiveSessionState(
 	callbacks: ActiveSessionBindingCallbacks,
 ): Promise<void> {
 	const session = state.runtime.session;
-	if (state.unsubscribe) {
+	const captureStartupNotifications = state.hasCompletedInitialExtensionBind !== true;
+	if (!captureStartupNotifications) {
 		state.pendingExtensionUiNotifications = [];
+		state.pendingExtensionUiNotificationRecipient = undefined;
 	}
 
 	session.setExecEnvProvider(() => execEnvForSession(state.clientEnv));
@@ -90,20 +92,28 @@ export async function bindActiveSessionState(
 		});
 	});
 
-	await session.bindExtensions({
-		uiContext: createExtensionUIContext(state, callbacks.broadcast),
-		commandContextActions: createCommandContextActions(state),
-		shutdownHandler: callbacks.shutdown,
-		onError: (error) => {
-			callbacks.broadcast(state, {
-				type: "extension_error",
-				activeSessionId: state.activeSessionId,
-				extensionPath: error.extensionPath,
-				event: error.event,
-				error: error.error,
-			});
-		},
-	});
+	let bindingInitialExtensions = captureStartupNotifications;
+	try {
+		await session.bindExtensions({
+			uiContext: createExtensionUIContext(state, callbacks.broadcast, () => bindingInitialExtensions),
+			commandContextActions: createCommandContextActions(state),
+			shutdownHandler: callbacks.shutdown,
+			onError: (error) => {
+				callbacks.broadcast(state, {
+					type: "extension_error",
+					activeSessionId: state.activeSessionId,
+					extensionPath: error.extensionPath,
+					event: error.event,
+					error: error.error,
+				});
+			},
+		});
+	} finally {
+		bindingInitialExtensions = false;
+		if (captureStartupNotifications) {
+			state.hasCompletedInitialExtensionBind = true;
+		}
+	}
 }
 
 function createCommandContextActions(state: ActiveSessionState): ExtensionCommandContextActions {
@@ -135,6 +145,7 @@ function createCommandContextActions(state: ActiveSessionState): ExtensionComman
 function createExtensionUIContext(
 	state: ActiveSessionState,
 	broadcast: ActiveSessionBindingCallbacks["broadcast"],
+	isCapturingStartupNotifications: () => boolean,
 ): ExtensionUIContext {
 	const createUiRequest = (method: string, payload: Record<string, unknown>): DaemonExtensionUiNotification => ({
 		type: "extension_ui_request",
@@ -150,16 +161,15 @@ function createExtensionUIContext(
 	};
 	const notify = (message: string, notifyType?: "info" | "warning" | "error"): string => {
 		const request = createUiRequest("notify", { message, notifyType });
-		if (hasExtensionUiClient(state)) {
-			state.hasAttachedExtensionUiClient = true;
-			broadcast(state, request);
-		} else if (state.hasAttachedExtensionUiClient !== true) {
+		if (isCapturingStartupNotifications() && !hasExtensionUiClient(state)) {
 			state.pendingExtensionUiNotifications ??= [];
 			const pending = state.pendingExtensionUiNotifications;
 			if (pending.length >= MAX_PENDING_EXTENSION_UI_NOTIFICATIONS) {
 				pending.shift();
 			}
 			pending.push(request);
+		} else {
+			broadcast(state, request);
 		}
 		return request.id;
 	};

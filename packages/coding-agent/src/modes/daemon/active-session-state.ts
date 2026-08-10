@@ -43,10 +43,12 @@ export interface ActiveSessionState {
 	/** Attach snapshots in flight: reserved for passivation busyness, but not yet event recipients. */
 	pendingAttaches: number;
 	extensionUiRequests: Map<string, ActiveSessionExtensionUiRequest>;
-	/** Notifications emitted before the first extension-UI client attaches. */
+	/** Notifications emitted during the initial extension bind before a UI-capable client is available. */
 	pendingExtensionUiNotifications?: DaemonExtensionUiNotification[];
-	/** Prevents later no-client notifications from being replayed as startup notifications. */
-	hasAttachedExtensionUiClient?: boolean;
+	/** First UI-capable recipient selected for retained startup notifications. */
+	pendingExtensionUiNotificationRecipient?: DaemonSocketClient;
+	/** Prevents replacement/reload binds from opening another startup capture window. */
+	hasCompletedInitialExtensionBind?: boolean;
 	eventGeneration: string;
 	lastEventSequence: DaemonEventSequence;
 	unsubscribe?: () => void;

@@ -6,7 +6,7 @@ import {
 	bindActiveSessionState,
 	MAX_PENDING_EXTENSION_UI_NOTIFICATIONS,
 } from "../../../src/modes/daemon/daemon-extension-binding.js";
-import { AgentDaemon, cancelPendingExtensionUiRequests } from "../../../src/modes/daemon/daemon-mode.js";
+import { AgentDaemon, detachClientFromActiveSession } from "../../../src/modes/daemon/daemon-mode.js";
 import {
 	DAEMON_PROTOCOL_INFO,
 	type DaemonAttachResult,
@@ -15,7 +15,12 @@ import {
 	type DaemonResponse,
 } from "../../../src/modes/daemon/daemon-protocol.js";
 import { DaemonSupervisor } from "../../../src/modes/daemon/daemon-supervisor.js";
-import type { DaemonWorkerCommand } from "../../../src/modes/daemon/daemon-worker-protocol.js";
+import {
+	type DaemonWorkerCommand,
+	type DaemonWorkerFrameHeader,
+	isDaemonWorkerFrameHeader,
+} from "../../../src/modes/daemon/daemon-worker-protocol.js";
+import { PrivateFrameDecoder } from "../../../src/modes/session-worker/private-framing.js";
 import { createHarness, type Harness } from "../harness.js";
 
 interface DaemonInternals {
@@ -28,10 +33,13 @@ interface DaemonInternals {
 	): Promise<DaemonAttachResult>;
 	handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
 	handleWorkerCommand(client: DaemonSocketClient, command: DaemonWorkerCommand): Promise<void>;
+	closeSession(state: ActiveSessionState, reason: "killed"): Promise<void>;
+	schedulePendingExtensionUiNotifications(state: ActiveSessionState, client: DaemonSocketClient): void;
 }
 
 interface SupervisorInternals {
 	handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
+	handleWorkerFrame(worker: unknown, frame: { header: DaemonWorkerFrameHeader; payload: Buffer }): void;
 }
 
 const harnesses: Harness[] = [];
@@ -78,7 +86,9 @@ describe("Issue #1032 daemon session_start notifications", () => {
 		expect(extensionUiRequests(incapable.outbound)).toEqual([]);
 
 		const first = createClient("first");
+		const second = createClient("second");
 		await attach(internals, first.client, state.activeSessionId, true);
+		await attach(internals, second.client, state.activeSessionId, true);
 		await waitForImmediate();
 
 		expect(extensionUiRequests(first.outbound)).toEqual([
@@ -89,9 +99,6 @@ describe("Issue #1032 daemon session_start notifications", () => {
 			}),
 		]);
 
-		const second = createClient("second");
-		await attach(internals, second.client, state.activeSessionId, true);
-		await waitForImmediate();
 		expect(extensionUiRequests(second.outbound)).toEqual([]);
 
 		notifyAfterAttach?.();
@@ -104,6 +111,148 @@ describe("Issue #1032 daemon session_start notifications", () => {
 			payload: { message: "attached notification" },
 		});
 		expect(extensionUiRequests(incapable.outbound)).toEqual([]);
+	});
+
+	it("retains startup notifications across an incapable client's detach", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => ctx.ui.notify("survives detach"));
+				},
+			],
+		});
+		harnesses.push(harness);
+		const state = createState(harness);
+		const daemon = createDaemon(harness);
+		const internals = daemon as unknown as DaemonInternals;
+		internals.sessions.set(state.activeSessionId, state);
+		stubAttachResult(internals, state);
+		await bindActiveSessionState(state, {
+			broadcast: (targetState, message) => internals.broadcastToSession(targetState, message),
+			shutdown: () => {},
+		});
+
+		const incapable = createClient("incapable-detach");
+		await attach(internals, incapable.client, state.activeSessionId, false);
+		detachClientFromActiveSession(incapable.client, state);
+
+		const first = createClient("first-capable");
+		await attach(internals, first.client, state.activeSessionId, true);
+		await waitForImmediate();
+		expect(extensionUiRequests(first.outbound)).toEqual([
+			expect.objectContaining({ method: "notify", payload: { message: "survives detach" } }),
+		]);
+
+		const second = createClient("second-capable");
+		await attach(internals, second.client, state.activeSessionId, true);
+		await waitForImmediate();
+		expect(extensionUiRequests(second.outbound)).toEqual([]);
+	});
+
+	it("reselects a recipient if the first capable client disconnects before replay", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => ctx.ui.notify("recipient fallback"));
+				},
+			],
+		});
+		harnesses.push(harness);
+		const state = createState(harness);
+		const daemon = createDaemon(harness);
+		const internals = daemon as unknown as DaemonInternals;
+		internals.sessions.set(state.activeSessionId, state);
+		stubAttachResult(internals, state);
+		await bindActiveSessionState(state, {
+			broadcast: (targetState, message) => internals.broadcastToSession(targetState, message),
+			shutdown: () => {},
+		});
+
+		const disconnected = createClient("disconnected-recipient");
+		await attach(internals, disconnected.client, state.activeSessionId, true);
+		detachClientFromActiveSession(disconnected.client, state);
+		(disconnected.client.socket as unknown as { destroyed: boolean }).destroyed = true;
+
+		const fallback = createClient("fallback-recipient");
+		await attach(internals, fallback.client, state.activeSessionId, true);
+		await waitForImmediate();
+
+		expect(extensionUiRequests(disconnected.outbound)).toEqual([]);
+		expect(extensionUiRequests(fallback.outbound)).toEqual([
+			expect.objectContaining({ method: "notify", payload: { message: "recipient fallback" } }),
+		]);
+	});
+
+	it("keeps undelivered notifications while the selected client is backpressured", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => {
+						ctx.ui.notify("backpressure one");
+						ctx.ui.notify("backpressure two");
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const state = createState(harness);
+		const daemon = createDaemon(harness);
+		const internals = daemon as unknown as DaemonInternals;
+		internals.sessions.set(state.activeSessionId, state);
+		stubAttachResult(internals, state);
+		await bindActiveSessionState(state, {
+			broadcast: (targetState, message) => internals.broadcastToSession(targetState, message),
+			shutdown: () => {},
+		});
+
+		const client = createClient("backpressured-recipient");
+		client.client.backpressured = true;
+		await attach(internals, client.client, state.activeSessionId, true);
+		await waitForImmediate();
+		expect(extensionUiRequests(client.outbound)).toEqual([]);
+		expect(state.pendingExtensionUiNotifications).toHaveLength(2);
+
+		client.client.backpressured = false;
+		internals.schedulePendingExtensionUiNotifications(state, client.client);
+		await waitForImmediate();
+		expect(extensionUiRequests(client.outbound).map((message) => message.payload.message)).toEqual([
+			"backpressure one",
+			"backpressure two",
+		]);
+		expect(state.pendingExtensionUiNotifications).toEqual([]);
+	});
+
+	it("does not replay notifications emitted after the initial bind", async () => {
+		let notifyLater: (() => void) | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => {
+						ctx.ui.notify("initial startup");
+						notifyLater = () => ctx.ui.notify("later background failure");
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const state = createState(harness);
+		const daemon = createDaemon(harness);
+		const internals = daemon as unknown as DaemonInternals;
+		internals.sessions.set(state.activeSessionId, state);
+		stubAttachResult(internals, state);
+		await bindActiveSessionState(state, {
+			broadcast: (targetState, message) => internals.broadcastToSession(targetState, message),
+			shutdown: () => {},
+		});
+
+		notifyLater?.();
+		const client = createClient("after-background-notify");
+		await attach(internals, client.client, state.activeSessionId, true);
+		await waitForImmediate();
+
+		expect(extensionUiRequests(client.outbound).map((message) => message.payload.message)).toEqual([
+			"initial startup",
+		]);
 	});
 
 	it("drops pending notifications when the session closes", async () => {
@@ -125,12 +274,10 @@ describe("Issue #1032 daemon session_start notifications", () => {
 			shutdown: () => {},
 		});
 
-		cancelPendingExtensionUiRequests(state);
-		const client = createClient("after-close");
-		await attach(internals, client.client, state.activeSessionId, true);
-		await waitForImmediate();
+		await internals.closeSession(state, "killed");
 
-		expect(extensionUiRequests(client.outbound)).toEqual([]);
+		expect(state.pendingExtensionUiNotifications).toEqual([]);
+		expect(internals.sessions.has(state.activeSessionId)).toBe(false);
 	});
 
 	it("does not leak notifications across a session rebind", async () => {
@@ -163,7 +310,7 @@ describe("Issue #1032 daemon session_start notifications", () => {
 		await attach(internals, client.client, state.activeSessionId, true);
 		await waitForImmediate();
 
-		expect(extensionUiRequests(client.outbound).map((message) => message.payload.message)).toEqual(["startup 2"]);
+		expect(extensionUiRequests(client.outbound)).toEqual([]);
 	});
 
 	it("bounds pending startup notifications and preserves retained order", async () => {
@@ -232,44 +379,121 @@ describe("Issue #1032 daemon session_start notifications", () => {
 		]);
 	});
 
-	it("enables worker extension UI only after a chunked public snapshot completes", async () => {
+	it("routes worker startup replay once after the public chunked snapshot", async () => {
+		let notifyAfterBind: (() => void) | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => {
+						ctx.ui.notify("worker startup one");
+						ctx.ui.notify("worker startup two");
+						notifyAfterBind = () => ctx.ui.notify("worker live");
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const state = createState(harness);
+		const daemon = createDaemon(harness);
+		const workerInternals = daemon as unknown as DaemonInternals;
+		workerInternals.sessions.set(state.activeSessionId, state);
+		await bindActiveSessionState(state, {
+			broadcast: (targetState, message) => workerInternals.broadcastToSession(targetState, message),
+			shutdown: () => {},
+		});
+
 		let finishSnapshot: () => void = () => {};
 		const snapshot = new Promise<void>((resolve) => {
 			finishSnapshot = resolve;
 		});
-		const syncWorkerExtensionUi = vi.fn(async () => {});
 		const attachResult = {
 			activeSessionId: "active-1032",
 			snapshot: { messages: [] },
 		} as unknown as DaemonAttachResult;
-		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
-			attachClient: vi.fn(async () => ({
-				result: attachResult,
-				worker: {},
-				transcript: {},
-			})),
+		const first = createClient("public-first");
+		const second = createClient("public-second");
+		second.client.supportsExtensionUi = true;
+		second.client.capabilities.add("extension_ui");
+		second.client.attachedActiveSessionIds.add(state.activeSessionId);
+		const clients = new Set<DaemonSocketClient>([second.client]);
+		let supervisor!: SupervisorInternals;
+		let workerResponse: DaemonResponse | undefined;
+		const decoder = new PrivateFrameDecoder(isDaemonWorkerFrameHeader);
+		const workerClient = createClient("supervisor-worker").client;
+		workerClient.transport = "private-framed";
+		workerClient.socket = {
+			destroyed: false,
+			write(data: string | Uint8Array) {
+				for (const frame of decoder.push(typeof data === "string" ? Buffer.from(data) : data)) {
+					if (frame.header.kind === "outbound" && frame.header.outboundType === "response") {
+						workerResponse = JSON.parse(frame.payload.toString("utf8")) as DaemonResponse;
+					} else {
+						supervisor.handleWorkerFrame(worker, frame);
+					}
+				}
+				return true;
+			},
+		} as unknown as Socket;
+		const worker = {
+			client: {
+				requestWorker: vi.fn(
+					async (command: Omit<Extract<DaemonWorkerCommand, { type: "worker_subscribe" }>, "id">) => {
+						workerResponse = undefined;
+						await workerInternals.handleWorkerCommand(workerClient, { ...command, id: "worker-request" });
+						if (!workerResponse) throw new Error("Worker did not return a response");
+						return workerResponse;
+					},
+				),
+			},
+			snapshotCache: new Map(),
+		};
+		supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
+			clients,
+			workers: new Map(),
+			startupNotificationRecipients: new Map(),
+			startupNotificationRoutingSessions: new Set(),
+			pendingStartupNotificationFrames: new Map(),
+			workerExtensionUiSyncs: new Map(),
+			matchWorkers: vi.fn(() => [{ worker, summary: { id: state.activeSessionId } }]),
+			attachClient: vi.fn(
+				async (client: DaemonSocketClient, command: Extract<DaemonCommand, { type: "attach" }>) => {
+					client.capabilities = new Set(command.capabilities ?? []);
+					client.supportsExtensionUi = client.capabilities.has("extension_ui");
+					client.attachedActiveSessionIds.add(state.activeSessionId);
+					clients.add(client);
+					return { result: attachResult, worker, transcript: {} };
+				},
+			),
 			createStreamedAttachResult: vi.fn(() => attachResult),
 			streamSnapshot: vi.fn(() => snapshot),
-			syncWorkerExtensionUi,
-			write: vi.fn(() => true),
+			write: (client: DaemonSocketClient, message: DaemonOutbound) =>
+				client.socket.write(`${JSON.stringify(message)}\n`),
+			writeSerialized: (client: DaemonSocketClient, data: string | Uint8Array) => client.socket.write(data),
 			log: vi.fn(),
 		}) as unknown as SupervisorInternals;
-		const client = createClient("public-client").client;
-		client.capabilities.add("chunked_snapshot");
 
-		await supervisor.handleCommand(client, {
+		await supervisor.handleCommand(first.client, {
 			type: "attach",
 			activeSessionId: "active-1032",
 			capabilities: ["extension_ui", "chunked_snapshot"],
 			supportsExtensionUi: true,
 		});
-		expect(syncWorkerExtensionUi).not.toHaveBeenCalled();
+		expect(extensionUiRequests(first.outbound)).toEqual([]);
+		expect(extensionUiRequests(second.outbound)).toEqual([]);
+		expect(state.pendingExtensionUiNotifications).toHaveLength(2);
 
 		finishSnapshot();
 		await snapshot;
-		await waitForImmediate();
-		expect(syncWorkerExtensionUi).toHaveBeenCalledOnce();
-		expect(syncWorkerExtensionUi).toHaveBeenCalledWith("active-1032");
+		await vi.waitFor(() => expect(extensionUiRequests(first.outbound)).toHaveLength(2));
+		expect(extensionUiRequests(first.outbound).map((message) => message.payload.message)).toEqual([
+			"worker startup one",
+			"worker startup two",
+		]);
+		expect(extensionUiRequests(second.outbound)).toEqual([]);
+
+		notifyAfterBind?.();
+		expect(extensionUiRequests(first.outbound).at(-1)?.payload.message).toBe("worker live");
+		expect(extensionUiRequests(second.outbound).at(-1)?.payload.message).toBe("worker live");
 	});
 });
 
@@ -282,6 +506,7 @@ function createState(harness: Harness): ActiveSessionState {
 		setRuntimeEnvScope: vi.fn(),
 		setSubagentRuntimeHost: vi.fn(),
 		setRebindSession: vi.fn(),
+		dispose: vi.fn(async () => {}),
 	} as unknown as AgentSessionRuntime;
 	return {
 		activeSessionId: "active-1032",

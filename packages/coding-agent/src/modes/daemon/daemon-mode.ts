@@ -1214,7 +1214,7 @@ export class AgentDaemon {
 			pendingAttaches: 0,
 			extensionUiRequests: new Map(),
 			pendingExtensionUiNotifications: [],
-			hasAttachedExtensionUiClient: false,
+			hasCompletedInitialExtensionBind: false,
 			eventGeneration: createActiveSessionId(),
 			lastEventSequence: 0,
 			clientEnv,
@@ -3068,9 +3068,14 @@ export class AgentDaemon {
 		socket.on("drain", () => {
 			client.backpressured = false;
 			if (!client.snapshotStreaming) {
-				void this.catchUpBackpressuredClient(client).catch((error) =>
-					this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`),
-				);
+				void this.catchUpBackpressuredClient(client)
+					.then(() => {
+						for (const activeSessionId of client.attachedActiveSessionIds) {
+							const state = this.sessions.get(activeSessionId);
+							if (state) this.schedulePendingExtensionUiNotifications(state, client);
+						}
+					})
+					.catch((error) => this.log(`could not catch up snapshot client ${client.id}: ${String(error)}`));
 			}
 		});
 	}
@@ -3346,8 +3351,9 @@ export class AgentDaemon {
 					);
 					state.clients.add(client);
 					client.attachedActiveSessionIds.add(state.activeSessionId);
+					// Keep replay inside the supervisor's startup-routing window, which closes on this response.
+					this.replayPendingExtensionUiNotificationsToWorker(state, client);
 					this.write(client, success(command.id, "attach", summaryForActiveSession(state)));
-					this.schedulePendingExtensionUiNotifications(state, client);
 					return;
 				}
 				case "worker_unsubscribe": {
@@ -6048,6 +6054,7 @@ export class AgentDaemon {
 				persistError = error;
 			}
 		}
+		clearPendingExtensionUiNotifications(state);
 		cancelPendingExtensionUiRequests(state);
 		if (reason === "killed" || reason === "shutdown" || reason === "replaced" || reason === "update") {
 			await this.abortBashForClose(state);
@@ -6187,35 +6194,92 @@ export class AgentDaemon {
 		preferredClient: DaemonSocketClient,
 	): void {
 		if (
+			!state.pendingExtensionUiNotifications?.length ||
 			preferredClient.socket.destroyed ||
 			!daemonClientSupportsExtensionUiForSession(preferredClient, state.activeSessionId)
 		) {
 			return;
 		}
-		state.hasAttachedExtensionUiClient = true;
+		const selected = state.pendingExtensionUiNotificationRecipient;
+		if (
+			selected &&
+			(!state.clients.has(selected) ||
+				selected.socket.destroyed ||
+				!daemonClientSupportsExtensionUiForSession(selected, state.activeSessionId))
+		) {
+			state.pendingExtensionUiNotificationRecipient = undefined;
+		}
+		state.pendingExtensionUiNotificationRecipient ??= preferredClient;
+		if (state.pendingExtensionUiNotificationRecipient !== preferredClient) {
+			return;
+		}
 		const session = state.runtime.session;
-		setImmediate(() => {
-			if (this.sessions.get(state.activeSessionId) !== state || state.runtime.session !== session) {
+		setImmediate(() => this.replayPendingExtensionUiNotifications(state, preferredClient, session));
+	}
+
+	private replayPendingExtensionUiNotificationsToWorker(state: ActiveSessionState, client: DaemonSocketClient): void {
+		if (
+			!state.pendingExtensionUiNotifications?.length ||
+			client.socket.destroyed ||
+			!daemonClientSupportsExtensionUiForSession(client, state.activeSessionId)
+		) {
+			return;
+		}
+		state.pendingExtensionUiNotificationRecipient = client;
+		const pending = state.pendingExtensionUiNotifications;
+		while (pending.length > 0) {
+			if (client.socket.destroyed || state.pendingExtensionUiNotificationRecipient !== client) {
 				return;
 			}
-			const client =
-				state.clients.has(preferredClient) &&
-				!preferredClient.socket.destroyed &&
-				daemonClientSupportsExtensionUiForSession(preferredClient, state.activeSessionId)
-					? preferredClient
-					: [...state.clients].find(
-							(candidate) =>
-								!candidate.socket.destroyed &&
-								daemonClientSupportsExtensionUiForSession(candidate, state.activeSessionId),
-						);
-			if (!client) {
-				return;
+			const notification = pending[0]!;
+			this.write(client, this.addSessionEventMeta(state, notification));
+			pending.shift();
+		}
+		state.pendingExtensionUiNotificationRecipient = undefined;
+	}
+
+	private replayPendingExtensionUiNotifications(
+		state: ActiveSessionState,
+		client: DaemonSocketClient,
+		session: ActiveSessionState["runtime"]["session"],
+	): void {
+		if (this.sessions.get(state.activeSessionId) !== state || state.runtime.session !== session) {
+			return;
+		}
+		if (
+			state.pendingExtensionUiNotificationRecipient !== client ||
+			!state.clients.has(client) ||
+			client.socket.destroyed ||
+			!daemonClientSupportsExtensionUiForSession(client, state.activeSessionId)
+		) {
+			if (state.pendingExtensionUiNotificationRecipient === client) {
+				state.pendingExtensionUiNotificationRecipient = undefined;
 			}
-			const pending = state.pendingExtensionUiNotifications?.splice(0) ?? [];
-			for (const notification of pending) {
-				this.write(client, this.addSessionEventMeta(state, notification));
+			const fallback = [...state.clients].find(
+				(candidate) =>
+					!candidate.socket.destroyed &&
+					daemonClientSupportsExtensionUiForSession(candidate, state.activeSessionId),
+			);
+			if (fallback) {
+				this.schedulePendingExtensionUiNotifications(state, fallback);
 			}
-		});
+			return;
+		}
+		if (client.snapshotActiveSessionIds?.has(state.activeSessionId) || client.backpressured === true) {
+			return;
+		}
+		const pending = state.pendingExtensionUiNotifications;
+		while (pending?.length) {
+			const notification = pending[0]!;
+			const accepted = this.write(client, this.addSessionEventMeta(state, notification));
+			pending.shift();
+			if (!accepted) {
+				break;
+			}
+		}
+		if (!pending?.length) {
+			state.pendingExtensionUiNotificationRecipient = undefined;
+		}
 	}
 
 	private beginReplacementSnapshot(
@@ -6688,6 +6752,9 @@ export function detachClientFromActiveSession(client: DaemonSocketClient, state:
 	state.clients.delete(client);
 	client.attachedActiveSessionIds.delete(state.activeSessionId);
 	removeDaemonClientSessionCapabilities(client, state.activeSessionId);
+	if (state.pendingExtensionUiNotificationRecipient === client) {
+		state.pendingExtensionUiNotificationRecipient = undefined;
+	}
 	if (state.clients.size === 0) {
 		cancelPendingExtensionUiRequests(state);
 	}
@@ -6763,12 +6830,16 @@ export function finishClientSnapshotStreaming(client: DaemonSocketClient, active
 }
 
 export function cancelPendingExtensionUiRequests(state: ActiveSessionState): void {
-	state.pendingExtensionUiNotifications = [];
 	const pendingRequests = [...state.extensionUiRequests.values()];
 	state.extensionUiRequests.clear();
 	for (const pending of pendingRequests) {
 		pending.resolve({ cancelled: true });
 	}
+}
+
+function clearPendingExtensionUiNotifications(state: ActiveSessionState): void {
+	state.pendingExtensionUiNotifications = [];
+	state.pendingExtensionUiNotificationRecipient = undefined;
 }
 
 function normalizeClientCapabilities(
