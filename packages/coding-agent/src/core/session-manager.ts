@@ -6,6 +6,7 @@ import {
 	chmodSync,
 	chownSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -16,7 +17,7 @@ import {
 	writeFileSync,
 } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import { readFirstLineSync, readLinesAsBuffers } from "../utils/file-lines.js";
@@ -36,6 +37,8 @@ const SESSION_LIST_PARSE_MAX_LINE_CHARS = 1024 * 1024;
 const SESSION_LIST_LARGE_MESSAGE_PREVIEW_MAX_CHARS = 256;
 const SESSION_STREAMING_LOAD_THRESHOLD_BYTES = 128 * 1024 * 1024;
 const SESSION_ASYNC_PARSE_YIELD_BYTES = 4 * 1024 * 1024;
+// IDs are generated UUIDs. Keep the legacy slug characters, but never path syntax.
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 // Entry types that can represent user intent (vs. daemon bookkeeping like
 // session_state/agent_status/git_state/child_usage_attributed). Used by
@@ -328,8 +331,35 @@ function createSessionId(): string {
 	return uuidv7();
 }
 
+function isValidSessionId(sessionId: unknown): sessionId is string {
+	return typeof sessionId === "string" && SESSION_ID_PATTERN.test(sessionId);
+}
+
 function getSessionFilePath(sessionDir: string, sessionId: string): string {
+	if (!isValidSessionId(sessionId)) throw new Error(`Invalid session id: ${String(sessionId)}`);
 	return join(sessionDir, `${sessionId}.jsonl`);
+}
+
+function rejectSymlinkIfPresent(path: string): void {
+	try {
+		if (lstatSync(path).isSymbolicLink())
+			throw new Error(`Session artifact path must not contain a symlink: ${path}`);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+}
+
+function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+	const candidate = relative(rootPath, candidatePath);
+	return candidate === "" || (candidate !== ".." && !candidate.startsWith(`..${sep}`) && !isAbsolute(candidate));
+}
+
+function canonicalizePath(path: string): string {
+	const resolved = realpathIfPresent(path);
+	if (resolved !== path || existsSync(path)) return resolved;
+	const parent = dirname(path);
+	if (parent === path) return path;
+	return join(canonicalizePath(parent), basename(path));
 }
 
 function createUniqueSessionFileTarget(sessionDir: string): { sessionId: string; sessionFile: string } {
@@ -344,7 +374,19 @@ function createUniqueSessionFileTarget(sessionDir: string): { sessionId: string;
 }
 
 function getSessionArtifactPath(sessionDir: string, sessionId: string): string {
-	return join(dirname(sessionDir), "session-artifacts", sessionId);
+	if (!isValidSessionId(sessionId)) throw new Error(`Invalid session id: ${String(sessionId)}`);
+	const artifactRoot = resolve(dirname(resolve(sessionDir)), "session-artifacts");
+	rejectSymlinkIfPresent(dirname(artifactRoot));
+	rejectSymlinkIfPresent(artifactRoot);
+	const canonicalRoot = canonicalizePath(artifactRoot);
+	const artifactPath = resolve(artifactRoot, sessionId);
+	rejectSymlinkIfPresent(artifactPath);
+	if (!isPathWithinRoot(artifactRoot, artifactPath))
+		throw new Error(`Session artifact path escapes root: ${sessionId}`);
+	const realArtifactPath = canonicalizePath(artifactPath);
+	if (!isPathWithinRoot(canonicalRoot, realArtifactPath))
+		throw new Error(`Session artifact path escapes root: ${sessionId}`);
+	return artifactPath;
 }
 
 /** Generate a unique short ID (8 hex chars, collision-checked) */
@@ -603,7 +645,7 @@ export function buildSessionContext(
 export function getDefaultSessionDir(_cwd: string, agentDir: string = getDefaultAgentDir()): string {
 	const sessionDir = getSessionsDir(agentDir);
 	if (!existsSync(sessionDir)) {
-		mkdirSync(sessionDir, { recursive: true });
+		mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
 	}
 	return sessionDir;
 }
@@ -652,9 +694,8 @@ async function parseEntriesFromBufferAsync(buffer: Buffer): Promise<FileEntry[]>
 function finalizeLoadedEntries(entries: FileEntry[]): FileEntry[] {
 	if (entries.length === 0) return entries;
 	const header = entries[0];
-	if (header.type !== "session" || typeof (header as any).id !== "string") {
-		return [];
-	}
+	if (header.type !== "session") return [];
+	if (!isValidSessionId((header as any).id)) throw new Error("Invalid session header id");
 	applyChildUsageAttributions(entries);
 	return entries;
 }
@@ -1213,8 +1254,9 @@ export class SessionManager {
 		this.sessionDir = sessionDir;
 		this.persist = persist;
 		if (persist && sessionDir && !existsSync(sessionDir)) {
-			mkdirSync(sessionDir, { recursive: true });
+			mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
 		}
+		if (persist && sessionDir) chmodSync(sessionDir, 0o700);
 
 		if (sessionFile) {
 			this.setSessionFile(sessionFile, preloadedEntries);
@@ -1245,7 +1287,8 @@ export class SessionManager {
 			}
 
 			const header = this.fileEntries.find((e) => e.type === "session") as SessionHeader | undefined;
-			this.sessionId = header?.id ?? createSessionId();
+			if (!header || !isValidSessionId(header.id)) throw new Error("Invalid session header id");
+			this.sessionId = header.id;
 
 			let shouldRewrite = migrateToCurrentVersion(this.fileEntries);
 			if (header?.parentSession && !isValidRlmDepth(header.rlmDepth)) {
@@ -1267,6 +1310,7 @@ export class SessionManager {
 
 	newSession(options?: NewSessionOptions): string | undefined {
 		let sessionId = options?.id ?? createSessionId();
+		if (!isValidSessionId(sessionId)) throw new Error(`Invalid session id: ${sessionId}`);
 		let sessionFile: string | undefined;
 		const hasExplicitRlmDepth = options !== undefined && Object.hasOwn(options, "rlmDepth");
 		let parentHeader: Partial<SessionHeader> | undefined;

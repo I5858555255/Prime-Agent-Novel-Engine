@@ -1,7 +1,19 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
+import {
+	closeSync,
+	constants,
+	existsSync,
+	fchmodSync,
+	lstatSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeSync,
+} from "node:fs";
 import { createInterface } from "node:readline";
-import { existsSync, readFileSync, writeFileSync } from "fs";
 import { getOAuthProvider, getOAuthProviders } from "./utils/oauth/index.js";
 import type { OAuthCredentials, OAuthProviderId } from "./utils/oauth/types.js";
 
@@ -22,7 +34,28 @@ function loadAuth(): Record<string, { type: "oauth" } & OAuthCredentials> {
 }
 
 function saveAuth(auth: Record<string, { type: "oauth" } & OAuthCredentials>): void {
-	writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2), "utf-8");
+	try {
+		if (lstatSync(AUTH_FILE).isSymbolicLink()) throw new Error(`${AUTH_FILE} must not be a symlink`);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	const tempPath = `${AUTH_FILE}.${process.pid}.${randomUUID()}.tmp`;
+	let fd: number | undefined;
+	try {
+		fd = openSync(tempPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+		fchmodSync(fd, 0o600);
+		writeSync(fd, JSON.stringify(auth, null, 2), undefined, "utf-8");
+		closeSync(fd);
+		fd = undefined;
+		renameSync(tempPath, AUTH_FILE);
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+		try {
+			unlinkSync(tempPath);
+		} catch {
+			/* renamed or never created */
+		}
+	}
 }
 
 async function login(providerId: OAuthProviderId): Promise<void> {

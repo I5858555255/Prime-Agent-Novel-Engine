@@ -285,7 +285,11 @@ class HarnessState:
         if self.file_path is None:
             # in_memory fallback: nothing to persist.
             return self
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.file_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(self.file_path.parent, 0o700)
+        except OSError:
+            pass
         data = {
             "schema": 1,
             "entries": {
@@ -294,8 +298,25 @@ class HarnessState:
             },
             "refinements": [asdict(event) for event in self.refinements],
         }
-        with self.file_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        temp_path = self.file_path.with_name(f".{self.file_path.name}.{os.getpid()}.{id(self)}.tmp")
+        fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                fd = -1
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fchmod(f.fileno(), 0o600)
+                os.fsync(f.fileno())
+            if self.file_path.exists() and self.file_path.stat().st_uid == os.getuid():
+                os.chmod(self.file_path, 0o600)
+            os.replace(temp_path, self.file_path)
+        finally:
+            if fd != -1:
+                os.close(fd)
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
         self._loaded_mtime = self._disk_mtime()
         return self
 

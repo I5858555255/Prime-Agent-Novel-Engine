@@ -99,11 +99,21 @@ def _prime_agent_snapshot_state():
         payload[name] = blob
         total += _b.len(blob)
 
-    os.makedirs(os.path.dirname(${pyStr(outPath)}), exist_ok=True)
-    tmp = ${pyStr(outPath)} + ".tmp"
+    artifact_dir = os.path.dirname(${pyStr(outPath)})
+    os.makedirs(artifact_dir, exist_ok=True, mode=0o700)
+    os.chmod(artifact_dir, 0o700)
+    tmp = ${pyStr(outPath)} + "." + str(os.getpid()) + ".tmp"
     try:
-        with _b.open(tmp, "wb") as fh:
-            dill.dump(payload, fh)
+        _fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            with os.fdopen(_fd, "wb") as fh:
+                _fd = None
+                dill.dump(payload, fh)
+                fh.flush()
+                os.fchmod(fh.fileno(), 0o600)
+        finally:
+            if _fd is not None:
+                os.close(_fd)
         os.replace(tmp, ${pyStr(outPath)})
     except _b.Exception as _err:
         try:
@@ -123,11 +133,24 @@ def _prime_agent_snapshot_state():
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
+    manifest_tmp = ${pyStr(manifestPath)} + "." + str(os.getpid()) + ".tmp"
     try:
-        with _b.open(${pyStr(manifestPath)}, "w") as fh:
-            json.dump(manifest, fh)
+        _manifest_fd = os.open(manifest_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            with os.fdopen(_manifest_fd, "w") as fh:
+                _manifest_fd = None
+                json.dump(manifest, fh)
+                fh.flush()
+                os.fchmod(fh.fileno(), 0o600)
+        finally:
+            if _manifest_fd is not None:
+                os.close(_manifest_fd)
+        os.replace(manifest_tmp, ${pyStr(manifestPath)})
     except _b.Exception:
-        pass
+        try:
+            os.remove(manifest_tmp)
+        except _b.Exception:
+            pass
     _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"saved": saved, "skipped": skipped, "bytes": bytes_written}))
 
 
