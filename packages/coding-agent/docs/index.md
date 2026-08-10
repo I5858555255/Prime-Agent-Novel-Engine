@@ -38,6 +38,7 @@ Public releases are currently installed from versioned release artifacts. The in
 
 - [Extensions](extensions.md) - TypeScript modules for tools, commands, events, and custom UI.
 - [Skills](skills.md) - markdown and Python-backed skills, including how to ask Prime Agent to create them.
+- [Desktop automation with Cua Driver](cua-driver.md) - install the Cua Driver skill and operate host applications.
 - [MCP integrations](mcp-integrations.md) - use MCP servers through Python skills without expanding the model's tool surface.
 - [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
 - [Themes](themes.md) - built-in and custom terminal themes.
