@@ -102,7 +102,7 @@ The protocol does not promise that every historical event remains replayable. Du
 
 ## Command Lifecycle and Idempotency
 
-The public daemon protocol is JSONL-framed and currently at protocol v4. Commands may be sent in versioned envelopes containing protocol metadata, client ID, and command ID.
+The public daemon protocol is JSONL-framed and currently at protocol v7 with schema revision 13. Commands may be sent in versioned envelopes containing protocol metadata, client ID, and command ID.
 
 Mutating commands are recorded before dispatch. A repeated completed command returns its recorded result. A command known to have been received but lacking a durable result is reported as uncertain instead of being replayed blindly. Clients acknowledge durable results so old journal entries can be compacted.
 
