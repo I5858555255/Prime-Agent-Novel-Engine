@@ -76,6 +76,34 @@ await browser.screenshot()                     # look before you act
 - **Switching browsers**: if the user asks to use a different browser, call
   `await browser.reconnect()` — the user gets the connection choices again.
 
+## Using the user's already-running local browser
+
+When the user asks how to make the agent drive THEIR browser (with their
+logins), that browser must expose a CDP endpoint first. Give them ONE of
+these setups, then call `await browser.reconnect()` and have them pick
+"Use my RUNNING <browser>" from the list:
+
+- **Easiest (Chrome/Edge/Brave, one-time)**: in that browser open
+  `chrome://inspect/#remote-debugging` and tick **Allow remote debugging**.
+  The checkbox is sticky — do it once and the browser is discoverable on
+  every later launch. No restart needed. This is the ONLY way to attach to
+  the browser's everyday profile with its logins.
+- **Alternative (separate profile)**: launch the browser with
+  `--remote-debugging-port=9222 --user-data-dir=/some/dedicated/dir`, then
+  pick "Enter a CDP endpoint manually" with `http://127.0.0.1:9222` on
+  reconnect. Note: Chrome 136+ silently IGNORES the port flag on the
+  default profile — a dedicated user-data-dir is mandatory, which means
+  this path never has the user's logins.
+- **Headless/CI or scripting**: set the env var
+  `PRIME_AGENT_BROWSER_CDP_URL=http://127.0.0.1:9222` before starting the
+  agent — it always wins and skips the picker entirely. Same user-data-dir
+  caveat applies to whatever that endpoint points at.
+
+A running browser that has NOT done one of the above is invisible to the
+agent — it will not appear in the picker. If the user insists their browser
+is running but no "RUNNING" option shows up, the debugging checkbox/port
+is the missing step.
+
 ## Tabs you own vs tabs the user owns
 
 - `ensure_session()` / `new_tab(url)` create fresh tabs assigned to you. A new
@@ -104,7 +132,9 @@ await browser.screenshot()                     # look before you act
 - First use may prompt the user to pick a connection mode (their running
   browsers are listed by name — Chrome/Edge/Brave — plus launching a managed
   one or a custom endpoint). Their choice is persisted; later calls connect
-  silently.
+  silently. Only ALREADY-DEBUGGABLE browsers appear in the list — see
+  "Using the user's already-running local browser" above when the user asks
+  how to connect their own browser.
 - Coordinates are CSS pixels in the viewport — exactly what `dom()`'s
   `@(x, y)` markers and `page_info()` report. Screenshots may be downscaled;
   use the `image`/`viewport_css` sizes from `screenshot()`'s return value to

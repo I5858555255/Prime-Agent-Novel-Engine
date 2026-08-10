@@ -8835,14 +8835,10 @@ export class AgentSession {
 			options.push(`Use my RUNNING ${candidate.label} — keeps my logins (already debuggable)`);
 			actions.push({ mode: "attach", wsUrl: candidate.wsUrl, label: candidate.label });
 		}
-		// When nothing debuggable is running, guided attach is the only way to
-		// get a logged-in browser — offer it. When candidates exist, a browser
-		// not listed simply needs its checkbox ticked (see the title hint) and
-		// will show up on retry, so no confusing extra option.
-		if (context.attachable.length === 0) {
-			options.push("Use my running browser — keeps my logins (one-time checkbox on its chrome://inspect page)");
-			actions.push({ mode: "attach" });
-		}
+		// When nothing debuggable is running, don't offer a blind "my running
+		// browser" option — it always dead-ends in a 60s poll. The title hint
+		// explains how to make a logged-in browser appear (tick its
+		// chrome://inspect checkbox), after which it shows up as a candidate.
 		for (const binary of context.launchable) {
 			options.push(`Open a NEW separate ${binary.label} window — fresh profile, no logins, fully automatic`);
 			actions.push({ mode: "launch", binaryPath: binary.path });
