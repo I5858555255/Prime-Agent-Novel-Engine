@@ -16,6 +16,7 @@ import {
 	DAEMON_SCHEMA_REVISION,
 	type DaemonCommand,
 	type DaemonOutbound,
+	getDaemonCommandCompatibilities,
 	isDaemonCommandEnvelope,
 	isDaemonMutatingCommand,
 	salvageDaemonCommandId,
@@ -88,6 +89,29 @@ describe("daemon protocol helpers", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.set_rlm_max_depth).toEqual({ minProtocol: 7, minSchemaRevision: 11 });
 	});
 
+	it("schema-gates session commands that carry the telemetry policy", () => {
+		expect(getDaemonCommandCompatibilities({ type: "create", config: { cwd: "/tmp" } })).toEqual([
+			{ minProtocol: 7 },
+		]);
+		expect(
+			getDaemonCommandCompatibilities({ type: "create", config: { cwd: "/tmp", telemetryDisabled: true } }),
+		).toEqual([{ minProtocol: 7, minSchemaRevision: 14 }, { minProtocol: 7 }]);
+		expect(getDaemonCommandCompatibilities({ type: "attach", activeSessionId: "active-1" })).toEqual([
+			{ minProtocol: 7 },
+		]);
+		expect(
+			getDaemonCommandCompatibilities({ type: "attach", activeSessionId: "active-1", telemetryDisabled: true }),
+		).toEqual([{ minProtocol: 7, minSchemaRevision: 14 }, { minProtocol: 7 }]);
+		expect(
+			getDaemonCommandCompatibilities({
+				type: "reattach",
+				activeSessionId: "active-1",
+				targetActiveSessionId: "active-2",
+				telemetryDisabled: true,
+			}),
+		).toEqual([{ minProtocol: 7, minSchemaRevision: 14 }, { minProtocol: 7 }]);
+	});
+
 	it("version- and capability-gates prompt admission cancellation", () => {
 		expect(DAEMON_COMMAND_COMPATIBILITY.cancel_prompt_admission).toEqual({
 			minProtocol: 7,
@@ -98,11 +122,11 @@ describe("daemon protocol helpers", () => {
 	});
 
 	it("gates honest worker-state reporting at its introducing schema revision", () => {
-		// Revision 14 adds the "stopping" workerState and stops reporting
+		// Revision 15 adds the "stopping" workerState and stops reporting
 		// disconnected workers as "ready". The field is optional and old clients
 		// ignore unknown values, so no capability gate is needed; the revision
 		// lets version probes distinguish daemons with the old semantics.
-		expect(DAEMON_SCHEMA_REVISION).toBeGreaterThanOrEqual(14);
+		expect(DAEMON_SCHEMA_REVISION).toBeGreaterThanOrEqual(15);
 	});
 
 	it("keeps refine failure events backward-compatible on the existing session event channel", () => {
