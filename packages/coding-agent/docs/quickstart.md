@@ -1,5 +1,7 @@
 # Quickstart
 
+> **中文文档**：[quickstart.zh-CN.md](quickstart.zh-CN.md)
+
 This page gets you from install to a useful first Prime Agent session.
 
 ## Install
