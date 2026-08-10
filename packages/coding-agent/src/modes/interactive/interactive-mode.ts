@@ -147,6 +147,7 @@ import type {
 	AgentConnectionHeartbeat,
 	AgentConnectionModel,
 	AgentConnectionModelCatalog,
+	AgentConnectionQueuedMessageMutationStatus,
 	AgentConnectionQueueState,
 	AgentConnectionResourceDiagnostic,
 	AgentConnectionResourceSnapshot,
@@ -244,6 +245,7 @@ import {
 	shouldRunPrimeCliOnboardingSplash,
 } from "./onboarding.js";
 import type { ClientPromptStashStore, PromptStash, PromptStashState } from "./prompt-stash-state.js";
+import { QueueSelection } from "./queue-selection.js";
 import { formatResumeHint } from "./resume-hint.js";
 import {
 	getAvailableThemes,
@@ -892,7 +894,6 @@ export class InteractiveMode {
 	private escapeRepeatAction: "tree" | "clear" | undefined;
 	private escapeRepeatExpiresAt = 0;
 	private escapeRepeatTimer: ReturnType<typeof setTimeout> | undefined = undefined;
-	private isRestoringQueuedEditorText = false;
 	private anthropicSubscriptionWarningShown = false;
 
 	// Status line tracking (for mutating immediately-sequential status updates)
@@ -993,6 +994,9 @@ export class InteractiveMode {
 
 	// Session-owned queued messages mirrored from connection events.
 	private connectionQueue: AgentConnectionQueueState = { steering: [], followUp: [] };
+	private readonly queueSelection = new QueueSelection();
+	private isApplyingQueueSelectionText = false;
+	private queueMutationChain: Promise<void> = Promise.resolve();
 
 	// Shutdown state
 	private shutdownRequested = false;
@@ -1376,7 +1380,7 @@ export class InteractiveMode {
 						hint("app.prompt.stash", "to stash prompt"),
 						rawKeyHint("/", "for commands"),
 						hint("app.message.followUp", "to queue follow-up"),
-						hint("app.message.dequeue", "to edit all queued messages"),
+						hint("app.message.navigateOlder", "to browse queued messages"),
 						hint("app.clipboard.pasteImage", "to paste image"),
 						rawKeyHint("drop files", "to attach"),
 					].join("\n")
@@ -2815,6 +2819,9 @@ export class InteractiveMode {
 		this.pendingMessagesContainer.clear();
 		this.queuedMessagesContainer.clear();
 		this.connectionQueue = { steering: [], followUp: [] };
+		// The selection and its stashed draft belong to the previous session;
+		// every editor draft is cleared below, so discard rather than restore.
+		this.queueSelection.reset();
 		this.featureHintSuppressedByQueue = false;
 		if (options?.clearPromptStash) {
 			this.promptStash = undefined;
@@ -4117,6 +4124,7 @@ export class InteractiveMode {
 	// =========================================================================
 
 	private setupKeyHandlers(): void {
+		this.defaultEditor.getHeaderLine = () => this.getQueueSelectionHeader();
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
@@ -4144,9 +4152,10 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
 		this.defaultEditor.onAction("app.prompt.stash", () => this.handlePromptStash());
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
-		this.defaultEditor.onAction("app.message.dequeue", () => {
-			void this.handleDequeue();
-		});
+		this.defaultEditor.onAction("app.message.navigateOlder", () => this.browseQueueSelection(-1));
+		this.defaultEditor.onAction("app.message.navigateNewer", () => this.browseQueueSelection(1));
+		this.defaultEditor.onAction("app.message.moveEarlier", () => this.moveQueueSelection(-1));
+		this.defaultEditor.onAction("app.message.moveLater", () => this.moveQueueSelection(1));
 		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
 		this.defaultEditor.onAction("app.session.tree", () => {
 			void this.showTreeSelector();
@@ -4161,10 +4170,10 @@ export class InteractiveMode {
 		this.defaultEditor.onMoveBelowPrompt = () => this.focusSubagentSummary();
 
 		this.defaultEditor.onChange = (text: string) => {
-			if (text.length > 0) {
+			if (text.length > 0 && !this.isApplyingQueueSelectionText) {
 				this.latestEditorPromptStash = this.snapshotPromptStashFrom(this.editor, text);
 			}
-			if (this.escapeRepeatAction && !this.isRestoringQueuedEditorText) {
+			if (this.escapeRepeatAction && !this.isApplyingQueueSelectionText) {
 				this.clearEscapeRepeat();
 			}
 			if (text.length > 0) {
@@ -4572,6 +4581,15 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			const streamingBehavior = this.submittedInputBehavior;
 			this.submittedInputBehavior = "steer";
+			if (this.queueSelection?.isBrowsing) {
+				const targetLane = streamingBehavior === "followUp" ? "followUp" : "steering";
+				try {
+					if (await this.applyQueueSelection(text, targetLane)) return;
+				} catch (error) {
+					this.showError(error instanceof Error ? error.message : String(error));
+					return;
+				}
+			}
 			text = text.trim();
 			if (!text) return;
 			const submissionGeneration = ++this.inputSubmissionGeneration;
@@ -5315,14 +5333,21 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 
-			case "session_action_update":
+			case "session_action_update": {
 				this.connectionQueue = {
 					steering: [...event.actions.steering],
 					followUp: [...event.actions.followUps],
 				};
+				const dropped = this.queueSelection.sync(this.connectionQueue);
+				// When the browsed item was consumed or removed, put the stashed
+				// draft back so Enter cannot resubmit the stale queued text.
+				if (dropped !== undefined && this.editor.getText() === dropped) {
+					this.setEditorTextFromQueueSelection(this.queueSelection.reset());
+				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				break;
+			}
 
 			case "session_info_changed":
 				this.updateTerminalTitle();
@@ -6651,7 +6676,9 @@ export class InteractiveMode {
 			void this.agentConnection.abortBash();
 		}
 		if (this.isAgentStreaming()) {
-			void this.restoreQueuedMessagesToEditor({ abort: true }).catch((error) => {
+			// The queue is preserved server-side; draining resumes on the next
+			// submit or queued-message edit.
+			void this.agentConnection.abort().catch((error) => {
 				this.showError(error instanceof Error ? error.message : String(error));
 			});
 		}
@@ -6893,6 +6920,12 @@ export class InteractiveMode {
 	private async handleFollowUp(): Promise<void> {
 		const editorText = this.editor.getText();
 		const text = (this.editor.getExpandedText?.() ?? editorText).trim();
+		if (this.queueSelection?.isBrowsing) {
+			await this.applyQueueSelection(text, "followUp").catch((error) =>
+				this.showError(error instanceof Error ? error.message : String(error)),
+			);
+			return;
+		}
 		if (!text || !this.editor.onSubmit) return;
 
 		// Unlike Enter, Alt+Enter does not go through Editor.submitValue(), so
@@ -6916,13 +6949,156 @@ export class InteractiveMode {
 		}
 	}
 
-	private async handleDequeue(): Promise<void> {
-		const restored = await this.restoreQueuedMessagesToEditor();
-		if (restored === 0) {
-			this.showStatus("No queued messages to restore");
-		} else {
-			this.showStatus(`Restored ${restored} queued message${restored > 1 ? "s" : ""} to editor`);
+	private browseQueueSelection(direction: -1 | 1): void {
+		const text = this.queueSelection.move(this.connectionQueue, this.editor.getText(), direction);
+		if (text === undefined) return;
+		this.setEditorTextFromQueueSelection(text);
+		this.ui.requestRender();
+	}
+
+	/** Serializes queue mutations so rapid keypresses never race each other or use stale indices. */
+	private enqueueQueueMutation<T>(run: () => Promise<T>): Promise<T> {
+		const next = this.queueMutationChain.then(run, run);
+		this.queueMutationChain = next.then(
+			() => undefined,
+			() => undefined,
+		);
+		return next;
+	}
+
+	private moveQueueSelection(direction: -1 | 1): void {
+		void this.enqueueQueueMutation(async () => {
+			const selected = this.queueSelection.selected;
+			if (!selected) return;
+			const queueBefore = this.connectionQueue;
+			const status = await this.agentConnection.mutateQueuedMessage(selected.lane, selected.index, selected.text, {
+				type: "move",
+				direction,
+			});
+			if (status === "applied") {
+				// The queue event for this mutation can land before or after the
+				// response. Patch the mirror only when no event has replaced it
+				// meanwhile (events always assign a fresh object); patching an
+				// already-updated mirror would apply the mutation twice.
+				const lane = this.connectionQueue[selected.lane];
+				const target = selected.index + direction;
+				if (
+					this.connectionQueue === queueBefore &&
+					lane[selected.index] === selected.text &&
+					target >= 0 &&
+					target < lane.length
+				) {
+					[lane[selected.index], lane[target]] = [lane[target] as string, selected.text];
+					this.queueSelection.sync(this.connectionQueue);
+					this.updatePendingMessagesDisplay();
+					this.ui.requestRender();
+				}
+			} else if (status === "unsupported") this.showStatus("Queue editing requires a newer daemon");
+			else this.showStatus("Queue changed; reorder not applied");
+		}).catch((error) => this.showError(error instanceof Error ? error.message : String(error)));
+	}
+
+	/**
+	 * Applies the edited text to the selected queued message. Returns true when
+	 * the submission was consumed (the caller must not treat it as a new prompt).
+	 * Empty text deletes; otherwise replaces, moving the item to `targetLane`.
+	 */
+	private applyQueueSelection(text: string, targetLane: "steering" | "followUp"): Promise<boolean> {
+		if (!this.queueSelection.isBrowsing) return Promise.resolve(false);
+		return this.enqueueQueueMutation(async () => {
+			// Re-read inside the serialized task: an earlier mutation may have
+			// resolved or retargeted the selection while this one waited.
+			const selected = this.queueSelection.selected;
+			if (!selected) return true;
+			const trimmed = text.trim();
+			const mutation =
+				trimmed.length === 0
+					? ({ type: "delete" } as const)
+					: ({
+							type: "replace",
+							text: trimmed,
+							images: this.collectQueueReplaceImages(trimmed),
+							lane: targetLane,
+						} as const);
+			// Only write the editor back if the user has not typed meanwhile.
+			const editorTextBefore = this.editor.getText();
+			const queueBefore = this.connectionQueue;
+			let status: AgentConnectionQueuedMessageMutationStatus;
+			try {
+				status = await this.agentConnection.mutateQueuedMessage(
+					selected.lane,
+					selected.index,
+					selected.text,
+					mutation,
+				);
+			} catch (error) {
+				// The editor was already cleared by Enter; restore the edit before surfacing the error.
+				if (this.editor.getText() === editorTextBefore) this.setEditorTextFromQueueSelection(text);
+				throw error;
+			}
+			const editorUntouched = this.editor.getText() === editorTextBefore;
+			if (status === "applied") {
+				// Same optimistic patch as moveQueueSelection, and the same guard:
+				// skip when a queue event already replaced the mirror.
+				const lane = this.connectionQueue[selected.lane];
+				if (this.connectionQueue === queueBefore && lane[selected.index] === selected.text) {
+					if (!trimmed) lane.splice(selected.index, 1);
+					else if (targetLane === selected.lane) lane[selected.index] = trimmed;
+					else {
+						lane.splice(selected.index, 1);
+						this.connectionQueue[targetLane].push(trimmed);
+					}
+				}
+				if (trimmed) this.editor.addToHistory?.(trimmed);
+				const draft = this.queueSelection.reset();
+				if (editorUntouched) this.setEditorTextFromQueueSelection(draft);
+			} else {
+				// Enter submissions clear the editor before onSubmit runs; restore the
+				// edit so a failed mutation never swallows it.
+				if (editorUntouched) this.setEditorTextFromQueueSelection(text);
+				if (status === "invalid")
+					this.showStatus("Edited command is not a valid session command; edit kept in the editor");
+				else if (status === "unsupported") this.showStatus("Queue editing requires a newer daemon");
+				else this.showStatus("Queue changed; edit kept in the editor");
+			}
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+			return true;
+		});
+	}
+
+	/**
+	 * Images for a queue replace: undefined preserves the server's images (some
+	 * markers cannot be resolved by this client), [] clears, a list replaces.
+	 */
+	private collectQueueReplaceImages(text: string): ImageContent[] | undefined {
+		const markers = [...new Set(imageMarkerIds(text))];
+		if (markers.length === 0) return [];
+		const resolved = markers.map((markerId) => this.pastedImages.get(markerId));
+		return resolved.every((image) => image !== undefined)
+			? resolved.map((image) => ({ ...(image as ImageContent) }))
+			: undefined;
+	}
+
+	private setEditorTextFromQueueSelection(text: string): void {
+		this.isApplyingQueueSelectionText = true;
+		try {
+			this.editor.setText(text);
+		} finally {
+			this.isApplyingQueueSelectionText = false;
 		}
+	}
+
+	private getQueueSelectionHeader(): string | undefined {
+		const selected = this.queueSelection.selected;
+		if (!selected) return undefined;
+		const lane = selected.lane === "steering" ? "steering" : "follow-up";
+		const older = this.getAppKeyDisplay("app.message.navigateOlder");
+		const newer = this.getAppKeyDisplay("app.message.navigateNewer");
+		const earlier = this.getAppKeyDisplay("app.message.moveEarlier");
+		const later = this.getAppKeyDisplay("app.message.moveLater");
+		const queue = this.getAppKeyDisplay("app.message.followUp");
+		return `${lane} ${selected.index + 1} · ${older}/${newer} browse · ${earlier}/${later} reorder · enter steers · ${queue} queues · empty deletes`;
 	}
 
 	private updateEditorBorderColor(): void {
@@ -7080,14 +7256,12 @@ export class InteractiveMode {
 	// UI helpers
 	// =========================================================================
 
-	clearEditor(): void {
-		this.clearInputBar();
-	}
-
 	private clearInputBar(): void {
 		this.clearEscapeRepeat();
 		this.clearCtrlCExitHint({ render: false });
-		this.editor.setText("");
+		// Leaving browse mode restores the stashed draft instead of arming an
+		// accidental empty-submit delete of the selected queued message.
+		this.editor.setText(this.queueSelection.isBrowsing ? this.queueSelection.reset() : "");
 		this.ui.requestRender();
 	}
 
@@ -7121,17 +7295,6 @@ export class InteractiveMode {
 		};
 	}
 
-	/** Clear all session-owned queued messages and return their contents. */
-	private async clearAllQueues(
-		options: { abort?: boolean } = {},
-	): Promise<{ steering: string[]; followUp: string[] }> {
-		const { steering, followUp } = options.abort
-			? await this.agentConnection.abortAndClearQueue()
-			: await this.agentConnection.clearQueue();
-		this.connectionQueue = { steering: [], followUp: [] };
-		return { steering, followUp };
-	}
-
 	private updatePendingMessagesDisplay(): void {
 		// pendingMessagesContainer holds only in-flight bash output for the current
 		// turn, so it stays above the execution indicator. clear() detaches the
@@ -7155,8 +7318,8 @@ export class InteractiveMode {
 				const text = styleQueuedMessagePreview(message, "Follow-up", (name) => this.isRecognizedSlashCommand(name));
 				this.queuedMessagesContainer.addChild(new TruncatedText(text, 1, 0));
 			}
-			const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
-			const hintText = theme.fg("dim", `╰─ ${dequeueHint} to edit all queued messages`);
+			const dequeueHint = this.getAppKeyDisplay("app.message.navigateOlder");
+			const hintText = theme.fg("dim", `╰─ ${dequeueHint} to browse and edit queued messages`);
 			this.queuedMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
 		if (hasQueuedMessages && !this.featureHintSuppressedByQueue) {
@@ -7175,28 +7338,6 @@ export class InteractiveMode {
 			this.chatContainer.addChild(component);
 		}
 		this.pendingBashComponents = [];
-	}
-
-	private async restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): Promise<number> {
-		const { steering, followUp } = await this.clearAllQueues({ abort: options?.abort });
-		const allQueued = [...steering, ...followUp];
-		if (allQueued.length === 0) {
-			this.updatePendingMessagesDisplay();
-			return 0;
-		}
-		const queuedText = allQueued.join("\n\n");
-		const currentText = options?.currentText ?? this.editor.getText();
-		const combinedText = [queuedText, currentText].filter((t) => t.trim()).join("\n\n");
-		// The image registry persists, so the restored `[image #N]` markers resolve
-		// on resubmit without any re-registration here.
-		this.isRestoringQueuedEditorText = true;
-		try {
-			this.editor.setText(combinedText);
-		} finally {
-			this.isRestoringQueuedEditorText = false;
-		}
-		this.updatePendingMessagesDisplay();
-		return allQueued.length;
 	}
 
 	// =========================================================================
@@ -9497,7 +9638,8 @@ ${shortcutsKey ? `\`${shortcutsKey}\` quick shortcuts · ` : ""}\`/hotkeys\` ful
 		const externalEditor = this.getAppKeyDisplay("app.editor.external");
 		const promptStash = this.getAppKeyDisplay("app.prompt.stash");
 		const followUp = this.getAppKeyDisplay("app.message.followUp");
-		const dequeue = this.getAppKeyDisplay("app.message.dequeue");
+		const browseQueue = this.getAppKeyDisplay("app.message.navigateOlder");
+		const reorderQueue = `${this.getAppKeyDisplay("app.message.moveEarlier")} / ${this.getAppKeyDisplay("app.message.moveLater")}`;
 		const pasteImage = this.getAppKeyDisplay("app.clipboard.pasteImage");
 		const viewportPageUp = this.getEditorKeyDisplay("tui.viewport.pageUp");
 		const viewportPageDown = this.getEditorKeyDisplay("tui.viewport.pageDown");
@@ -9544,7 +9686,8 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 | \`${externalEditor}\` | Edit message in external editor |
 | \`${promptStash}\` | Stash or restore draft prompt |
 | \`${followUp}\` | Queue follow-up message |
-| \`${dequeue}\` | Restore queued messages |
+| \`${browseQueue}\` | Browse and edit queued messages |
+| \`${reorderQueue}\` | Reorder the selected queued message |
 | \`${pasteImage}\` | Paste image from clipboard |
 | \`/\` | Slash commands |
 
