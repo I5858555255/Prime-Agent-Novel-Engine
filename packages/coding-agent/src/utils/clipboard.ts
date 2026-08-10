@@ -69,7 +69,7 @@ export async function copyToClipboard(text: string): Promise<void> {
 				execSync("pbcopy", options);
 				copied = true;
 			} else if (p === "win32") {
-				execSync("clip", options);
+				execSync("clip", { ...options, windowsHide: true });
 				copied = true;
 			} else {
 				// Linux. Try Termux, Wayland, or X11 clipboard tools.

@@ -209,6 +209,8 @@ function readCommandOutput(
 	const result = spawnSync(command, args, {
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
+		// Without windowsHide, console child processes get a visible window on Windows.
+		windowsHide: true,
 		shell: shouldUseWindowsShell(command),
 	});
 	if (result.status === 0) return result.stdout.trim() || undefined;

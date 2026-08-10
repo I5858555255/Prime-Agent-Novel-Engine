@@ -8752,7 +8752,7 @@ export class InteractiveMode {
 
 		try {
 			const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-				proc = spawn("gh", ["gist", "create", "--public=false", tmpFile]);
+				proc = spawn("gh", ["gist", "create", "--public=false", tmpFile], { windowsHide: true });
 				let stdout = "";
 				let stderr = "";
 				proc.stdout?.on("data", (data) => {
