@@ -978,9 +978,19 @@ export class ModelRegistry {
 			return availableModels.filter((model) => model.provider !== "openai-codex");
 		}
 		const authFingerprint = createHash("sha256").update(auth.apiKey).digest("hex");
+		// An empty catalog from a successful discovery is an entitlement or
+		// client-version gate (#639), not proof that an authenticated provider
+		// has no models — filtering on it silently disabled every codex model
+		// while the models demonstrably worked, and the resulting error blamed
+		// authentication (#696). Fail open on empty and let per-request errors
+		// surface the real cause; non-empty catalogs filter as before.
+		const filterByCatalog = (ids: Set<string>): Model<Api>[] =>
+			ids.size === 0
+				? availableModels
+				: availableModels.filter((model) => model.provider !== "openai-codex" || ids.has(model.id));
 		const cached = this.openAICodexModelsCache;
 		if (cached?.authFingerprint === authFingerprint && Date.now() - cached.refreshedAt < 300_000) {
-			return availableModels.filter((model) => model.provider !== "openai-codex" || cached.modelIds.has(model.id));
+			return filterByCatalog(cached.modelIds);
 		}
 
 		const accountId = readOpenAICodexAccountId(auth.apiKey);
@@ -1002,12 +1012,10 @@ export class ModelRegistry {
 			}
 			const modelIds = readOpenAICodexModelIds(await response.json());
 			this.openAICodexModelsCache = { authFingerprint, modelIds, refreshedAt: Date.now() };
-			return availableModels.filter((model) => model.provider !== "openai-codex" || modelIds.has(model.id));
+			return filterByCatalog(modelIds);
 		} catch {
 			if (cached?.authFingerprint === authFingerprint && Date.now() - cached.refreshedAt < 300_000) {
-				return availableModels.filter(
-					(model) => model.provider !== "openai-codex" || cached.modelIds.has(model.id),
-				);
+				return filterByCatalog(cached.modelIds);
 			}
 			return availableModels.filter((model) => model.provider !== "openai-codex");
 		}

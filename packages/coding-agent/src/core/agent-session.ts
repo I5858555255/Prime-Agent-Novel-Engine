@@ -1254,6 +1254,7 @@ export class AgentSession {
 	private _turnIntervalAutoRefinePending = false;
 	private _postCompactionContinuationScheduled = false;
 	private _postCompactionContinuationTimer: ReturnType<typeof setTimeout> | undefined;
+	private _postCompactionContinuationWaiters = new Set<() => void>();
 	private _postCompactionContinuationMessages: AgentMessage[] = [];
 	private _scheduledPostCompactionContinuationMessages: AgentMessage[] = [];
 	private _queuedAutonomousThresholdContinuations = new WeakMap<AssistantMessage, AgentMessage>();
@@ -6446,6 +6447,16 @@ export class AgentSession {
 			await this.agent.waitForIdle();
 			const agentEventQueue = this._agentEventQueue;
 			await agentEventQueue;
+			// A scheduled post-compaction continuation is pending session work
+			// that lives only in a timer — none of the checks below see it, so
+			// headless/print completion would tear the session down before the
+			// continuation fires and silently truncate the run (#674). Wait for
+			// the continuation to run or be cancelled; if it starts a turn, the
+			// next loop iteration observes the streaming state as usual.
+			if (this._postCompactionContinuationScheduled) {
+				await new Promise<void>((resolve) => this._postCompactionContinuationWaiters.add(resolve));
+				continue;
+			}
 			if (
 				pump === this._sessionInputPump &&
 				agentEventQueue === this._agentEventQueue &&
@@ -7200,6 +7211,15 @@ export class AgentSession {
 		}
 		this._postCompactionContinuationScheduled = false;
 		this._scheduledPostCompactionContinuationMessages = [];
+		this._notifyPostCompactionContinuationWaiters();
+	}
+
+	private _notifyPostCompactionContinuationWaiters(): void {
+		const waiters = [...this._postCompactionContinuationWaiters];
+		this._postCompactionContinuationWaiters.clear();
+		for (const waiter of waiters) {
+			waiter();
+		}
 	}
 
 	private _discardPendingAutoRefine(options: { cancelPostCompactionContinue?: boolean } = {}): void {
@@ -7311,6 +7331,18 @@ export class AgentSession {
 	}
 
 	private async _runScheduledPostCompactionContinue(): Promise<void> {
+		try {
+			await this._runScheduledPostCompactionContinueInner();
+		} finally {
+			// Wake waitForIdle waiters on every exit path. If the run
+			// rescheduled itself, the flag is set again and the waiter loop
+			// re-arms; if it started a turn, the streaming state keeps
+			// waitForIdle looping as usual.
+			this._notifyPostCompactionContinuationWaiters();
+		}
+	}
+
+	private async _runScheduledPostCompactionContinueInner(): Promise<void> {
 		await this._waitForRefineIdle();
 		if (!this._postCompactionContinuationScheduled) {
 			return;
