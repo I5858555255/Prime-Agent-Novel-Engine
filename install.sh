@@ -51,6 +51,8 @@ prime_agent_screen_layout_lab_width=0
 prime_agent_screen_render_lab_width=0
 prime_agent_screen_compact=0
 prime_agent_download_dir=
+prime_agent_animation_command_pid=
+prime_agent_animation_output_dir=
 prime_agent_bootstrap_kernel_on_install=0
 prime_agent_screen_title=
 prime_agent_screen_status=
@@ -162,6 +164,7 @@ prime_agent_install_traps() {
 
 prime_agent_cleanup() {
 	status=$?
+	prime_agent_stop_animation_command
 	if [ -n "${prime_agent_download_dir:-}" ] && [ -d "$prime_agent_download_dir" ]; then
 		rm -rf "$prime_agent_download_dir"
 	fi
@@ -172,6 +175,30 @@ prime_agent_cleanup() {
 prime_agent_signal_cleanup() {
 	prime_agent_restore_terminal
 	exit "$1"
+}
+
+prime_agent_stop_animation_command() {
+	if [ -z "${prime_agent_animation_command_pid:-}" ]; then
+		return
+	fi
+	if kill -0 "$prime_agent_animation_command_pid" 2>/dev/null; then
+		kill -TERM "$prime_agent_animation_command_pid" 2>/dev/null || true
+		grace_ticks=0
+		while kill -0 "$prime_agent_animation_command_pid" 2>/dev/null; do
+			grace_ticks=$((grace_ticks + 1))
+			if [ "$grace_ticks" -gt 10 ]; then
+				kill -KILL "$prime_agent_animation_command_pid" 2>/dev/null || true
+				break
+			fi
+			sleep 0.05
+		done
+	fi
+	wait "$prime_agent_animation_command_pid" 2>/dev/null || true
+	prime_agent_animation_command_pid=
+	if [ -n "${prime_agent_animation_output_dir:-}" ] && [ -d "$prime_agent_animation_output_dir" ]; then
+		rm -rf "$prime_agent_animation_output_dir"
+	fi
+	prime_agent_animation_output_dir=
 }
 
 prime_agent_restore_terminal() {
@@ -781,6 +808,8 @@ prime_agent_run_quiet_with_animation_command() {
 	output_file="$output_dir/output"
 	"$@" >"$output_file" 2>&1 &
 	command_pid=$!
+	prime_agent_animation_command_pid=$command_pid
+	prime_agent_animation_output_dir=$output_dir
 	prime_agent_animation_frame=0
 
 	while kill -0 "$command_pid" 2>/dev/null; do
@@ -802,6 +831,8 @@ prime_agent_run_quiet_with_animation_command() {
 		cat "$output_file" >&2
 	fi
 	rm -rf "$output_dir"
+	prime_agent_animation_command_pid=
+	prime_agent_animation_output_dir=
 	return "$command_status"
 }
 
