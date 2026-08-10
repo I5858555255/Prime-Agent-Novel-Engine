@@ -46,6 +46,7 @@ import type { CompactionPreparation, CompactionResult } from "../compaction/inde
 import type { EventBus } from "../event-bus.js";
 import type { ExecOptions, ExecResult } from "../exec.js";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.js";
+import type { ExecuteResult } from "../kernel/index.js";
 import type { KeybindingsManager } from "../keybindings.js";
 import type { CustomMessage } from "../messages.js";
 import type { ModelRegistry } from "../model-registry.js";
@@ -1156,6 +1157,21 @@ export interface ExtensionAPI {
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 
+	/**
+	 * Execute code in the session's persistent IPython kernel.
+	 *
+	 * Shares the kernel with the built-in `ipython` tool: variables, imports,
+	 * and running tasks persist across calls and are visible to both. Calls are
+	 * serialized against the kernel's execution queue, so a cell running from
+	 * the agent blocks an extension call (and vice versa) until it finishes.
+	 * The kernel starts lazily on first use.
+	 *
+	 * @example
+	 * const result = await pi.kernel.execute("print(2 + 2)");
+	 * // result.stdout === "4\n", result.status === "ok"
+	 */
+	kernel: KernelAPI;
+
 	/** Get the list of currently active tool names. */
 	getActiveTools(): string[];
 
@@ -1422,12 +1438,42 @@ export interface ExtensionRuntimeState {
 }
 
 /**
+ * Options for `pi.kernel.execute()`. A subset of the kernel's native execute
+ * options; extensions cannot mark a cell as internal.
+ */
+export interface KernelExecuteOptions {
+	/** Abort the execution: interrupts the kernel via the control channel. */
+	signal?: AbortSignal;
+	/** Receive raw stdout/stderr chunks as the cell runs. */
+	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
+	/** Cap stdout / stderr / result at this many characters. Default 65536. */
+	maxOutputChars?: number;
+}
+
+/** Execute a code cell in the session's IPython kernel. */
+export type KernelExecuteHandler = (code: string, options?: KernelExecuteOptions) => Promise<ExecuteResult>;
+
+/**
+ * Kernel access for extensions.
+ *
+ * Executions share the session's persistent IPython kernel with the built-in
+ * `ipython` tool and are serialized against it, so kernel state (variables,
+ * imports, running tasks) is visible to both. The kernel starts lazily on the
+ * first call.
+ */
+export interface KernelAPI {
+	/** Execute a code cell in the session's IPython kernel. */
+	execute: KernelExecuteHandler;
+}
+
+/**
  * Action implementations for pi.* API methods.
  * Provided to runner.initialize(), copied into the shared runtime.
  */
 export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
+	executeKernel: KernelExecuteHandler;
 	appendEntry: AppendEntryHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;

@@ -8388,6 +8388,14 @@ export class AgentSession {
 						});
 					});
 				},
+				executeKernel: async (code, options) => {
+					const provisioner = this._ipythonKernelProvisioner;
+					if (!provisioner) {
+						throw new Error("IPython kernel is not available in this session (no ipython tool configured)");
+					}
+					const manager = await provisioner.ensure(undefined, options?.signal);
+					return manager.execute(code, options);
+				},
 				appendEntry: (customType, data) => {
 					this.sessionManager.appendCustomEntry(customType, data);
 				},
