@@ -522,6 +522,66 @@ describe("AgentsViewMode", () => {
 			selection: { sessionId: root.sessionId },
 		});
 	});
+
+	it("restores expanded subagent lists across view remounts", () => {
+		const persistentState: AgentsViewPersistentState = {};
+		const view = new AgentsViewMode({ config: {}, uiServices: createUiServices() }, persistentState);
+		try {
+			(Reflect.get(view, "expandedSubagentParents") as Set<string>).add("file:/tmp/root.jsonl");
+			(Reflect.get(view, "programShownParents") as Set<string>).add("file:/tmp/root.jsonl");
+
+			const remount = new AgentsViewMode({ config: {}, uiServices: createUiServices() }, persistentState);
+			expect((Reflect.get(remount, "expandedSubagentParents") as Set<string>).has("file:/tmp/root.jsonl")).toBe(
+				true,
+			);
+			expect((Reflect.get(remount, "programShownParents") as Set<string>).has("file:/tmp/root.jsonl")).toBe(true);
+		} finally {
+			stopThemeWatcher();
+		}
+	});
+
+	it("keeps the persisted expansion set in sync when selection collapses other lists", () => {
+		const persistentState: AgentsViewPersistentState = {};
+		const self: Record<string, unknown> = {
+			persistentState,
+			rows: [
+				{
+					kind: "agent",
+					section: "idle",
+					summary: summary({ id: "root", activeSessionId: "root", sessionId: "root" }),
+					selectable: true,
+					identity: "root-row",
+				},
+				{
+					kind: "subagent",
+					section: "running",
+					summary: summary({ id: "child", activeSessionId: "child", sessionId: "child" }),
+					selectable: true,
+					identity: "child-row",
+					parentIdentity: "root-row",
+				},
+				{
+					kind: "agent",
+					section: "idle",
+					summary: summary({ id: "other", activeSessionId: "other", sessionId: "other" }),
+					selectable: true,
+					identity: "other-row",
+				},
+			],
+			selectedIndex: 1,
+			expandedSubagentParents: new Set(["root-row", "other-row"]),
+			programShownParents: new Set(["root-row", "other-row"]),
+			rebuildRows: vi.fn(),
+		};
+
+		invoke("collapseSubagentListsOutsideSelection", self);
+
+		const pruned = Reflect.get(self, "expandedSubagentParents") as Set<string>;
+		expect(pruned).toEqual(new Set(["root-row"]));
+		expect(persistentState.expandedSubagentParents).toBe(pruned);
+		expect(Reflect.get(self, "programShownParents")).toEqual(new Set(["root-row"]));
+		expect(self.rebuildRows).toHaveBeenCalledOnce();
+	});
 });
 
 function createUiServices(): InteractiveModeUiServices {

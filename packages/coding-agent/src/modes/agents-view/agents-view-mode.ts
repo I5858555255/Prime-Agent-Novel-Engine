@@ -157,6 +157,9 @@ export type AgentsViewPersistentState = {
 	// Ancestor chain to re-expand on return to a nested agent. Kept by sessionId,
 	// not row identity, so it survives an active→persisted identity flip.
 	pendingExpandedAncestorSessionIds?: string[];
+	// Shared with each view instance so in-place expansion mutations survive remounts.
+	expandedSubagentParents?: Set<string>;
+	programShownParents?: Set<string>;
 	statusMessage?: string;
 	// Gathered once and reused across agents-view instances so the notices survive
 	// re-entry and render the moment they resolve, even if the first view was left early.
@@ -705,6 +708,10 @@ export class AgentsViewMode implements Component, Focusable {
 		this.savedCatalogReady = persistentState.lastSuccessfulSavedSessions !== undefined;
 		this.heartbeats = persistentState.heartbeats ?? [];
 		this.savedCatalogGeneration = persistentState.savedCatalogGeneration ?? 0;
+		this.expandedSubagentParents = persistentState.expandedSubagentParents ?? new Set();
+		persistentState.expandedSubagentParents = this.expandedSubagentParents;
+		this.programShownParents = persistentState.programShownParents ?? new Set();
+		persistentState.programShownParents = this.programShownParents;
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		setRegisteredThemes(options.uiServices.getThemes());
@@ -1241,6 +1248,7 @@ export class AgentsViewMode implements Component, Focusable {
 			return;
 		}
 		this.expandedSubagentParents = next;
+		this.persistentState.expandedSubagentParents = next;
 		// A collapsed agent's revealed program collapses with it, so reopening
 		// starts from the hidden state rather than a stale reveal.
 		for (const identity of [...this.programShownParents]) {
