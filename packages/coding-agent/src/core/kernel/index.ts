@@ -43,6 +43,12 @@ const KERNEL_ABORT_GRACE_MS = 1000;
 // set to its temp dir, and Windows keeps that directory locked until the
 // process is really gone, so a caller deleting it after dispose() gets EPERM.
 const KERNEL_EXIT_TIMEOUT_MS = 2000;
+// After SIGTERM expires the kernel is killed outright. Without this the wait is
+// best-effort in exactly the case the timeout exists for -- a kernel blocked in
+// a long-running native call, or a forked one where signal delivery is less
+// certain, is still alive when dispose() resolves, and the temp-dir removal
+// below then exhausts its retries against a directory the OS still holds.
+const KERNEL_SIGKILL_TIMEOUT_MS = 1000;
 const KERNEL_EXIT_POLL_INTERVAL_MS = 10;
 // rmSync's own maxRetries does not cover this: the native implementation
 // surfaces the directory-level EPERM without retrying.
@@ -1295,51 +1301,86 @@ export class KernelManager {
 	}
 
 	/**
-	 * Resolves once the killed kernel has actually exited, or the timeout
-	 * elapses. A forked kernel is not a direct child and emits no "exit", so it
-	 * is polled the same way `forkedKernelDied` checks liveness.
+	 * True while the pid exists. EPERM means it exists but is not ours to
+	 * signal, which still counts as alive -- same convention as
+	 * `isProcessAlive` in session-lease.ts.
 	 */
-	private static async waitForKernelExit(child: ChildProcess | undefined, pid: number | undefined): Promise<void> {
-		const deadline = Date.now() + KERNEL_EXIT_TIMEOUT_MS;
-
-		if (child && child.exitCode === null && child.signalCode === null) {
-			await new Promise<void>((resolve) => {
-				const done = () => {
-					globalThis.clearTimeout(timer);
-					child.removeListener("exit", done);
-					resolve();
-				};
-				const timer = globalThis.setTimeout(done, KERNEL_EXIT_TIMEOUT_MS);
-				if (typeof timer === "object" && "unref" in timer) timer.unref();
-				child.once("exit", done);
-			});
-			return;
-		}
-
-		if (pid === undefined) return;
-		while (Date.now() < deadline) {
-			try {
-				process.kill(pid, 0);
-			} catch (error) {
-				// ESRCH means gone. EPERM means the pid exists but is not ours to
-				// signal, which still counts as alive.
-				if (!(error instanceof Error && (error as NodeJS.ErrnoException).code === "EPERM")) return;
-			}
-			await new Promise((resolve) => globalThis.setTimeout(resolve, KERNEL_EXIT_POLL_INTERVAL_MS));
+	private static isPidAlive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "EPERM";
 		}
 	}
 
-	/** Removes a kernel temp dir, retrying while the OS still holds a handle. */
-	private static async removeTempDirWithRetries(dir: string): Promise<void> {
+	/**
+	 * Resolves once the killed kernel has actually exited, or the timeout
+	 * elapses. Returns whether it exited. A forked kernel is not a direct child
+	 * and emits no "exit", so it is polled instead.
+	 */
+	private static async waitForKernelExit(
+		child: ChildProcess | undefined,
+		pid: number | undefined,
+		timeoutMs: number,
+	): Promise<boolean> {
+		if (child && child.exitCode === null && child.signalCode === null) {
+			return await new Promise<boolean>((resolve) => {
+				const finish = (exited: boolean) => {
+					globalThis.clearTimeout(timer);
+					child.removeListener("exit", onExit);
+					resolve(exited);
+				};
+				const onExit = () => finish(true);
+				const timer = globalThis.setTimeout(() => finish(false), timeoutMs);
+				if (typeof timer === "object" && "unref" in timer) timer.unref();
+				child.once("exit", onExit);
+			});
+		}
+
+		if (pid === undefined) return true;
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (!KernelManager.isPidAlive(pid)) return true;
+			await new Promise((resolve) => globalThis.setTimeout(resolve, KERNEL_EXIT_POLL_INTERVAL_MS));
+		}
+		return !KernelManager.isPidAlive(pid);
+	}
+
+	/**
+	 * Waits for the kernel to exit, escalating to SIGKILL if SIGTERM is not
+	 * honoured in time, so that "once dispose() resolves, the pid is gone" is
+	 * true rather than usually true. Returns whether it is actually gone.
+	 */
+	private static async ensureKernelExited(child: ChildProcess | undefined, pid: number | undefined): Promise<boolean> {
+		if (await KernelManager.waitForKernelExit(child, pid, KERNEL_EXIT_TIMEOUT_MS)) return true;
+
+		try {
+			if (child) child.kill("SIGKILL");
+			else if (pid !== undefined && KernelManager.isPidAlive(pid)) process.kill(pid, "SIGKILL");
+		} catch {
+			// Raced with the kernel exiting on its own.
+		}
+		return await KernelManager.waitForKernelExit(child, pid, KERNEL_SIGKILL_TIMEOUT_MS);
+	}
+
+	/**
+	 * Removes a kernel temp dir, retrying while the OS still holds a handle.
+	 * Returns the last error if every attempt failed, so a genuine EACCES or a
+	 * bad path is visible rather than silently leaving the directory behind.
+	 */
+	private static async removeTempDirWithRetries(dir: string): Promise<unknown> {
+		let lastError: unknown;
 		for (let attempt = 0; attempt < TEMP_DIR_REMOVE_ATTEMPTS; attempt++) {
 			try {
 				rmSync(dir, { recursive: true, force: true });
-				return;
-			} catch {
+				return undefined;
+			} catch (error) {
+				lastError = error;
 				await new Promise((resolve) => globalThis.setTimeout(resolve, TEMP_DIR_REMOVE_DELAY_MS));
 			}
 		}
-		// Leave the temp dir for OS tmp cleanup.
+		return lastError;
 	}
 
 	private cleanupResources(killSignal: NodeJS.Signals = "SIGTERM", options: { removeTempDir?: boolean } = {}): void {
@@ -1576,8 +1617,18 @@ export class KernelManager {
 				const tempDir = this.tempDir;
 				this.cleanupResources("SIGTERM", { removeTempDir: false });
 				this.tempDir = undefined;
-				await KernelManager.waitForKernelExit(child, pid);
-				if (tempDir) await KernelManager.removeTempDirWithRetries(tempDir);
+				const exited = await KernelManager.ensureKernelExited(child, pid);
+				if (!exited) {
+					this.appendKernelDiagnostic("kernel did not exit after SIGTERM and SIGKILL during dispose");
+				}
+				if (tempDir) {
+					const removalError = await KernelManager.removeTempDirWithRetries(tempDir);
+					if (removalError) {
+						this.appendKernelDiagnostic(
+							`failed to remove kernel temp dir ${tempDir}: ${errorMessage(removalError)}`,
+						);
+					}
+				}
 			}
 		})();
 	}

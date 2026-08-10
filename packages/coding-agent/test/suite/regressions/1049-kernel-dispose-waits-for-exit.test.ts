@@ -89,6 +89,35 @@ describe("kernel dispose waits for the child to exit (#1049)", () => {
 		await started;
 	}, 20000);
 
+	it("escalates to SIGKILL when the kernel ignores SIGTERM", async () => {
+		const pidFile = join(tempDir, "kernel.pid");
+		const python = join(tempDir, "python");
+		// Ignores SIGTERM outright, standing in for a kernel blocked in a
+		// long-running native call. Waiting on SIGTERM alone would time out and
+		// leave this process alive, which is the case the escalation exists for.
+		writeExecutable(
+			python,
+			["#!/bin/sh", `echo $$ > "${pidFile}"`, "trap '' TERM", "while true; do sleep 0.05; done", ""].join("\n"),
+		);
+
+		const manager = new KernelManager({ python, cwd: tempDir });
+		const started = manager.execute("print(1)").catch(() => undefined);
+
+		const spawned = await waitFor(() => existsSync(pidFile), 5000);
+		expect(spawned, "fake kernel never started").toBe(true);
+		const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+		expect(isAlive(pid)).toBe(true);
+
+		await manager.dispose();
+
+		// Without escalation dispose() returns after the SIGTERM deadline with
+		// the kernel still running, and the temp-dir removal then races a
+		// directory the OS still holds open.
+		expect(isAlive(pid), "dispose() resolved with a SIGTERM-ignoring kernel still alive").toBe(false);
+
+		await started;
+	}, 30000);
+
 	it("removes the kernel temp directory once dispose resolves", async () => {
 		const pidFile = join(tempDir, "kernel.pid");
 		const python = join(tempDir, "python");
