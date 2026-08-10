@@ -118,6 +118,32 @@ describe("kernel dispose waits for the child to exit (#1049)", () => {
 		await started;
 	}, 30000);
 
+	it("leaves the caller's cwd removable even when the kernel ignores SIGTERM", async () => {
+		// The issue's literal repro: the caller deletes the directory it passed
+		// as cwd immediately after an awaited dispose(). That directory is the
+		// one Windows holds open -- not KernelManager's own connection-file
+		// temp dir -- so only the wait plus escalation makes this safe.
+		const pidFile = join(tempDir, "kernel.pid");
+		const python = join(tempDir, "python");
+		writeExecutable(
+			python,
+			["#!/bin/sh", `echo $$ > "${pidFile}"`, "trap '' TERM", "while true; do sleep 0.05; done", ""].join("\n"),
+		);
+
+		const manager = new KernelManager({ python, cwd: tempDir });
+		const started = manager.execute("print(1)").catch(() => undefined);
+		await waitFor(() => existsSync(pidFile), 5000);
+		const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+
+		await manager.dispose();
+
+		expect(isAlive(pid), "kernel still holding cwd open").toBe(false);
+		expect(() => rmSync(tempDir, { recursive: true, force: true })).not.toThrow();
+		tempDir = "";
+
+		await started;
+	}, 30000);
+
 	it("removes the kernel temp directory once dispose resolves", async () => {
 		const pidFile = join(tempDir, "kernel.pid");
 		const python = join(tempDir, "python");
