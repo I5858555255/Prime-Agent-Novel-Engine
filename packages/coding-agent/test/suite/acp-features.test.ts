@@ -450,7 +450,7 @@ describe("ACP mode preserves prime-agent features", () => {
 				sessionId: fixture.sessionId,
 				prompt: [{ type: "text", text: "remember this" }],
 			});
-			await harness.session.refine({ global: true });
+			await harness.session.refine({ scope: "global" });
 			await waitFor(() => fixture.metaOf("refinement").length > 0);
 
 			const refinements = fixture.metaOf("refinement");

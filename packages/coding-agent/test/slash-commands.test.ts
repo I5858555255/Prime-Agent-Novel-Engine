@@ -217,25 +217,40 @@ describe("session slash commands", () => {
 		}
 	});
 
-	test("parses refine rollback ids and --global placement without consuming instruction text", () => {
-		expect(parseRefineCommandOptions("rollback refine_123")).toEqual({ rollbackId: "refine_123", global: false });
+	test("parses refine rollback ids and scope flag placement without consuming instruction text", () => {
+		expect(parseRefineCommandOptions("rollback refine_123")).toEqual({
+			rollbackId: "refine_123",
+			scope: undefined,
+		});
 		expect(parseRefineCommandOptions("rollback refine_456 --global")).toEqual({
 			rollbackId: "refine_456",
-			global: true,
+			scope: "global",
+		});
+		expect(parseRefineCommandOptions("rollback refine_457 --project")).toEqual({
+			rollbackId: "refine_457",
+			scope: "project",
 		});
 		expect(parseRefineCommandOptions("--global rollback refine_789")).toEqual({
 			rollbackId: "refine_789",
-			global: true,
+			scope: "global",
+		});
+		expect(parseRefineCommandOptions("--project rollback refine_790")).toEqual({
+			rollbackId: "refine_790",
+			scope: "project",
 		});
 		expect(parseRefineCommandOptions("--global focus on validation")).toEqual({
 			instructions: "focus on validation",
-			global: true,
+			scope: "global",
+		});
+		expect(parseRefineCommandOptions("--project focus on validation")).toEqual({
+			instructions: "focus on validation",
+			scope: "project",
 		});
 		expect(parseRefineCommandOptions("update docs to explain --global")).toEqual({
 			instructions: "update docs to explain --global",
-			global: false,
+			scope: undefined,
 		});
-		for (const args of ["rollback", "rollback --global"]) {
+		for (const args of ["rollback", "rollback --global", "rollback --project"]) {
 			expect(() => parseRefineCommandOptions(args)).toThrow("Usage: /refine rollback <refinement-id>");
 		}
 	});

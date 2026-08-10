@@ -116,6 +116,7 @@ import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-infe
 import { parseCommandArgs } from "../../core/prompt-templates.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
+import type { SettingsScope } from "../../core/settings-manager.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
 import {
 	BUILTIN_SLASH_COMMANDS,
@@ -7243,6 +7244,8 @@ export class InteractiveMode {
 					blockImages: this.settingsManager.getBlockImages(),
 					enableSkillCommands: this.settingsManager.getEnableSkillCommands(),
 					enableBuiltinSkills: this.settingsManager.getEnableBuiltinSkills(),
+					contextFiles: this.settingsManager.getContextFiles().enabled,
+					globalContextFiles: this.settingsManager.getContextFiles().global,
 					steeringMode: state.steeringMode,
 					followUpMode: state.followUpMode,
 					transport: this.settingsManager.getTransport(),
@@ -7292,6 +7295,14 @@ export class InteractiveMode {
 					},
 					onEnableBuiltinSkillsChange: (enabled) => {
 						this.settingsManager.setEnableBuiltinSkills(enabled);
+						void this.handleReloadCommand();
+					},
+					onContextFilesChange: (enabled) => {
+						this.settingsManager.setContextFilesOption("enabled", enabled);
+						void this.handleReloadCommand();
+					},
+					onGlobalContextFilesChange: (enabled) => {
+						this.settingsManager.setContextFilesOption("global", enabled);
 						void this.handleReloadCommand();
 					},
 					onSteeringModeChange: (mode) => {
@@ -8845,9 +8856,11 @@ export class InteractiveMode {
 			return;
 		}
 
-		const global = tokens[1] === "--global";
-		if (tokens.length > (global ? 2 : 1) || !/^\d+$/.test(tokens[0] ?? "")) {
-			this.showWarning("Usage: /rlm-max-depth [<non-negative integer> [--global]]");
+		const scopeFlag = tokens[1];
+		const scope: SettingsScope | undefined =
+			scopeFlag === "--global" ? "global" : scopeFlag === "--project" ? "project" : undefined;
+		if (tokens.length > (scope ? 2 : 1) || !/^\d+$/.test(tokens[0] ?? "")) {
+			this.showWarning("Usage: /rlm-max-depth [<non-negative integer> [--project|--global]]");
 			return;
 		}
 		const maxDepth = Number(tokens[0]);
@@ -8857,22 +8870,22 @@ export class InteractiveMode {
 		}
 
 		try {
-			const result = await this.agentConnection.setRlmMaxDepth(maxDepth, { global });
+			const result = await this.agentConnection.setRlmMaxDepth(maxDepth, { scope });
+			const savedSuffix =
+				result.savedScope === "project" && result.projectSaved
+					? " and saved as project default"
+					: result.globalSaved
+						? " and saved as global default"
+						: "";
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(
-				new Text(
-					theme.fg(
-						"dim",
-						`RLM max depth set: ${result.maxDepth}${result.globalSaved ? " and saved as global default" : ""}`,
-					),
-					1,
-					0,
-				),
+				new Text(theme.fg("dim", `RLM max depth set: ${result.maxDepth}${savedSuffix}`), 1, 0),
 			);
 			this.ui.requestRender();
-			if (result.globalError) {
+			const saveError = result.globalError ?? result.projectError;
+			if (saveError) {
 				this.showError(
-					`RLM max depth set for this chat, but the global default was not saved: ${result.globalError}`,
+					`RLM max depth set for this chat, but the ${result.savedScope} default was not saved: ${saveError}`,
 				);
 			}
 		} catch (error) {

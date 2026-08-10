@@ -18,8 +18,10 @@ import type {
 } from "../../core/cron-jobs.js";
 import type { InputSource } from "../../core/extensions/types.js";
 import type { CustomMessage } from "../../core/messages.js";
+import type { HarnessScope } from "../../core/refinement/index.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
+import type { SettingsScope } from "../../core/settings-manager.js";
 import type {
 	AgentConnectionAgentStatus,
 	AgentConnectionHeartbeat,
@@ -57,8 +59,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 12 publishes idle-residency metadata on session summary rows.
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
 // Revision 14 carries the client's monotonic telemetry opt-out on attach and reattach.
-export const DAEMON_SCHEMA_REVISION = 14;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-14-816309b1cd50";
+// Revision 15 adds per-repository config scopes to refine and set_rlm_max_depth.
+export const DAEMON_SCHEMA_REVISION = 15;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-15-b41c2c59c2c1";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -96,7 +99,11 @@ export type DaemonServerCapability =
 	// identity). Clients must check before sending.
 	| "transient_bash"
 	| "session_input_admission"
-	| "prompt_admission_cancellation";
+	| "prompt_admission_cancellation"
+	// The daemon honors per-project config scopes: `scope` on refine (local,
+	// project, or global harness store) and on set_rlm_max_depth (project or
+	// global settings file). Clients must check before requesting project scope.
+	| "config_scopes";
 
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
 
@@ -134,6 +141,7 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	"transient_bash",
 	"session_input_admission",
 	"prompt_admission_cancellation",
+	"config_scopes",
 ];
 
 export interface DaemonRuntimeIdentity {
@@ -557,7 +565,9 @@ export type DaemonCommand =
 			activeSessionId: string;
 			instructions?: string;
 			rollbackId?: string;
+			/** Legacy pre-scope flag; daemons with "config_scopes" prefer `scope`. */
 			global?: boolean;
+			scope?: HarnessScope;
 	  }
 	| { id?: string; type: "abort_compaction"; activeSessionId: string }
 	| { id?: string; type: "abort_branch_summary"; activeSessionId: string }
@@ -582,7 +592,15 @@ export type DaemonCommand =
 	| { id?: string; type: "export_jsonl"; activeSessionId: string; outputPath?: string }
 	| { id?: string; type: "set_session_name"; activeSessionId: string; name: string; workerToken?: string }
 	| { id?: string; type: "get_rlm_max_depth_status"; activeSessionId: string }
-	| { id?: string; type: "set_rlm_max_depth"; activeSessionId: string; maxDepth: number; global?: boolean }
+	| {
+			id?: string;
+			type: "set_rlm_max_depth";
+			activeSessionId: string;
+			maxDepth: number;
+			/** Legacy pre-scope flag; daemons with "config_scopes" prefer `scope`. */
+			global?: boolean;
+			scope?: SettingsScope;
+	  }
 	| { id?: string; type: "rename_saved_session"; activeSessionId?: string; sessionPath: string; name: string }
 	| { id?: string; type: "delete_saved_session"; activeSessionId?: string; sessionPath: string }
 	| { id?: string; type: "get_session_context"; activeSessionId: string }

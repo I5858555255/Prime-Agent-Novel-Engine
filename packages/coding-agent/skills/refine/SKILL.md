@@ -15,7 +15,8 @@ IPython:
 await refine.status()
 await refine.run()
 await refine.run("create a memory about always checking git status before committing")
-await refine.run("promote the error-handling pattern to a global skill", global_=True)
+await refine.run("record how this repository runs its tests", scope="project")
+await refine.run("promote the error-handling pattern to a global skill", scope="global")
 ```
 
 ## API
@@ -23,11 +24,12 @@ await refine.run("promote the error-handling pattern to a global skill", global_
 - `await refine.status()` — current refine state as a dict: `pending` (whether a
   requested refine is already queued for this turn) and `in_flight` (whether a
   refine is currently planning or applying).
-- `await refine.run(instructions=None, global_=False)` — schedule refinement.
+- `await refine.run(instructions=None, scope=None)` — schedule refinement.
   Returns `{"scheduled": True}` immediately, or `{"scheduled": False, "reason": ...}`
   when refinement cannot start. Optional `instructions` focus the refinement on a
-  specific observation. Set `global_=True` to target the global harness store
-  (cross-session); omit for local (session-scoped) refinement.
+  specific observation. `scope` selects the target store: `"local"` (this session,
+  the default), `"project"` (this repository, across sessions), or `"global"`
+  (every session and project).
 
 ## Rules
 

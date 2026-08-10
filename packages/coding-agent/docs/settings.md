@@ -5,7 +5,13 @@ Prime Agent uses JSON settings files with project settings overriding global set
 | Location | Scope |
 |----------|-------|
 | `~/.prime/agent/settings.json` | Global (all projects) |
-| `.prime/agent/settings.json` | Project (current directory) |
+| `<project>/.prime/agent/settings.json` | Project (this repository) |
+
+The project directory is the nearest ancestor of the working directory that already has a
+`.prime/agent` directory, otherwise the enclosing repository root, otherwise the working
+directory itself. Starting Prime Agent in a subdirectory therefore uses the same project
+settings, harness state, and `SYSTEM.md` as starting it at the repository root. The home
+directory is never treated as a project.
 
 Edit directly or use `/settings` for common options.
 
@@ -215,6 +221,41 @@ Normally the package manager's global modules location is queried using `root -g
 ```
 
 When multiple sources specify a session directory, precedence is `--session-dir`, `PRIME_AGENT_SESSION_DIR`, the legacy `PRIME_AGENT_CODING_AGENT_SESSION_DIR`, then `sessionDir` in `settings.json`.
+
+### Context Files
+
+`AGENTS.md` and `CLAUDE.md` are loaded into the system prompt. Set these globally to change the
+default, or per project to keep unrelated instructions out of one repository.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `contextFiles.enabled` | boolean | `true` | Load `AGENTS.md`/`CLAUDE.md` at all |
+| `contextFiles.global` | boolean | `true` | Include `~/.prime/agent/AGENTS.md` in every project |
+| `contextFiles.ancestors` | boolean | `true` | Include directories above the project root |
+
+Keep only this repository's own instructions:
+
+```json
+{
+  "contextFiles": {
+    "global": false,
+    "ancestors": false
+  }
+}
+```
+
+`--no-context-files` disables discovery for a single run regardless of these settings.
+The `/settings` menu exposes the first two toggles as "AGENTS.md context" and "Global AGENTS.md".
+
+### Recursive Agents
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `rlmMaxDepth` | number | `1` | Default recursion depth for new sessions; `0` disables subagents |
+
+`rlmMaxDepth` is read from project settings first, then global settings, then `RLM_MAX_DEPTH`.
+`/rlm-max-depth <n>` changes the current chat only; `/rlm-max-depth <n> --project` and
+`/rlm-max-depth <n> --global` also persist the default to that settings file.
 
 ### Model Cycling
 

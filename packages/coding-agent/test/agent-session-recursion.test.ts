@@ -1964,7 +1964,7 @@ describe("AgentSession rlm recursion", () => {
 		const existingSettings = SettingsManager.create(tempDir, tempDir);
 		const existing = createSession({ settingsManager: existingSettings });
 
-		await expect(current.setRlmMaxDepth(4, { global: true })).resolves.toMatchObject({
+		await expect(current.setRlmMaxDepth(4, { scope: "global" })).resolves.toMatchObject({
 			maxDepth: 4,
 			source: "chat",
 			globalSaved: true,
@@ -1990,7 +1990,7 @@ describe("AgentSession rlm recursion", () => {
 		};
 		const current = createSession({ settingsManager: SettingsManager.fromStorage(storage) });
 
-		const result = await current.setRlmMaxDepth(5, { global: true });
+		const result = await current.setRlmMaxDepth(5, { scope: "global" });
 
 		expect(result).toMatchObject({ maxDepth: 5, source: "chat", globalSaved: false });
 		expect(result.globalError).toContain("EROFS: read-only file system");
@@ -2028,7 +2028,7 @@ describe("AgentSession rlm recursion", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const current = createSession({ settingsManager });
 
-		const result = await current.setRlmMaxDepth(5, { global: true });
+		const result = await current.setRlmMaxDepth(5, { scope: "global" });
 
 		expect(result).toMatchObject({ maxDepth: 5, source: "chat", globalSaved: true });
 		expect(warn).toHaveBeenCalledWith("Warning: Earlier global settings write failed: stale global failure");

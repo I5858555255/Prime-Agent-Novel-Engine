@@ -289,7 +289,7 @@ async function runRpcModeWithConnectionInternal(
 					await connection.refine({
 						instructions: command.instructions,
 						rollbackId: command.rollbackId,
-						global: command.global,
+						scope: command.scope,
 					}),
 				);
 			case "set_auto_compaction":

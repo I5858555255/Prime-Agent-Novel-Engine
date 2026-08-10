@@ -29,7 +29,7 @@ function writeBootstrapVersion(venv: string, pythonSkills: readonly KernelPython
 	writeFileSync(
 		join(venv, ".bootstrap-version"),
 		`${JSON.stringify({
-			schema: 8,
+			schema: 9,
 			ipykernel: "ipykernel",
 			runtime: runtimeIdentity,
 			snapshot: "dill",
@@ -193,7 +193,7 @@ describe("kernel bootstrap", () => {
 		}
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version).toEqual({
-			schema: 8,
+			schema: 9,
 			ipykernel: "ipykernel",
 			runtime: runtimeIdentity,
 			snapshot: "dill",
@@ -436,7 +436,7 @@ dependencies = ["httpx"]
 		writeFileSync(
 			join(venv, ".bootstrap-version"),
 			`${JSON.stringify({
-				schema: 8,
+				schema: 9,
 				ipykernel: "ipykernel",
 				runtime: "sha256:stale",
 				snapshot: "dill",

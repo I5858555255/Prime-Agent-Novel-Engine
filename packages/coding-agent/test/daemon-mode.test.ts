@@ -8335,7 +8335,17 @@ describe("daemon mode helpers", () => {
 				global: true,
 			}),
 		).resolves.toMatchObject({ success: true, data: { maxDepth: 3, globalSaved: true } });
-		expect(setRlmMaxDepth).toHaveBeenCalledWith(3, { global: true });
+		// Older clients send only the boolean flag; the daemon maps it onto the settings scope.
+		expect(setRlmMaxDepth).toHaveBeenCalledWith(3, { scope: "global" });
+		await expect(
+			internals.handleCommand(client, {
+				type: "set_rlm_max_depth",
+				activeSessionId: state.activeSessionId,
+				maxDepth: 3,
+				scope: "project",
+			}),
+		).resolves.toMatchObject({ success: true });
+		expect(setRlmMaxDepth).toHaveBeenLastCalledWith(3, { scope: "project" });
 	});
 
 	it.each([

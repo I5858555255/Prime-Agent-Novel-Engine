@@ -662,3 +662,56 @@ export function getSessionDirEnvOverride(): string | undefined {
 export function getDebugLogPath(): string {
 	return join(getAgentDir(), `${APP_NAME}-debug.log`);
 }
+
+// =============================================================================
+// Project Config Paths (<project>/.prime/agent/*)
+// =============================================================================
+
+/**
+ * Resolve the project root for a working directory: the nearest ancestor that
+ * already holds a project config dir, else the nearest repository root, else the
+ * working directory itself. Running the agent from a subdirectory therefore uses
+ * the same project settings and harness state as running it from the repo root.
+ */
+export function getProjectDir(cwd: string): string {
+	// The home directory is never a project root: its config dir is the user's own
+	// agent dir, and a dotfiles repository there would otherwise make every project
+	// share one store.
+	const homeDir = resolve(homedir());
+	const resolvedCwd = resolve(cwd);
+	let currentDir = resolvedCwd;
+	let repoRoot: string | undefined;
+	let configRoot: string | undefined;
+
+	while (true) {
+		if (currentDir !== homeDir) {
+			if (!configRoot && existsSync(join(currentDir, CONFIG_DIR_NAME))) {
+				configRoot = currentDir;
+			}
+			if (!repoRoot && existsSync(join(currentDir, ".git"))) {
+				repoRoot = currentDir;
+			}
+		}
+		const parentDir = dirname(currentDir);
+		if (parentDir === currentDir) break;
+		currentDir = parentDir;
+	}
+
+	// A config dir above the repository root belongs to something else (an
+	// enclosing checkout or a home-like directory), so the repository wins.
+	if (repoRoot && (!configRoot || !isSameOrInside(configRoot, repoRoot))) {
+		return repoRoot;
+	}
+	return configRoot ?? resolvedCwd;
+}
+
+function isSameOrInside(target: string, root: string): boolean {
+	if (target === root) return true;
+	const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
+	return target.startsWith(prefix);
+}
+
+/** Get the project config directory (e.g., <repo>/.prime/agent/) */
+export function getProjectConfigDir(cwd: string): string {
+	return join(getProjectDir(cwd), CONFIG_DIR_NAME);
+}

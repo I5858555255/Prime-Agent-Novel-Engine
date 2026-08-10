@@ -4352,7 +4352,8 @@ export class AgentDaemon {
 				const result = await state.runtime.session.refine({
 					instructions: command.instructions,
 					rollbackId: command.rollbackId,
-					global: command.global,
+					// Older clients only send the boolean flag.
+					scope: command.scope ?? (command.global ? "global" : undefined),
 				});
 				return success(command.id, "refine", result);
 			}
@@ -4455,7 +4456,10 @@ export class AgentDaemon {
 
 			case "set_rlm_max_depth": {
 				const state = this.getSessionState(command.activeSessionId);
-				const result = await state.runtime.session.setRlmMaxDepth(command.maxDepth, { global: command.global });
+				const result = await state.runtime.session.setRlmMaxDepth(command.maxDepth, {
+					// Older clients only send the boolean flag.
+					scope: command.scope ?? (command.global ? "global" : undefined),
+				});
 				return success(command.id, "set_rlm_max_depth", result);
 			}
 
