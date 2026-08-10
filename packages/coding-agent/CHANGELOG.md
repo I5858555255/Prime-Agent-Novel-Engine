@@ -6,6 +6,9 @@
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+- Fixed source launcher failing outside repository directory by passing root tsconfig to tsx ([#904](https://github.com/PrimeIntellect-ai/prime-agent/issues/904))
+- Fixed `send` command help listing removed `--steer` and `--follow-up` flags ([#901](https://github.com/PrimeIntellect-ai/prime-agent/issues/901))
+- Fixed Python `rlm` API `RLMSpawnHandle` / `RLMSubagent` name attribute mismatch and allowed passing `RLMSpawnHandle` objects directly to `rlm.delete_subagent` ([#824](https://github.com/PrimeIntellect-ai/prime-agent/issues/824))
 
 ## [0.7.1] - 2026-08-07
 

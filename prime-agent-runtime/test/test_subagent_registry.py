@@ -182,6 +182,45 @@ class RlmSubagentRegistryTest(unittest.TestCase):
             {"target": "sub-a1b2c3d4"},
         )
 
+    def test_deletes_subagent_spawn_handle_by_child_id(self) -> None:
+        handle = rlm_module.RLMSpawnHandle(
+            rlm_child_id="sub-a1b2c3d4",
+            name="api-reviewer",
+            session_dir=Path("/tmp/parent/sub-a1b2c3d4"),
+            model="claude",
+        )
+        subagent = rlm_module.RLMSubagent(
+            rlm_child_id="sub-a1b2c3d4",
+            active_session_id=None,
+            session_id="session-child",
+            session_name="api-reviewer",
+            session_dir=Path("/tmp/parent/sub-a1b2c3d4"),
+            status="running",
+        )
+        self.assertEqual(handle.session_name, "api-reviewer")
+        self.assertEqual(subagent.name, "api-reviewer")
+
+        host_request = AsyncMock(
+            return_value={
+                "subagent": {
+                    "rlm_child_id": subagent.rlm_child_id,
+                    "active_session_id": subagent.active_session_id,
+                    "session_id": subagent.session_id,
+                    "session_name": subagent.session_name,
+                    "session_dir": str(subagent.session_dir),
+                    "status": subagent.status,
+                }
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            asyncio.run(rlm_module.delete_subagent(handle))
+
+        host_request.assert_awaited_once_with(
+            "rlm.delete_subagent",
+            {"target": "sub-a1b2c3d4"},
+        )
+
     def test_rejects_invalid_delete_response_and_target(self) -> None:
         host_request = AsyncMock(return_value={"subagent": {"status": "completed"}})
 
@@ -191,7 +230,7 @@ class RlmSubagentRegistryTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "target must not be empty"):
             asyncio.run(rlm_module.delete_subagent("   "))
-        with self.assertRaisesRegex(TypeError, "target must be str or RLMSubagent"):
+        with self.assertRaisesRegex(TypeError, "target must be str, RLMSubagent, or RLMSpawnHandle"):
             asyncio.run(rlm_module.delete_subagent(123))
 
     def test_rejects_invalid_registry_payload(self) -> None:

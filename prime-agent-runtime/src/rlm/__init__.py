@@ -31,6 +31,11 @@ class RLMSpawnHandle:
     session_dir: Path
     model: str
 
+    @property
+    def session_name(self) -> str:
+        """Alias for `name`; matches RLMSubagent.session_name."""
+        return self.name
+
 
 @dataclass(frozen=True)
 class RLMModel:
@@ -48,6 +53,11 @@ class RLMSubagent:
     session_name: str
     session_dir: Path
     status: str
+
+    @property
+    def name(self) -> str:
+        """Alias for `session_name`; matches RLMSpawnHandle.name."""
+        return self.session_name
 
 
 def _install_control_comm_handlers() -> None:
@@ -216,16 +226,16 @@ async def list_subagents() -> list[RLMSubagent]:
     return [_subagent_from_payload(entry) for entry in entries]
 
 
-async def delete_subagent(target: str | RLMSubagent) -> RLMSubagent:
+async def delete_subagent(target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
     """Delete one running or retained direct child from the current parent session."""
-    if isinstance(target, RLMSubagent):
+    if isinstance(target, (RLMSubagent, RLMSpawnHandle)):
         selector = target.rlm_child_id
     elif isinstance(target, str):
         selector = target.strip()
         if not selector:
             raise ValueError("target must not be empty")
     else:
-        raise TypeError(f"target must be str or RLMSubagent, got {type(target).__name__}")
+        raise TypeError(f"target must be str, RLMSubagent, or RLMSpawnHandle, got {type(target).__name__}")
     payload = await host_request("rlm.delete_subagent", {"target": selector})
     return _subagent_from_payload(payload.get("subagent"), "rlm.delete_subagent")
 
@@ -294,7 +304,7 @@ class _RLMCallable:
     async def list_subagents(self) -> list[RLMSubagent]:
         return await list_subagents()
 
-    async def delete_subagent(self, target: str | RLMSubagent) -> RLMSubagent:
+    async def delete_subagent(self, target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
         return await delete_subagent(target)
 
     async def __call__(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
