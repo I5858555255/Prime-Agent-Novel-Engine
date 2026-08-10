@@ -978,9 +978,14 @@ export class ModelRegistry {
 			return availableModels.filter((model) => model.provider !== "openai-codex");
 		}
 		const authFingerprint = createHash("sha256").update(auth.apiKey).digest("hex");
+		// An empty successful catalog is inconclusive; the authenticated request remains authoritative.
+		const filterByCatalog = (ids: Set<string>): Model<Api>[] =>
+			ids.size === 0
+				? availableModels
+				: availableModels.filter((model) => model.provider !== "openai-codex" || ids.has(model.id));
 		const cached = this.openAICodexModelsCache;
 		if (cached?.authFingerprint === authFingerprint && Date.now() - cached.refreshedAt < 300_000) {
-			return availableModels.filter((model) => model.provider !== "openai-codex" || cached.modelIds.has(model.id));
+			return filterByCatalog(cached.modelIds);
 		}
 
 		const accountId = readOpenAICodexAccountId(auth.apiKey);
@@ -1002,12 +1007,10 @@ export class ModelRegistry {
 			}
 			const modelIds = readOpenAICodexModelIds(await response.json());
 			this.openAICodexModelsCache = { authFingerprint, modelIds, refreshedAt: Date.now() };
-			return availableModels.filter((model) => model.provider !== "openai-codex" || modelIds.has(model.id));
+			return filterByCatalog(modelIds);
 		} catch {
 			if (cached?.authFingerprint === authFingerprint && Date.now() - cached.refreshedAt < 300_000) {
-				return availableModels.filter(
-					(model) => model.provider !== "openai-codex" || cached.modelIds.has(model.id),
-				);
+				return filterByCatalog(cached.modelIds);
 			}
 			return availableModels.filter((model) => model.provider !== "openai-codex");
 		}
