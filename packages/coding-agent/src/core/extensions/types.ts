@@ -178,7 +178,16 @@ export interface ExtensionUIContext {
 	/** Set the terminal window/tab title. */
 	setTitle(title: string): void;
 
-	/** Show a custom component with keyboard focus. */
+	/**
+	 * Show a custom component with keyboard focus.
+	 *
+	 * Not supported when the extension runs under the daemon/worker
+	 * architecture: the worker process has no terminal of its own to render
+	 * or focus a custom component on, so calling this rejects with
+	 * `ExtensionCustomUiUnsupportedError`. Use `select()`, `input()`,
+	 * `confirm()`, or `editor()` instead for UI that needs to work across
+	 * both in-process and daemon sessions.
+	 */
 	custom<T>(
 		factory: (
 			tui: TUI,

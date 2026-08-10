@@ -18,6 +18,27 @@ import {
 	isDaemonDialogExtensionUiRequest,
 } from "./daemon-protocol.js";
 
+/**
+ * Thrown by the daemon-mode `ctx.ui.custom()` binding. Extensions run inside a
+ * worker process that has no terminal of its own to render or focus a custom
+ * component on - only the socket-attached client owns a terminal. Unlike
+ * `select`/`confirm`/`input`/`editor`, `custom()` has no wire-protocol path to
+ * hand rendering off to the client, so it cannot be supported here.
+ */
+export class ExtensionCustomUiUnsupportedError extends Error {
+	readonly code = "extension_custom_ui_unsupported" as const;
+
+	constructor() {
+		super(
+			"ctx.ui.custom() is not supported when the extension runs under the daemon/worker architecture: " +
+				"the worker process executing this extension does not own a terminal, so there is no way to " +
+				"render or focus a custom component here. Use ctx.ui.select(), ctx.ui.input(), ctx.ui.confirm(), " +
+				"or ctx.ui.editor() instead, which are supported across daemon and in-process sessions.",
+		);
+		this.name = "ExtensionCustomUiUnsupportedError";
+	}
+}
+
 export interface ActiveSessionBindingCallbacks {
 	broadcast: (state: ActiveSessionState, message: DaemonOutbound) => void;
 	createConnectionState?: (state: ActiveSessionState) => AgentConnectionState;
@@ -218,7 +239,7 @@ function createExtensionUIContext(
 		setHeader: () => {},
 		setTitle: (title) => emitUiRequest("setTitle", { title }),
 		async custom<T>(): Promise<T> {
-			return undefined as T;
+			throw new ExtensionCustomUiUnsupportedError();
 		},
 		pasteToEditor: (text) => emitUiRequest("setEditorText", { text }),
 		setEditorText: (text) => emitUiRequest("setEditorText", { text }),

@@ -148,6 +148,51 @@ describe("daemon extension binding", () => {
 		}
 	});
 
+	it("rejects ctx.ui.custom() with a clear error instead of silently swallowing the callback", async () => {
+		let customCallbackInvoked = false;
+		let caughtError: unknown;
+		const runtime = await createRuntimeForTest(
+			(pi) => {
+				pi.registerCommand("daemon-custom-ui", {
+					description: "daemon custom ui",
+					handler: async (_args, ctx) => {
+						try {
+							await ctx.ui.custom((_tui, _theme, _keybindings, done) => {
+								customCallbackInvoked = true;
+								done(undefined);
+								return { render: () => [], invalidate: () => {} };
+							});
+						} catch (error) {
+							caughtError = error;
+						}
+					},
+				});
+			},
+			["daemon custom ui reply"],
+		);
+
+		const state: ActiveSessionState = {
+			activeSessionId: "active-custom-ui",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-custom-ui",
+			lastEventSequence: 0,
+		};
+		await bindActiveSessionState(state, {
+			broadcast: () => {},
+			shutdown: () => {},
+		});
+
+		await runtime.session.prompt("/daemon-custom-ui");
+
+		expect(customCallbackInvoked).toBe(false);
+		expect(caughtError).toBeInstanceOf(Error);
+		expect((caughtError as Error).name).toBe("ExtensionCustomUiUnsupportedError");
+		expect((caughtError as Error).message).toContain("ctx.ui.custom()");
+	});
+
 	it("keeps extension replacement callbacks daemon-side and rebinds before withSession", async () => {
 		const phases: string[] = [];
 		let oldSessionFile: string | undefined;
