@@ -413,6 +413,62 @@ describe("StdinBuffer", () => {
 			assert.deepStrictEqual(emittedPaste, ["Hello 世界 🎉"]);
 			assert.deepStrictEqual(emittedSequences, []);
 		});
+
+		it("should flush buffered paste as normal input when end marker never arrives", async () => {
+			const local = new StdinBuffer({ timeout: 10, pasteTimeout: 20 });
+			const sequences: string[] = [];
+			const pastes: string[] = [];
+			local.on("data", (sequence) => sequences.push(sequence));
+			local.on("paste", (data) => pastes.push(data));
+
+			local.process("\x1b[200~");
+			local.process("abc");
+			assert.deepStrictEqual(sequences, []);
+			assert.deepStrictEqual(pastes, []);
+
+			// Wait for the paste timeout to flush the buffered content
+			await wait(30);
+
+			assert.deepStrictEqual(pastes, []);
+			assert.deepStrictEqual(sequences, ["a", "b", "c"]);
+
+			// Paste mode is cleared: subsequent input flows normally
+			local.process("d");
+			assert.deepStrictEqual(sequences, ["a", "b", "c", "d"]);
+
+			local.destroy();
+		});
+
+		it("should not flush paste content when the end marker arrives before the timeout", async () => {
+			const local = new StdinBuffer({ timeout: 10, pasteTimeout: 20 });
+			const sequences: string[] = [];
+			const pastes: string[] = [];
+			local.on("data", (sequence) => sequences.push(sequence));
+			local.on("paste", (data) => pastes.push(data));
+
+			local.process("\x1b[200~abc\x1b[201~");
+			assert.deepStrictEqual(pastes, ["abc"]);
+
+			// Wait past the paste timeout; nothing else may be emitted
+			await wait(30);
+			assert.deepStrictEqual(sequences, []);
+
+			local.destroy();
+		});
+
+		it("should clear the paste timeout on clear", async () => {
+			const local = new StdinBuffer({ timeout: 10, pasteTimeout: 20 });
+			const sequences: string[] = [];
+			local.on("data", (sequence) => sequences.push(sequence));
+
+			local.process("\x1b[200~abc");
+			local.clear();
+
+			await wait(30);
+			assert.deepStrictEqual(sequences, []);
+
+			local.destroy();
+		});
 	});
 
 	describe("Destroy", () => {

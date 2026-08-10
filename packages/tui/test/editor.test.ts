@@ -1079,6 +1079,33 @@ describe("Editor component", () => {
 			const reconstructed = chunks.map((c) => line.slice(c.startIndex, c.endIndex)).join("");
 			assert.strictEqual(reconstructed, line);
 		});
+
+		it("emits wide grapheme wider than maxWidth as its own chunk without recursing", () => {
+			// Regression: a single emoji (width 2) with maxWidth 1 used to
+			// recurse with identical arguments until the stack overflowed.
+			const chunks = wordWrapLine("😀", 1);
+
+			assert.deepStrictEqual(chunks, [{ text: "😀", startIndex: 0, endIndex: 2 }]);
+		});
+
+		it("emits CJK character wider than maxWidth as its own chunk without recursing", () => {
+			const chunks = wordWrapLine("你", 1);
+
+			assert.deepStrictEqual(chunks, [{ text: "你", startIndex: 0, endIndex: 1 }]);
+		});
+
+		it("isolates wide graphemes into their own chunks in mixed content", () => {
+			const line = "a😀b";
+			const chunks = wordWrapLine(line, 1);
+
+			assert.deepStrictEqual(
+				chunks.map((c) => c.text),
+				["a", "😀", "b"],
+			);
+
+			const reconstructed = chunks.map((c) => line.slice(c.startIndex, c.endIndex)).join("");
+			assert.strictEqual(reconstructed, line);
+		});
 	});
 
 	describe("Kill ring", () => {
