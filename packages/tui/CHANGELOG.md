@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Reduced fullscreen mouse-wheel sensitivity from three transcript rows to one row per wheel step.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
