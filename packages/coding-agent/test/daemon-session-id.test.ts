@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -119,6 +119,24 @@ describe("resolveDaemonSessionPath", () => {
 			createSavedSession(cwd, sessionDir, "1abcd");
 
 			await expect(resolveDaemonSessionPath("AB-CD", cwd, sessionDir)).resolves.toBe(exactPath);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("prefers the canonical file when imported aliases share an exact session ID", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-daemon-session-id-"));
+		try {
+			const cwd = join(tempDir, "project");
+			const sessionDir = join(tempDir, "sessions");
+			const sessionId = "019fd5bd-5738-752e-95c8-fdfb3e710b31";
+			const canonicalPath = createSavedSession(cwd, sessionDir, sessionId);
+			copyFileSync(canonicalPath, join(sessionDir, "imported-copy.jsonl"));
+
+			await expect(resolveDaemonSessionPath(sessionId, cwd, sessionDir)).resolves.toBe(canonicalPath);
+			await expect(resolveDaemonSessionPath("fdfb3e710b31", cwd, sessionDir)).rejects.toThrow(
+				/Ambiguous saved session "fdfb3e710b31"/,
+			);
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
