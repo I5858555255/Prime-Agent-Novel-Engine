@@ -379,6 +379,11 @@ async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promi
 			// (EPIPE once it exits); crash details come from the daemon log,
 			// which the supervisor writes to before rethrowing startup errors.
 			stdio: "ignore",
+			// Without this the detached daemon gets no console at all on Windows,
+			// so every console tool it later spawns (git, uv, python) allocates a
+			// console window of its own that flashes open and shut. CREATE_NO_WINDOW
+			// gives the daemon an invisible console that its children inherit.
+			windowsHide: true,
 		},
 	);
 	let childFailure:

@@ -2397,6 +2397,7 @@ export class DefaultPackageManager implements PackageManager {
 			stdio: ["ignore", "pipe", "pipe"],
 			shell: shouldUseWindowsShell(command),
 			env: options?.env ? { ...baseEnv, ...options.env } : baseEnv,
+			windowsHide: true,
 		});
 	}
 
@@ -2464,6 +2465,7 @@ export class DefaultPackageManager implements PackageManager {
 			encoding: "utf-8",
 			shell: shouldUseWindowsShell(command),
 			env: getEnv(),
+			windowsHide: true,
 		});
 		if (result.error || result.status !== 0) {
 			throw new Error(

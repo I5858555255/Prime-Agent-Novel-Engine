@@ -210,6 +210,7 @@ function readCommandOutput(
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
 		shell: shouldUseWindowsShell(command),
+		windowsHide: true,
 	});
 	if (result.status === 0) return result.stdout.trim() || undefined;
 	if (options.requireSuccess) {
@@ -514,7 +515,13 @@ export const ENV_LEGACY_SESSION_DIR = `${envPrefix}_CODING_AGENT_SESSION_DIR`;
 
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
-	if (path.startsWith("~/")) return homedir() + path.slice(1);
+	// join() rather than string concatenation: on Windows the home directory is
+	// backslash-separated, so concatenating "~/sessions" produced a mixed
+	// "C:\Users\me/sessions" that no longer compares equal to the same path
+	// built with join().
+	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) {
+		return join(homedir(), path.slice(2));
+	}
 	return path;
 }
 

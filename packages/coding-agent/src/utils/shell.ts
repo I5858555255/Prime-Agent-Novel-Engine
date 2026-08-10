@@ -16,12 +16,19 @@ function findBashOnPath(): string | null {
 	if (process.platform === "win32") {
 		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
 		try {
-			const result = spawnSync("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000 });
+			const result = spawnSync("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000, windowsHide: true });
 			if (result.status === 0 && result.stdout) {
-				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-				if (firstMatch && existsSync(firstMatch)) {
-					return firstMatch;
-				}
+				const matches = result.stdout
+					.trim()
+					.split(/\r?\n/)
+					.map((line) => line.trim())
+					.filter((line) => line && existsSync(line));
+				// %SystemRoot%\System32\bash.exe is the WSL launcher, not a Windows
+				// bash: it sees a different filesystem (/mnt/c/...), so a command the
+				// agent composes with Windows paths silently runs against the wrong
+				// tree. Prefer any other bash and fall back to WSL only if it is all
+				// that exists.
+				return matches.find((match) => !isWslBashLauncher(match)) ?? matches[0] ?? null;
 			}
 		} catch {
 			// Ignore errors
@@ -44,6 +51,48 @@ function findBashOnPath(): string | null {
 	return null;
 }
 
+function isWslBashLauncher(bashPath: string): boolean {
+	const systemRoot = (process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows")
+		.toLowerCase()
+		.replaceAll("/", "\\")
+		.replace(/\\+$/, "");
+	const normalized = bashPath.toLowerCase().replaceAll("/", "\\");
+	// Sysnative is the 32-bit process view of System32; both reach the WSL stub.
+	return normalized.startsWith(`${systemRoot}\\system32\\`) || normalized.startsWith(`${systemRoot}\\sysnative\\`);
+}
+
+/**
+ * Git for Windows install locations, in preference order. Covers the machine-wide
+ * installer, the 32-bit installer, per-user installs (the winget default), and
+ * Git resolved from PATH — which is how scoop/chocolatey shims land, since
+ * `<gitroot>\cmd\git.exe` always sits beside `<gitroot>\bin\bash.exe`.
+ */
+function windowsGitBashCandidates(): string[] {
+	const candidates: string[] = [];
+	const roots = [
+		process.env.ProgramFiles,
+		process.env["ProgramFiles(x86)"],
+		process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Programs` : undefined,
+	];
+	for (const root of roots) {
+		if (root) candidates.push(`${root}\\Git\\bin\\bash.exe`);
+	}
+
+	try {
+		const result = spawnSync("where", ["git.exe"], { encoding: "utf-8", timeout: 5000, windowsHide: true });
+		for (const line of result.stdout?.trim().split(/\r?\n/) ?? []) {
+			const gitPath = line.trim();
+			// <gitroot>\cmd\git.exe or <gitroot>\bin\git.exe -> <gitroot>\bin\bash.exe
+			const match = /^(.*)\\(?:cmd|bin|mingw64\\bin)\\git\.exe$/i.exec(gitPath);
+			if (match?.[1]) candidates.push(`${match[1]}\\bin\\bash.exe`);
+		}
+	} catch {
+		// PATH lookup is best-effort; the fixed locations above still apply.
+	}
+
+	return [...new Set(candidates)];
+}
+
 /**
  * Resolve shell configuration based on platform and an optional explicit shell path.
  * Resolution order:
@@ -62,15 +111,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 
 	if (process.platform === "win32") {
 		// 2. Try Git Bash in known locations
-		const paths: string[] = [];
-		const programFiles = process.env.ProgramFiles;
-		if (programFiles) {
-			paths.push(`${programFiles}\\Git\\bin\\bash.exe`);
-		}
-		const programFilesX86 = process.env["ProgramFiles(x86)"];
-		if (programFilesX86) {
-			paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
-		}
+		const paths = windowsGitBashCandidates();
 
 		for (const path of paths) {
 			if (existsSync(path)) {
@@ -194,6 +235,7 @@ export function killProcessTree(pid: number): void {
 			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
 				detached: true,
+				windowsHide: true,
 			});
 		} catch {
 			// Ignore errors if taskkill fails

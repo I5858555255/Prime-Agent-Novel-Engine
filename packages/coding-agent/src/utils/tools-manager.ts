@@ -12,6 +12,7 @@ const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const COMMAND_TIMEOUT_MS = 5_000;
+const ZIP_EXTRACT_TIMEOUT_MS = 60_000;
 const RIPGREP_INSTALL_URL = "https://github.com/BurntSushi/ripgrep#installation";
 
 export type ManagedTool = "fd" | "rg";
@@ -100,7 +101,7 @@ const TOOLS: Record<string, ToolConfig> = {
 // Check that a command both launches and reports a successful version.
 function commandWorks(cmd: string): boolean {
 	try {
-		const result = spawnSync(cmd, ["--version"], { stdio: "pipe", timeout: COMMAND_TIMEOUT_MS });
+		const result = spawnSync(cmd, ["--version"], { stdio: "pipe", timeout: COMMAND_TIMEOUT_MS, windowsHide: true });
 		return !result.error && result.status === 0;
 	} catch {
 		return false;
@@ -160,6 +161,53 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 
 	const fileStream = createWriteStream(dest);
 	await pipeline(Readable.fromWeb(response.body as any), fileStream);
+}
+
+// Zip archives are only downloaded on Windows (every other platform gets a
+// tar.gz). bsdtar ships in System32 on Windows 10 1803+ and reads zip, so it is
+// the primary path; extract-zip stays as a fallback but is time-boxed because
+// yauzl read streams can stall indefinitely on current Node releases, which
+// silently wedged tool provisioning at the first multi-chunk entry.
+async function extractZipArchive(archivePath: string, extractDir: string, assetName: string): Promise<void> {
+	const tarResult = spawnSync("tar", ["-xf", archivePath, "-C", extractDir], {
+		stdio: "pipe",
+		timeout: ZIP_EXTRACT_TIMEOUT_MS,
+		windowsHide: true,
+	});
+	if (!tarResult.error && tarResult.status === 0) {
+		return;
+	}
+
+	const tarError = tarResult.error?.message ?? tarResult.stderr?.toString().trim() ?? `exit code ${tarResult.status}`;
+	try {
+		await withTimeout(
+			extractZip(archivePath, { dir: extractDir }),
+			ZIP_EXTRACT_TIMEOUT_MS,
+			`extracting ${assetName} timed out`,
+		);
+	} catch (fallbackError) {
+		throw new Error(
+			`Failed to extract ${assetName}: tar failed (${tarError}) and the bundled unzip failed (${
+				fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+			})`,
+		);
+	}
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
 }
 
 function findBinaryRecursively(rootDir: string, binaryFileName: string): string | null {
@@ -224,13 +272,16 @@ async function downloadTool(tool: ManagedTool): Promise<string> {
 
 	try {
 		if (assetName.endsWith(".tar.gz")) {
-			const extractResult = spawnSync("tar", ["xzf", archivePath, "-C", extractDir], { stdio: "pipe" });
+			const extractResult = spawnSync("tar", ["xzf", archivePath, "-C", extractDir], {
+				stdio: "pipe",
+				windowsHide: true,
+			});
 			if (extractResult.error || extractResult.status !== 0) {
 				const errMsg = extractResult.error?.message ?? extractResult.stderr?.toString().trim() ?? "unknown error";
 				throw new Error(`Failed to extract ${assetName}: ${errMsg}`);
 			}
 		} else if (assetName.endsWith(".zip")) {
-			await extractZip(archivePath, { dir: extractDir });
+			await extractZipArchive(archivePath, extractDir, assetName);
 		} else {
 			throw new Error(`Unsupported archive format: ${assetName}`);
 		}
@@ -262,9 +313,18 @@ async function downloadTool(tool: ManagedTool): Promise<string> {
 			throw new Error(`Installed ${config.name} binary failed its version check`);
 		}
 	} finally {
-		// Cleanup
-		rmSync(archivePath, { force: true });
-		rmSync(extractDir, { recursive: true, force: true });
+		// Cleanup. A failure here (Windows can hold a handle on a just-extracted
+		// file) must not replace the real error from the block above.
+		try {
+			rmSync(archivePath, { force: true });
+		} catch {
+			// Leave the archive behind; the next run overwrites it.
+		}
+		try {
+			rmSync(extractDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+		} catch {
+			// Leave the temp directory behind rather than failing the install.
+		}
 	}
 
 	return binaryPath;

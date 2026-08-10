@@ -18,6 +18,14 @@ curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh -s -- beta
 
 Both commands fetch versioned Prime Agent release artifacts and install the `prime-agent` command. The inherited npm workspace identifiers in the source tree are not the public install path.
 
+The bootstrap installer is POSIX-only. On Windows, install from npm and run Prime Agent from PowerShell, Command Prompt, or Windows Terminal:
+
+```powershell
+npm install -g prime-agent
+```
+
+See [Windows](windows.md) for requirements and platform notes.
+
 Then start Prime Agent in the project directory you want it to work on:
 
 ```bash

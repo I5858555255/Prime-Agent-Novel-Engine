@@ -65,6 +65,8 @@ export async function execCommand(
 			// Merge per-call env over the parent env so callers can scope vars
 			// (e.g. herdr pane identity) without mutating the shared process.env.
 			env: mergeExecEnv(options?.env),
+			// Output is piped, so a console window would only ever flash and close.
+			windowsHide: true,
 		});
 
 		let stdout = "";
