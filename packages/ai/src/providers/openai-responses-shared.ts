@@ -375,37 +375,38 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 		} else if (event.type === "response.output_text.delta") {
 			if (currentItem?.type === "message" && currentBlock?.type === "text") {
-				if (!currentItem.content || currentItem.content.length === 0) {
-					continue;
+				currentItem.content = currentItem.content || [];
+				let lastPart = currentItem.content[currentItem.content.length - 1];
+				// Some endpoints stream deltas without a preceding content_part.added
+				if (lastPart?.type !== "output_text") {
+					lastPart = { type: "output_text", text: "", annotations: [] };
+					currentItem.content.push(lastPart);
 				}
-				const lastPart = currentItem.content[currentItem.content.length - 1];
-				if (lastPart?.type === "output_text") {
-					currentBlock.text += event.delta;
-					lastPart.text += event.delta;
-					stream.push({
-						type: "text_delta",
-						contentIndex: blockIndex(),
-						delta: event.delta,
-						partial: output,
-					});
-				}
+				currentBlock.text += event.delta;
+				lastPart.text += event.delta;
+				stream.push({
+					type: "text_delta",
+					contentIndex: blockIndex(),
+					delta: event.delta,
+					partial: output,
+				});
 			}
 		} else if (event.type === "response.refusal.delta") {
 			if (currentItem?.type === "message" && currentBlock?.type === "text") {
-				if (!currentItem.content || currentItem.content.length === 0) {
-					continue;
+				currentItem.content = currentItem.content || [];
+				let lastPart = currentItem.content[currentItem.content.length - 1];
+				if (lastPart?.type !== "refusal") {
+					lastPart = { type: "refusal", refusal: "" };
+					currentItem.content.push(lastPart);
 				}
-				const lastPart = currentItem.content[currentItem.content.length - 1];
-				if (lastPart?.type === "refusal") {
-					currentBlock.text += event.delta;
-					lastPart.refusal += event.delta;
-					stream.push({
-						type: "text_delta",
-						contentIndex: blockIndex(),
-						delta: event.delta,
-						partial: output,
-					});
-				}
+				currentBlock.text += event.delta;
+				lastPart.refusal += event.delta;
+				stream.push({
+					type: "text_delta",
+					contentIndex: blockIndex(),
+					delta: event.delta,
+					partial: output,
+				});
 			}
 		} else if (event.type === "response.function_call_arguments.delta") {
 			if (currentItem?.type === "function_call" && currentBlock?.type === "toolCall") {
