@@ -1,0 +1,147 @@
+{
+	"schemaVersion": 1,
+	"coverage": {
+		"userImages": true,
+		"toolResultImages": true,
+		"toolErrors": true,
+		"providerErrors": true
+	},
+	"images": {
+		"user": {
+			"mimeType": "image/png",
+			"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+		},
+		"toolResult": {
+			"mimeType": "image/png",
+			"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg=="
+		}
+	},
+	"fixtures": [
+		{
+			"id": "anthropic-claude",
+			"source": {
+				"api": "anthropic-messages",
+				"provider": "anthropic",
+				"model": "claude-sonnet-4-5"
+			},
+			"protocol": {
+				"toolCallId": "toolu_01FixtureHandoff",
+				"thinkingSignature": "anthropic-signature-marker-v1",
+				"toolThoughtSignature": null,
+				"signatureMarker": "anthropic-signature-marker-v1"
+			}
+		},
+		{
+			"id": "azure-openai-responses",
+			"source": {
+				"api": "azure-openai-responses",
+				"provider": "azure-openai-responses",
+				"model": "gpt-5-mini"
+			},
+			"protocol": {
+				"toolCallId": "call_azure_fixture|fc_azure_fixture",
+				"thinkingSignature": "{\"id\":\"rs_azure_fixture\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Sanitized provider reasoning summary.\"}],\"encrypted_content\":\"azure-signature-marker-v1\"}",
+				"toolThoughtSignature": null,
+				"signatureMarker": "azure-signature-marker-v1"
+			}
+		},
+		{
+			"id": "bedrock-claude",
+			"source": {
+				"api": "bedrock-converse-stream",
+				"provider": "amazon-bedrock",
+				"model": "anthropic.claude-3-7-sonnet-20250219-v1:0"
+			},
+			"protocol": {
+				"toolCallId": "bedrock_tool_fixture_01",
+				"thinkingSignature": "bedrock-signature-marker-v1",
+				"toolThoughtSignature": null,
+				"signatureMarker": "bedrock-signature-marker-v1"
+			}
+		},
+		{
+			"id": "google-gemini",
+			"source": {
+				"api": "google-generative-ai",
+				"provider": "google",
+				"model": "gemini-3-flash-preview"
+			},
+			"protocol": {
+				"toolCallId": "google_function_call_fixture",
+				"thinkingSignature": "Z29vZ2xlLWdlbi1zaWduYXR1cmU=",
+				"toolThoughtSignature": "Z29vZ2xlLWdlbi10b29sLXNpZw==",
+				"signatureMarker": "Z29vZ2xlLWdlbi1zaWduYXR1cmU="
+			}
+		},
+		{
+			"id": "google-vertex-gemini",
+			"source": {
+				"api": "google-vertex",
+				"provider": "google-vertex",
+				"model": "gemini-3-flash-preview"
+			},
+			"protocol": {
+				"toolCallId": "vertex_function_call_fixture",
+				"thinkingSignature": "dmVydGV4LXNpZ25hdHVyZS12MQ==",
+				"toolThoughtSignature": "dmVydGV4LXRvb2wtc2lnbmF0dXJl",
+				"signatureMarker": "dmVydGV4LXNpZ25hdHVyZS12MQ=="
+			}
+		},
+		{
+			"id": "mistral-devstral",
+			"source": {
+				"api": "mistral-conversations",
+				"provider": "mistral",
+				"model": "devstral-medium-latest"
+			},
+			"protocol": {
+				"toolCallId": "Mistral01",
+				"thinkingSignature": null,
+				"toolThoughtSignature": null,
+				"signatureMarker": null
+			}
+		},
+		{
+			"id": "openai-codex-responses",
+			"source": {
+				"api": "openai-codex-responses",
+				"provider": "openai-codex",
+				"model": "gpt-5.2-codex"
+			},
+			"protocol": {
+				"toolCallId": "call_codex_fixture|fc_codex_fixture",
+				"thinkingSignature": "{\"id\":\"rs_codex_fixture\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Sanitized provider reasoning summary.\"}],\"encrypted_content\":\"codex-signature-marker-v1\"}",
+				"toolThoughtSignature": null,
+				"signatureMarker": "codex-signature-marker-v1"
+			}
+		},
+		{
+			"id": "openai-chat-completions",
+			"source": {
+				"api": "openai-completions",
+				"provider": "openai",
+				"model": "gpt-5-mini"
+			},
+			"protocol": {
+				"toolCallId": "call_openai_completions_fixture",
+				"thinkingSignature": "reasoning_content",
+				"toolThoughtSignature": "{\"type\":\"reasoning.encrypted\",\"data\":\"completions-signature-marker-v1\"}",
+				"signatureMarker": "completions-signature-marker-v1"
+			}
+		},
+		{
+			"id": "openai-responses",
+			"source": {
+				"api": "openai-responses",
+				"provider": "openai",
+				"model": "gpt-5-mini"
+			},
+			"protocol": {
+				"toolCallId": "call_openai_fixture|fc_openai_fixture",
+				"thinkingSignature": "{\"id\":\"rs_openai_fixture\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Sanitized provider reasoning summary.\"}],\"encrypted_content\":\"responses-signature-marker-v1\"}",
+				"toolThoughtSignature": null,
+				"signatureMarker": "responses-signature-marker-v1"
+			}
+		}
+	]
+}

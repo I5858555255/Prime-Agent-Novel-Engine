@@ -1,0 +1,207 @@
+{
+	"schemaVersion": 1,
+	"responses": [
+		{
+			"id": "anthropic-messages-v1",
+			"api": "anthropic-messages",
+			"transport": "anthropic-sse",
+			"success": [
+				{"event":"message_start","data":{"type":"message_start","message":{"id":"msg_fixture_anthropic","usage":{"input_tokens":3,"output_tokens":0}}}},
+				{"event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}},
+				{"event":"content_block_delta","data":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"anthropic raw thinking"}}},
+				{"event":"content_block_delta","data":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"anthropic-raw-signature-v1"}}},
+				{"event":"content_block_stop","data":{"type":"content_block_stop","index":0}},
+				{"event":"content_block_start","data":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_raw_fixture_01","name":"inspect_fixture","input":{}}}},
+				{"event":"content_block_delta","data":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"raw.txt\"}"}}},
+				{"event":"content_block_stop","data":{"type":"content_block_stop","index":1}},
+				{"event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}},
+				{"event":"message_stop","data":{"type":"message_stop"}}
+			],
+			"error": [
+				{"event":"error","data":{"type":"error","error":{"type":"overloaded_error","message":"anthropic raw fixture overload"},"request_id":"req_fixture_anthropic"}}
+			],
+			"expected": {
+				"thinkingText": "anthropic raw thinking",
+				"thinkingSignatureMarker": "anthropic-raw-signature-v1",
+				"toolThoughtSignatureMarker": null,
+				"toolCallId": "toolu_raw_fixture_01",
+				"errorMarker": "anthropic raw fixture overload"
+			}
+		},
+		{
+			"id": "azure-openai-responses-v1",
+			"api": "azure-openai-responses",
+			"transport": "openai-events",
+			"success": [
+				{"type":"response.created","response":{"id":"resp_fixture_azure"}},
+				{"type":"response.output_item.added","item":{"id":"rs_fixture_azure","type":"reasoning","summary":[],"encrypted_content":"azure-raw-signature-v1"}},
+				{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}},
+				{"type":"response.reasoning_summary_text.delta","delta":"azure raw thinking"},
+				{"type":"response.output_item.done","item":{"id":"rs_fixture_azure","type":"reasoning","summary":[{"type":"summary_text","text":"azure raw thinking"}],"encrypted_content":"azure-raw-signature-v1"}},
+				{"type":"response.output_item.added","item":{"id":"fc_fixture_azure","type":"function_call","call_id":"call_fixture_azure","name":"inspect_fixture","arguments":""}},
+				{"type":"response.function_call_arguments.delta","delta":"{\"path\":\"raw.txt\"}"},
+				{"type":"response.output_item.done","item":{"id":"fc_fixture_azure","type":"function_call","call_id":"call_fixture_azure","name":"inspect_fixture","arguments":"{\"path\":\"raw.txt\"}"}},
+				{"type":"response.completed","response":{"id":"resp_fixture_azure","status":"completed","usage":{"input_tokens":3,"output_tokens":7,"total_tokens":10,"input_tokens_details":{"cached_tokens":0}}}}
+			],
+			"error": [
+				{"type":"error","code":"server_error","message":"azure raw fixture failure"}
+			],
+			"expected": {
+				"thinkingText": "azure raw thinking",
+				"thinkingSignatureMarker": "azure-raw-signature-v1",
+				"toolThoughtSignatureMarker": null,
+				"toolCallId": "call_fixture_azure|fc_fixture_azure",
+				"errorMarker": "azure raw fixture failure"
+			}
+		},
+		{
+			"id": "bedrock-converse-stream-v1",
+			"api": "bedrock-converse-stream",
+			"transport": "smithy-events",
+			"success": [
+				{"messageStart":{"role":"assistant"}},
+				{"contentBlockDelta":{"contentBlockIndex":0,"delta":{"reasoningContent":{"text":"bedrock raw thinking","signature":"bedrock-raw-signature-v1"}}}},
+				{"contentBlockStop":{"contentBlockIndex":0}},
+				{"contentBlockStart":{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"bedrock_raw_tool_01","name":"inspect_fixture"}}}},
+				{"contentBlockDelta":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"path\":\"raw.txt\"}"}}}},
+				{"contentBlockStop":{"contentBlockIndex":1}},
+				{"messageStop":{"stopReason":"tool_use"}},
+				{"metadata":{"usage":{"inputTokens":3,"outputTokens":7,"totalTokens":10}}}
+			],
+			"error": [
+				{"throttlingException":{"name":"ThrottlingException","message":"bedrock raw fixture throttled"}}
+			],
+			"expected": {
+				"thinkingText": "bedrock raw thinking",
+				"thinkingSignatureMarker": "bedrock-raw-signature-v1",
+				"toolThoughtSignatureMarker": null,
+				"toolCallId": "bedrock_raw_tool_01",
+				"errorMarker": "bedrock raw fixture throttled"
+			}
+		},
+		{
+			"id": "google-generative-ai-v1",
+			"api": "google-generative-ai",
+			"transport": "google-events",
+			"success": [
+				{"responseId":"resp_fixture_google","candidates":[{"content":{"parts":[{"thought":true,"text":"google raw thinking","thoughtSignature":"Z29vZ2xlLXJhdy1zaWduYXR1cmU="},{"functionCall":{"id":"google_raw_tool_01","name":"inspect_fixture","args":{"path":"raw.txt"}},"thoughtSignature":"Z29vZ2xlLXJhdy10b29sLXNpZw=="}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":7,"totalTokenCount":10}}
+			],
+			"error": [
+				{"responseId":"resp_fixture_google_error","candidates":[{"content":{"parts":[]},"finishReason":"SAFETY"}]}
+			],
+			"expected": {
+				"thinkingText": "google raw thinking",
+				"thinkingSignatureMarker": "Z29vZ2xlLXJhdy1zaWduYXR1cmU=",
+				"toolThoughtSignatureMarker": "Z29vZ2xlLXJhdy10b29sLXNpZw==",
+				"toolCallId": "google_raw_tool_01",
+				"errorMarker": "SAFETY"
+			}
+		},
+		{
+			"id": "google-vertex-v1",
+			"api": "google-vertex",
+			"transport": "google-events",
+			"success": [
+				{"responseId":"resp_fixture_vertex","candidates":[{"content":{"parts":[{"thought":true,"text":"vertex raw thinking","thoughtSignature":"dmVydGV4LXJhdy1zaWduYXR1cmU="},{"functionCall":{"id":"vertex_raw_tool_01","name":"inspect_fixture","args":{"path":"raw.txt"}},"thoughtSignature":"dmVydGV4LXJhdy10b29sLXNpZw=="}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":7,"totalTokenCount":10}}
+			],
+			"error": [
+				{"responseId":"resp_fixture_vertex_error","candidates":[{"content":{"parts":[]},"finishReason":"SAFETY"}]}
+			],
+			"expected": {
+				"thinkingText": "vertex raw thinking",
+				"thinkingSignatureMarker": "dmVydGV4LXJhdy1zaWduYXR1cmU=",
+				"toolThoughtSignatureMarker": "dmVydGV4LXJhdy10b29sLXNpZw==",
+				"toolCallId": "vertex_raw_tool_01",
+				"errorMarker": "SAFETY"
+			}
+		},
+		{
+			"id": "mistral-conversations-v1",
+			"api": "mistral-conversations",
+			"transport": "mistral-events",
+			"success": [
+				{"data":{"id":"resp_fixture_mistral","choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"mistral raw thinking"}]}],"toolCalls":[{"index":0,"id":"Mistral01","function":{"name":"inspect_fixture","arguments":"{\"path\":\"raw.txt\"}"}}]},"finishReason":"tool_calls"}],"usage":{"promptTokens":3,"completionTokens":7,"totalTokens":10}}}
+			],
+			"error": [
+				{"data":{"id":"resp_fixture_mistral_error","choices":[{"delta":{"content":null},"finishReason":"error"}]}}
+			],
+			"expected": {
+				"thinkingText": "mistral raw thinking",
+				"thinkingSignatureMarker": null,
+				"toolThoughtSignatureMarker": null,
+				"toolCallId": "Mistral01",
+				"errorMarker": "error"
+			}
+		},
+		{
+			"id": "openai-codex-responses-v1",
+			"api": "openai-codex-responses",
+			"transport": "codex-sse",
+			"success": [
+				{"type":"response.created","response":{"id":"resp_fixture_codex"}},
+				{"type":"response.output_item.added","item":{"id":"rs_fixture_codex","type":"reasoning","summary":[],"encrypted_content":"codex-raw-signature-v1"}},
+				{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}},
+				{"type":"response.reasoning_summary_text.delta","delta":"codex raw thinking"},
+				{"type":"response.output_item.done","item":{"id":"rs_fixture_codex","type":"reasoning","summary":[{"type":"summary_text","text":"codex raw thinking"}],"encrypted_content":"codex-raw-signature-v1"}},
+				{"type":"response.output_item.added","item":{"id":"fc_fixture_codex","type":"function_call","call_id":"call_fixture_codex","name":"inspect_fixture","arguments":""}},
+				{"type":"response.function_call_arguments.delta","delta":"{\"path\":\"raw.txt\"}"},
+				{"type":"response.output_item.done","item":{"id":"fc_fixture_codex","type":"function_call","call_id":"call_fixture_codex","name":"inspect_fixture","arguments":"{\"path\":\"raw.txt\"}"}},
+				{"type":"response.done","response":{"id":"resp_fixture_codex","status":"completed","usage":{"input_tokens":3,"output_tokens":7,"total_tokens":10,"input_tokens_details":{"cached_tokens":0}}}}
+			],
+			"error": [
+				{"type":"error","code":"server_error","message":"codex raw fixture failure"}
+			],
+			"expected": {
+				"thinkingText": "codex raw thinking",
+				"thinkingSignatureMarker": "codex-raw-signature-v1",
+				"toolThoughtSignatureMarker": null,
+				"toolCallId": "call_fixture_codex|fc_fixture_codex",
+				"errorMarker": "codex raw fixture failure"
+			}
+		},
+		{
+			"id": "openai-completions-v1",
+			"api": "openai-completions",
+			"transport": "openai-chunks",
+			"success": [
+				{"id":"chatcmpl_fixture","model":"gpt-5-mini","choices":[{"index":0,"delta":{"reasoning_content":"completions raw thinking","tool_calls":[{"index":0,"id":"call_raw_openai_01","type":"function","function":{"name":"inspect_fixture","arguments":"{\"path\":\"raw.txt\"}"}}],"reasoning_details":[{"type":"reasoning.encrypted","id":"call_raw_openai_01","data":"completions-raw-tool-signature-v1"}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":7,"total_tokens":10}}
+			],
+			"error": [
+				{"id":"chatcmpl_fixture_error","model":"gpt-5-mini","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]}
+			],
+			"expected": {
+				"thinkingText": "completions raw thinking",
+				"thinkingSignatureMarker": "reasoning_content",
+				"toolThoughtSignatureMarker": "completions-raw-tool-signature-v1",
+				"toolCallId": "call_raw_openai_01",
+				"errorMarker": "content_filter"
+			}
+		},
+		{
+			"id": "openai-responses-v1",
+			"api": "openai-responses",
+			"transport": "openai-events",
+			"success": [
+				{"type":"response.created","response":{"id":"resp_fixture_openai"}},
+				{"type":"response.output_item.added","item":{"id":"rs_fixture_openai","type":"reasoning","summary":[],"encrypted_content":"responses-raw-signature-v1"}},
+				{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}},
+				{"type":"response.reasoning_summary_text.delta","delta":"responses raw thinking"},
+				{"type":"response.output_item.done","item":{"id":"rs_fixture_openai","type":"reasoning","summary":[{"type":"summary_text","text":"responses raw thinking"}],"encrypted_content":"responses-raw-signature-v1"}},
+				{"type":"response.output_item.added","item":{"id":"fc_fixture_openai","type":"function_call","call_id":"call_fixture_openai","name":"inspect_fixture","arguments":""}},
+				{"type":"response.function_call_arguments.delta","delta":"{\"path\":\"raw.txt\"}"},
+				{"type":"response.output_item.done","item":{"id":"fc_fixture_openai","type":"function_call","call_id":"call_fixture_openai","name":"inspect_fixture","arguments":"{\"path\":\"raw.txt\"}"}},
+				{"type":"response.completed","response":{"id":"resp_fixture_openai","status":"completed","usage":{"input_tokens":3,"output_tokens":7,"total_tokens":10,"input_tokens_details":{"cached_tokens":0}}}}
+			],
+			"error": [
+				{"type":"error","code":"server_error","message":"responses raw fixture failure"}
+			],
+			"expected": {
+				"thinkingText": "responses raw thinking",
+				"thinkingSignatureMarker": "responses-raw-signature-v1",
+				"toolThoughtSignatureMarker": null,
+				"toolCallId": "call_fixture_openai|fc_fixture_openai",
+				"errorMarker": "responses raw fixture failure"
+			}
+		}
+	]
+}
