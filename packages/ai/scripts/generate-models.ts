@@ -1338,8 +1338,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				// Copilot proxies Claude via the Anthropic Messages API
 				const isCopilotClaude = modelId.startsWith("claude-");
-				// gpt-5 models require responses API, others use completions
-				const needsResponsesApi = modelId.startsWith("gpt-5") || modelId.startsWith("oswe");
+				// gpt-5, grok-4.5, and oswe models require responses API; others use completions
+				const needsResponsesApi =
+					modelId === "grok-4.5" || modelId.startsWith("gpt-5") || modelId.startsWith("oswe");
 
 				const api: Api = isCopilotClaude
 					? "anthropic-messages"
