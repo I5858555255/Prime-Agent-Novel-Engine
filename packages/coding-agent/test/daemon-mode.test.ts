@@ -43,7 +43,10 @@ import {
 	failure,
 } from "../src/modes/daemon/daemon-protocol.js";
 import type { SessionSummary } from "../src/modes/daemon/daemon-session-list.js";
-import { DAEMON_WORKER_SUPERVISOR_SOCKET_ENV } from "../src/modes/daemon/daemon-worker-protocol.js";
+import {
+	DAEMON_WORKER_RECOVERY_JOURNAL_ENV,
+	DAEMON_WORKER_SUPERVISOR_SOCKET_ENV,
+} from "../src/modes/daemon/daemon-worker-protocol.js";
 
 describe("daemon mode helpers", () => {
 	it("preserves envelope client identity while registering prompt admission", () => {
@@ -898,6 +901,166 @@ describe("daemon mode helpers", () => {
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("creates a scoped child with parent header linkage from create runtimeMetadata", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-scoped-create-"));
+		try {
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => ({
+				session: makeRuntimeSession(options.sessionManager),
+				extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+					ReturnType<CreateAgentSessionRuntimeFactory>
+				>["extensionsResult"],
+				services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+					ReturnType<CreateAgentSessionRuntimeFactory>
+				>["services"],
+				diagnostics: [],
+			}));
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir: join(tempDir, "sessions") },
+				createRuntime,
+			});
+			const internals = daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				isDiscardableDraft(state: ActiveSessionState): boolean;
+			};
+			const parentState = await internals.createRuntime({ type: "create" });
+			Object.assign(parentState.runtime.session, { rlmDepth: 0 });
+			const parentSessionFile = parentState.runtime.session.sessionFile;
+			if (!parentSessionFile) throw new Error("Missing parent session file");
+
+			const childState = await internals.createRuntime({
+				type: "create",
+				runtimeMetadata: {
+					kind: "subagent",
+					createdAt: Date.now(),
+					parentSessionId: parentState.runtime.session.sessionId,
+					parentSessionFile,
+				},
+			});
+
+			expect(childState.runtime.session.sessionManager.getHeader()).toMatchObject({
+				parentSession: parentSessionFile,
+				rlmDepth: 1,
+			});
+			expect(childState.runtime.metadata).toMatchObject({
+				kind: "subagent",
+				parentSessionId: parentState.runtime.session.sessionId,
+				parentSessionFile,
+			});
+			expect(childState.runtime.metadata).not.toHaveProperty("parentActiveSessionId");
+
+			Object.assign(childState.runtime.session, {
+				isBashRunning: false,
+				isSessionActive: false,
+				hasRunningRlmChildren: () => false,
+			});
+			expect(internals.isDiscardableDraft(childState)).toBe(true);
+
+			const kernelChildState = await internals.createRuntime({
+				type: "create",
+				runtimeMetadata: { kind: "subagent", createdAt: Date.now(), rlmChildId: "kernel-child" },
+			});
+			expect(internals.isDiscardableDraft(kernelChildState)).toBe(false);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("honors the worker-assigned root active session id for a scoped root create", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "prime-agent-daemon-worker-scoped-root-"));
+		// A test daemon has no recovery journal; keep a host worker's env from
+		// leaking one in (recordWorkerRecoveryState would touch a foreign file).
+		const previousRecoveryJournal = process.env[DAEMON_WORKER_RECOVERY_JOURNAL_ENV];
+		delete process.env[DAEMON_WORKER_RECOVERY_JOURNAL_ENV];
+		try {
+			const createRuntime = vi.fn(async (options: Parameters<CreateAgentSessionRuntimeFactory>[0]) => ({
+				session: makeRuntimeSession(options.sessionManager),
+				extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as Awaited<
+					ReturnType<CreateAgentSessionRuntimeFactory>
+				>["extensionsResult"],
+				services: { cwd: options.cwd, agentDir: options.agentDir } as Awaited<
+					ReturnType<CreateAgentSessionRuntimeFactory>
+				>["services"],
+				diagnostics: [],
+			}));
+			const daemon = new AgentDaemon(join(tempDir, "daemon.sock"), {
+				defaultSessionConfig: { agentDir: tempDir, cwd: tempDir, sessionDir: join(tempDir, "sessions") },
+				createRuntime,
+				worker: { authenticationToken: "token", restoreActiveSessionId: "root-assigned" },
+			});
+			const internals = daemon as unknown as {
+				createRuntime(command: Extract<DaemonCommand, { type: "create" }>): Promise<ActiveSessionState>;
+				addRuntime(
+					runtime: ActiveSessionState["runtime"],
+					name?: string,
+					clientEnv?: Record<string, string>,
+					onStateCreated?: (state: ActiveSessionState) => void,
+					runtimeOpenGuard?: () => boolean,
+					onStateBound?: (state: ActiveSessionState) => void,
+					restoreActiveSessionId?: string,
+				): Promise<ActiveSessionState>;
+			};
+
+			// Kernel-managed subagent runtimes pass an explicit id (e.g. rehydration):
+			// it wins over and does not consume the worker's one-shot root id.
+			const rehydratedManager = SessionManager.create(tempDir, join(tempDir, "sessions"));
+			rehydratedManager.newSession();
+			const rehydrated = await internals.addRuntime(
+				{
+					metadata: { kind: "subagent", createdAt: Date.now(), rlmChildId: "rehydrated-child" },
+					session: makeRuntimeSession(rehydratedManager),
+					setRuntimeEnvScope: vi.fn(),
+					setSubagentRuntimeHost: vi.fn(),
+					setRebindSession: vi.fn(),
+				} as unknown as ActiveSessionState["runtime"],
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				"explicit-restore",
+			);
+			expect(rehydrated.activeSessionId).toBe("explicit-restore");
+
+			// The worker's root create keeps its supervisor-assigned id even when a
+			// scoped agents-view create carries subagent metadata.
+			const scopedRoot = await internals.createRuntime({
+				type: "create",
+				runtimeMetadata: {
+					kind: "subagent",
+					createdAt: Date.now(),
+					parentSessionId: "scope-parent",
+					parentSessionFile: join(tempDir, "parent.jsonl"),
+				},
+			});
+			expect(scopedRoot.activeSessionId).toBe("root-assigned");
+
+			// One-shot: later creates mint their own ids.
+			const next = await internals.createRuntime({ type: "create" });
+			expect(next.activeSessionId).not.toBe("root-assigned");
+		} finally {
+			if (previousRecoveryJournal === undefined) delete process.env[DAEMON_WORKER_RECOVERY_JOURNAL_ENV];
+			else process.env[DAEMON_WORKER_RECOVERY_JOURNAL_ENV] = previousRecoveryJournal;
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not cascade-close a ctrl+n scoped agent when its scope root closes", () => {
+		const parent = makeState("parent");
+		const scopedChild = makeState("scoped-child");
+		Object.assign(scopedChild.runtime.metadata, {
+			parentSessionId: "parent-session",
+			parentSessionFile: "/tmp/parent.jsonl",
+		});
+		const kernelChild = makeState("kernel-child", "parent");
+		const sessions = new Map<string, ActiveSessionState>(
+			[parent, scopedChild, kernelChild].map((state) => [state.activeSessionId, state]),
+		);
+
+		expect(getChildActiveSessionStates(sessions, parent).map((state) => state.activeSessionId)).toEqual([
+			"kernel-child",
+		]);
 	});
 
 	it("defers RLM heartbeats while a subagent is binding", async () => {
@@ -4261,6 +4424,7 @@ describe("daemon mode helpers", () => {
 			},
 		});
 		const state = makeState("active");
+		state.runtime.metadata.rlmChildId = "child-1";
 		state.extensionUiRequests = new Map();
 		const socketState = { destroyed: false };
 		const socket = Object.assign(new EventEmitter(), {

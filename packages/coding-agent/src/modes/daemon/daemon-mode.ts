@@ -1198,9 +1198,8 @@ export class AgentDaemon {
 		onStateBound?: (state: ActiveSessionState) => void,
 		restoreActiveSessionId?: string,
 	): Promise<ActiveSessionState> {
-		const desiredActiveSessionId =
-			runtime.metadata.kind === "top-level" ? this.restoreActiveSessionId : restoreActiveSessionId;
-		if (runtime.metadata.kind === "top-level" && desiredActiveSessionId) {
+		const desiredActiveSessionId = restoreActiveSessionId ?? this.restoreActiveSessionId;
+		if (!restoreActiveSessionId && desiredActiveSessionId) {
 			this.restoreActiveSessionId = undefined;
 		}
 		const state: ActiveSessionState = {
@@ -1447,6 +1446,23 @@ export class AgentDaemon {
 			sessionLease?.release();
 			releaseOpenReservation();
 			throw error;
+		}
+		// A scoped create (agents view new agent) anchors the fresh session under
+		// the scope root so live and saved listings link it as the root's child.
+		const requestedMetadata = command.runtimeMetadata;
+		if (
+			!sessionPath &&
+			!command.noSession &&
+			!command.continueRecent &&
+			requestedMetadata?.kind === "subagent" &&
+			requestedMetadata.parentSessionFile &&
+			!requestedMetadata.rehydratedCompleted
+		) {
+			const parentState = this.findSessionBySessionFile(requestedMetadata.parentSessionFile);
+			sessionManager.newSession({
+				parentSession: requestedMetadata.parentSessionFile,
+				...(parentState ? { rlmDepth: parentState.runtime.session.rlmDepth + 1 } : {}),
+			});
 		}
 		const createState = async (): Promise<ActiveSessionState> => {
 			if (runtimeOpenGuard && !(await runtimeOpenGuard())) {
@@ -5584,7 +5600,9 @@ export class AgentDaemon {
 		if (state.clients.size > 0) {
 			return false;
 		}
-		if (state.runtime.metadata.kind === "subagent") {
+		// Kernel-managed RLM children carry rlmChildId; a user-created scoped
+		// agent draft is discardable like a top-level draft.
+		if (state.runtime.metadata.kind === "subagent" && state.runtime.metadata.rlmChildId) {
 			return false;
 		}
 		// A running bash or in-flight turn means there is live work to preserve.

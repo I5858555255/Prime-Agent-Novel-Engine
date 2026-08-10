@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { APP_TITLE, appendRotatingLog, getAgentDir, getClientErrorLogPath, VERSION } from "../../config.js";
 import type { AgentSessionRuntimeConfig } from "../../core/agent-session-config.js";
+import type { AgentSessionRuntimeMetadata } from "../../core/agent-session-runtime.js";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { SessionManager } from "../../core/session-manager.js";
 import {
@@ -252,6 +253,18 @@ export function createAgentsViewReplyHeadline(text: string | undefined): string 
 
 export function getAgentsViewDepth(scopeRoot: SessionSummary | undefined): number {
 	return scopeRoot ? (scopeRoot.rlmDepth ?? 0) + 1 : 0;
+}
+
+export function createAgentsViewScopedRuntimeMetadata(
+	scopeRoot: SessionSummary,
+	sessionFile: string,
+): AgentSessionRuntimeMetadata {
+	return {
+		kind: "subagent",
+		createdAt: Date.now(),
+		parentSessionId: scopeRoot.sessionId,
+		parentSessionFile: sessionFile,
+	};
 }
 
 export function createInitialAgentsViewScopeFrames(
@@ -1763,10 +1776,16 @@ export class AgentsViewMode implements Component, Focusable {
 			const client = await this.connectDedicatedClient();
 			try {
 				this.setStatusMessage("Creating session...");
+				const hello = await client.waitForHello().catch(() => undefined);
+				const scopeRoot = this.scopeRootSummary;
+				const scopeSessionFile = scopeRoot?.sessionFile;
 				const response = await client.request({
 					type: "create",
 					config: this.options.config,
 					env: collectDaemonClientEnv(),
+					...(scopeRoot && scopeSessionFile && hello && client.supportsServerCapability("scoped_session_create")
+						? { runtimeMetadata: createAgentsViewScopedRuntimeMetadata(scopeRoot, scopeSessionFile) }
+						: {}),
 				});
 				const created = expectSessionSummary(requireDaemonData(response));
 				// The view can finish mid-create; kill the fresh session instead of orphaning it.
