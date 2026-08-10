@@ -9,6 +9,7 @@ export interface AgentIntegrationQualityGate {
 	command: string;
 	args?: string[];
 	timeoutMs?: number;
+	shell?: boolean;
 }
 
 export interface AgentIntegrationGateResult {
@@ -81,7 +82,7 @@ const DEFAULT_GATE_TIMEOUT_MS = 5 * 60 * 1000;
 function runCommand(
 	command: string,
 	args: string[],
-	options: { cwd: string; timeoutMs?: number },
+	options: { cwd: string; timeoutMs?: number; shell?: boolean },
 ): Promise<CommandResult> {
 	return new Promise((resolvePromise) => {
 		execFile(
@@ -91,6 +92,7 @@ function runCommand(
 				cwd: options.cwd,
 				encoding: "utf8",
 				maxBuffer: OUTPUT_LIMIT,
+				shell: options.shell,
 				timeout: options.timeoutMs,
 				windowsHide: true,
 			},
@@ -444,6 +446,33 @@ export class AgentMergeManager {
 		};
 	}
 
+	async validateWorkspace(
+		workspacePath: string,
+		qualityGates: readonly AgentIntegrationQualityGate[],
+	): Promise<AgentIntegrationGateResult[]> {
+		const results: AgentIntegrationGateResult[] = [];
+		for (const gate of qualityGates) {
+			const startedAt = Date.now();
+			const commandResult = await runCommand(gate.command, [...(gate.args ?? [])], {
+				cwd: workspacePath,
+				timeoutMs: gate.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
+				shell: gate.shell,
+			});
+			results.push({
+				id: gate.id,
+				command: gate.command,
+				args: [...(gate.args ?? [])],
+				passed: commandResult.code === 0,
+				exitCode: commandResult.code,
+				stdout: commandResult.stdout,
+				stderr: commandResult.stderr,
+				durationMs: Date.now() - startedAt,
+			});
+			if (commandResult.code !== 0) break;
+		}
+		return results;
+	}
+
 	private async runQualityGates(
 		request: Pick<AgentMergeRequest, "taskId" | "candidateWorkspace" | "qualityGates">,
 		resultSha: string,
@@ -458,30 +487,11 @@ export class AgentMergeManager {
 		if (existsSync(gateRoot)) throw new Error(`Integration gate worktree already exists: ${gateRoot}`);
 		mkdirSync(dirname(gateRoot), { recursive: true });
 		await runGit(request.candidateWorkspace.repositoryRoot, ["worktree", "add", "--detach", gateRoot, resultSha]);
-		const results: AgentIntegrationGateResult[] = [];
 		try {
-			for (const gate of request.qualityGates) {
-				const startedAt = Date.now();
-				const commandResult = await runCommand(gate.command, [...(gate.args ?? [])], {
-					cwd: gateRoot,
-					timeoutMs: gate.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
-				});
-				results.push({
-					id: gate.id,
-					command: gate.command,
-					args: [...(gate.args ?? [])],
-					passed: commandResult.code === 0,
-					exitCode: commandResult.code,
-					stdout: commandResult.stdout,
-					stderr: commandResult.stderr,
-					durationMs: Date.now() - startedAt,
-				});
-				if (commandResult.code !== 0) break;
-			}
+			return await this.validateWorkspace(gateRoot, request.qualityGates);
 		} finally {
 			await runGit(request.candidateWorkspace.repositoryRoot, ["worktree", "remove", "--force", "--", gateRoot]);
 		}
-		return results;
 	}
 
 	private async restoreRecoveryPoint(

@@ -146,7 +146,7 @@ describe("issue 1056 agent runtime scheduler phase two", () => {
 		const agent = scheduler.getAgent(spawned.rlm_child_id);
 		expect(runtimeOptions?.cwd).toBe(agent?.worktreePath);
 		expect(runtimeOptions?.cwd).not.toBe(parent.tempDir);
-		expect(readFileSync(join(parent.tempDir, "shared.txt"), "utf8")).toBe("parent version\n");
+		expect(readFileSync(join(parent.tempDir, "shared.txt"), "utf8")).toBe("child version\n");
 		expect(agent).toMatchObject({
 			baseSha: expect.any(String),
 			candidateSha: expect.any(String),
@@ -172,6 +172,7 @@ describe("issue 1056 agent runtime scheduler phase two", () => {
 		]);
 		expect(restoredScheduler.getIntegrationRecord(spawned.rlm_child_id)).toMatchObject({
 			status: "integrated",
+			promotionStatus: "promoted",
 			candidateSha: manifest.resultSha,
 			resultSha: expect.any(String),
 		});

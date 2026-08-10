@@ -60,7 +60,14 @@ export {
 	type AgentRuntimeTaskRecord,
 	type AgentRuntimeTaskResourceSummary,
 	type AgentRuntimeTaskStatus,
+	type AgentRuntimeWorkspaceAuthority,
+	type IntegrateAgentRuntimeWorkspaceOptions,
 } from "./core/agent-runtime-scheduler.js";
+export {
+	type AcquireAgentRuntimeWorkspaceSchedulerOptions,
+	type AgentRuntimeWorkspaceSchedulerHandle,
+	acquireAgentRuntimeWorkspaceScheduler,
+} from "./core/agent-runtime-workspace-service.js";
 export {
 	AgentSession,
 	type AgentSessionConfig,

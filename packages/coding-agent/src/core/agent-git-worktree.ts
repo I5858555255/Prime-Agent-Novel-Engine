@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import type { AgentIntegrationGateResult } from "./agent-merge-manager.js";
 
 export const AGENT_RUNTIME_TASK_CONTRACT_VERSION = 1;
 export const AGENT_RUNTIME_RESULT_MANIFEST_VERSION = 1;
@@ -99,6 +100,23 @@ export interface FinalizeAgentGitWorkspaceInput {
 	taskId: string;
 	agentId: string;
 	finalSummary: string;
+}
+
+export interface PromoteAgentIntegrationInput {
+	repositoryId: string;
+	repositoryRoot: string;
+	recoverySha: string;
+	resultSha: string;
+	sourceCwd: string;
+	validate?: (workspacePath: string) => Promise<AgentIntegrationGateResult[]>;
+}
+
+export interface AgentIntegrationPromotionResult {
+	outcome: "promoted" | "conflict" | "failed";
+	changedFiles: string[];
+	gateResults: AgentIntegrationGateResult[];
+	sourceSnapshotSha?: string;
+	error?: string;
 }
 
 const GIT_OUTPUT_LIMIT = 16 * 1024 * 1024;
@@ -465,40 +483,146 @@ export class AgentGitWorktreeManager {
 		await runGit(workspace.repositoryRoot, ["worktree", "remove", "--", workspace.worktreePath]);
 	}
 
+	async promoteIntegration(input: PromoteAgentIntegrationInput): Promise<AgentIntegrationPromotionResult> {
+		const capability = await this.inspectRepository(input.sourceCwd);
+		if (
+			!capability.supported ||
+			!capability.repositoryRoot ||
+			!capability.repositoryId ||
+			capability.repositoryId !== input.repositoryId ||
+			canonicalPath(capability.repositoryRoot) !== canonicalPath(input.repositoryRoot)
+		) {
+			return {
+				outcome: "failed",
+				changedFiles: [],
+				gateResults: [],
+				error: "Promotion target is not the scheduler's source repository",
+			};
+		}
+		const repositoryRoot = capability.repositoryRoot;
+		const changedFiles = (
+			await runGit(repositoryRoot, ["diff", "--name-only", "-z", input.recoverySha, input.resultSha, "--"])
+		)
+			.split("\0")
+			.filter(Boolean)
+			.sort();
+		const temporaryDirectory = mkdtempSync(join(tmpdir(), "prime-agent-promotion-"));
+		const patchPath = join(temporaryDirectory, "integration.patch");
+		const validationWorktreePath = join(temporaryDirectory, "validation-worktree");
+		let validationWorktreeCreated = false;
+		let sourceSnapshotSha: string | undefined;
+		try {
+			const fingerprint = await this.sourceWorkspaceFingerprint(repositoryRoot);
+			sourceSnapshotSha = await this.createDirtyBaseSnapshot(
+				repositoryRoot,
+				capability.headSha ?? "HEAD",
+				"promotion",
+			);
+			if (changedFiles.length > 0) {
+				const patch = await runGit(repositoryRoot, ["diff", "--binary", input.recoverySha, input.resultSha, "--"]);
+				writeFileSync(patchPath, patch, "utf8");
+				try {
+					await runGit(repositoryRoot, ["apply", "--check", "--binary", "--", patchPath]);
+				} catch (error) {
+					return {
+						outcome: "conflict",
+						changedFiles,
+						gateResults: [],
+						sourceSnapshotSha,
+						error: errorText(error),
+					};
+				}
+			}
+			let gateResults: AgentIntegrationGateResult[] = [];
+			if (input.validate) {
+				await runGit(repositoryRoot, ["worktree", "add", "--detach", validationWorktreePath, sourceSnapshotSha]);
+				validationWorktreeCreated = true;
+				if (changedFiles.length > 0) {
+					await runGit(validationWorktreePath, ["apply", "--binary", "--", patchPath]);
+				}
+				gateResults = await input.validate(validationWorktreePath);
+				if (gateResults.some((gate) => !gate.passed)) {
+					return {
+						outcome: "failed",
+						changedFiles,
+						gateResults,
+						sourceSnapshotSha,
+						error: "Final integration quality gate failed against the current source workspace",
+					};
+				}
+			}
+			const verifiedFingerprint = await this.sourceWorkspaceFingerprint(repositoryRoot);
+			if (fingerprint !== verifiedFingerprint) {
+				return {
+					outcome: "conflict",
+					changedFiles,
+					gateResults,
+					sourceSnapshotSha,
+					error: "Promotion target changed during integration preflight",
+				};
+			}
+			if (changedFiles.length > 0) {
+				try {
+					await runGit(repositoryRoot, ["apply", "--binary", "--", patchPath]);
+				} catch (error) {
+					return { outcome: "conflict", changedFiles, gateResults, sourceSnapshotSha, error: errorText(error) };
+				}
+			}
+			return { outcome: "promoted", changedFiles, gateResults, sourceSnapshotSha };
+		} catch (error) {
+			return { outcome: "failed", changedFiles, gateResults: [], sourceSnapshotSha, error: errorText(error) };
+		} finally {
+			try {
+				if (validationWorktreeCreated) {
+					await runGit(repositoryRoot, ["worktree", "remove", "--force", "--", validationWorktreePath]);
+				}
+			} finally {
+				rmSync(temporaryDirectory, { recursive: true, force: true });
+			}
+		}
+	}
+
 	async rollbackProvision(workspace: AgentGitWorkspace): Promise<void> {
 		await this.cleanup(workspace);
 		await runGit(workspace.repositoryRoot, ["update-ref", "-d", `refs/heads/${workspace.branch}`, workspace.baseSha]);
 	}
 
 	private async createDirtyBaseSnapshot(repositoryRoot: string, headSha: string, taskId: string): Promise<string> {
+		const treeSha = await this.createWorkingTreeSnapshot(repositoryRoot, headSha);
+		return (
+			await runGit(repositoryRoot, [
+				"-c",
+				"user.name=Prime Agent Scheduler",
+				"-c",
+				"user.email=scheduler@prime-agent.local",
+				"commit-tree",
+				treeSha,
+				"-p",
+				headSha,
+				"-m",
+				`prime-agent base snapshot ${taskId}`,
+			])
+		).trim();
+	}
+
+	private async createWorkingTreeSnapshot(repositoryRoot: string, headSha: string): Promise<string> {
 		const temporaryDirectory = mkdtempSync(join(tmpdir(), "prime-agent-git-index-"));
 		const indexPath = join(temporaryDirectory, "index");
 		const environment = { GIT_INDEX_FILE: indexPath };
 		try {
 			await runGit(repositoryRoot, ["read-tree", headSha], environment);
 			await runGit(repositoryRoot, ["add", "-A", "--", "."], environment);
-			const treeSha = (await runGit(repositoryRoot, ["write-tree"], environment)).trim();
-			return (
-				await runGit(
-					repositoryRoot,
-					[
-						"-c",
-						"user.name=Prime Agent Scheduler",
-						"-c",
-						"user.email=scheduler@prime-agent.local",
-						"commit-tree",
-						treeSha,
-						"-p",
-						headSha,
-						"-m",
-						`prime-agent base snapshot ${taskId}`,
-					],
-					environment,
-				)
-			).trim();
+			return (await runGit(repositoryRoot, ["write-tree"], environment)).trim();
 		} finally {
 			rmSync(temporaryDirectory, { recursive: true, force: true });
 		}
+	}
+
+	private async sourceWorkspaceFingerprint(repositoryRoot: string): Promise<string> {
+		const headSha = (await runGit(repositoryRoot, ["rev-parse", "HEAD^{commit}"])).trim();
+		const indexTree = (await runGit(repositoryRoot, ["write-tree"])).trim();
+		const workingTree = await this.createWorkingTreeSnapshot(repositoryRoot, headSha);
+		return `${headSha}\0${indexTree}\0${workingTree}`;
 	}
 
 	private resolveManagerRoot(repositoryRoot: string, repositoryId: string): string {

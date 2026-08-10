@@ -321,9 +321,9 @@ describe("issue 1056 agent runtime scheduler phase five", () => {
 			runId: "run-resolution-migration",
 			statePath,
 		});
-		expect(restored.snapshot()).toMatchObject({ version: 5, conflictResolutions: [] });
+		expect(restored.snapshot()).toMatchObject({ version: 6, conflictResolutions: [], integrationQualityGates: [] });
 		expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
-			version: 5,
+			version: 6,
 			conflictResolutions: [],
 		});
 	});

@@ -24,9 +24,18 @@ import {
 	type AgentMergeOutcome,
 } from "./agent-merge-manager.js";
 
-export const AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 5;
-const PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 4;
-const LEGACY_AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 3;
+export const AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 6;
+const PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 5;
+const LEGACY_AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 4;
+const EARLIEST_AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 3;
+
+export interface AgentRuntimeWorkspaceAuthority {
+	isWritable(): boolean;
+	assertWritable(): void;
+	renew(): boolean;
+	release(): void;
+	describe(): { ownerId?: string; epoch?: number; expiresAt?: string; writable: boolean };
+}
 
 export type AgentRuntimeTaskStatus =
 	| "planned"
@@ -89,6 +98,7 @@ export interface AgentRuntimeSchedulerSnapshot {
 	resourceLeases: AgentRuntimeResourceLease[];
 	resourceBlocks: AgentRuntimeResourceBlockRecord[];
 	conflictResolutions: AgentConflictResolutionRecord[];
+	integrationQualityGates: AgentIntegrationQualityGate[];
 	events: AgentRuntimeSchedulerEvent[];
 	nextEventSequence: number;
 }
@@ -111,6 +121,11 @@ export interface AgentRuntimeIntegrationRecord {
 	changedFiles: string[];
 	conflictFiles: string[];
 	gateResults: AgentIntegrationGateResult[];
+	promotionStatus?: "pending" | "promoted" | "conflict" | "failed";
+	promotionSourceCwd?: string;
+	promotedAt?: string;
+	promotionRecoverySha?: string;
+	promotionError?: string;
 	error?: string;
 }
 
@@ -240,6 +255,9 @@ export interface AgentRuntimeSchedulerSummary {
 	conflictResolutions: AgentConflictResolutionRecord[];
 	recentEvents: AgentRuntimeSchedulerEvent[];
 	latestEventSequence: number;
+	integrationQualityGateIds: string[];
+	qualityGateWarning?: string;
+	workspaceAuthority: { ownerId?: string; epoch?: number; expiresAt?: string; writable: boolean };
 }
 
 export interface CreateAgentRuntimeSchedulerOptions {
@@ -252,6 +270,7 @@ export interface CreateAgentRuntimeSchedulerOptions {
 	conflictResolver?: AgentConflictResolverRunner;
 	conflictResolutionMaxAttempts?: number;
 	conflictResolutionTimeoutMs?: number;
+	workspaceAuthority?: AgentRuntimeWorkspaceAuthority;
 }
 
 export interface RegisterAgentRuntimeTaskInput {
@@ -268,6 +287,10 @@ export interface RegisterAgentRuntimeAgentInput {
 	parentAgentId?: string;
 	sessionId?: string;
 	sessionName?: string;
+}
+
+export interface IntegrateAgentRuntimeWorkspaceOptions {
+	promotionSourceCwd?: string;
 }
 
 const TASK_STATUSES: readonly AgentRuntimeTaskStatus[] = [
@@ -587,6 +610,24 @@ function parseGateResult(value: unknown): AgentIntegrationGateResult {
 	};
 }
 
+function parseQualityGate(value: unknown): AgentIntegrationQualityGate {
+	if (!isRecord(value)) throw new Error("Agent runtime scheduler state has invalid quality gate");
+	const timeoutMs = value.timeoutMs;
+	if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs <= 0)) {
+		throw new Error("Agent runtime scheduler state has invalid quality gate timeoutMs");
+	}
+	if (value.shell !== undefined && typeof value.shell !== "boolean") {
+		throw new Error("Agent runtime scheduler state has invalid quality gate shell");
+	}
+	return {
+		id: requiredString(value, "id"),
+		command: requiredString(value, "command"),
+		args: value.args === undefined ? undefined : stringArray(value, "args"),
+		timeoutMs,
+		shell: value.shell,
+	};
+}
+
 function parseIntegrationRecord(value: unknown): AgentRuntimeIntegrationRecord {
 	if (!isRecord(value)) throw new Error("Agent runtime scheduler state has invalid integration record");
 	if (!Array.isArray(value.gateResults)) {
@@ -608,6 +649,17 @@ function parseIntegrationRecord(value: unknown): AgentRuntimeIntegrationRecord {
 		changedFiles: stringArray(value, "changedFiles"),
 		conflictFiles: stringArray(value, "conflictFiles"),
 		gateResults: value.gateResults.map(parseGateResult),
+		promotionStatus:
+			value.promotionStatus === "pending" ||
+			value.promotionStatus === "promoted" ||
+			value.promotionStatus === "conflict" ||
+			value.promotionStatus === "failed"
+				? value.promotionStatus
+				: undefined,
+		promotionSourceCwd: optionalString(value, "promotionSourceCwd"),
+		promotedAt: optionalString(value, "promotedAt"),
+		promotionRecoverySha: optionalString(value, "promotionRecoverySha"),
+		promotionError: optionalString(value, "promotionError"),
 		error: optionalString(value, "error"),
 	};
 }
@@ -684,7 +736,13 @@ function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 	if (!isRecord(value)) throw new Error("Agent runtime scheduler state must be an object");
 	const isPreviousVersion = value.version === PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION;
 	const isLegacyVersion = value.version === LEGACY_AGENT_RUNTIME_SCHEDULER_STATE_VERSION;
-	if (!isLegacyVersion && !isPreviousVersion && value.version !== AGENT_RUNTIME_SCHEDULER_STATE_VERSION) {
+	const isEarliestVersion = value.version === EARLIEST_AGENT_RUNTIME_SCHEDULER_STATE_VERSION;
+	if (
+		!isEarliestVersion &&
+		!isLegacyVersion &&
+		!isPreviousVersion &&
+		value.version !== AGENT_RUNTIME_SCHEDULER_STATE_VERSION
+	) {
 		throw new Error(`Unsupported agent runtime scheduler state version: ${String(value.version)}`);
 	}
 	if (
@@ -692,11 +750,12 @@ function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 		!Array.isArray(value.agents) ||
 		!Array.isArray(value.integrationRecords) ||
 		!Array.isArray(value.integrationWorkspaces) ||
-		(!isLegacyVersion &&
+		(!isEarliestVersion &&
 			(!Array.isArray(value.resourceLeases) ||
 				!Array.isArray(value.resourceBlocks) ||
 				!Array.isArray(value.events))) ||
-		(!isLegacyVersion && !isPreviousVersion && !Array.isArray(value.conflictResolutions))
+		(!isEarliestVersion && !isLegacyVersion && !Array.isArray(value.conflictResolutions)) ||
+		(!isEarliestVersion && !isLegacyVersion && !isPreviousVersion && !Array.isArray(value.integrationQualityGates))
 	) {
 		throw new Error("Agent runtime scheduler state has invalid registry arrays");
 	}
@@ -710,14 +769,18 @@ function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 		agents: value.agents.map(parseAgent),
 		integrationRecords: value.integrationRecords.map(parseIntegrationRecord),
 		integrationWorkspaces: value.integrationWorkspaces.map(parseIntegrationWorkspace),
-		resourceLeases: isLegacyVersion ? [] : (value.resourceLeases as unknown[]).map(parseResourceLease),
-		resourceBlocks: isLegacyVersion ? [] : (value.resourceBlocks as unknown[]).map(parseResourceBlock),
+		resourceLeases: isEarliestVersion ? [] : (value.resourceLeases as unknown[]).map(parseResourceLease),
+		resourceBlocks: isEarliestVersion ? [] : (value.resourceBlocks as unknown[]).map(parseResourceBlock),
 		conflictResolutions:
-			isLegacyVersion || isPreviousVersion
+			isEarliestVersion || isLegacyVersion
 				? []
 				: (value.conflictResolutions as unknown[]).map(parseConflictResolutionRecord),
-		events: isLegacyVersion ? [] : (value.events as unknown[]).map(parseSchedulerEvent),
-		nextEventSequence: isLegacyVersion ? 1 : parseNextEventSequence(value.nextEventSequence),
+		integrationQualityGates:
+			isEarliestVersion || isLegacyVersion || isPreviousVersion
+				? []
+				: (value.integrationQualityGates as unknown[]).map(parseQualityGate),
+		events: isEarliestVersion ? [] : (value.events as unknown[]).map(parseSchedulerEvent),
+		nextEventSequence: isEarliestVersion ? 1 : parseNextEventSequence(value.nextEventSequence),
 	};
 	assertUniqueIds(snapshot.tasks, "task");
 	assertUniqueIds(snapshot.agents, "agent");
@@ -818,6 +881,10 @@ function cloneConflictResolution(record: AgentConflictResolutionRecord): AgentCo
 	};
 }
 
+function cloneQualityGate(gate: AgentIntegrationQualityGate): AgentIntegrationQualityGate {
+	return { ...gate, args: gate.args ? [...gate.args] : undefined };
+}
+
 function normalizeResourceScopes(resources: readonly string[]): string[] {
 	const normalized = resources.map((resource) => resource.trim());
 	if (normalized.some((resource) => !resource)) {
@@ -841,10 +908,15 @@ export class AgentRuntimeScheduler {
 	private readonly mergeManager: AgentMergeManager;
 	private readonly conflictResolverManager: AgentConflictResolverManager;
 	private readonly integrationQualityGates: AgentIntegrationQualityGate[];
+	private readonly workspaceAuthority?: AgentRuntimeWorkspaceAuthority;
 	private readonly resourceLeaseTtlMs: number;
 	private readonly conflictResolutionMaxAttempts: number;
 	private readonly conflictResolutionTimeoutMs: number;
-	private conflictResolver?: AgentConflictResolverRunner;
+	private readonly configuredConflictResolver?: AgentConflictResolverRunner;
+	private readonly sessionConflictResolvers: Array<{
+		runner: AgentConflictResolverRunner;
+		ownerAgentId?: string;
+	}> = [];
 	private readonly integrationOperations = new Map<string, Promise<AgentRuntimeIntegrationRecord>>();
 	private integrationTail: Promise<void> = Promise.resolve();
 	private state: AgentRuntimeSchedulerSnapshot;
@@ -853,6 +925,7 @@ export class AgentRuntimeScheduler {
 		if (!options.runId.trim()) throw new Error("Agent runtime scheduler runId must not be empty");
 		this.statePath = options.statePath;
 		this.now = options.now ?? Date.now;
+		this.workspaceAuthority = options.workspaceAuthority;
 		this.resourceLeaseTtlMs = options.resourceLeaseTtlMs ?? DEFAULT_RESOURCE_LEASE_TTL_MS;
 		if (!Number.isFinite(this.resourceLeaseTtlMs) || this.resourceLeaseTtlMs <= 0) {
 			throw new Error("Agent runtime resourceLeaseTtlMs must be a positive finite number");
@@ -866,7 +939,7 @@ export class AgentRuntimeScheduler {
 		if (!Number.isInteger(this.conflictResolutionTimeoutMs) || this.conflictResolutionTimeoutMs <= 0) {
 			throw new Error("Agent runtime conflictResolutionTimeoutMs must be a positive integer");
 		}
-		this.conflictResolver = options.conflictResolver;
+		this.configuredConflictResolver = options.conflictResolver;
 		this.worktreeManager = new AgentGitWorktreeManager({
 			runId: options.runId,
 			preferredRoot: options.statePath ? resolve(dirname(options.statePath), "worktrees") : undefined,
@@ -897,10 +970,7 @@ export class AgentRuntimeScheduler {
 			runId: options.runId,
 			preferredRoot: resolutionRoot,
 		});
-		this.integrationQualityGates = (options.integrationQualityGates ?? []).map((gate) => ({
-			...gate,
-			args: gate.args ? [...gate.args] : undefined,
-		}));
+		const configuredQualityGates = (options.integrationQualityGates ?? []).map(cloneQualityGate);
 		const workspaceId = canonicalWorkspaceId(options.workspacePath);
 		const loadedState = this.loadState();
 		const loaded = loadedState?.snapshot;
@@ -909,6 +979,16 @@ export class AgentRuntimeScheduler {
 				throw new Error("Agent runtime scheduler state does not match the requested workspace and run");
 			}
 			this.state = loaded;
+			if (
+				configuredQualityGates.length > 0 &&
+				loaded.integrationQualityGates.length > 0 &&
+				JSON.stringify(configuredQualityGates) !== JSON.stringify(loaded.integrationQualityGates)
+			) {
+				throw new Error("Agent runtime integration quality gates do not match persisted workspace policy");
+			}
+			if (loaded.integrationQualityGates.length === 0 && configuredQualityGates.length > 0) {
+				loaded.integrationQualityGates = configuredQualityGates.map(cloneQualityGate);
+			}
 		} else {
 			const timestamp = this.timestamp();
 			this.state = {
@@ -924,10 +1004,12 @@ export class AgentRuntimeScheduler {
 				resourceLeases: [],
 				resourceBlocks: [],
 				conflictResolutions: [],
+				integrationQualityGates: configuredQualityGates.map(cloneQualityGate),
 				events: [],
 				nextEventSequence: 1,
 			};
 		}
+		this.integrationQualityGates = this.state.integrationQualityGates.map(cloneQualityGate);
 		for (const task of this.state.tasks) this.tasks.set(task.id, task);
 		for (const agent of this.state.agents) this.agents.set(agent.id, agent);
 		for (const record of this.state.integrationRecords) this.integrationRecords.set(record.taskId, record);
@@ -939,7 +1021,8 @@ export class AgentRuntimeScheduler {
 		for (const resolutionRecord of this.state.conflictResolutions) {
 			this.conflictResolutions.set(resolutionRecord.id, resolutionRecord);
 		}
-		const expiredLeases = this.expireStaleResourceLeases();
+		const mayRecover = this.workspaceAuthority?.isWritable() ?? true;
+		const expiredLeases = mayRecover ? this.expireStaleResourceLeases() : [];
 		if (expiredLeases.length > 0) {
 			this.resolveResourceBlocks();
 			this.appendEvent({
@@ -949,18 +1032,19 @@ export class AgentRuntimeScheduler {
 				message: "Recovered expired resource ownership during scheduler restoration",
 			});
 		}
-		const recoveredAgents = this.markInterruptedAgentsRecovering();
-		const recoveredIntegrations = this.markInterruptedIntegrationsQueued();
-		const recoveredResolutions = this.markInterruptedResolutionsEscalated();
+		const recoveredAgents = mayRecover ? this.markInterruptedAgentsRecovering() : false;
+		const recoveredIntegrations = mayRecover ? this.markInterruptedIntegrationsQueued() : false;
+		const recoveredResolutions = mayRecover ? this.markInterruptedResolutionsEscalated() : false;
 		if (
-			loadedState?.migrated ||
-			expiredLeases.length > 0 ||
-			recoveredAgents ||
-			recoveredIntegrations ||
-			recoveredResolutions
+			mayRecover &&
+			(loadedState?.migrated ||
+				expiredLeases.length > 0 ||
+				recoveredAgents ||
+				recoveredIntegrations ||
+				recoveredResolutions)
 		) {
 			this.persist();
-		} else if (!loaded) this.persist();
+		} else if (!loaded && mayRecover) this.persist();
 	}
 
 	get workspaceId(): string {
@@ -971,7 +1055,29 @@ export class AgentRuntimeScheduler {
 		return this.state.runId;
 	}
 
+	isWorkspaceAuthorityOwner(): boolean {
+		return this.workspaceAuthority?.isWritable() ?? true;
+	}
+
+	renewWorkspaceAuthority(): boolean {
+		if (!this.workspaceAuthority) return true;
+		const alreadyWritable = this.workspaceAuthority.isWritable();
+		if (!alreadyWritable) this.refreshReadOnlyState();
+		const renewed = this.workspaceAuthority.renew();
+		if (renewed && !alreadyWritable) this.recoverAfterAuthorityTakeover();
+		return renewed;
+	}
+
+	releaseWorkspaceAuthority(): void {
+		this.workspaceAuthority?.release();
+	}
+
+	getIntegrationQualityGates(): AgentIntegrationQualityGate[] {
+		return this.integrationQualityGates.map(cloneQualityGate);
+	}
+
 	registerTask(input: RegisterAgentRuntimeTaskInput): AgentRuntimeTaskRecord {
+		this.assertMutationAuthority();
 		const id = input.id.trim();
 		const objective = input.objective.trim();
 		if (!id) throw new Error("Agent runtime task id must not be empty");
@@ -1002,6 +1108,7 @@ export class AgentRuntimeScheduler {
 	}
 
 	transitionTask(taskId: string, status: AgentRuntimeTaskStatus, error?: string): AgentRuntimeTaskRecord {
+		this.assertMutationAuthority();
 		const task = this.requireTask(taskId);
 		if (task.status === status) return cloneTask(task);
 		const previousStatus = task.status;
@@ -1023,6 +1130,7 @@ export class AgentRuntimeScheduler {
 	}
 
 	registerAgent(input: RegisterAgentRuntimeAgentInput): AgentRuntimeAgentRecord {
+		this.assertMutationAuthority();
 		const id = input.id.trim();
 		if (!id) throw new Error("Agent runtime agent id must not be empty");
 		if (this.agents.has(id)) throw new Error(`Duplicate agent runtime agent id: ${id}`);
@@ -1046,6 +1154,7 @@ export class AgentRuntimeScheduler {
 	}
 
 	markAgentRunning(agentId: string, sessionId?: string): AgentRuntimeAgentRecord {
+		this.assertMutationAuthority();
 		const agent = this.requireAgent(agentId);
 		const previousStatus = agent.status;
 		this.transitionAgent(agent, "running");
@@ -1063,11 +1172,15 @@ export class AgentRuntimeScheduler {
 	}
 
 	recordAgentHeartbeat(agentId: string): AgentRuntimeAgentRecord {
+		this.assertMutationAuthority();
 		const agent = this.requireAgent(agentId);
-		if (!ACTIVE_AGENT_STATUSES.has(agent.status)) {
+		const task = this.requireTask(agent.taskId);
+		const integrationPending =
+			agent.status === "completed" && (task.status === "completed" || task.status === "integrating");
+		if (!ACTIVE_AGENT_STATUSES.has(agent.status) && !integrationPending) {
 			return cloneAgent(agent);
 		}
-		if (agent.status !== "running") this.transitionAgent(agent, "running");
+		if (agent.status !== "running" && agent.status !== "completed") this.transitionAgent(agent, "running");
 		else agent.updatedAt = this.timestamp();
 		agent.heartbeatAt = agent.updatedAt;
 		this.renewAgentResourceLeases(agent.id, agent.heartbeatAt);
@@ -1088,6 +1201,7 @@ export class AgentRuntimeScheduler {
 		agentId: string,
 		input: { sourceCwd: string; metadataDir: string },
 	): Promise<AgentGitWorkspace | undefined> {
+		this.assertMutationAuthority();
 		const agent = this.requireAgent(agentId);
 		const task = this.requireTask(agent.taskId);
 		const workspace = await this.worktreeManager.provision({
@@ -1128,6 +1242,7 @@ export class AgentRuntimeScheduler {
 		agentId: string,
 		finalSummary: string,
 	): Promise<AgentRuntimeResultManifest | undefined> {
+		this.assertMutationAuthority();
 		const agent = this.requireAgent(agentId);
 		const workspace = this.workspaceForAgent(agent);
 		if (!workspace) return undefined;
@@ -1146,6 +1261,7 @@ export class AgentRuntimeScheduler {
 	}
 
 	async cleanupAgentWorkspace(agentId: string): Promise<void> {
+		this.assertMutationAuthority();
 		const agent = this.requireAgent(agentId);
 		const task = this.requireTask(agent.taskId);
 		if (task.status !== "integrated" && task.status !== "cancelled") {
@@ -1160,6 +1276,7 @@ export class AgentRuntimeScheduler {
 	}
 
 	acquireTaskResources(agentId: string): AgentRuntimeResourceAcquisitionResult {
+		this.assertMutationAuthority();
 		this.recoverStaleResourceLeases();
 		const agent = this.requireAgent(agentId);
 		const task = this.requireTask(agent.taskId);
@@ -1237,6 +1354,7 @@ export class AgentRuntimeScheduler {
 		agentId: string,
 		reason: AgentRuntimeResourceReleaseReason = "explicit",
 	): AgentRuntimeResourceLease[] {
+		this.assertMutationAuthority();
 		this.requireAgent(agentId);
 		const releasedAt = this.timestamp();
 		const released: AgentRuntimeResourceLease[] = [];
@@ -1262,6 +1380,7 @@ export class AgentRuntimeScheduler {
 	}
 
 	recoverStaleResourceLeases(): AgentRuntimeResourceLease[] {
+		this.assertMutationAuthority();
 		const expired = this.expireStaleResourceLeases();
 		if (expired.length === 0) return [];
 		this.resolveResourceBlocks();
@@ -1298,16 +1417,18 @@ export class AgentRuntimeScheduler {
 		return this.state.events.filter((event) => event.sequence > sequence).map(cloneSchedulerEvent);
 	}
 
-	setConflictResolver(runner: AgentConflictResolverRunner | undefined): void {
-		this.conflictResolver = runner;
+	setConflictResolver(runner: AgentConflictResolverRunner | undefined, ownerAgentId?: string): void {
+		if (!runner || this.sessionConflictResolvers.some((entry) => entry.runner === runner)) return;
+		this.sessionConflictResolvers.push({ runner, ownerAgentId });
 	}
 
 	hasConflictResolver(): boolean {
-		return this.conflictResolver !== undefined;
+		return this.activeConflictResolver() !== undefined;
 	}
 
 	clearConflictResolver(runner: AgentConflictResolverRunner): void {
-		if (this.conflictResolver === runner) this.conflictResolver = undefined;
+		const index = this.sessionConflictResolvers.findIndex((entry) => entry.runner === runner);
+		if (index >= 0) this.sessionConflictResolvers.splice(index, 1);
 	}
 
 	getConflictResolution(resolutionId: string): AgentConflictResolutionRecord | undefined {
@@ -1315,7 +1436,11 @@ export class AgentRuntimeScheduler {
 		return record ? cloneConflictResolution(record) : undefined;
 	}
 
-	async integrateAgentWorkspace(agentId: string): Promise<AgentRuntimeIntegrationRecord | undefined> {
+	async integrateAgentWorkspace(
+		agentId: string,
+		options: IntegrateAgentRuntimeWorkspaceOptions = {},
+	): Promise<AgentRuntimeIntegrationRecord | undefined> {
+		this.assertMutationAuthority();
 		const agent = this.requireAgent(agentId);
 		const workspace = this.workspaceForAgent(agent);
 		if (!workspace || !agent.candidateSha) return undefined;
@@ -1340,10 +1465,17 @@ export class AgentRuntimeScheduler {
 				changedFiles: [],
 				conflictFiles: [],
 				gateResults: [],
+				promotionStatus: options.promotionSourceCwd ? "pending" : undefined,
+				promotionSourceCwd: options.promotionSourceCwd,
 			};
 			this.integrationRecords.set(record.taskId, record);
 			this.persist();
 			this.publishEvent({ type: "integration_queued", taskId: record.taskId, agentId: record.agentId });
+		} else if (options.promotionSourceCwd) {
+			existing.promotionSourceCwd = options.promotionSourceCwd;
+			existing.promotionStatus = "pending";
+			existing.promotionError = undefined;
+			this.persist();
 		}
 		const operation = this.integrationTail.then(() => this.performIntegration(agent.id));
 		this.integrationTail = operation.then(
@@ -1358,7 +1490,44 @@ export class AgentRuntimeScheduler {
 		}
 	}
 
+	async retryIntegrationPromotion(
+		taskId: string,
+		promotionSourceCwd?: string,
+	): Promise<AgentRuntimeIntegrationRecord> {
+		this.assertMutationAuthority();
+		const record = this.integrationRecords.get(taskId);
+		if (!record?.recoverySha || !record.resultSha) {
+			throw new Error(`Agent runtime task ${taskId} has no completed integration result to promote`);
+		}
+		if (record.status !== "conflict" || !record.promotionSourceCwd) {
+			throw new Error(`Agent runtime task ${taskId} has no retryable promotion conflict`);
+		}
+		if (promotionSourceCwd) record.promotionSourceCwd = promotionSourceCwd;
+		record.promotionStatus = "pending";
+		record.promotionError = undefined;
+		this.transitionTask(taskId, "integrating");
+		await this.finalizeIntegratedRecord(record, this.requireTask(taskId), this.requireAgent(record.agentId));
+		return cloneIntegrationRecord(record);
+	}
+
+	abandonIntegration(taskId: string, reason = "Integration abandoned by user"): AgentRuntimeIntegrationRecord {
+		this.assertMutationAuthority();
+		const record = this.integrationRecords.get(taskId);
+		if (!record || record.status !== "conflict") {
+			throw new Error(`Agent runtime task ${taskId} has no integration conflict to abandon`);
+		}
+		record.status = "failed";
+		record.completedAt = this.timestamp();
+		record.error = reason;
+		record.promotionStatus = "failed";
+		record.promotionError = reason;
+		this.transitionTask(taskId, "cancelled", reason);
+		this.releaseAgentResources(record.agentId, "explicit");
+		return cloneIntegrationRecord(record);
+	}
+
 	async resumePendingIntegrations(): Promise<AgentRuntimeIntegrationRecord[]> {
+		this.assertMutationAuthority();
 		const pending = [...this.integrationRecords.values()]
 			.filter(
 				(record) =>
@@ -1388,6 +1557,7 @@ export class AgentRuntimeScheduler {
 	}
 
 	markStaleAgentsRecovering(staleAfterMs: number): string[] {
+		this.assertMutationAuthority();
 		if (!Number.isFinite(staleAfterMs) || staleAfterMs < 0) {
 			throw new Error("staleAfterMs must be a non-negative finite number");
 		}
@@ -1415,16 +1585,19 @@ export class AgentRuntimeScheduler {
 	}
 
 	getTask(taskId: string): AgentRuntimeTaskRecord | undefined {
+		this.refreshReadOnlyState();
 		const task = this.tasks.get(taskId);
 		return task ? cloneTask(task) : undefined;
 	}
 
 	getAgent(agentId: string): AgentRuntimeAgentRecord | undefined {
+		this.refreshReadOnlyState();
 		const agent = this.agents.get(agentId);
 		return agent ? cloneAgent(agent) : undefined;
 	}
 
 	getIntegrationRecord(taskId: string): AgentRuntimeIntegrationRecord | undefined {
+		this.refreshReadOnlyState();
 		const record = this.integrationRecords.get(taskId);
 		return record ? cloneIntegrationRecord(record) : undefined;
 	}
@@ -1476,16 +1649,24 @@ export class AgentRuntimeScheduler {
 			record.gateResults = result.gateResults.map((gate) => ({ ...gate, args: [...gate.args] }));
 			record.error = result.error;
 			const resolutionTrigger = this.conflictResolutionTrigger(result.outcome, result.gateResults);
-			if (resolutionTrigger && this.conflictResolver) {
+			if (resolutionTrigger && this.activeConflictResolver(agent.parentAgentId)) {
 				record.status = "conflict";
 				record.completedAt = this.timestamp();
 				this.transitionTask(task.id, "conflict", result.error);
 				await this.performConflictResolution(record, agent, workspace, resolutionTrigger);
+				const resolvedRecord = this.integrationRecords.get(task.id);
+				if (resolvedRecord?.status === "integrated") {
+					await this.finalizeIntegratedRecord(resolvedRecord, task, agent);
+				}
 				return cloneIntegrationRecord(record);
 			}
 			record.status = result.outcome;
 			record.completedAt = this.timestamp();
-			this.transitionTask(task.id, result.outcome, result.error);
+			if (result.outcome === "integrated") {
+				await this.finalizeIntegratedRecord(record, task, agent);
+			} else {
+				this.transitionTask(task.id, result.outcome, result.error);
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			record.status = "failed";
@@ -1500,13 +1681,57 @@ export class AgentRuntimeScheduler {
 		return cloneIntegrationRecord(record);
 	}
 
+	private async finalizeIntegratedRecord(
+		record: AgentRuntimeIntegrationRecord,
+		task: AgentRuntimeTaskRecord,
+		agent: AgentRuntimeAgentRecord,
+	): Promise<void> {
+		if (record.promotionSourceCwd) {
+			if (!record.recoverySha || !record.resultSha || !agent.repositoryRoot) {
+				throw new Error(`Agent runtime task ${task.id} is missing promotion metadata`);
+			}
+			const promotion = await this.worktreeManager.promoteIntegration({
+				repositoryId: record.repositoryId,
+				repositoryRoot: agent.repositoryRoot,
+				recoverySha: record.recoverySha,
+				resultSha: record.resultSha,
+				sourceCwd: record.promotionSourceCwd,
+				validate:
+					this.integrationQualityGates.length > 0
+						? (workspacePath) => this.mergeManager.validateWorkspace(workspacePath, this.integrationQualityGates)
+						: undefined,
+			});
+			if (promotion.gateResults.length > 0) {
+				record.gateResults = promotion.gateResults.map((gate) => ({ ...gate, args: [...gate.args] }));
+			}
+			record.promotionRecoverySha = promotion.sourceSnapshotSha;
+			if (promotion.outcome !== "promoted") {
+				record.status = "conflict";
+				record.completedAt = this.timestamp();
+				record.promotionStatus = promotion.outcome;
+				record.promotionError = promotion.error ?? "Integration promotion failed";
+				record.error = record.promotionError;
+				this.transitionTask(task.id, "conflict", record.error);
+				return;
+			}
+			record.promotionStatus = "promoted";
+			record.promotedAt = this.timestamp();
+			record.promotionError = undefined;
+		}
+		record.status = "integrated";
+		record.completedAt = this.timestamp();
+		record.error = undefined;
+		this.transitionTask(task.id, "integrated");
+		this.releaseAgentResources(agent.id, "agent_completed");
+	}
+
 	private async performConflictResolution(
 		integrationRecord: AgentRuntimeIntegrationRecord,
 		agent: AgentRuntimeAgentRecord,
 		candidateWorkspace: AgentGitWorkspace,
 		trigger: AgentConflictResolutionTrigger,
 	): Promise<void> {
-		const runner = this.conflictResolver;
+		const runner = this.activeConflictResolver(agent.parentAgentId);
 		const recoverySha = integrationRecord.recoverySha;
 		const integrationWorkspace = this.integrationWorkspaces.get(candidateWorkspace.repositoryId);
 		if (!runner || !recoverySha || !integrationWorkspace) return;
@@ -1624,7 +1849,6 @@ export class AgentRuntimeScheduler {
 				integrationRecord.changedFiles = [...promotion.changedFiles];
 				integrationRecord.gateResults = promotion.gateResults.map((gate) => ({ ...gate, args: [...gate.args] }));
 				integrationRecord.error = undefined;
-				this.transitionTask(resolution.taskId, "integrated");
 				try {
 					await this.conflictResolverManager.cleanupSuccessful(execution.workspace);
 					resolution.workspaceCleanedAt = this.timestamp();
@@ -1694,11 +1918,24 @@ export class AgentRuntimeScheduler {
 
 	private canAttemptConflictResolution(taskId: string): boolean {
 		const attempts = this.conflictResolutionAttempts(taskId);
+		const integration = this.integrationRecords.get(taskId);
+		const agent = integration ? this.agents.get(integration.agentId) : undefined;
 		return Boolean(
-			this.conflictResolver &&
+			this.activeConflictResolver(agent?.parentAgentId) &&
 				attempts.length < this.conflictResolutionMaxAttempts &&
 				attempts.at(-1)?.status !== "escalated",
 		);
+	}
+
+	private activeConflictResolver(ownerAgentId?: string): AgentConflictResolverRunner | undefined {
+		if (this.configuredConflictResolver) return this.configuredConflictResolver;
+		if (ownerAgentId) {
+			for (let index = this.sessionConflictResolvers.length - 1; index >= 0; index--) {
+				const owned = this.sessionConflictResolvers[index];
+				if (owned?.ownerAgentId === ownerAgentId) return owned.runner;
+			}
+		}
+		return this.sessionConflictResolvers.at(-1)?.runner;
 	}
 
 	private taskContractsForResolution(repositoryId: string, candidateTaskId: string): AgentRuntimeTaskContract[] {
@@ -1739,7 +1976,8 @@ export class AgentRuntimeScheduler {
 	}
 
 	summary(): AgentRuntimeSchedulerSummary {
-		this.recoverStaleResourceLeases();
+		this.refreshReadOnlyState();
+		if (this.isWorkspaceAuthorityOwner()) this.recoverStaleResourceLeases();
 		const taskCounts: Partial<Record<AgentRuntimeTaskStatus, number>> = {};
 		const agentCounts: Partial<Record<AgentRuntimeAgentStatus, number>> = {};
 		const readyTaskIds: string[] = [];
@@ -1791,10 +2029,17 @@ export class AgentRuntimeScheduler {
 				.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.attempt - b.attempt),
 			recentEvents: this.state.events.slice(-MAX_SUMMARY_SCHEDULER_EVENTS).map(cloneSchedulerEvent),
 			latestEventSequence: this.state.nextEventSequence - 1,
+			integrationQualityGateIds: this.integrationQualityGates.map((gate) => gate.id),
+			qualityGateWarning:
+				this.integrationQualityGates.length === 0
+					? "No Agent Runtime integration quality gates are configured"
+					: undefined,
+			workspaceAuthority: this.workspaceAuthority?.describe() ?? { writable: true },
 		};
 	}
 
 	snapshot(): AgentRuntimeSchedulerSnapshot {
+		this.refreshReadOnlyState();
 		return {
 			...this.state,
 			tasks: [...this.tasks.values()].map(cloneTask),
@@ -1804,6 +2049,7 @@ export class AgentRuntimeScheduler {
 			resourceLeases: [...this.resourceLeases.values()].map(cloneResourceLease),
 			resourceBlocks: [...this.resourceBlocks.values()].map(cloneResourceBlock),
 			conflictResolutions: [...this.conflictResolutions.values()].map(cloneConflictResolution),
+			integrationQualityGates: this.integrationQualityGates.map(cloneQualityGate),
 			events: this.state.events.map(cloneSchedulerEvent),
 		};
 	}
@@ -1813,13 +2059,16 @@ export class AgentRuntimeScheduler {
 		status: "completed" | "failed" | "cancelled",
 		error?: string,
 	): AgentRuntimeAgentRecord {
+		this.assertMutationAuthority();
 		const agent = this.requireAgent(agentId);
 		if (agent.status === status) return cloneAgent(agent);
 		const previousStatus = agent.status;
 		this.transitionAgent(agent, status);
 		agent.error = error?.trim() || undefined;
 		this.persist();
-		this.releaseAgentResources(agent.id, `agent_${status}` as AgentRuntimeResourceReleaseReason);
+		if (status !== "completed") {
+			this.releaseAgentResources(agent.id, `agent_${status}` as AgentRuntimeResourceReleaseReason);
+		}
 		this.publishEvent({
 			type: `agent_${status}` as "agent_completed" | "agent_failed" | "agent_cancelled",
 			taskId: agent.taskId,
@@ -1881,7 +2130,7 @@ export class AgentRuntimeScheduler {
 		for (const lease of this.resourceLeases.values()) {
 			if (lease.status !== "active") continue;
 			const owner = this.agents.get(lease.agentId);
-			const ownerTerminal = owner && !ACTIVE_AGENT_STATUSES.has(owner.status);
+			const ownerTerminal = Boolean(owner && (owner.status === "failed" || owner.status === "cancelled"));
 			if (!ownerTerminal && Date.parse(lease.expiresAt) > now) continue;
 			lease.status = "expired";
 			lease.releasedAt = expiredAt;
@@ -2014,6 +2263,24 @@ export class AgentRuntimeScheduler {
 		return changed;
 	}
 
+	private recoverAfterAuthorityTakeover(): void {
+		const expiredLeases = this.expireStaleResourceLeases();
+		if (expiredLeases.length > 0) {
+			this.resolveResourceBlocks();
+			this.appendEvent({
+				type: "resource_expired",
+				resourceScopes: expiredLeases.map((lease) => lease.scope),
+				leaseIds: expiredLeases.map((lease) => lease.id),
+				message: "Recovered expired resource ownership after workspace authority takeover",
+			});
+		}
+		const recoveredAgents = this.markInterruptedAgentsRecovering();
+		const recoveredIntegrations = this.markInterruptedIntegrationsQueued();
+		const recoveredResolutions = this.markInterruptedResolutionsEscalated();
+		const changed = recoveredAgents || recoveredIntegrations || recoveredResolutions;
+		if (changed || expiredLeases.length > 0) this.persist();
+	}
+
 	private loadState(): { snapshot: AgentRuntimeSchedulerSnapshot; migrated: boolean } | undefined {
 		if (!this.statePath || !existsSync(this.statePath)) return undefined;
 		const value = JSON.parse(readFileSync(this.statePath, "utf8")) as unknown;
@@ -2022,11 +2289,48 @@ export class AgentRuntimeScheduler {
 			migrated:
 				isRecord(value) &&
 				(value.version === PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION ||
-					value.version === LEGACY_AGENT_RUNTIME_SCHEDULER_STATE_VERSION),
+					value.version === LEGACY_AGENT_RUNTIME_SCHEDULER_STATE_VERSION ||
+					value.version === EARLIEST_AGENT_RUNTIME_SCHEDULER_STATE_VERSION),
 		};
 	}
 
+	private assertMutationAuthority(): void {
+		this.workspaceAuthority?.assertWritable();
+	}
+
+	private refreshReadOnlyState(): void {
+		if (!this.workspaceAuthority || this.workspaceAuthority.isWritable()) return;
+		const loaded = this.loadState()?.snapshot;
+		if (!loaded) return;
+		if (loaded.workspaceId !== this.state.workspaceId || loaded.runId !== this.state.runId) {
+			throw new Error("Agent runtime scheduler state changed workspace identity while reading shared state");
+		}
+		this.state = loaded;
+		this.tasks.clear();
+		this.agents.clear();
+		this.integrationRecords.clear();
+		this.integrationWorkspaces.clear();
+		this.resourceLeases.clear();
+		this.resourceBlocks.clear();
+		this.conflictResolutions.clear();
+		this.integrationQualityGates.splice(
+			0,
+			this.integrationQualityGates.length,
+			...loaded.integrationQualityGates.map(cloneQualityGate),
+		);
+		for (const task of loaded.tasks) this.tasks.set(task.id, task);
+		for (const agent of loaded.agents) this.agents.set(agent.id, agent);
+		for (const record of loaded.integrationRecords) this.integrationRecords.set(record.taskId, record);
+		for (const workspace of loaded.integrationWorkspaces) {
+			this.integrationWorkspaces.set(workspace.repositoryId, workspace);
+		}
+		for (const lease of loaded.resourceLeases) this.resourceLeases.set(lease.id, lease);
+		for (const block of loaded.resourceBlocks) this.resourceBlocks.set(block.id, block);
+		for (const resolution of loaded.conflictResolutions) this.conflictResolutions.set(resolution.id, resolution);
+	}
+
 	private persist(): void {
+		this.assertMutationAuthority();
 		this.state.version = AGENT_RUNTIME_SCHEDULER_STATE_VERSION;
 		this.state.tasks = [...this.tasks.values()];
 		this.state.agents = [...this.agents.values()];
@@ -2035,6 +2339,7 @@ export class AgentRuntimeScheduler {
 		this.state.resourceLeases = [...this.resourceLeases.values()];
 		this.state.resourceBlocks = [...this.resourceBlocks.values()];
 		this.state.conflictResolutions = [...this.conflictResolutions.values()];
+		this.state.integrationQualityGates = this.integrationQualityGates.map(cloneQualityGate);
 		this.state.updatedAt = this.timestamp();
 		if (!this.statePath) return;
 		mkdirSync(dirname(this.statePath), { recursive: true });

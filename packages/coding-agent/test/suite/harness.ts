@@ -61,6 +61,7 @@ export function getAssistantTexts(harness: Harness): string[] {
 }
 
 export interface HarnessOptions {
+	cwd?: string;
 	api?: string;
 	provider?: string;
 	models?: FauxModelDefinition[];
@@ -74,6 +75,7 @@ export interface HarnessOptions {
 	agentMessageController?: AgentSessionMessageController;
 	subagentRuntimeHost?: SubagentRuntimeHost;
 	agentRuntimeScheduler?: AgentRuntimeScheduler;
+	agentRuntimeHeartbeatIntervalMs?: number;
 	persistSession?: boolean;
 	rlmDepth?: number;
 	rlmMaxDepth?: number;
@@ -108,7 +110,8 @@ function createTempDir(): string {
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
-	const tempDir = createTempDir();
+	const ownsTempDir = options.cwd === undefined;
+	const tempDir = options.cwd ?? createTempDir();
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		api: options.api,
 		provider: options.provider,
@@ -198,6 +201,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		agentMessageController: options.agentMessageController,
 		subagentRuntimeHost: options.subagentRuntimeHost,
 		agentRuntimeScheduler: options.agentRuntimeScheduler,
+		agentRuntimeHeartbeatIntervalMs: options.agentRuntimeHeartbeatIntervalMs,
 		baseToolsOverride: toolMap,
 		extensionRunnerRef,
 		rlmDepth: options.rlmDepth,
@@ -232,7 +236,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		cleanup() {
 			session.dispose();
 			fauxProvider.unregister();
-			if (existsSync(tempDir)) {
+			if (ownsTempDir && existsSync(tempDir)) {
 				// Spawned fixture processes may still be flushing their final registry
 				// writes; retry briefly instead of failing the suite on ENOTEMPTY.
 				rmSync(tempDir, { recursive: true, force: true, maxRetries: 40, retryDelay: 50 });

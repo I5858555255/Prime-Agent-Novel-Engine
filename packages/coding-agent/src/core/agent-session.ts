@@ -57,6 +57,7 @@ import type {
 	AgentConflictResolverRunnerResult,
 } from "./agent-conflict-resolver.js";
 import { formatAgentRuntimeTaskPrompt } from "./agent-git-worktree.js";
+import type { AgentIntegrationQualityGate } from "./agent-merge-manager.js";
 import {
 	AGENT_MESSAGE_CUSTOM_TYPE,
 	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
@@ -92,6 +93,7 @@ import {
 	type AgentRuntimeSchedulerEvent,
 	type AgentRuntimeSchedulerSummary,
 } from "./agent-runtime-scheduler.js";
+import { acquireAgentRuntimeWorkspaceScheduler } from "./agent-runtime-workspace-service.js";
 import { flushAgentTraceUpload } from "./agent-traces.js";
 import {
 	addLoginGuidanceToAuthError,
@@ -491,6 +493,8 @@ export interface AgentSessionConfig {
 	subagentRuntimeHost?: SubagentRuntimeHost;
 	/** Host-owned scheduler shared by one root session and its RLM descendants. */
 	agentRuntimeScheduler?: AgentRuntimeScheduler;
+	/** Host heartbeat cadence for workspace authority and active Agent Runtime leases. */
+	agentRuntimeHeartbeatIntervalMs?: number;
 	/** Host-side autonomous continuation policy. */
 	autonomous?: AgentAutonomousConfig;
 	/**
@@ -1097,6 +1101,19 @@ function attributeChildUsage(parentUsage: Usage, childUsage: Usage): void {
 // AgentSession Class
 // ============================================================================
 
+function integrationQualityGatesFromAutonomous(
+	config: AgentAutonomousConfig | undefined,
+): AgentIntegrationQualityGate[] {
+	const timeoutMs = config?.gates?.timeoutMs;
+	return (config?.gates?.commands ?? []).map((command, index) => ({
+		id: `autonomous-${index + 1}`,
+		command,
+		args: [],
+		timeoutMs,
+		shell: true,
+	}));
+}
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
@@ -1234,6 +1251,8 @@ export class AgentSession {
 	private readonly _agentRuntimeScheduler: AgentRuntimeScheduler;
 	private _agentRuntimeConflictResolver?: AgentConflictResolverRunner;
 	private _unsubscribeAgentRuntimeScheduler?: () => void;
+	private _releaseAgentRuntimeWorkspaceScheduler?: () => void;
+	private _agentRuntimeHeartbeatTimer?: ReturnType<typeof setInterval>;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
 	private _pendingRlmSubagentSessionNames = new Set<string>();
 	// Inline mode keeps finished child sessions so the inspector can still read them;
@@ -1344,22 +1363,57 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._rlmParentAgent = config.rlmParentAgent;
+		const heartbeatIntervalMs = config.agentRuntimeHeartbeatIntervalMs ?? 10_000;
+		if (this._rlmDepth === 0 && (!Number.isFinite(heartbeatIntervalMs) || heartbeatIntervalMs <= 0)) {
+			throw new Error("agentRuntimeHeartbeatIntervalMs must be a positive finite number");
+		}
 		const schedulerArtifactDir = this.sessionManager.getSessionArtifactDir();
-		this._agentRuntimeScheduler =
-			config.agentRuntimeScheduler ??
-			new AgentRuntimeScheduler({
+		if (config.agentRuntimeScheduler) {
+			this._agentRuntimeScheduler = config.agentRuntimeScheduler;
+		} else if (config.agentDir) {
+			const schedulerHandle = acquireAgentRuntimeWorkspaceScheduler({
+				workspacePath: this._cwd,
+				agentDir: config.agentDir,
+				legacyStatePath: schedulerArtifactDir
+					? join(schedulerArtifactDir, "agent-runtime-scheduler.json")
+					: undefined,
+				integrationQualityGates: integrationQualityGatesFromAutonomous(config.autonomous),
+			});
+			this._agentRuntimeScheduler = schedulerHandle.scheduler;
+			this._releaseAgentRuntimeWorkspaceScheduler = schedulerHandle.release;
+		} else {
+			this._agentRuntimeScheduler = new AgentRuntimeScheduler({
 				workspacePath: this._cwd,
 				runId: this.sessionId,
 				statePath: schedulerArtifactDir ? join(schedulerArtifactDir, "agent-runtime-scheduler.json") : undefined,
+				integrationQualityGates: integrationQualityGatesFromAutonomous(config.autonomous),
 			});
+		}
 		if (this._rlmDepth === 0) {
-			if (!this._agentRuntimeScheduler.hasConflictResolver()) {
-				this._agentRuntimeConflictResolver = (context) => this._runAgentConflictResolver(context);
-				this._agentRuntimeScheduler.setConflictResolver(this._agentRuntimeConflictResolver);
-			}
+			this._agentRuntimeConflictResolver = (context) => this._runAgentConflictResolver(context);
+			this._agentRuntimeScheduler.setConflictResolver(this._agentRuntimeConflictResolver, this.sessionId);
 			this._unsubscribeAgentRuntimeScheduler = this._agentRuntimeScheduler.subscribe((event) => {
 				this._queueAgentRuntimeSchedulerContext(event);
 			});
+			this._agentRuntimeHeartbeatTimer = setInterval(() => {
+				try {
+					const alreadyOwned = this._agentRuntimeScheduler.isWorkspaceAuthorityOwner();
+					if (!this._agentRuntimeScheduler.renewWorkspaceAuthority()) return;
+					if (!alreadyOwned) {
+						void this._agentRuntimeScheduler.resumePendingIntegrations().catch(() => undefined);
+					}
+					for (const run of this._activeRlmChildRuns.values()) {
+						if (run.status !== "running") continue;
+						const agent = this._agentRuntimeScheduler.getAgent(run.id);
+						if (agent?.status === "running" || agent?.status === "recovering" || agent?.status === "completed") {
+							this._agentRuntimeScheduler.recordAgentHeartbeat(run.id);
+						}
+					}
+				} catch {
+					// A later tick retries authority renewal; background coordination must not crash the session.
+				}
+			}, heartbeatIntervalMs);
+			this._agentRuntimeHeartbeatTimer.unref?.();
 			const schedulerSummary = this._agentRuntimeScheduler.summary();
 			if (
 				schedulerSummary.activeAgents.length > 0 ||
@@ -1369,7 +1423,9 @@ export class AgentSession {
 			) {
 				this._queueAgentRuntimeSchedulerContext();
 			}
-			void this._agentRuntimeScheduler.resumePendingIntegrations().catch(() => undefined);
+			if (this._agentRuntimeScheduler.isWorkspaceAuthorityOwner()) {
+				void this._agentRuntimeScheduler.resumePendingIntegrations().catch(() => undefined);
+			}
 		}
 		// A resumed child may have replied before this process started; false would
 		// claim knowledge that is not present in the session transcript.
@@ -4024,6 +4080,10 @@ export class AgentSession {
 			return;
 		}
 		this._disposed = true;
+		if (this._agentRuntimeHeartbeatTimer) {
+			clearInterval(this._agentRuntimeHeartbeatTimer);
+			this._agentRuntimeHeartbeatTimer = undefined;
+		}
 		if (this._agentRuntimeConflictResolver) {
 			this._agentRuntimeScheduler.clearConflictResolver(this._agentRuntimeConflictResolver);
 			this._agentRuntimeConflictResolver = undefined;
@@ -4073,6 +4133,8 @@ export class AgentSession {
 			this._eventListeners = [];
 			cleanupSessionResources(this.sessionId);
 		} finally {
+			this._releaseAgentRuntimeWorkspaceScheduler?.();
+			this._releaseAgentRuntimeWorkspaceScheduler = undefined;
 			void this._startDisposeCallbacks();
 		}
 	}
@@ -9222,6 +9284,9 @@ export class AgentSession {
 			...(event?.taskId ? [`task: ${event.taskId}`] : []),
 			...(event?.resolutionId ? [`resolution: ${event.resolutionId}`] : []),
 			...(event?.message ? [`detail: ${event.message}`] : []),
+			`workspace_authority: ${summary.workspaceAuthority.writable ? "owned" : "read_only"}${summary.workspaceAuthority.epoch ? ` (epoch ${summary.workspaceAuthority.epoch})` : ""}`,
+			`integration_quality_gates: ${summary.integrationQualityGateIds.join(", ") || "none"}`,
+			...(summary.qualityGateWarning ? [`quality_gate_warning: ${summary.qualityGateWarning}`] : []),
 			"active_workers:",
 			...(summary.activeAgents.length > 0
 				? summary.activeAgents.slice(0, 20).map((agent) => `- ${agent.sessionName ?? agent.id}: ${agent.status}`)
@@ -9239,6 +9304,30 @@ export class AgentSession {
 				? summary.blockedResourceTasks.slice(0, 20).map((block) => {
 						const scopes = block.conflicts.map((conflict) => conflict.scope).join(", ");
 						return `- ${block.taskId}: ${scopes}`;
+					})
+				: ["- none"]),
+			"integration_results:",
+			...(summary.integrationRecords.length > 0
+				? summary.integrationRecords.slice(-10).map((integration) => {
+						const workspaceAgent = summary.workspaceAgents.find((agent) => agent.id === integration.agentId);
+						const failedGates = integration.gateResults.filter((gate) => !gate.passed).map((gate) => gate.id);
+						const error = integration.promotionError ?? integration.error;
+						const requiredAction =
+							integration.status === "conflict"
+								? "retry or abandon the retained candidate after resolving parent changes"
+								: integration.status === "failed"
+									? "inspect failed gates and retained evidence"
+									: undefined;
+						return [
+							`- ${integration.taskId}: ${integration.status}`,
+							...(integration.promotionStatus ? [`promotion=${integration.promotionStatus}`] : []),
+							...(workspaceAgent?.branch ? [`branch=${workspaceAgent.branch}`] : []),
+							...(integration.resultSha ? [`result=${integration.resultSha}`] : []),
+							...(integration.changedFiles.length > 0 ? [`files=${integration.changedFiles.join(",")}`] : []),
+							...(failedGates.length > 0 ? [`failed_gates=${failedGates.join(",")}`] : []),
+							...(requiredAction ? [`action=${requiredAction}`] : []),
+							...(error ? [`error=${error}`] : []),
+						].join("; ");
 					})
 				: ["- none"]),
 			"conflict_resolution:",
@@ -10096,10 +10185,21 @@ export class AgentSession {
 					run.id,
 					child.getLastAssistantText() ?? answerPreview ?? "Agent completed without a textual summary.",
 				);
-				run.status = "done";
 				this._agentRuntimeScheduler.completeAgent(run.id);
 				this._agentRuntimeScheduler.transitionTask(run.id, "completed");
-				await this._agentRuntimeScheduler.integrateAgentWorkspace(run.id);
+				const integration = await this._agentRuntimeScheduler.integrateAgentWorkspace(run.id, {
+					promotionSourceCwd: this._cwd,
+				});
+				if (integration) {
+					if (integration.status !== "integrated" || integration.promotionStatus !== "promoted") {
+						throw new Error(integration.error ?? integration.promotionError ?? "Agent result integration failed");
+					}
+				} else {
+					this._agentRuntimeScheduler.transitionTask(run.id, "integrating");
+					this._agentRuntimeScheduler.transitionTask(run.id, "integrated");
+					this._agentRuntimeScheduler.releaseAgentResources(run.id, "agent_completed");
+				}
+				run.status = "done";
 				durationMs = Date.now() - startedAt;
 				activity = undefined;
 				emitChildUpdate();
