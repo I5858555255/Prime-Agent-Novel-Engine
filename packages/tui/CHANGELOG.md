@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed the TUI Quick Start to define a self-contained editor theme that compiles from packed artifacts ([#952](https://github.com/PrimeIntellect-ai/prime-agent/issues/952)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
