@@ -193,6 +193,10 @@ export class BrowserManager {
 					params: {},
 					sessionId: event.sessionId,
 				});
+				// A crashed tab will never answer again — release it so listTabs
+				// stops showing it and the next operation fails with the documented
+				// TAB_DESTROYED instead of an opaque CDP_ERROR.
+				this._releaseTarget(targetId, "crashed");
 			}
 		});
 		client.onAny((event) => {
@@ -429,7 +433,10 @@ export class BrowserManager {
 		const state = this._agentState(agentId);
 		const client = await this._ensureClient(agentId);
 		if (effectiveScope === "mine") {
-			const rawTargets = await this._listRawTargets(client);
+			// Include internal pages here: an agent's fresh tab is chrome://newtab,
+			// and filtering it out of the lookup would list it with an empty
+			// url/title even though the agent legitimately owns it.
+			const rawTargets = await this._listRawTargets(client, true);
 			const byId = new Map(rawTargets.map((t) => [t.targetId, t]));
 			return [...state.targets.keys()].map((targetId) => {
 				const raw = byId.get(targetId);
@@ -444,10 +451,10 @@ export class BrowserManager {
 			});
 		}
 		const rawTargets = await this._listRawTargets(client);
-		// Active detection briefly attaches to each user tab — on Chrome 144+
-		// that can surface the remote-debugging consent popup, so it only runs
-		// when the caller actually needs the marker.
-		const activeUserTarget = detectActive ? await this._detectActiveUserTarget(client, rawTargets) : undefined;
+		// Active detection briefly attaches to each tab — on Chrome 144+ that can
+		// surface the remote-debugging consent popup, so it only runs when the
+		// caller actually needs the marker.
+		const activeTargets = detectActive ? await this._detectActiveTargets(client, rawTargets) : new Set<string>();
 		return rawTargets.map((raw) => {
 			const owner = this._owners.get(raw.targetId) ?? null;
 			return {
@@ -456,35 +463,41 @@ export class BrowserManager {
 				title: raw.title,
 				owner,
 				createdByAgent: this._created.has(raw.targetId),
-				active: raw.targetId === activeUserTarget,
+				active: activeTargets.has(raw.targetId),
 			};
 		});
 	}
 
-	private async _listRawTargets(client: CdpClient): Promise<Array<{ targetId: string; url: string; title: string }>> {
+	private async _listRawTargets(
+		client: CdpClient,
+		includeInternal = false,
+	): Promise<Array<{ targetId: string; url: string; title: string }>> {
 		const { targetInfos } = await client.sendRaw<{
 			targetInfos: Array<{ targetId: string; type: string; url: string; title: string }>;
 		}>("Target.getTargets");
-		return (targetInfos ?? []).filter((t) => t.type === "page" && isRealPageUrl(t.url));
+		return (targetInfos ?? []).filter((t) => t.type === "page" && (includeInternal || isRealPageUrl(t.url)));
 	}
 
 	/**
-	 * Find which unassigned page the user is looking at. Visibility semantics
+	 * Find which page(s) the user is looking at. Visibility semantics
 	 * (VibeSurf's _get_active_target): visibilityState === 'visible' means
 	 * "the selected tab of its window" — crucially this stays true while the
 	 * user is typing in the terminal, whereas document.hasFocus() goes false
-	 * and would report nothing. Requires a brief attach+evaluate per candidate
-	 * — on Chrome 144+ this may surface the one-time remote-debugging consent
-	 * the setup flow already covers.
+	 * and would report nothing. EVERY visible tab is returned (one per browser
+	 * window when several windows are open — which window is frontmost is not
+	 * exposed over CDP, so the caller sees them all and picks by context).
+	 * Owned tabs are NOT skipped: the user may well be looking at a tab the
+	 * agent created or adopted, and skipping it would leave no marker at all.
+	 * Requires a brief attach+evaluate per candidate — on Chrome 144+ this may
+	 * surface the one-time remote-debugging consent the setup flow already
+	 * covers.
 	 */
-	private async _detectActiveUserTarget(
+	private async _detectActiveTargets(
 		client: CdpClient,
 		rawTargets: Array<{ targetId: string; url: string; title: string }>,
-	): Promise<string | undefined> {
+	): Promise<Set<string>> {
+		const visible = new Set<string>();
 		for (const raw of rawTargets) {
-			if (this._owners.has(raw.targetId)) {
-				continue;
-			}
 			try {
 				const { sessionId } = await client.sendRaw<{ sessionId: string }>("Target.attachToTarget", {
 					targetId: raw.targetId,
@@ -500,14 +513,14 @@ export class BrowserManager {
 						sessionId,
 					);
 					if (result.result?.value?.visible) {
-						return raw.targetId;
+						visible.add(raw.targetId);
 					}
 				} finally {
 					await client.sendRaw("Target.detachFromTarget", { sessionId }).catch(() => {});
 				}
 			} catch {}
 		}
-		return undefined;
+		return visible;
 	}
 
 	// ------------------------------------------------------------------

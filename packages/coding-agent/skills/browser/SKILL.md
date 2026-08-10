@@ -70,7 +70,10 @@ await browser.screenshot()                     # look before you act
 - **Scrolling**: `scroll(dy=600)` scrolls down, `scroll(dy=-600)` up. It's
   JS-based and works on background tabs; pass x/y to scroll a specific panel.
 - **Troubleshooting**: `drain_events()` shows network/page lifecycle events;
-  `page_info()` is the cheapest "is this tab alive?" check.
+  `page_info()` is the cheapest "is this tab alive?" check. `page_info()`
+  reports YOUR focused tab — it NEVER tells you which tab the user is
+  looking at; that is the `active: true` marker from
+  `list_tabs(scope="all")`.
 - **Raw CDP**: `await browser.cdp("Domain.method", {...})` for anything the
   helpers don't cover (e.g. `Accessibility.getFullAXTree`).
 - **Switching browsers**: if the user asks to use a different browser, call
@@ -114,14 +117,17 @@ is the missing step.
   the background without disturbing the user.
 - `list_tabs()` shows only your tabs. The **main agent** may also
   `list_tabs(scope="all")` to see the user's open tabs — the one the user is
-  currently looking at comes back marked `active: true` — and
-  `attach_tab(target_id)` to adopt one — e.g. when the user asks to "summarize
-  the page I have open". Adopted tabs are never closed by the agent
-  lifecycle. Child agents cannot adopt.
+  currently looking at comes back marked `active: true` (with several
+  browser windows open, EACH window's front tab is marked — CDP does not
+  expose which window is frontmost, so pick by context or ask the user) —
+  and `attach_tab(target_id)` to adopt one — e.g. when the user asks to
+  "summarize the page I have open". Adopted tabs are never closed by the
+  agent lifecycle. Child agents cannot adopt.
 - You get at most 5 tabs; `close_tab()` ones you're done with.
 - Errors are structured: `[NOT_OWNER]`, `[TAB_DESTROYED]`, `[QUOTA_EXCEEDED]`,
-  `[ADOPT_NOT_ALLOWED]`, `[STALE_INDEX]`, `[NOT_CONNECTED]`. On
-  `TAB_DESTROYED` just open a new tab; on `STALE_INDEX` re-run `dom()`.
+  `[ADOPT_NOT_ALLOWED]`, `[STALE_INDEX]`, `[NOT_CONNECTED]`,
+  `[TARGET_NOT_FOUND]`, `[CDP_ERROR]`. On `TAB_DESTROYED` just open a new
+  tab; on `STALE_INDEX` re-run `dom()`.
 
 ## Gotchas
 

@@ -81,11 +81,12 @@ async def focus_tab(target_id: str) -> dict[str, Any]:
 
 async def list_tabs(scope: str = "mine", include_active: bool | None = None) -> dict[str, Any]:
     """List tabs. scope="mine": only this agent's tabs. scope="all" (main
-    agent only): also the user's unassigned tabs, with the tab the user is
-    currently looking at marked `active: true`. Active detection defaults ON
-    for scope="all" (it briefly inspects each user tab — silent once the
-    browser's remote-debugging consent was granted during connection setup);
-    pass include_active=False to skip it."""
+    agent only): also the user's unassigned tabs, with the tab(s) the user is
+    currently looking at marked `active: true` — one per browser window when
+    several windows are open (CDP cannot tell which window is frontmost).
+    Active detection defaults ON for scope="all" (it briefly inspects each
+    tab — silent once the browser's remote-debugging consent was granted
+    during connection setup); pass include_active=False to skip it."""
     if scope not in ("mine", "all"):
         raise ValueError(f'scope must be "mine" or "all", got {scope!r}')
     payload: dict[str, Any] = {"scope": scope}
@@ -100,7 +101,11 @@ async def list_tabs(scope: str = "mine", include_active: bool | None = None) -> 
 
 
 async def goto_url(url: str, target_id: str | None = None) -> dict[str, Any]:
-    """Navigate a tab (default: this agent's primary tab) to `url`."""
+    """Navigate a tab (default: this agent's focused tab) to `url`.
+
+    Returns after the navigation has actually started and the new document
+    reaches readyState interactive/complete (10s budget).
+    """
     return await host_request("browser.goto_url", _payload(url=_require_str(url, "url"), target_id=target_id))
 
 

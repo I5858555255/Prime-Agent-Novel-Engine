@@ -323,6 +323,22 @@ const LOCATE_MARKED_JS = `(function (mark, index) {
 	return { cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2), tag: el.tagName.toLowerCase() };
 })`;
 
+/**
+ * Select the focused element's contents so the following insertText REPLACES
+ * them. A keyboard select-all is not portable: on macOS Ctrl+A is the Emacs
+ * move-to-line-start binding in text fields, so filling would PREPEND the new
+ * text instead of replacing the old.
+ */
+const SELECT_FOCUSED_JS = `(function () {
+	const el = document.activeElement;
+	if (!el) return false;
+	try { if (typeof el.select === "function") { el.select(); return true; } } catch { /* input types without selectable text */ }
+	if (el.isContentEditable) {
+		try { window.getSelection().selectAllChildren(el); return true; } catch { /* fall through */ }
+	}
+	return false;
+})`;
+
 /** JS-first scroll: works on background tabs, unlike CDP wheel events (Chromium drops those for hidden pages). */
 const SCROLL_JS = `(function (dx, dy, x, y) {
 	let el = document.scrollingElement || document.documentElement;
@@ -431,18 +447,50 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 		}
 	}
 
-	async function evaluate<T>(expression: string, targetId?: string): Promise<T> {
-		// Auto-IIFE-wrap top-level `return`, like browser-harness js().
-		let code = expression;
-		if (/\breturn\b/.test(code) && !/^\s*(async\s*)?\(/.test(code)) {
-			code = `(async () => { ${code} })()`;
+	/**
+	 * Replace the focused element's contents with `text`. The element must
+	 * already be focused (click first). Selection-based clearing works on every
+	 * platform; the keyboard shortcut is only a fallback for inputs whose text
+	 * is not selectable (type=number and friends).
+	 */
+	async function clearAndType(text: string, targetId?: string): Promise<void> {
+		const selected = await evaluate<boolean>(SELECT_FOCUSED_JS, targetId).catch(() => false);
+		if (!selected) {
+			// Cmd on macOS (Ctrl+A is Emacs move-to-line-start there), Ctrl elsewhere.
+			const modifiers = process.platform === "darwin" ? 4 : 2;
+			await run(
+				"Input.dispatchKeyEvent",
+				{ type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers },
+				targetId,
+			);
+			await run(
+				"Input.dispatchKeyEvent",
+				{ type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers },
+				targetId,
+			);
 		}
+		await run("Input.insertText", { text }, targetId);
+	}
+
+	async function evaluate<T>(expression: string, targetId?: string): Promise<T> {
 		// Goes through run() (not runForAgent directly) so js()/dom()/scroll()
 		// auto-create a tab on first use, same as the action handlers.
-		const response = await run<{
-			result?: { value?: T; description?: string };
-			exceptionDetails?: { exception?: { description?: string }; text?: string };
-		}>("Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true }, targetId);
+		const attempt = (code: string) =>
+			run<{
+				result?: { value?: T; description?: string };
+				exceptionDetails?: { exception?: { description?: string }; text?: string };
+			}>("Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true }, targetId);
+		let response = await attempt(expression);
+		// Top-level `return` is only legal inside a function. Retry wrapped in an
+		// async IIFE ONLY on that exact syntax error — grepping the source for
+		// the word "return" would misfire on expressions merely containing it
+		// (e.g. a string literal), silently discarding their completion value.
+		if (response.exceptionDetails) {
+			const text = response.exceptionDetails.exception?.description ?? response.exceptionDetails.text ?? "";
+			if (/illegal return statement/i.test(text)) {
+				response = await attempt(`(async () => { ${expression} })()`);
+			}
+		}
 		if (response.exceptionDetails) {
 			const detail = response.exceptionDetails.exception?.description ?? response.exceptionDetails.text ?? "unknown";
 			throw new Error(`JS evaluation failed: ${detail}`);
@@ -539,16 +587,30 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 			try {
 				const url = requireString(payload, "url");
 				const targetId = targetOf(payload);
+				// Snapshot the pre-navigation URL so the readiness poll below can
+				// tell "old document still complete" from "new document arrived".
+				const beforeUrl = await evaluate<string>("location.href", targetId).catch(() => undefined);
 				await run("Page.navigate", { url }, targetId);
-				// Wait out the navigation: while the document is being replaced,
-				// Runtime.evaluate can hit a half-destroyed context
-				// (document.documentElement === null) — polls tolerate that and
-				// simply retry until readyState settles or the budget runs out.
+				// Wait out the navigation: right after Page.navigate returns, the
+				// OLD document is still there and still reports readyState
+				// "complete" — breaking on that would let a screenshot catch the
+				// pre-navigation page. Only accept readyState once the navigation
+				// has actually started (loading state or URL change). While the
+				// document is being replaced, Runtime.evaluate can hit a
+				// half-destroyed context (document.documentElement === null) —
+				// polls tolerate that and retry until the budget runs out.
 				const deadline = Date.now() + 10_000;
+				let sawNavigationStart = false;
 				while (Date.now() < deadline) {
 					try {
-						const state = await evaluate<string>("document.readyState", targetId);
-						if (state === "complete" || state === "interactive") {
+						const probe = await evaluate<{ u: string; r: string }>(
+							"({u: location.href, r: document.readyState})",
+							targetId,
+						);
+						if (probe.r === "loading" || (beforeUrl !== undefined && probe.u !== beforeUrl)) {
+							sawNavigationStart = true;
+						}
+						if (sawNavigationStart && (probe.r === "complete" || probe.r === "interactive")) {
 							break;
 						}
 					} catch {
@@ -709,17 +771,7 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 					throw new Error(`no element matches selector: ${selector}`);
 				}
 				await clickAt(rect.cx, rect.cy, "left", 1, targetId);
-				await run(
-					"Input.dispatchKeyEvent",
-					{ type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 },
-					targetId,
-				);
-				await run(
-					"Input.dispatchKeyEvent",
-					{ type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 },
-					targetId,
-				);
-				await run("Input.insertText", { text }, targetId);
+				await clearAndType(text, targetId);
 				return { selector, length: text.length };
 			} catch (err) {
 				rethrow(err);
@@ -859,17 +911,7 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 					throw new Error(`[STALE_INDEX] element ${index} is gone — the page changed; re-run dom()`);
 				}
 				await clickAt(located.cx, located.cy, "left", 1, snapshot.targetId);
-				await run(
-					"Input.dispatchKeyEvent",
-					{ type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 },
-					snapshot.targetId,
-				);
-				await run(
-					"Input.dispatchKeyEvent",
-					{ type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 },
-					snapshot.targetId,
-				);
-				await run("Input.insertText", { text }, snapshot.targetId);
+				await clearAndType(text, snapshot.targetId);
 				return { index, length: text.length };
 			} catch (err) {
 				rethrow(err);
