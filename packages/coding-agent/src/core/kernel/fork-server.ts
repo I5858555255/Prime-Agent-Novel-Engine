@@ -175,6 +175,7 @@ class ForkServer {
 				const proc = spawn(this.params.python, ["-c", FORK_SERVER_SCRIPT, socketPath], {
 					env: this.launchEnv,
 					stdio: ["ignore", "ignore", "pipe"],
+					windowsHide: true, // avoid console window flash on Windows (console-less daemon workers)
 				});
 				this.proc = proc;
 				proc.stderr?.on("data", (buf: Buffer) => {

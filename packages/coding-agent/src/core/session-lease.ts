@@ -116,6 +116,9 @@ function runProcessQuery(command: string, args: string[]): string {
 	return execFileSync(command, args, {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "ignore"],
+		// Called from console-less daemon workers; avoid a console window flash
+		// on Windows (see runGit in utils/git.ts).
+		windowsHide: true,
 	});
 }
 

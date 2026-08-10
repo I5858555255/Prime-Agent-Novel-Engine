@@ -62,6 +62,9 @@ export async function execCommand(
 			cwd,
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
+			// Runs inside console-less daemon workers; avoid a console window
+			// flash on Windows (see runGit in utils/git.ts).
+			windowsHide: true,
 			// Merge per-call env over the parent env so callers can scope vars
 			// (e.g. herdr pane identity) without mutating the shared process.env.
 			env: mergeExecEnv(options?.env),

@@ -496,6 +496,9 @@ function runChildProcess(
 			detached: process.platform !== "win32",
 			shell: options.shell === true,
 			stdio: ["ignore", "pipe", "pipe"],
+			// These run inside console-less daemon workers; avoid a console window
+			// flash on Windows (see runGit in utils/git.ts).
+			windowsHide: true,
 		});
 		if (child.pid) {
 			trackDetachedChildPid(child.pid);
