@@ -160,8 +160,10 @@ import {
 	GOAL_SKILL_NAME,
 	GOAL_STATE_CUSTOM_TYPE,
 	type GoalHostResponse,
+	type GoalPausedBy,
 	type GoalState,
 	type GoalStatus,
+	goalContinuationIsStalled,
 	goalHostResponse,
 	goalTokenDeltaForUsage,
 	isPersistedGoalState,
@@ -1804,7 +1806,7 @@ export class AgentSession {
 		this._setGoalState(emptyGoalState());
 	}
 
-	private _pauseGoal(reason = "Paused by user"): void {
+	private _pauseGoal(reason = "Paused by user", pausedBy: GoalPausedBy = "user"): void {
 		this._clearQueuedGoalContexts();
 		if (this._goalState.status !== "active") {
 			this._emitGoalUpdate();
@@ -1815,8 +1817,27 @@ export class AgentSession {
 			...goal,
 			active: false,
 			status: "paused",
+			pausedBy,
 			lastReason: reason,
 			lastError: undefined,
+		});
+	}
+
+	/**
+	 * Reactivate a goal the host paused waiting for user input. The user
+	 * message being admitted supplies that input; the regular continuation
+	 * hook takes over after the turn, so no goal context is injected here.
+	 * An explicit `/goal pause` (pausedBy "user") is not resumed.
+	 */
+	private _resumeGoalForUserInput(): void {
+		if (this._goalState.pausedBy !== "host") {
+			return;
+		}
+		this._setGoalState({
+			...this._goalState,
+			active: true,
+			status: "active",
+			lastReason: undefined,
 		});
 	}
 
@@ -3171,6 +3192,10 @@ export class AgentSession {
 			return [];
 		}
 		try {
+			if (goalContinuationIsStalled(context.newMessages)) {
+				this._pauseGoal("Waiting for user input: goal continuations repeatedly ended without tool calls", "host");
+				return [];
+			}
 			this._ensureGoalRuntimeActive(context.context);
 			const nextGoal = {
 				...this._goalState,
@@ -4665,6 +4690,13 @@ export class AgentSession {
 					return;
 				}
 
+				// A genuine user prompt supplies the input a stall-paused goal was
+				// waiting for. Host-generated prompts and custom-message deliveries
+				// (heartbeats, agent messages) do not resume it.
+				if (!isInternalPrompt && !options?.customMessage) {
+					this._resumeGoalForUserInput();
+				}
+
 				const queueForStreaming = this.isStreaming;
 				const queueForBusy = options?.queueIfBusy === true && this._isBusyForSessionInput("preflight");
 				const visibleQueued = queueForStreaming || queueForBusy;
@@ -4862,6 +4894,7 @@ export class AgentSession {
 			throw new Error("Queued prompt normalization did not produce a prompt");
 		}
 
+		this._resumeGoalForUserInput();
 		await this._queuePreparedPrompt("steer", normalized.text, normalized.images, {
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
@@ -4895,6 +4928,7 @@ export class AgentSession {
 			throw new Error("Queued prompt normalization did not produce a prompt");
 		}
 
+		this._resumeGoalForUserInput();
 		return this._queuePreparedPrompt("followUp", normalized.text, normalized.images, {
 			queueKey: options.queueKey,
 			agentMessageId: options.agentMessageId,
