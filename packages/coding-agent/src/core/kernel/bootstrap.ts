@@ -381,6 +381,7 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 function run(command: string, args: string[], options: { stdio?: "ignore" | "inherit" } = {}): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
+			windowsHide: true,
 			env: process.env,
 			stdio: options.stdio ?? "ignore",
 		});

@@ -125,6 +125,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 
 			const [editor, ...editorArgs] = editorCmd.split(" ");
 			const result = spawnSync(editor, [...editorArgs, tmpFile], {
+				windowsHide: true,
 				stdio: "inherit",
 				shell: process.platform === "win32",
 			});
