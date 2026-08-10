@@ -358,10 +358,21 @@ param(
 			[Environment]::SetEnvironmentVariable($name, $installEnv[$name], 'Process')
 		}
 
+		$npmArguments = @('install', '-g', '--no-fund', '--no-audit', '--loglevel=error', '--progress=false')
+		try {
+			$npmHelp = (& $npm install --help 2>$null | Out-String)
+			if ($npmHelp -match '--allow-scripts') {
+				$npmArguments += '--allow-scripts=prime-agent,zeromq,@google/genai,koffi,protobufjs'
+			}
+		} catch {
+			# Older npm versions do not support per-package lifecycle-script approvals.
+		}
+		$npmArguments += $TarballPath
+
 		Write-PrimeAgentStep 'Installing Prime Agent with npm.'
 		$exitCode = 0
 		try {
-			& $npm install -g --no-fund --no-audit --loglevel=error --progress=false $TarballPath
+			& $npm @npmArguments
 			$exitCode = $LASTEXITCODE
 		} finally {
 			foreach ($name in @($previousEnv.Keys)) {

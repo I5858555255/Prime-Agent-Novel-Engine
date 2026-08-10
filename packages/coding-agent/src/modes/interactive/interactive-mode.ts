@@ -7047,7 +7047,6 @@ export class InteractiveMode {
 
 			// Spawn editor synchronously with inherited stdio for interactive editing
 			const result = spawnSync(editor, [...editorArgs, tmpFile], {
-				windowsHide: true,
 				stdio: "inherit",
 				shell: process.platform === "win32",
 			});

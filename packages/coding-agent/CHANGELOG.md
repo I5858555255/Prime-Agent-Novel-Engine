@@ -7,7 +7,8 @@
 - Fixed Windows child processes opening transient console windows.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
 - Added a Windows PowerShell installer (`irm .../install.ps1 | iex`) that verifies the release checksum, installs with npm, and can prepare the IPython runtime.
-- Added Windows support to the kernel bootstrap, installing uv with the official PowerShell installer and using the venv's `Scripts/python.exe`.
+- Added Windows support to the kernel bootstrap, installing uv with the official PowerShell installer and using the venv's `Scripts/python.exe` ([#663](https://github.com/PrimeIntellect-ai/prime-agent/pull/663) by [@skulitom](https://github.com/skulitom)).
+- Fixed the Windows PowerShell installer skipping required lifecycle scripts with npm versions that require explicit approvals.
 
 ## [0.7.1] - 2026-08-07
 
