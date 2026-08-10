@@ -36,6 +36,8 @@ export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) =>
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
 export const DEFAULT_RLM_EXTRA_IMPORT_LABELS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.promptLabel);
 const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
+const UV_INSTALL_COMMAND_WINDOWS =
+	'powershell -ExecutionPolicy ByPass -NoProfile -Command "irm https://astral.sh/uv/install.ps1 | iex"';
 const REQUIRED_HARNESS_METHODS = [
 	"create_memory",
 	"update_memory",
@@ -336,6 +338,11 @@ function ensureKernelPythonKey(pythonSkills: readonly BootstrapPythonSkill[]): s
 	].join("\0");
 }
 
+// uv (like every venv tool) puts the interpreter in Scripts/python.exe on Windows.
+function getKernelVenvPython(venv: string): string {
+	return process.platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
+}
+
 export function getKernelVenvDir(): string {
 	const override = process.env.PRIME_AGENT_KERNEL_VENV;
 	if (override) return path.resolve(expandHome(override));
@@ -511,35 +518,77 @@ async function findExecutable(name: string): Promise<string | null> {
 	return null;
 }
 
+function uvInstallCommand(): string {
+	return process.platform === "win32" ? UV_INSTALL_COMMAND_WINDOWS : UV_INSTALL_COMMAND;
+}
+
+function uvInstaller(): { command: string; args: string[] } {
+	if (process.platform === "win32") {
+		return {
+			command: "powershell",
+			args: ["-ExecutionPolicy", "ByPass", "-NoProfile", "-Command", "irm https://astral.sh/uv/install.ps1 | iex"],
+		};
+	}
+	return { command: "sh", args: ["-c", UV_INSTALL_COMMAND] };
+}
+
+// Both uv installers drop the binary into the first of XDG_BIN_HOME,
+// XDG_DATA_HOME/../bin, or ~/.local/bin. On Windows the installer only adds that
+// directory to the persisted user PATH, so this process never sees it.
+function uvInstallLocations(): string[] {
+	if (process.platform !== "win32") {
+		return [path.join(os.homedir(), ".local", "bin", "uv")];
+	}
+	const locations: string[] = [];
+	if (process.env.XDG_BIN_HOME) locations.push(path.join(process.env.XDG_BIN_HOME, "uv.exe"));
+	if (process.env.XDG_DATA_HOME) locations.push(path.join(process.env.XDG_DATA_HOME, "..", "bin", "uv.exe"));
+	locations.push(path.join(os.homedir(), ".local", "bin", "uv.exe"));
+	return locations;
+}
+
+function uvInstallLocationHint(): string {
+	return process.platform === "win32" ? "%USERPROFILE%\\.local\\bin\\uv.exe" : "~/.local/bin/uv";
+}
+
+async function findInstalledUv(): Promise<string | null> {
+	for (const location of uvInstallLocations()) {
+		if (await isExecutable(location)) return location;
+	}
+	return null;
+}
+
 async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 	const fromPath = await findExecutable("uv");
 	if (fromPath) return fromPath;
 
-	const localUv = path.join(os.homedir(), ".local", "bin", process.platform === "win32" ? "uv.exe" : "uv");
-	if (await isExecutable(localUv)) return localUv;
+	const localUv = await findInstalledUv();
+	if (localUv) return localUv;
 
+	const installCommand = uvInstallCommand();
 	const shouldInstallUv =
 		process.env.PRIME_AGENT_INSTALL_UV === "1" || (!options.onProgress && (await confirmUvInstall()));
 	if (!shouldInstallUv) {
 		throw new Error(
-			`uv is required to set up the Python kernel. Install uv yourself: ${UV_INSTALL_COMMAND}, ` +
+			`uv is required to set up the Python kernel. Install uv yourself: ${installCommand}, ` +
 				"or set PRIME_AGENT_INSTALL_UV=1 to let prime-agent run that installer.",
 		);
 	}
 
 	reportProgress(options, "› installing uv (one-time)…");
+	const installer = uvInstaller();
 	try {
-		await run("sh", ["-c", UV_INSTALL_COMMAND], { stdio: options.onProgress ? "ignore" : "inherit" });
+		await run(installer.command, installer.args, { stdio: options.onProgress ? "ignore" : "inherit" });
 	} catch (error) {
 		throw new Error(
-			`couldn't install uv from astral.sh; install it yourself: ${UV_INSTALL_COMMAND}, then re-run prime-agent. ${errorMessage(error)}`,
+			`couldn't install uv from astral.sh; install it yourself: ${installCommand}, then re-run prime-agent. ${errorMessage(error)}`,
 		);
 	}
 
-	if (await isExecutable(localUv)) return localUv;
+	const installedUv = await findInstalledUv();
+	if (installedUv) return installedUv;
 	const installedFromPath = await findExecutable("uv");
 	if (installedFromPath) return installedFromPath;
-	throw new Error("uv install completed but binary not found at ~/.local/bin/uv");
+	throw new Error(`uv install completed but binary not found at ${uvInstallLocationHint()}`);
 }
 
 async function confirmUvInstall(): Promise<boolean> {
@@ -725,7 +774,7 @@ async function bootstrapVenv(
 ): Promise<void> {
 	await mkdir(path.dirname(venv), { recursive: true });
 	const uv = await ensureUv(options);
-	const python = path.join(venv, "bin", "python");
+	const python = getKernelVenvPython(venv);
 	const sourceDir = await resolveRuntimeSourceDir();
 	const runtimeRequirement = sourceDir ?? RUNTIME_REQUIREMENT;
 	const runtimeIdentity = await resolveRuntimeIdentity();
@@ -886,7 +935,7 @@ async function ensureKernelPythonUncached(
 	}
 
 	const venv = await resolveWritableKernelVenvDir();
-	const python = path.join(venv, "bin", "python");
+	const python = getKernelVenvPython(venv);
 	const runtimeIdentity = await resolveRuntimeIdentity();
 	if (await kernelReady(python, venv, runtimeIdentity, pythonSkills)) return python;
 

@@ -52,6 +52,12 @@ To install the beta built from the latest commit on `main`:
 curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh -s -- beta
 ```
 
+On Windows, install from PowerShell (see [Windows setup](docs/windows.md)):
+
+```powershell
+irm https://app.primeintellect.ai/prime-agent/install.ps1 | iex
+```
+
 Authenticate with an API key:
 
 ```bash
