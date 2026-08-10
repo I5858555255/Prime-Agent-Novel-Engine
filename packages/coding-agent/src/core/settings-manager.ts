@@ -1,7 +1,7 @@
 import type { ServiceTier, Transport } from "@earendil-works/pi-ai";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 
@@ -208,6 +208,22 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 
 export type SettingsScope = "global" | "project";
 
+function writeSettingsFileAtomically(path: string, content: string): void {
+	const dir = dirname(path);
+	const tempPath = join(
+		dir,
+		`.${basename(path)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`,
+	);
+	try {
+		writeFileSync(tempPath, content, "utf-8");
+		renameSync(tempPath, path);
+	} finally {
+		if (existsSync(tempPath)) {
+			rmSync(tempPath, { force: true });
+		}
+	}
+}
+
 export interface SettingsStorage {
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
 }
@@ -264,17 +280,22 @@ export class FileSettingsStorage implements SettingsStorage {
 			if (fileExists) {
 				release = this.acquireLockSyncWithRetry(path);
 			}
-			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
-			const next = fn(current);
+			let current = fileExists ? readFileSync(path, "utf-8") : undefined;
+			let next = fn(current);
 			if (next !== undefined) {
-				// Only create directory when we actually need to write
-				if (!existsSync(dir)) {
-					mkdirSync(dir, { recursive: true });
-				}
 				if (!release) {
+					// Only create directory when we actually need to write
+					if (!existsSync(dir)) {
+						mkdirSync(dir, { recursive: true });
+					}
 					release = this.acquireLockSyncWithRetry(path);
+					// Re-read under the lock so a concurrent first-time write is not lost.
+					current = existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+					next = fn(current);
 				}
-				writeFileSync(path, next, "utf-8");
+				if (next !== undefined) {
+					writeSettingsFileAtomically(path, next);
+				}
 			}
 		} finally {
 			if (release) {

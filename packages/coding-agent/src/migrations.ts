@@ -4,6 +4,7 @@
 
 import chalk from "chalk";
 import {
+	chmodSync,
 	type Dirent,
 	existsSync,
 	mkdirSync,
@@ -25,6 +26,24 @@ const MIGRATION_GUIDE_URL =
 const EXTENSIONS_DOC_URL =
 	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/extensions.md";
 
+function writeJsonFileAtomically(path: string, value: unknown, mode?: number): void {
+	const tempPath = join(
+		dirname(path),
+		`.${basename(path)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`,
+	);
+	try {
+		writeFileSync(tempPath, JSON.stringify(value, null, 2), mode === undefined ? undefined : { mode });
+		if (mode !== undefined) {
+			chmodSync(tempPath, mode);
+		}
+		renameSync(tempPath, path);
+	} finally {
+		if (existsSync(tempPath)) {
+			rmSync(tempPath, { force: true });
+		}
+	}
+}
+
 /**
  * Migrate legacy oauth.json and settings.json apiKeys to auth.json.
  *
@@ -42,7 +61,8 @@ export function migrateAuthToAuthJson(): string[] {
 	const migrated: Record<string, unknown> = {};
 	const providers: string[] = [];
 
-	// Migrate oauth.json
+	// Read oauth.json; it is renamed to .migrated only after auth.json is durable.
+	let hasOAuth = false;
 	if (existsSync(oauthPath)) {
 		try {
 			const oauth = JSON.parse(readFileSync(oauthPath, "utf-8"));
@@ -50,35 +70,53 @@ export function migrateAuthToAuthJson(): string[] {
 				migrated[provider] = { type: "oauth", ...(cred as object) };
 				providers.push(provider);
 			}
-			renameSync(oauthPath, `${oauthPath}.migrated`);
+			hasOAuth = true;
 		} catch {
 			// Skip on error
 		}
 	}
 
-	// Migrate settings.json apiKeys
+	// Read settings.json apiKeys; the file is rewritten only after auth.json is durable.
+	let settings: Record<string, unknown> | undefined;
 	if (existsSync(settingsPath)) {
 		try {
 			const content = readFileSync(settingsPath, "utf-8");
-			const settings = JSON.parse(content);
-			if (settings.apiKeys && typeof settings.apiKeys === "object") {
-				for (const [provider, key] of Object.entries(settings.apiKeys)) {
+			const parsed = JSON.parse(content) as Record<string, unknown>;
+			if (parsed.apiKeys && typeof parsed.apiKeys === "object") {
+				for (const [provider, key] of Object.entries(parsed.apiKeys)) {
 					if (!migrated[provider] && typeof key === "string") {
 						migrated[provider] = { type: "api_key", key };
 						providers.push(provider);
 					}
 				}
-				delete settings.apiKeys;
-				writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+				settings = parsed;
 			}
 		} catch {
 			// Skip on error
 		}
 	}
 
+	// Write auth.json first so credentials survive a crash before the old locations are cleaned up.
 	if (Object.keys(migrated).length > 0) {
 		mkdirSync(dirname(authPath), { recursive: true });
-		writeFileSync(authPath, JSON.stringify(migrated, null, 2), { mode: 0o600 });
+		writeJsonFileAtomically(authPath, migrated, 0o600);
+	}
+
+	if (settings) {
+		delete settings.apiKeys;
+		try {
+			writeJsonFileAtomically(settingsPath, settings);
+		} catch {
+			// Skip on error
+		}
+	}
+
+	if (hasOAuth) {
+		try {
+			renameSync(oauthPath, `${oauthPath}.migrated`);
+		} catch {
+			// Skip on error
+		}
 	}
 
 	return providers;
