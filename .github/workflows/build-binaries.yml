@@ -229,20 +229,15 @@ jobs:
       - name: Prepare installer
         run: |
           INSTALL_BASE_URL="${R2_PUBLIC_BASE_URL%/}"
-          export INSTALL_BASE_URL
           test -n "$INSTALL_BASE_URL"
-
-          node - <<'NODE'
-          const fs = require("node:fs");
-          const baseUrl = process.env.INSTALL_BASE_URL;
-          if (!baseUrl) throw new Error("INSTALL_BASE_URL is required");
-          const installer = fs.readFileSync("install.sh", "utf8");
-          const renderInstaller = (channel) => installer
-            .replaceAll("__PRIME_AGENT_DOWNLOAD_BASE_URL__", baseUrl)
-            .replaceAll("__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__", channel);
-          fs.writeFileSync("/tmp/prime-agent-install.sh", renderInstaller("stable"));
-          fs.writeFileSync("/tmp/prime-agent-install-beta.sh", renderInstaller("beta"));
-          NODE
+          node scripts/render-installer.mjs \
+            --base-url "$INSTALL_BASE_URL" \
+            --channel stable \
+            --output /tmp/prime-agent-install.sh
+          node scripts/render-installer.mjs \
+            --base-url "$INSTALL_BASE_URL" \
+            --channel beta \
+            --output /tmp/prime-agent-install-beta.sh
 
       - name: Extract production release notes
         if: env.PUBLISH_PRODUCTION == 'true'
