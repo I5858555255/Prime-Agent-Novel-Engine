@@ -5,31 +5,42 @@ describe("export HTML markdown link sanitization", () => {
 	const templateJs = readFileSync(new URL("../src/core/export-html/template.js", import.meta.url), "utf-8");
 
 	it("overrides the marked link renderer to block javascript: protocol", () => {
-		// The custom link renderer must check for dangerous protocols
 		expect(templateJs).toMatch(/link\s*\(\s*token\s*\)/);
-		expect(templateJs).toMatch(/javascript/i);
-		expect(templateJs).toMatch(/vbscript/i);
+		expect(templateJs).toMatch(/getSafeNavigation\(token\.href\)/);
+		expect(templateJs).toMatch(/SAFE_NAVIGATION_PROTOCOLS/);
 	});
 
-	it("overrides the marked image renderer to block javascript: protocol", () => {
+	it("overrides the marked image renderer to isolate remote resources", () => {
 		expect(templateJs).toMatch(/image\s*\(\s*token\s*\)/);
+		expect(templateJs).toMatch(/getEmbeddedImageHref\(token\.href\)/);
+		expect(templateJs).toMatch(/renderBlockedImage\(token, getRemoteImageHref\(token\.href\)\)/);
 	});
 
 	it("escapes href attributes in the custom link renderer", () => {
-		// The link renderer must escape href values to prevent attribute breakout
-		expect(templateJs).toMatch(/escapeHtml\(href\)/);
+		expect(templateJs).toMatch(/escapeHtml\(navigation\.href\)/);
+		expect(templateJs).toMatch(/escapeHtml\(remoteHref\)/);
 	});
 
-	it("escapes image mimeType attributes", () => {
-		// Image mimeType must be escaped to prevent attribute breakout
+	it("defers remote image navigation until an explicit button activation", () => {
+		expect(templateJs).toContain('class="remote-image-link" data-remote-url="');
+		expect(templateJs).not.toContain('class="remote-image-link" href="');
+		expect(templateJs).toMatch(/getRemoteImageHref\(button\.dataset\.remoteUrl\)/);
+		expect(templateJs).toContain("window.open(remoteHref, '_blank', 'noopener,noreferrer')");
+	});
+
+	it("allowlists embedded session image MIME types", () => {
 		expect(templateJs).not.toMatch(/\$\{img\.mimeType\}/);
-		expect(templateJs).toMatch(/escapeHtml\(img\.mimeType/);
+		expect(templateJs).toMatch(/\['image\/avif', 'image\/gif', 'image\/jpeg', 'image\/png', 'image\/webp'\]/);
 	});
 
 	it("escapes image data attributes", () => {
-		// Image data is embedded in src attributes and must not allow attribute breakout.
 		expect(templateJs).not.toMatch(/;base64,\$\{img\.data\}"/);
-		expect(templateJs).toMatch(/;base64,\$\{escapeHtml\(img\.data \|\| (?:''|"")\)\}"/);
+		expect(templateJs).toMatch(/escapeHtml\(href\)/);
+	});
+
+	it("adds no-referrer isolation to external links and embedded images", () => {
+		expect(templateJs).toContain('rel="noopener noreferrer nofollow" referrerpolicy="no-referrer"');
+		expect(templateJs).toContain('referrerpolicy="no-referrer" loading="lazy" decoding="async"');
 	});
 
 	it("escapes entry IDs before inserting them into attributes", () => {

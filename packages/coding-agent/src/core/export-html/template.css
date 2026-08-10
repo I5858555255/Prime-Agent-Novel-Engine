@@ -863,6 +863,35 @@
       margin: var(--line-height) 0;
     }
 
+    .blocked-image {
+      display: inline-flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 6px;
+      max-width: 100%;
+      padding: 2px 6px;
+      border: 1px solid var(--dim);
+      border-radius: 3px;
+      color: var(--muted);
+      background: var(--container-bg);
+    }
+
+    .blocked-image-label {
+      overflow-wrap: anywhere;
+    }
+
+    .remote-image-link {
+      padding: 0;
+      border: 0;
+      color: var(--mdLink);
+      background: transparent;
+      font: inherit;
+      font-weight: 600;
+      text-decoration: underline;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
     /* Markdown content */
     .markdown-content h1,
     .markdown-content h2,
