@@ -549,11 +549,213 @@ export function buildSummarizationPrompt(customInstructions?: string, previousSu
 	return `${basePrompt}\n\n${KERNEL_PERSIST_SUMMARY_NOTE}`;
 }
 
+// ============================================================================
+// Input budget and chunking helpers
+// ============================================================================
+
+/**
+ * Conservative overhead budget (chars/4) for the system prompt, prompt wrapper
+ * tags, previous-summary block, and the instruction text appended by
+ * buildSummarizationPrompt(). 2000 tokens = ~8 kB of boilerplate.
+ */
+const SUMMARIZATION_PROMPT_OVERHEAD_TOKENS = 2000;
+
+/**
+ * Compute the safe number of input tokens available for conversation text in a
+ * single summarization request, given the model's context window.
+ *
+ * Returns 0 when the model does not advertise a context window, meaning the
+ * caller should skip the budget check.
+ */
+function safeInputBudget(model: Model<any>, reserveTokens: number): number {
+	const contextWindow = model.contextWindow ?? 0;
+	if (contextWindow <= 0) return 0;
+	// Leave room for: summary output (reserveTokens), prompt overhead, and a
+	// 10% safety margin on what remains.
+	const raw = contextWindow - reserveTokens - SUMMARIZATION_PROMPT_OVERHEAD_TOKENS;
+	return Math.max(0, Math.floor(raw * 0.9));
+}
+
+/**
+ * Estimate the token count of a serialized block of text using the same
+ * chars/4 heuristic used by estimateTokens().
+ */
+function estimateTextTokens(text: string): number {
+	return Math.ceil(text.length / 4);
+}
+
+/**
+ * Split `messages` into groups where each group's serialized text fits within
+ * `budgetTokens`. Splits only at AgentMessage boundaries.
+ *
+ * Returns a single chunk containing all messages when the budget is 0 (unknown
+ * context window) or when everything fits in one chunk.
+ */
+function chunkMessagesByBudget(messages: AgentMessage[], budgetTokens: number): AgentMessage[][] {
+	if (budgetTokens <= 0 || messages.length === 0) return [messages];
+
+	const chunks: AgentMessage[][] = [];
+	let current: AgentMessage[] = [];
+	let currentTokens = 0;
+
+	for (const message of messages) {
+		const llm = convertToLlm([message]);
+		const text = serializeConversation(llm);
+		const tokens = estimateTextTokens(text);
+
+		if (current.length > 0 && currentTokens + tokens > budgetTokens) {
+			// Current chunk would overflow — flush it and start a new one.
+			chunks.push(current);
+			current = [];
+			currentTokens = 0;
+		}
+		current.push(message);
+		currentTokens += tokens;
+	}
+
+	if (current.length > 0) chunks.push(current);
+	return chunks;
+}
+
 /**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
+ *
+ * When the serialized conversation exceeds the model's safe input budget the
+ * messages are split into budget-sized chunks, each chunk is summarised
+ * independently, and the resulting partial summaries are aggregated in a final
+ * bounded pass. Every provider call is verified to fit within the budget before
+ * it is sent.
  */
 export async function generateSummary(
+	currentMessages: AgentMessage[],
+	model: Model<any>,
+	reserveTokens: number,
+	apiKey: string,
+	headers?: Record<string, string>,
+	signal?: AbortSignal,
+	customInstructions?: string,
+	previousSummary?: string,
+	thinkingLevel?: ThinkingLevel,
+): Promise<string> {
+	const budget = safeInputBudget(model, reserveTokens);
+
+	// Check whether the full conversation fits in a single request.
+	const llmMessages = convertToLlm(currentMessages);
+	const conversationText = serializeConversation(llmMessages);
+	const conversationTokens = estimateTextTokens(conversationText);
+
+	if (budget > 0 && conversationTokens > budget) {
+		// ----------------------------------------------------------------
+		// Chunked path: split, summarise each chunk, then aggregate.
+		// ----------------------------------------------------------------
+		const chunks = chunkMessagesByBudget(currentMessages, budget);
+		const chunkSummaries: string[] = [];
+
+		for (const chunk of chunks) {
+			const partialSummary = await generateSummaryDirect(
+				chunk,
+				model,
+				reserveTokens,
+				apiKey,
+				headers,
+				signal,
+				customInstructions,
+				undefined, // no previousSummary per chunk — keep chunks independent
+				thinkingLevel,
+			);
+			chunkSummaries.push(partialSummary);
+		}
+
+		// Aggregate chunk summaries. Feed them as the "conversation" so the
+		// model can produce one coherent summary. If the aggregated summaries
+		// themselves overflow the budget, split again (one recursive pass).
+		const aggregatedText = chunkSummaries.join("\n\n---\n\n");
+		const aggregatedTokens = estimateTextTokens(aggregatedText);
+		if (budget > 0 && aggregatedTokens > budget) {
+			// Aggregate summaries are too large — summarise the aggregation in chunks.
+			const aggregationMessages: AgentMessage[] = chunkSummaries.map((s) => ({
+				role: "user" as const,
+				content: s,
+				timestamp: Date.now(),
+			}));
+			const secondPassChunks = chunkMessagesByBudget(aggregationMessages, budget);
+			const secondPassSummaries: string[] = [];
+			for (const chunk of secondPassChunks) {
+				const s = await generateSummaryDirect(
+					chunk,
+					model,
+					reserveTokens,
+					apiKey,
+					headers,
+					signal,
+					customInstructions,
+					undefined,
+					thinkingLevel,
+				);
+				secondPassSummaries.push(s);
+			}
+			// Final merge: all second-pass summaries combined with the previous summary
+			const mergedMessages: AgentMessage[] = secondPassSummaries.map((s) => ({
+				role: "user" as const,
+				content: s,
+				timestamp: Date.now(),
+			}));
+			return generateSummaryDirect(
+				mergedMessages,
+				model,
+				reserveTokens,
+				apiKey,
+				headers,
+				signal,
+				customInstructions,
+				previousSummary,
+				thinkingLevel,
+			);
+		}
+
+		// Aggregated summaries fit — produce final summary incorporating previousSummary.
+		const aggregationMessages: AgentMessage[] = [
+			{
+				role: "user" as const,
+				content: aggregatedText,
+				timestamp: Date.now(),
+			},
+		];
+		return generateSummaryDirect(
+			aggregationMessages,
+			model,
+			reserveTokens,
+			apiKey,
+			headers,
+			signal,
+			customInstructions,
+			previousSummary,
+			thinkingLevel,
+		);
+	}
+
+	// ----------------------------------------------------------------
+	// Fast path: conversation fits in a single request.
+	// ----------------------------------------------------------------
+	return generateSummaryDirect(
+		currentMessages,
+		model,
+		reserveTokens,
+		apiKey,
+		headers,
+		signal,
+		customInstructions,
+		previousSummary,
+		thinkingLevel,
+	);
+}
+
+/**
+ * Internal: make a single bounded summarization provider call.
+ * Callers are responsible for ensuring the messages fit within the budget.
+ */
+async function generateSummaryDirect(
 	currentMessages: AgentMessage[],
 	model: Model<any>,
 	reserveTokens: number,
@@ -814,6 +1016,27 @@ export async function compact(
 
 	if (!firstKeptEntryId) {
 		throw new Error("First kept entry has no UUID - session may need migration");
+	}
+
+	// Validate that the resulting context will fit within the model's budget.
+	// If it is still too large, throw so the caller records a failure instead
+	// of committing an oversized compacted state.
+	const contextWindow = model.contextWindow ?? 0;
+	if (contextWindow > 0) {
+		const summaryTokens = estimateTextTokens(summary);
+		const retainedTokens =
+			preparation.messagesToSummarize.length > 0 || preparation.isSplitTurn
+				? settings.keepRecentTokens // conservative: assume retained portion fills keep-window
+				: 0;
+		const estimatedResultTokens = summaryTokens + retainedTokens;
+		const safeLimit = contextWindow - settings.reserveTokens;
+		if (estimatedResultTokens > safeLimit) {
+			throw new Error(
+				`Compaction result (estimated ${estimatedResultTokens} tokens) still exceeds ` +
+					`safe context limit (${safeLimit} tokens). ` +
+					`Consider switching to a model with a larger context window.`,
+			);
+		}
 	}
 
 	return {

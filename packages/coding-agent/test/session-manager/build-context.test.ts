@@ -296,4 +296,87 @@ describe("buildSessionContext", () => {
 			expect(ctx.messages).toHaveLength(1);
 		});
 	});
+
+	describe("Issue #900 filtering in buildSessionContext", () => {
+		it("skips assistant messages with stopReason error from model context", () => {
+			const failedMsg: SessionMessageEntry = {
+				type: "message",
+				id: "2",
+				parentId: "1",
+				timestamp: "2025-01-01T00:00:00Z",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "context_window_exceeded error details" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-test",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "error",
+					errorMessage: "context_window_exceeded",
+					timestamp: 2,
+				},
+			};
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "hello"),
+				failedMsg,
+				msg("3", "2", "user", "next user prompt"),
+			];
+			const ctx = buildSessionContext(entries);
+			// Failed assistant message should be skipped, leaving 2 user messages
+			expect(ctx.messages).toHaveLength(2);
+			expect(ctx.messages.map((m) => m.role)).toEqual(["user", "user"]);
+		});
+
+		it("skips compaction_outcome custom messages from model context", () => {
+			const compactionOutcomeEntry: SessionEntry = {
+				type: "custom_message",
+				id: "2",
+				parentId: "1",
+				timestamp: "2025-01-01T00:00:00Z",
+				customType: "compaction_outcome",
+				content: "Compaction failed: context_window_exceeded",
+				display: true,
+			};
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "hello"),
+				compactionOutcomeEntry,
+				msg("3", "2", "user", "retry prompt"),
+			];
+			const ctx = buildSessionContext(entries);
+			expect(ctx.messages).toHaveLength(2);
+			expect(ctx.messages.map((m) => m.role)).toEqual(["user", "user"]);
+		});
+
+		it("retains task-relevant tool result errors in model context", () => {
+			const toolResultEntry: SessionMessageEntry = {
+				type: "message",
+				id: "3",
+				parentId: "2",
+				timestamp: "2025-01-01T00:00:00Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "bash",
+					content: [{ type: "text", text: "database connection failed" }],
+					isError: true,
+					timestamp: 3,
+				},
+			};
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "connect to db"),
+				msg("2", "1", "assistant", "running command"),
+				toolResultEntry,
+			];
+			const ctx = buildSessionContext(entries);
+			expect(ctx.messages).toHaveLength(3);
+			expect(ctx.messages[2].role).toBe("toolResult");
+		});
+	});
 });

@@ -23,6 +23,7 @@ import { readFirstLineSync, readLinesAsBuffers } from "../utils/file-lines.js";
 import { captureGitContext, type GitContext, gitContextsEqual } from "../utils/git.js";
 import {
 	type BashExecutionMessage,
+	COMPACTION_OUTCOME_CUSTOM_TYPE,
 	type CustomMessage,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
@@ -541,8 +542,20 @@ export function buildSessionContext(
 
 	const appendMessage = (entry: SessionEntry, target = messages) => {
 		if (entry.type === "message") {
+			// Skip failed provider attempts — they are not valid conversation turns.
+			// The journal retains them for audit/debugging. Only "error" stopReason is
+			// excluded; aborted turns may carry partial content the model benefits from.
+			if (entry.message.role === "assistant" && (entry.message as AssistantMessage).stopReason === "error") {
+				return;
+			}
 			target.push(entry.message);
 		} else if (entry.type === "custom_message") {
+			// Skip internal operational telemetry that is not conversation content.
+			// compaction_outcome records infrastructure failures for audit but must
+			// not be replayed as model context — it also inflates token estimates.
+			if (entry.customType === COMPACTION_OUTCOME_CUSTOM_TYPE) {
+				return;
+			}
 			target.push(
 				createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp),
 			);
