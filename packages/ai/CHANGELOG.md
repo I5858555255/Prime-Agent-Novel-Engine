@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added `reasoning_effort` control for all Z.AI reasoning models, exposing five thinking levels (`off`, `low`, `medium`, `high`, `max`) in the `/effort` selector.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05

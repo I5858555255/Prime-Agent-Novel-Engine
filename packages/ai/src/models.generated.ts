@@ -20330,8 +20330,9 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "zai",
 			baseUrl: "https://api.z.ai/api/coding/paas/v4",
-			compat: {"supportsDeveloperRole":false,"thinkingFormat":"zai","zaiToolStream":true},
+			compat: {"supportsDeveloperRole":false,"thinkingFormat":"zai","supportsReasoningEffort":true,"zaiToolStream":true},
 			reasoning: true,
+			thinkingLevelMap: {"minimal":null,"low":"high","medium":"high","high":"high","max":"max"},
 			input: ["text"],
 			cost: {
 				input: 0,
@@ -20348,8 +20349,9 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "zai",
 			baseUrl: "https://api.z.ai/api/coding/paas/v4",
-			compat: {"supportsDeveloperRole":false,"thinkingFormat":"zai","zaiToolStream":true},
+			compat: {"supportsDeveloperRole":false,"thinkingFormat":"zai","supportsReasoningEffort":true,"zaiToolStream":true},
 			reasoning: true,
+			thinkingLevelMap: {"minimal":null,"low":"high","medium":"high","high":"high","max":"max"},
 			input: ["text"],
 			cost: {
 				input: 0,
@@ -20366,8 +20368,9 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "zai",
 			baseUrl: "https://api.z.ai/api/coding/paas/v4",
-			compat: {"supportsDeveloperRole":false,"thinkingFormat":"zai","zaiToolStream":true},
+			compat: {"supportsDeveloperRole":false,"thinkingFormat":"zai","supportsReasoningEffort":true,"zaiToolStream":true},
 			reasoning: true,
+			thinkingLevelMap: {"minimal":null,"low":"high","medium":"high","high":"high","max":"max"},
 			input: ["text"],
 			cost: {
 				input: 0,
@@ -20384,8 +20387,9 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "zai",
 			baseUrl: "https://api.z.ai/api/coding/paas/v4",
-			compat: {"supportsDeveloperRole":false,"thinkingFormat":"zai","zaiToolStream":true},
+			compat: {"supportsDeveloperRole":false,"thinkingFormat":"zai","supportsReasoningEffort":true,"zaiToolStream":true},
 			reasoning: true,
+			thinkingLevelMap: {"minimal":null,"low":"high","medium":"high","high":"high","max":"max"},
 			input: ["text"],
 			cost: {
 				input: 0,
