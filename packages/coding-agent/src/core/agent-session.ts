@@ -10021,6 +10021,29 @@ export class AgentSession {
 		return this._retryAttempt > 0 && this._isStructuredPermanentProviderFailure(message);
 	}
 
+	private _getProviderStreamFailureRetryAfterMs(message: AssistantMessage): number | undefined {
+		const value = this._getProviderStreamFailureDetails(message)?.retryAfterMs;
+		return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+	}
+
+	/**
+	 * Exponential backoff with full jitter. maxBackoffMs bounds only the
+	 * exponential term (our own guesswork); a server Retry-After (surfaced via
+	 * the provider_stream_failure diagnostic) is the delay floor and is honored
+	 * past that cap. Retry-After values above maxRetryAfterMs never reach this:
+	 * _handleRetryableError stops retrying instead of waiting.
+	 */
+	private _computeRetryDelayMs(
+		settings: { baseDelayMs: number; maxBackoffMs: number },
+		message: AssistantMessage,
+	): number {
+		const cap = settings.maxBackoffMs > 0 ? settings.maxBackoffMs : Number.POSITIVE_INFINITY;
+		const exponentialMs = Math.min(settings.baseDelayMs * 2 ** (this._retryAttempt - 1), cap);
+		const jitteredMs = Math.round(Math.random() * exponentialMs);
+		const retryAfterMs = this._getProviderStreamFailureRetryAfterMs(message);
+		return retryAfterMs === undefined ? jitteredMs : Math.max(Math.round(retryAfterMs), jitteredMs);
+	}
+
 	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
 		const details = this._getProviderStreamFailureDetails(message);
 		if (!details) {
@@ -10163,6 +10186,19 @@ export class AgentSession {
 			});
 		}
 
+		// A server Retry-After beyond maxRetryAfterMs (e.g. "quota resets in 5h")
+		// means waiting it out is hopeless; stop retrying instead of sleeping.
+		const retryAfterMs = this._getProviderStreamFailureRetryAfterMs(message);
+		if (retryAfterMs !== undefined && settings.maxRetryAfterMs > 0 && retryAfterMs > settings.maxRetryAfterMs) {
+			if (message.errorMessage) {
+				message.errorMessage += ` (provider requested a ${Math.ceil(retryAfterMs / 1000)}s wait, above retry.maxRetryAfterMs; not retrying)`;
+			}
+			this._markProviderAuthStaleForRetryFailure(message, options);
+			this._retryAuthFailureSources = [];
+			this._resolveRetry();
+			return false;
+		}
+
 		this._retryAttempt++;
 
 		if (this._retryAttempt > settings.maxRetries) {
@@ -10180,7 +10216,7 @@ export class AgentSession {
 			return false;
 		}
 
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const delayMs = this._computeRetryDelayMs(settings, message);
 
 		this._emit({
 			type: "auto_retry_start",
