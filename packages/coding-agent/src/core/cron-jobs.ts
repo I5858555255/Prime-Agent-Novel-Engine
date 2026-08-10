@@ -219,6 +219,64 @@ export class AgentCronJobStore {
 		return this.readJobs().sort((a, b) => compareOptionalIso(a.nextRunAt, b.nextRunAt));
 	}
 
+	/**
+	 * Whether a persisted session schedule prevents replacing its worker with a
+	 * processless passive descriptor. Unlike list(), this deliberately does not
+	 * discard malformed records: a supervisor cannot reconstruct a heartbeat
+	 * catalog from data it cannot validate.
+	 */
+	hasRecoverableSessionArtifactState(sessionId: string): boolean {
+		if (!this.sessionArtifactMode) {
+			throw new Error("Recoverable artifact state requires session artifact mode");
+		}
+		const path = this.sessionArtifactFiles.get(sessionId);
+		if (!path || !existsSync(path)) {
+			return false;
+		}
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return true;
+		}
+		const file = parsed as CronJobsFile;
+		if (
+			(file.jobs !== undefined && !Array.isArray(file.jobs)) ||
+			(file.dispatches !== undefined && !Array.isArray(file.dispatches))
+		) {
+			return true;
+		}
+		if ((file.jobs ?? []).some((job) => !isAgentCronJob(job))) {
+			return true;
+		}
+		if ((file.dispatches ?? []).some((dispatch) => !isAgentCronDispatchRecord(dispatch))) {
+			return true;
+		}
+		const jobs = (file.jobs as AgentCronJob[] | undefined) ?? [];
+		const jobsById = new Map<string, AgentCronJob>();
+		for (const job of jobs) {
+			// A duplicate ID makes a dispatch ambiguous: we cannot prove which durable
+			// schedule claimed it, so recovery is safer than passivation.
+			if (jobsById.has(job.id)) return true;
+			jobsById.set(job.id, job);
+		}
+		for (const dispatch of (file.dispatches as AgentCronDispatchRecord[] | undefined) ?? []) {
+			const job = jobsById.get(dispatch.jobId);
+			// Dispatches are not independently meaningful. An orphan, cross-session,
+			// or terminal-state mismatch may represent work whose result was lost. A
+			// completed one-shot dispatch is safe: its durable terminal job proves there
+			// is no schedule left to revive. A recurring job can become completed only
+			// after an interrupted state transition, so its outstanding dispatch is
+			// recoverable rather than evidence that passivation is safe.
+			if (
+				!job ||
+				job.sessionId !== sessionId ||
+				(job.status !== "active" && (job.status !== "completed" || job.schedule.kind !== "once"))
+			) {
+				return true;
+			}
+		}
+		return jobs.some((job) => job.status === "active" || (isHeartbeatCronJob(job) && job.status === "paused"));
+	}
+
 	create(input: CreateAgentCronJobInput): AgentCronJob {
 		const now = input.now ?? new Date();
 		const prompt = input.prompt.trim();

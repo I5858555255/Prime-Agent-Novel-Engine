@@ -30,7 +30,7 @@ function createSupervisorHarness(): SupervisorHarness {
 	}) as unknown as SupervisorHarness;
 }
 
-function worker(lifecycle: "ready" | "recovering", connected = true) {
+function worker(lifecycle: "ready" | "recovering" | "passivated", connected = true) {
 	return {
 		descriptor: { lifecycle },
 		...(connected ? { client: {} } : {}),
@@ -71,6 +71,62 @@ describe("daemon supervisor heartbeat aggregation", () => {
 			data: { heartbeats: [{ job: { id: "heartbeat-1" } }, { job: { id: "heartbeat-2" } }] },
 		});
 		expect(supervisor.forwardToWorker).toHaveBeenCalledTimes(3);
+	});
+
+	it("treats a snapshotless passivated root as empty alongside live and snapshotted roots", async () => {
+		const supervisor = createSupervisorHarness();
+		const live = worker("ready");
+		const snapshotted = {
+			descriptor: { lifecycle: "recovering" },
+			heartbeatSnapshot: [{ job: { id: "cached-heartbeat" } }],
+			heartbeatSnapshotStale: false,
+		};
+		const emptyPassive = worker("passivated", false);
+		supervisor.workers.set("live", live);
+		supervisor.workers.set("snapshotted", snapshotted);
+		supervisor.workers.set("empty-passive", emptyPassive);
+		supervisor.forwardToWorker = vi.fn(async (target, command) => {
+			expect(target).toBe(live);
+			return success(command.id, command.type, { heartbeats: [{ job: { id: "live-heartbeat" } }] });
+		});
+
+		const response = await supervisor.handleCommand({} as DaemonSocketClient, {
+			id: "list-snapshotless-passive",
+			type: "heartbeats_list",
+		});
+
+		expect(response).toMatchObject({
+			success: true,
+			data: { heartbeats: [{ job: { id: "live-heartbeat" } }, { job: { id: "cached-heartbeat" } }] },
+		});
+		expect(supervisor.forwardToWorker).toHaveBeenCalledOnce();
+	});
+
+	it("uses a complete passive snapshot without targeting its processless worker", async () => {
+		const supervisor = createSupervisorHarness();
+		const resident = worker("ready");
+		const passive = {
+			descriptor: { lifecycle: "passivated" },
+			heartbeatSnapshot: [{ job: { id: "paused-heartbeat", status: "paused" } }],
+			heartbeatSnapshotStale: false,
+		};
+		supervisor.workers.set("resident", resident);
+		supervisor.workers.set("passive", passive);
+		supervisor.forwardToWorker = vi.fn(async (target, command) => {
+			expect(target).toBe(resident);
+			return success(command.id, command.type, { heartbeats: [{ job: { id: "resident-heartbeat" } }] });
+		});
+
+		const response = await supervisor.handleCommand({} as DaemonSocketClient, {
+			id: "list-passive",
+			type: "heartbeats_list",
+		});
+
+		expect(response).toMatchObject({
+			success: true,
+			data: { heartbeats: [{ job: { id: "resident-heartbeat" } }, { job: { id: "paused-heartbeat" } }] },
+		});
+		expect(supervisor.forwardToWorker).toHaveBeenCalledTimes(1);
 	});
 
 	it("returns a worker failure instead of a partial catalog", async () => {

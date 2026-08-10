@@ -1,6 +1,15 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Writable } from "node:stream";
@@ -41,7 +50,7 @@ import {
 	type WorkerEvictionSnapshot,
 } from "../../core/session-action-store.js";
 import { canonicalSessionPath, getProcessStartId, SessionAlreadyActiveError } from "../../core/session-lease.js";
-import { readSessionInfo, type SessionInfo } from "../../core/session-manager.js";
+import { isAgentTaskState, readSessionInfo, type SessionInfo } from "../../core/session-manager.js";
 import { SettingsManager } from "../../core/settings-manager.js";
 import { signalProcessGroupOrProcess } from "../../utils/child-process.js";
 import type { AgentConnectionHeartbeat } from "../agent-connection/types.js";
@@ -113,6 +122,7 @@ import {
 	type DaemonCreateCommand,
 	type DaemonWorkerDescriptor,
 	type DaemonWorkerFrameHeader,
+	isDaemonWorkerLifecycle,
 	SESSION_LEASE_OWNER_ID_ENV,
 	SESSION_LEASES_ENABLED_ENV,
 } from "./daemon-worker-protocol.js";
@@ -255,6 +265,16 @@ interface ResidentWorker {
 	snapshotGenerations: Map<string, Map<string, SnapshotTranscriptGeneration>>;
 	snapshotLoads: Map<string, Promise<DaemonAttachResult>>;
 	recovery?: Promise<void>;
+	/** Coalesces concurrent explicit requests to revive a metadata-only root. */
+	wake?: Promise<void>;
+	/** Every active stop finalization. This is only a wake fence: each caller still executes its own stop request. */
+	stopFinalizations?: Set<Promise<void>>;
+	/** The one archival side effect may be shared, without sharing the callers' stop results. */
+	archiveFinalization?: Promise<void>;
+	/** Prevents a stale routing reference from reviving a worker after a completed stop. */
+	stopFinalized?: boolean;
+	/** A partial stop is a durable tombstone until an explicit retry clears it safely. */
+	stopFailure?: Error;
 	deferredRecovery?: Promise<void>;
 	intentionalStop: boolean;
 	stopRevision: number;
@@ -408,13 +428,35 @@ function isDaemonWorkerDescriptor(value: unknown, socketPath: string): value is 
 		return false;
 	}
 	const descriptor = value as Partial<DaemonWorkerDescriptor>;
+	const validLegacyProcess =
+		Number.isInteger(descriptor.pid) &&
+		(descriptor.pid ?? 0) > 0 &&
+		(descriptor.processStartId === undefined || typeof descriptor.processStartId === "string");
+	// A processless recovering descriptor is a deliberate durable hand-off. Any
+	// process identity it retains, however, must be a complete, valid pair: a
+	// partial or object-shaped identity is untrusted input, not an invitation to
+	// probe, signal, or passivate an arbitrary process.
+	const validRecoveringProcess =
+		(descriptor.pid === undefined && descriptor.processStartId === undefined) ||
+		(Number.isInteger(descriptor.pid) &&
+			(descriptor.pid ?? 0) > 0 &&
+			typeof descriptor.processStartId === "string" &&
+			descriptor.processStartId.length > 0);
+	const knownLifecycle = isDaemonWorkerLifecycle(descriptor.lifecycle);
 	return (
 		descriptor.version === 1 &&
 		descriptor.supervisorSocketPath === socketPath &&
 		typeof descriptor.workerId === "string" &&
-		Number.isInteger(descriptor.pid) &&
-		(descriptor.pid ?? 0) > 0 &&
-		(descriptor.processStartId === undefined || typeof descriptor.processStartId === "string") &&
+		// A passivated descriptor is intentionally processless. `recovering` is
+		// also processless after normalizing a legacy missing/unknown lifecycle:
+		// retaining it lets the next supervisor recover the root without treating
+		// a stale PID as safe to adopt or signal. Other lifecycle states still need
+		// a valid process identity, and unknown legacy states do too until their
+		// first normalization pass, so malformed input remains fail-closed.
+		(knownLifecycle
+			? descriptor.lifecycle === "passivated" ||
+				(descriptor.lifecycle === "recovering" ? validRecoveringProcess : validLegacyProcess)
+			: validLegacyProcess) &&
 		(descriptor.ownerClientId === undefined || typeof descriptor.ownerClientId === "string") &&
 		typeof descriptor.socketPath === "string" &&
 		typeof descriptor.authenticationToken === "string" &&
@@ -656,8 +698,10 @@ export class DaemonSupervisor {
 			rmSync(this.snapshotCacheRoot, { recursive: true, force: true });
 			mkdirSync(this.snapshotCacheRoot, { recursive: true, mode: 0o700 });
 			this.commandJournal = new CommandRecoveryJournal(join(this.descriptorDir, "command-journal.jsonl"));
-			this.loadWorkerDescriptors();
-			const workersToAdopt = [...this.workers.values()];
+			await this.loadWorkerDescriptors();
+			const workersToAdopt = [...this.workers.values()].filter(
+				(worker) => worker.descriptor.lifecycle !== "passivated",
+			);
 
 			this.server = createServer((socket) => this.handleConnection(socket));
 			await this.listen();
@@ -912,21 +956,32 @@ export class DaemonSupervisor {
 		};
 	}
 
-	private loadWorkerDescriptors(): void {
+	/**
+	 * A descriptor normally means "recover this worker". That was too broad:
+	 * a cleanly-idle root leaves a durable JSONL and descriptor behind, so a
+	 * supervisor restart used to recreate every completed conversation merely to
+	 * discover that it was idle. Keep known-quiescent roots as routing records.
+	 */
+	private async loadWorkerDescriptors(): Promise<void> {
 		for (const name of readdirSync(this.descriptorDir)) {
-			if (name === SUPERVISOR_CONFIG_FILE_NAME || !name.endsWith(".json")) {
-				continue;
-			}
+			if (name === SUPERVISOR_CONFIG_FILE_NAME || !name.endsWith(".json")) continue;
 			const path = join(this.descriptorDir, name);
 			try {
 				const descriptor: unknown = JSON.parse(readFileSync(path, "utf8"));
-				if (!isDaemonWorkerDescriptor(descriptor, this.socketPath)) {
-					continue;
+				if (!isDaemonWorkerDescriptor(descriptor, this.socketPath)) continue;
+				const malformedLifecycle = !isDaemonWorkerLifecycle(descriptor.lifecycle);
+				if (malformedLifecycle) {
+					// A legacy v1 descriptor can omit lifecycle (or contain a value from a
+					// newer writer). It is not evidence that the root is idle or stopped.
+					// Discard even a syntactically valid legacy PID before recovery: do not
+					// adopt, passivate, or signal a process based on malformed lifecycle.
+					descriptor.lifecycle = "recovering";
+					delete descriptor.pid;
+					delete descriptor.processStartId;
 				}
-				descriptor.lifecycle = "recovering";
 				descriptor.recoveryJournalPath ??= join(this.descriptorDir, `${descriptor.workerId}.recovery.jsonl`);
 				descriptor.orphanProcessJournalPath ??= join(this.descriptorDir, `${descriptor.workerId}.orphans.jsonl`);
-				this.workers.set(descriptor.workerId, {
+				const worker: ResidentWorker = {
 					descriptor,
 					descriptorPath: path,
 					summaries: new Map(),
@@ -936,10 +991,90 @@ export class DaemonSupervisor {
 					snapshotLoads: new Map(),
 					intentionalStop: descriptor.stopRequestedAt !== undefined,
 					stopRevision: 0,
-				});
+				};
+				if (malformedLifecycle) {
+					// The descriptor remains visible to startup recovery, but malformed
+					// lifecycle is never allowed to reach passivation classification.
+					this.persistWorker(worker);
+					this.workers.set(descriptor.workerId, worker);
+					continue;
+				}
+				// Never passivate a live process: adoption is the only safe way to
+				// reconnect work that may still be running. A legacy passivated v1
+				// descriptor is deliberately migrated by discarding its stale identity.
+				const alreadyPassivated = descriptor.lifecycle === "passivated";
+				// Old C00 records could claim to be passivated while retaining a PID.
+				// Discard it before *any* recovery classification, including malformed
+				// JSONL that must recover, so no later consumer can act on it.
+				if (alreadyPassivated) {
+					delete descriptor.pid;
+					delete descriptor.processStartId;
+				}
+				// A client-owned worker's launch environment is transient and deliberately
+				// never persisted. A processless descriptor therefore cannot be safely
+				// restarted at supervisor startup: only its owner can provide that env on a
+				// subsequent attach. Keep it processless, visible, and wakeable by that path.
+				const ownerOwnedProcessless = descriptor.ownerClientId !== undefined && descriptor.pid === undefined;
+				if (ownerOwnedProcessless && !descriptor.stopRequestedAt) {
+					// Fail closed even if the durable transcript is unreadable or has work
+					// pending. The owner attach path identifies this root from its descriptor
+					// and supplies launchEnv before it asks recovery to spawn anything.
+					descriptor.lifecycle = "passivated";
+					const passive = await this.passivatedSummaryForDescriptor(descriptor);
+					if (passive) worker.summaries.set(descriptor.rootActiveSessionId, passive);
+					this.persistWorker(worker);
+				} else {
+					const passive =
+						descriptor.ownerClientId === undefined &&
+						!descriptor.stopRequestedAt &&
+						(alreadyPassivated || descriptor.pid === undefined || !isProcessAlive(descriptor.pid))
+							? await this.passivatedSummaryForDescriptor(descriptor)
+							: undefined;
+					if (passive) {
+						descriptor.lifecycle = "passivated";
+						delete descriptor.pid;
+						delete descriptor.processStartId;
+						worker.summaries.set(descriptor.rootActiveSessionId, passive);
+						this.persistWorker(worker);
+					} else {
+						descriptor.lifecycle = "recovering";
+					}
+				}
+				this.workers.set(descriptor.workerId, worker);
 			} catch (error) {
 				this.log(`Ignoring invalid worker descriptor ${path}: ${String(error)}`);
 			}
+		}
+	}
+
+	private async passivatedSummaryForDescriptor(
+		descriptor: DaemonWorkerDescriptor,
+	): Promise<SessionSummary | undefined> {
+		if (!descriptor.sessionFile) return undefined;
+		const info = await readSessionInfo(descriptor.sessionFile);
+		if (!info || info.hasInvalidDurableState || this.descriptorHasRecoverableWork(descriptor, info)) return undefined;
+		const taskState = info.agentStatus?.taskState;
+		const currentVerdict =
+			isAgentTaskState(taskState) &&
+			Number.isSafeInteger(info.agentStatus?.basedOnMessageCount) &&
+			info.agentStatus?.basedOnMessageCount === info.messageCount;
+		// Archived sessions are explicitly inactive. Active JSONLs require a current
+		// terminal/needs-input verdict; stale metadata must not suppress recovery.
+		if (info.state?.status !== "archived" && info.state?.status !== "crash" && !currentVerdict) return undefined;
+		return { ...summaryForInactiveSession(info), activeSessionId: descriptor.rootActiveSessionId };
+	}
+
+	private descriptorHasRecoverableWork(descriptor: DaemonWorkerDescriptor, info: SessionInfo): boolean {
+		try {
+			const journal = new WorkerRecoveryJournal(descriptor.recoveryJournalPath);
+			if (journal.hasUnreadableRecords() || journal.getLatest().some((record) => record.busy)) return true;
+			const artifactDir = join(dirname(dirname(info.path)), "session-artifacts", info.id);
+			const cronStore = AgentCronJobStore.forSessionArtifacts();
+			cronStore.registerSessionArtifact(info.id, artifactDir);
+			return cronStore.hasRecoverableSessionArtifactState(info.id);
+		} catch {
+			// Recovery is safer than dropping an unreadable durable schedule/journal.
+			return true;
 		}
 	}
 
@@ -1548,6 +1683,18 @@ export class DaemonSupervisor {
 				);
 				const worker = direct ?? (await this.findWorkerForClient(client, command.activeSessionId)).worker;
 				this.assertWorkerAccessibleToClient(client, worker, command.activeSessionId);
+				// Retry is the sole deliberate way to clear a failed stop tombstone. It
+				// must wait for every already-started finalization and never revive a
+				// worker whose process may still be alive.
+				const finalizations = this.waitForStopFinalizations(worker);
+				if (finalizations) await finalizations;
+				if (worker.stopFinalized) throw new Error(`Session worker ${worker.descriptor.workerId} was stopped`);
+				const processless = worker.descriptor.lifecycle === "passivated" || worker.descriptor.pid === undefined;
+				if (!processless && isProcessAlive(worker.descriptor.pid!)) {
+					throw new Error(`Session worker ${worker.descriptor.workerId} is still running; cannot retry its stop`);
+				}
+				worker.stopFailure = undefined;
+				worker.archiveFinalization = undefined;
 				worker.intentionalStop = false;
 				worker.descriptor.stopRequestedAt = undefined;
 				worker.descriptor.archiveOnStop = undefined;
@@ -1652,6 +1799,11 @@ export class DaemonSupervisor {
 							}
 							if (worker.heartbeatSnapshot !== undefined && worker.heartbeatSnapshotStale !== true) {
 								return { heartbeats: worker.heartbeatSnapshot };
+							}
+							// Passivation is allowed only after active and paused heartbeats
+							// have been excluded. Snapshotless passivated roots are empty.
+							if (worker.descriptor.lifecycle === "passivated") {
+								return { heartbeats: [] };
 							}
 							const state =
 								worker.descriptor.lifecycle === "ready" ? "disconnected" : worker.descriptor.lifecycle;
@@ -1824,6 +1976,9 @@ export class DaemonSupervisor {
 				if (!summary) throw new Error("Woken session worker has no target session");
 				target = { worker, summary };
 			}
+			// A2A delivery is an explicit target operation. The source is already
+			// resident (it is issuing this command), so revive only the target.
+			await this.wakePassivatedWorker(target.worker);
 			const targetActiveSessionId = target.summary.activeSessionId ?? target.summary.id;
 			if (source && command.agentOrigin === true) {
 				assertAgentFamilyReach(this.familyCatalogEntry(source.summary), this.familyCatalogEntry(target.summary));
@@ -1900,6 +2055,12 @@ export class DaemonSupervisor {
 					});
 				}
 				return await forward();
+			}
+			if (match.worker.descriptor.lifecycle === "passivated") {
+				// There is no process to ask to kill. Finalize the same tombstone and
+				// archive path without pointlessly reviving a completed root.
+				await this.stopWorker(match.worker, true, false, true);
+				return success(command.id, command.type);
 			}
 			this.persistWorkerStopTombstone(match.worker, true);
 			let response: DaemonResponse;
@@ -1999,7 +2160,12 @@ export class DaemonSupervisor {
 		if (command.sessionPath) {
 			const activeMatches = this.matchWorkers(command.sessionPath);
 			if (activeMatches.length === 1) {
-				return this.reuseWorkerForCreate(activeMatches[0]!.worker, ownerClientId, command.sessionPath);
+				const existing = activeMatches[0]!.worker;
+				// Preserve the #836 access collision behavior: do not let an
+				// unauthorized create revive a client-owned passive root.
+				this.reuseWorkerForCreate(existing, ownerClientId, command.sessionPath, command.launchEnv);
+				await this.wakePassivatedWorker(existing);
+				return existing;
 			}
 			if (activeMatches.length > 1) {
 				throw new Error(`Ambiguous active session "${command.sessionPath}"`);
@@ -2011,7 +2177,9 @@ export class DaemonSupervisor {
 			createCommand = { ...createCommand, sessionPath };
 			const existing = this.findWorkerBySessionFile(sessionPath);
 			if (existing) {
-				return this.reuseWorkerForCreate(existing.worker, ownerClientId, sessionPath);
+				this.reuseWorkerForCreate(existing.worker, ownerClientId, sessionPath, command.launchEnv);
+				await this.wakePassivatedWorker(existing.worker);
+				return existing.worker;
 			}
 			// A passive child from a stopped worker reopens as top-level here (pre-existing behavior);
 			// the recursive-harness residency/eviction PR will revisit it.
@@ -2050,15 +2218,80 @@ export class DaemonSupervisor {
 		}
 	}
 
+	/** Wait for active stop finalizations without inheriting any caller's result. */
+	private waitForStopFinalizations(worker: ResidentWorker): Promise<void> | undefined {
+		const finalizations = [...(worker.stopFinalizations ?? [])];
+		return finalizations.length > 0 ? Promise.allSettled(finalizations).then(() => undefined) : undefined;
+	}
+
+	/** Return the wake fence for a stop, or fail a stale/failed route. */
+	private stopFenceForWake(worker: ResidentWorker): Promise<void> | undefined {
+		const finalizations = this.waitForStopFinalizations(worker);
+		if (finalizations) {
+			return finalizations.then(() => {
+				throw new Error(`Session worker ${worker.descriptor.workerId} was stopped`);
+			});
+		}
+		if (worker.stopFinalized || worker.stopFailure || worker.descriptor.stopRequestedAt !== undefined) {
+			throw new Error(`Session worker ${worker.descriptor.workerId} was stopped`);
+		}
+		return undefined;
+	}
+
+	private async wakePassivatedWorker(worker: ResidentWorker): Promise<void> {
+		// Do not introduce an await when no stop exists: that would leave a gap in
+		// which a concurrent stop could install its tombstone before this wake starts.
+		const stopFence = this.stopFenceForWake(worker);
+		if (stopFence) await stopFence;
+		// A stop marks its fence before its asynchronous archive/delete finalization.
+		// Never clear that tombstone or launch a replacement from a stale route.
+		// The second caller can arrive after the first has changed lifecycle to
+		// recovering but before it has connected. Join it instead of leaking an
+		// opaque "recovering" error (or starting a second worker).
+		if (worker.wake) return worker.wake;
+		if (worker.descriptor.lifecycle !== "passivated") return;
+		const wake = (async () => {
+			worker.intentionalStop = false;
+			worker.descriptor.stopRequestedAt = undefined;
+			worker.descriptor.archiveOnStop = undefined;
+			worker.descriptor.lifecycle = "recovering";
+			worker.descriptor.consecutiveFailures = 0;
+			this.persistWorker(worker);
+			await this.recoverWorker(worker);
+			// recoverWorker mutates lifecycle through the normal launch/adoption
+			// path; read it after await rather than retaining the narrowed value.
+			const lifecycle = worker.descriptor.lifecycle as DaemonWorkerDescriptor["lifecycle"];
+			if (lifecycle !== "ready" || !worker.client) {
+				throw new Error(worker.descriptor.lastError ?? "Could not wake passivated session worker");
+			}
+		})();
+		worker.wake = wake;
+		void wake.then(
+			() => {
+				if (worker.wake === wake) worker.wake = undefined;
+			},
+			() => {
+				if (worker.wake === wake) worker.wake = undefined;
+			},
+		);
+		return wake;
+	}
+
 	private reuseWorkerForCreate(
 		worker: ResidentWorker,
 		ownerClientId: string | undefined,
 		sessionPath: string,
+		launchEnv: Record<string, string> | undefined,
 	): ResidentWorker {
-		if (worker.descriptor.ownerClientId === ownerClientId) {
-			return worker;
+		if (worker.descriptor.ownerClientId !== ownerClientId) {
+			throw new SessionAlreadyActiveError(sessionPath, worker.descriptor.rootActiveSessionId);
 		}
-		throw new SessionAlreadyActiveError(sessionPath, worker.descriptor.rootActiveSessionId);
+		// Only an authorized owner may supply the process environment used to wake
+		// its passive worker. Keep a previously authorized environment when absent.
+		if (ownerClientId !== undefined) {
+			worker.launchEnv = launchEnv ?? worker.launchEnv;
+		}
+		return worker;
 	}
 
 	private async promoteOwnedWorker(client: DaemonSocketClient, worker: ResidentWorker): Promise<void> {
@@ -2375,11 +2608,22 @@ export class DaemonSupervisor {
 
 	private async adoptOrRecoverWorker(worker: ResidentWorker): Promise<void> {
 		await this.assertRecoveryAllowed();
+		// A processless passivated descriptor (or a corrupt record that was
+		// conservatively moved to recovery) has no PID authority. Never feed an
+		// absent or stale identity into adoption/cleanup; recovery launches anew.
+		if (worker.descriptor.pid === undefined) {
+			if (worker.descriptor.stopRequestedAt) {
+				await this.stopWorker(worker, true, true, worker.descriptor.archiveOnStop === true);
+			} else {
+				await this.recoverWorker(worker);
+			}
+			return;
+		}
 		if (worker.descriptor.stopRequestedAt) {
 			try {
 				// A tombstoned worker must not run long enough to elect another
 				// supervisor while its intentional stop is being adopted.
-				signalProcessGroupOrProcess(worker.descriptor.pid, "SIGKILL");
+				signalProcessGroupOrProcess(worker.descriptor.pid!, "SIGKILL");
 				await this.stopWorker(worker, true, true, worker.descriptor.archiveOnStop === true);
 				this.log(`Completed intentional stop for worker ${worker.descriptor.workerId} during supervisor adoption`);
 			} catch (error) {
@@ -2391,10 +2635,10 @@ export class DaemonSupervisor {
 			return;
 		}
 		try {
-			if (!isProcessAlive(worker.descriptor.pid)) {
+			if (!isProcessAlive(worker.descriptor.pid!)) {
 				throw new Error("Session worker process is no longer running");
 			}
-			const observedProcessStartId = getProcessStartId(worker.descriptor.pid);
+			const observedProcessStartId = getProcessStartId(worker.descriptor.pid!);
 			await this.connectWorker(worker, 2000);
 			await this.subscribeWorker(worker, worker.descriptor.rootActiveSessionId);
 			await this.refreshWorkerSummaries(worker, true);
@@ -2478,6 +2722,7 @@ export class DaemonSupervisor {
 			!this.shuttingDown &&
 			!worker.intentionalStop &&
 			worker.descriptor.stopRequestedAt === undefined &&
+			worker.descriptor.lifecycle !== "passivated" &&
 			this.workers.get(worker.descriptor.workerId) === worker &&
 			worker.client === undefined
 		);
@@ -2709,8 +2954,19 @@ export class DaemonSupervisor {
 		if (this.isWorkerRecoveryCancelled(worker)) {
 			return;
 		}
-		if (worker.descriptor.ownerClientId && !worker.launchEnv && !isProcessAlive(worker.descriptor.pid)) {
-			worker.descriptor.lifecycle = "failed";
+		if (
+			worker.descriptor.ownerClientId &&
+			!worker.launchEnv &&
+			(worker.descriptor.pid === undefined || !isProcessAlive(worker.descriptor.pid))
+		) {
+			// Never infer an owner environment or relaunch an owner-owned worker from
+			// persisted state. This includes processless/passivated descriptors, whose
+			// missing PID must not bypass the owner/no-env guard. A dead PID is not a
+			// processless descriptor until its identity is removed: otherwise a later
+			// recovery could probe or signal stale/recycled process metadata.
+			worker.descriptor.lifecycle = "passivated";
+			delete worker.descriptor.pid;
+			delete worker.descriptor.processStartId;
 			worker.descriptor.lastError = "Waiting for the owning client to reconnect";
 			this.persistWorker(worker);
 			return;
@@ -2726,8 +2982,9 @@ export class DaemonSupervisor {
 				}
 				try {
 					await this.assertRecoveryAllowed();
-					const processAlive = isProcessAlive(worker.descriptor.pid);
-					const observedProcessStartId = processAlive ? getProcessStartId(worker.descriptor.pid) : undefined;
+					const pid = worker.descriptor.pid;
+					const processAlive = pid !== undefined && isProcessAlive(pid);
+					const observedProcessStartId = processAlive ? getProcessStartId(pid) : undefined;
 					const processIdentityMatches =
 						worker.descriptor.processStartId === undefined ||
 						observedProcessStartId === worker.descriptor.processStartId;
@@ -2823,12 +3080,15 @@ export class DaemonSupervisor {
 	private async recoverUncertainWorkerOperations(worker: ResidentWorker, killWorkerProcess = true): Promise<void> {
 		await this.assertRecoveryAllowed();
 		if (killWorkerProcess) {
-			signalProcessGroupOrProcess(worker.descriptor.pid, "SIGKILL");
+			signalProcessGroupOrProcess(worker.descriptor.pid!, "SIGKILL");
 		}
 		const orphanProcessJournalPath = worker.descriptor.orphanProcessJournalPath;
-		if (orphanProcessJournalPath) {
+		const pid = worker.descriptor.pid;
+		// A processless passive record intentionally has no parent identity. Do
+		// not use a legacy/stale parent PID to reap anything while waking it.
+		if (orphanProcessJournalPath && pid !== undefined) {
 			try {
-				for (const orphan of readActiveOrphanProcesses(orphanProcessJournalPath, worker.descriptor.pid)) {
+				for (const orphan of readActiveOrphanProcesses(orphanProcessJournalPath, pid)) {
 					if (!isOrphanProcessIdentityCurrent(orphan)) {
 						continue;
 					}
@@ -3131,7 +3391,7 @@ export class DaemonSupervisor {
 			attachedClients: [...this.clients].filter((client) => client.attachedActiveSessionIds.has(activeSessionId))
 				.length,
 			workerState: worker.descriptor.lifecycle,
-			workerPid: worker.descriptor.pid,
+			...(worker.descriptor.lifecycle === "passivated" ? {} : { workerPid: worker.descriptor.pid! }),
 		};
 	}
 
@@ -3230,11 +3490,85 @@ export class DaemonSupervisor {
 		return undefined;
 	}
 
+	private commandExplicitlyWakesWorker(command: DaemonCommand): boolean {
+		// Metadata reads deliberately remain processless. These are the explicit
+		// operations which need a worker runtime to change, interrupt, or resume
+		// the session. Root kill is handled before forwarding so its tombstone path
+		// can remove a passivated descriptor without waking it.
+		switch (command.type) {
+			case "prompt":
+			case "prompt_and_wait":
+			case "cancel_prompt_admission":
+			case "steer":
+			case "follow_up":
+			case "restore_next_turn":
+			case "restore_actions":
+			case "append_custom_message":
+			case "resume_queue":
+			case "send_message":
+			case "agent_messages_pause":
+			case "agent_messages_resume":
+			case "agent_messages_clear":
+			case "abort":
+			case "start_side_question":
+			case "abort_side_question":
+			case "execute_bash":
+			case "execute_bash_and_wait":
+			case "abort_bash":
+			case "clear_queue":
+			case "abort_and_clear_queue":
+			case "cron_add":
+			case "cron_cancel":
+			case "heartbeat_manage":
+			case "heartbeat_set":
+			case "heartbeat_update":
+			case "set_model":
+			case "cycle_model":
+			case "set_scoped_models":
+			case "set_thinking_level":
+			case "cycle_thinking_level":
+			case "set_service_tier":
+			case "set_transport":
+			case "set_steering_mode":
+			case "set_follow_up_mode":
+			case "set_auto_compaction":
+			case "set_auto_retry":
+			case "compact":
+			case "refine":
+			case "abort_compaction":
+			case "abort_branch_summary":
+			case "abort_retry":
+			case "reload":
+			case "new_session":
+			case "switch_session":
+			case "fork":
+			case "navigate_tree":
+			case "import_jsonl":
+			case "export_html":
+			case "export_jsonl":
+			case "rename":
+			case "rename_saved_session":
+			case "delete_saved_session":
+			case "set_session_name":
+			case "set_rlm_max_depth":
+			case "set_session_entry_label":
+			case "cancel_rlm_child":
+			case "delete_rlm_subagent":
+			case "extension_ui_response":
+				return true;
+			default:
+				return false;
+		}
+	}
+
 	private async forwardToWorker(
 		worker: ResidentWorker,
 		command: DaemonCommand,
 		timeoutMs = WORKER_REQUEST_TIMEOUT_MS,
 	): Promise<DaemonResponse> {
+		if (this.commandExplicitlyWakesWorker(command)) {
+			await this.wakePassivatedWorker(worker);
+		}
 		if (!worker.client || worker.descriptor.lifecycle !== "ready") {
 			throw new Error(`Session worker is ${worker.descriptor.lifecycle}`);
 		}
@@ -3279,7 +3613,10 @@ export class DaemonSupervisor {
 			}
 		}
 		const match = await this.findWorkerForClient(client, command.activeSessionId);
+		// The descriptor retains the creation telemetry policy while passivated, so
+		// reject an incompatible attach before it can launch a worker process.
 		this.assertTelemetryAttachAllowed(match.worker, command.telemetryDisabled);
+		await this.wakePassivatedWorker(match.worker);
 		const activeSessionId = match.summary.activeSessionId ?? match.summary.id;
 		const duplicateValidation = this.currentSnapshotGeneration(match.worker, activeSessionId)?.validation;
 		if (duplicateValidation) {
@@ -4326,7 +4663,11 @@ export class DaemonSupervisor {
 	}
 
 	private async prepareUpdateRestartFenced(deadline: number): Promise<DaemonUpdateRestartManifest> {
-		const residents = [...this.workers.values()];
+		// Passivated records deliberately have no process or client. They are durable
+		// routing metadata, not residents in this transaction: preparing, draining, or
+		// stopping one would either fail on its absent client or spuriously wake it.
+		// Keep it in the registry so the replacement supervisor can retain its summary.
+		const residents = [...this.workers.values()].filter((worker) => worker.descriptor.lifecycle !== "passivated");
 		const unavailable = residents.find(
 			(worker) => worker.descriptor.lifecycle !== "ready" || worker.client === undefined,
 		);
@@ -4508,6 +4849,86 @@ export class DaemonSupervisor {
 		recoveryCleanup = false,
 		directChild?: { child: ChildProcess; closed: Promise<void> },
 	): Promise<void> {
+		// Do not coalesce stop calls. Their remove/force/archive/recovery/direct-child
+		// arguments are intentional and a later caller must not silently inherit the
+		// first caller's policy. The set is only a fence for a stale passive wake.
+		if (worker.stopFinalized && !(removeDescriptor && archiveSession)) {
+			throw new Error(`Session worker ${worker.descriptor.workerId} was stopped`);
+		}
+		// Defer entry one microtask so every stop dispatched in the same turn records
+		// its immutable request before any one can begin final deletion.
+		const stop = Promise.resolve().then(() =>
+			this.stopWorkerOnce(worker, removeDescriptor, force, archiveSession, recoveryCleanup, directChild),
+		);
+		let finalizations = worker.stopFinalizations;
+		if (!finalizations) {
+			finalizations = new Set();
+			worker.stopFinalizations = finalizations;
+		}
+		finalizations.add(stop);
+		try {
+			await stop;
+		} catch (error) {
+			const failure = error instanceof Error ? error : new Error(String(error));
+			// A concurrent finalizer may have already stopped and removed this worker.
+			// Do not let a later loser resurrect its registry entry or descriptor merely
+			// to record its own cleanup failure.
+			if (!worker.stopFinalized) {
+				// Restore the failed-stop fence so a fresh lookup cannot wake it.
+				this.workers.set(worker.descriptor.workerId, worker);
+				worker.stopFailure = failure;
+				worker.intentionalStop = true;
+				try {
+					if (removeDescriptor) {
+						this.persistWorkerStopTombstone(worker, archiveSession);
+					} else {
+						worker.descriptor.lifecycle = "failed";
+						worker.descriptor.lastError = failure.message;
+						this.persistWorker(worker);
+					}
+				} catch (persistError) {
+					this.reportCleanupFailure(`worker stop failure fence ${worker.descriptor.workerId}`, persistError);
+				}
+			}
+			throw error;
+		} finally {
+			finalizations.delete(stop);
+			if (finalizations.size === 0 && worker.stopFinalizations === finalizations) {
+				worker.stopFinalizations = undefined;
+			}
+		}
+	}
+
+	private async stopWorkerOnce(
+		worker: ResidentWorker,
+		removeDescriptor: boolean,
+		force = false,
+		archiveSession = false,
+		recoveryCleanup = false,
+		directChild?: { child: ChildProcess; closed: Promise<void> },
+	): Promise<void> {
+		// Another independently dispatched stop may have completed between this
+		// request being recorded and its turn to run. A dead worker cannot be
+		// stopped twice, but a later archive request is still actionable from the
+		// retained descriptor context and must not be silently lost.
+		if (worker.stopFinalized) {
+			if (removeDescriptor && archiveSession) {
+				// A prior non-removing stop retains a recovering descriptor for hand-off.
+				// Tombstone only that retained durable record. If a concurrent final stop
+				// already deleted it, writing here would recreate a crash-window tombstone
+				// after finalization. Archiving remains idempotent and is still attempted.
+				if (existsSync(worker.descriptorPath)) {
+					this.persistWorkerStopTombstone(worker, true);
+				}
+				await this.finalizeArchivedWorkerStopOnce(worker);
+				this.workers.delete(worker.descriptor.workerId);
+				this.deleteWorkerDescriptor(worker);
+			}
+			return;
+		}
+		// A passivated descriptor is explicitly processless. Its old pid may have
+		// been recycled while the supervisor was down, so never probe or signal it.
+		const processless = worker.descriptor.lifecycle === "passivated" || worker.descriptor.pid === undefined;
 		if (worker.ownerCleanupTimer) {
 			clearTimeout(worker.ownerCleanupTimer);
 			worker.ownerCleanupTimer = undefined;
@@ -4563,13 +4984,15 @@ export class DaemonSupervisor {
 			worker.client = undefined;
 		} else if (directChild) {
 			directChild.child.kill("SIGTERM");
-		} else if (isProcessAlive(worker.descriptor.pid)) {
-			signalProcessGroupOrProcess(worker.descriptor.pid, "SIGTERM");
+		} else if (!processless && isProcessAlive(worker.descriptor.pid!)) {
+			signalProcessGroupOrProcess(worker.descriptor.pid!, "SIGTERM");
 		}
 		const isWorkerProcessAlive = () =>
-			directChild
-				? directChild.child.exitCode === null && directChild.child.signalCode === null
-				: isProcessAlive(worker.descriptor.pid);
+			processless
+				? false
+				: directChild
+					? directChild.child.exitCode === null && directChild.child.signalCode === null
+					: isProcessAlive(worker.descriptor.pid!);
 		const gracefulDeadline = Date.now() + (force ? 500 : 2000);
 		while (isWorkerProcessAlive() && Date.now() < gracefulDeadline) {
 			await delay(25);
@@ -4578,7 +5001,7 @@ export class DaemonSupervisor {
 			if (directChild) {
 				directChild.child.kill("SIGKILL");
 			} else {
-				signalProcessGroupOrProcess(worker.descriptor.pid, "SIGKILL");
+				signalProcessGroupOrProcess(worker.descriptor.pid!, "SIGKILL");
 			}
 			const forceDeadline = Date.now() + 1000;
 			while (isWorkerProcessAlive() && Date.now() < forceDeadline) {
@@ -4596,8 +5019,13 @@ export class DaemonSupervisor {
 			if (force) {
 				this.reclaimStoppedWorkerCronLock(worker);
 			}
-			await this.finalizeArchivedWorkerStop(worker);
+			// Archive is the one destructive side effect that may be shared. This does
+			// not share stop results: every caller still performed its own policy above.
+			await this.finalizeArchivedWorkerStopOnce(worker);
 		}
+		// A stopped resident is never routable again. Keep its descriptor only for a
+		// replacement supervisor/update hand-off, not as a stale in-memory route.
+		worker.stopFinalized = true;
 		this.workers.delete(worker.descriptor.workerId);
 		if (removeDescriptor) {
 			this.deleteWorkerDescriptor(worker);
@@ -4605,6 +5033,24 @@ export class DaemonSupervisor {
 		if (!this.shuttingDown) {
 			void this.syncAgentPeers().catch(() => undefined);
 			this.broadcastHeartbeatsChanged();
+		}
+	}
+
+	private async finalizeArchivedWorkerStopOnce(worker: ResidentWorker): Promise<void> {
+		let archiveFinalization = worker.archiveFinalization;
+		if (!archiveFinalization) {
+			archiveFinalization = this.finalizeArchivedWorkerStop(worker);
+			worker.archiveFinalization = archiveFinalization;
+		}
+		try {
+			await archiveFinalization;
+		} catch (error) {
+			// Preserve successful finalization for concurrent callers, but let an
+			// explicit later archive stop retry a failed finalization.
+			if (worker.archiveFinalization === archiveFinalization) {
+				worker.archiveFinalization = undefined;
+			}
+			throw error;
 		}
 	}
 
