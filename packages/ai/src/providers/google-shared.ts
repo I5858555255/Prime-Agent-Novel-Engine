@@ -354,10 +354,10 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.UNEXPECTED_TOOL_CALL:
 		case FinishReason.NO_IMAGE:
 			return "error";
-		default: {
-			const _exhaustive: never = reason;
-			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
-		}
+		default:
+			// Unknown finish reason — route through structured failure path
+			// instead of crashing the stream.  See #707.
+			return "error";
 	}
 }
 
