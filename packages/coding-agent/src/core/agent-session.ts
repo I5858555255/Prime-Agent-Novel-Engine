@@ -4306,6 +4306,7 @@ export class AgentSession {
 			rlmDepth: this._rlmDepth,
 			rlmParentAgent: this._rlmParentAgent,
 			harnessState: this._loadMergedHarnessState(),
+			harnessOverview: this.settingsManager.getHarnessOverviewSettings(),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}

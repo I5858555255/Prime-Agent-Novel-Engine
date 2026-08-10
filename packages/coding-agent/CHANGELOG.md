@@ -6,6 +6,10 @@
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+- Changed the continual harness overview to rank entries by recency instead of an alphabetical path sort, so the newest lessons survive truncation ([#819](https://github.com/PrimeIntellect-ai/prime-agent/issues/819))
+- Added the `harnessOverview` setting to raise the continual harness overview's per-kind entry cap and body length ([#819](https://github.com/PrimeIntellect-ai/prime-agent/issues/819))
+- Fixed the continual harness overview naming withheld entries by count alone, with no call that reads them ([#819](https://github.com/PrimeIntellect-ai/prime-agent/issues/819))
+- Added `include_global=True` to `rlm.harness.overview()` and `rlm.harness.list()`, and made a local overview name the global store, its counts, and how to read it ([#819](https://github.com/PrimeIntellect-ai/prime-agent/issues/819))
 
 ## [0.7.1] - 2026-08-07
 
