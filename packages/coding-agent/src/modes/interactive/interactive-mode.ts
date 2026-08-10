@@ -4840,7 +4840,7 @@ export class InteractiveMode {
 					this.editor.setText("");
 					return;
 				}
-				if (text === "/quit") {
+				if (commandName === "quit") {
 					this.editor.setText("");
 					await this.shutdown();
 					return;
