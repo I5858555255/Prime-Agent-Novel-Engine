@@ -71,9 +71,10 @@ await browser.screenshot()                     # look before you act
   JS-based and works on background tabs; pass x/y to scroll a specific panel.
 - **Troubleshooting**: `drain_events()` shows network/page lifecycle events;
   `page_info()` is the cheapest "is this tab alive?" check. `page_info()`
-  reports YOUR focused tab — it NEVER tells you which tab the user is
-  looking at; that is the `active: true` marker from
-  `list_tabs(scope="all")`.
+  reports YOUR focused tab — it never tells you which tab the user is
+  looking at (that is the `active` marker from `list_tabs(scope="all")`),
+  and it fails with `[NOT_CONNECTED]` when you have no tab yet instead of
+  creating one.
 - **Raw CDP**: `await browser.cdp("Domain.method", {...})` for anything the
   helpers don't cover (e.g. `Accessibility.getFullAXTree`).
 - **Switching browsers**: if the user asks to use a different browser, call
@@ -107,6 +108,11 @@ agent — it will not appear in the picker. If the user insists their browser
 is running but no "RUNNING" option shows up, the debugging checkbox/port
 is the missing step.
 
+Attaching to a tab may pop Chrome's modal "Allow remote debugging" dialog
+— once per tab (attaches are serialized internally, so only one dialog
+appears at a time; sessions are cached afterwards). If the browser seems
+frozen, a dialog is probably waiting on another monitor or macOS Space.
+
 ## Tabs you own vs tabs the user owns
 
 - `ensure_session()` / `new_tab(url)` create fresh tabs assigned to you. A new
@@ -116,13 +122,22 @@ is the missing step.
   `focused: true`. Focus is never brought to the front — everything runs in
   the background without disturbing the user.
 - `list_tabs()` shows only your tabs. The **main agent** may also
-  `list_tabs(scope="all")` to see the user's open tabs — the one the user is
-  currently looking at comes back marked `active: true` (with several
-  browser windows open, EACH window's front tab is marked — CDP does not
-  expose which window is frontmost, so pick by context or ask the user) —
-  and `attach_tab(target_id)` to adopt one — e.g. when the user asks to
-  "summarize the page I have open". Adopted tabs are never closed by the
-  agent lifecycle. Child agents cannot adopt.
+  `list_tabs(scope="all")` to see the user's open tabs — tabs the user is
+  looking at come back marked `active: true` (with several browser windows
+  open, EACH window's front tab is marked — CDP does not expose which
+  window is frontmost, so pick by context or ask the user) — and work on
+  any of them directly: passing a user tab's `target_id` to any operation
+  adopts it on the fly (or call `attach_tab(target_id)` explicitly) — e.g.
+  when the user asks to "summarize the page I have open". Adopted tabs are
+  never closed by the agent lifecycle. Child agents cannot adopt.
+  On Chrome 150+ the active marker needs no attaches at all; on older
+  Chrome the first probe of a user tab may show the one-time consent
+  dialog (cached afterwards). If the result carries an
+  `active_detection_note`, some tabs could not be probed — relay it to
+  the user.
+  Responses carry a `browser` field naming which browser you are connected
+  to. If it says "managed browser", the user's tabs are NOT there — call
+  `reconnect()` and let the user pick their running browser.
 - You get at most 5 tabs; `close_tab()` ones you're done with.
 - Errors are structured: `[NOT_OWNER]`, `[TAB_DESTROYED]`, `[QUOTA_EXCEEDED]`,
   `[ADOPT_NOT_ALLOWED]`, `[STALE_INDEX]`, `[NOT_CONNECTED]`,

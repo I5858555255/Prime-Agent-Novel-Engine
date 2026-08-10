@@ -23,7 +23,6 @@ import {
 	findSystemBrowser,
 	findSystemBrowsers,
 	launchManagedBrowser,
-	openUrlInDefaultBrowser,
 } from "./browser-launcher.js";
 import type { ConnectionProvider, ProvidedConnection } from "./browser-manager.js";
 import { CdpClient, discoverAttachCandidates, resolveHttpEndpointToWs } from "./cdp-client.js";
@@ -55,8 +54,6 @@ export interface ConnectionProviderDeps {
 	 */
 	consumeForcePrompt?: () => boolean;
 }
-
-const ATTACH_DISCOVERY_TIMEOUT_MS = 60_000;
 
 let _managed: { process: ChildProcess; profileDir: string } | undefined;
 
@@ -99,7 +96,7 @@ async function resolveManagedWsUrl(): Promise<string | undefined> {
 async function launchManaged(binaryPath?: string): Promise<ProvidedConnection> {
 	const existing = await resolveManagedWsUrl();
 	if (existing) {
-		return { client: await CdpClient.connect(existing), key: existing };
+		return { client: await CdpClient.connect(existing), key: existing, label: "managed browser" };
 	}
 	let executable = binaryPath ?? findSystemBrowser() ?? findDownloadedBrowser();
 	if (!executable || (binaryPath && !existsSync(binaryPath))) {
@@ -111,7 +108,7 @@ async function launchManaged(binaryPath?: string): Promise<ProvidedConnection> {
 	const launched = await launchManagedBrowser(executable);
 	_managed = { process: launched.process, profileDir: launched.profileDir };
 	installExitHook();
-	return { client: await CdpClient.connect(launched.wsUrl), key: launched.wsUrl };
+	return { client: await CdpClient.connect(launched.wsUrl), key: launched.wsUrl, label: "managed browser" };
 }
 
 async function pollForAttachableBrowser(timeoutMs: number, preferredLabel?: string): Promise<string | undefined> {
@@ -135,12 +132,12 @@ async function pollForAttachableBrowser(timeoutMs: number, preferredLabel?: stri
 }
 
 /** Connect, returning undefined instead of throwing — discovery candidates are often stale. */
-async function tryConnect(wsUrl: string | undefined): Promise<ProvidedConnection | undefined> {
+async function tryConnect(wsUrl: string | undefined, label?: string): Promise<ProvidedConnection | undefined> {
 	if (!wsUrl) {
 		return undefined;
 	}
 	try {
-		return { client: await CdpClient.connect(wsUrl), key: wsUrl };
+		return { client: await CdpClient.connect(wsUrl), key: wsUrl, ...(label ? { label } : {}) };
 	} catch {
 		return undefined;
 	}
@@ -155,7 +152,7 @@ export function createConnectionProvider(deps: ConnectionProviderDeps): Connecti
 			if (!wsUrl) {
 				throw new Error(`PRIME_AGENT_BROWSER_CDP_URL is set but unreachable: ${envUrl}`);
 			}
-			const client = await tryConnect(wsUrl);
+			const client = await tryConnect(wsUrl, `env (${envUrl})`);
 			if (!client) {
 				throw new Error(`PRIME_AGENT_BROWSER_CDP_URL websocket connect failed: ${wsUrl}`);
 			}
@@ -169,7 +166,7 @@ export function createConnectionProvider(deps: ConnectionProviderDeps): Connecti
 		if (!forcePrompt) {
 			const settings = deps.readSettings();
 			if (settings?.mode === "endpoint" && settings.cdpUrl) {
-				const client = await tryConnect(await resolveHttpEndpointToWs(settings.cdpUrl));
+				const client = await tryConnect(await resolveHttpEndpointToWs(settings.cdpUrl), settings.cdpUrl);
 				if (client) {
 					return client;
 				}
@@ -181,7 +178,10 @@ export function createConnectionProvider(deps: ConnectionProviderDeps): Connecti
 					// fall through to re-prompt
 				}
 			} else if (settings?.mode === "attach") {
-				const client = await tryConnect(await pollForAttachableBrowser(5_000, settings.attachLabel));
+				const client = await tryConnect(
+					await pollForAttachableBrowser(5_000, settings.attachLabel),
+					settings.attachLabel,
+				);
 				if (client) {
 					return client;
 				}
@@ -204,7 +204,7 @@ export function createConnectionProvider(deps: ConnectionProviderDeps): Connecti
 			!!deps.readSettings()?.attachLabel &&
 			!live.some((c) => c.label === deps.readSettings()?.attachLabel);
 		if (!forcePrompt && !rememberedMissing && live.length === 1) {
-			const only = await tryConnect(live[0].wsUrl);
+			const only = await tryConnect(live[0].wsUrl, live[0].label);
 			if (only) {
 				return only;
 			}
@@ -221,26 +221,16 @@ export function createConnectionProvider(deps: ConnectionProviderDeps): Connecti
 				launchable: findSystemBrowsers(),
 			});
 			if (choice.mode === "attach") {
-				// A specific candidate picked in the dialog connects directly.
+				// The picker always returns a specific candidate with a wsUrl.
 				if (choice.wsUrl) {
-					const conn = await tryConnect(choice.wsUrl);
+					const conn = await tryConnect(choice.wsUrl, choice.label);
 					if (conn) {
 						deps.writeSettings(choice.label ? { mode: "attach", attachLabel: choice.label } : { mode: "attach" });
 						return conn;
 					}
 					throw new Error(`selected browser is no longer reachable: ${choice.wsUrl}`);
 				}
-				// Guide the user through chrome://inspect, then poll until the
-				// debugging port shows up (the checkbox is sticky once ticked).
-				openUrlInDefaultBrowser("chrome://inspect/#remote-debugging");
-				const conn = await tryConnect(await pollForAttachableBrowser(ATTACH_DISCOVERY_TIMEOUT_MS));
-				if (!conn) {
-					throw new Error(
-						"no debuggable browser appeared within 60s — tick 'Allow remote debugging' on the chrome://inspect page that was just opened, then try again",
-					);
-				}
-				deps.writeSettings({ mode: "attach" });
-				return conn;
+				throw new Error("attach choice without a browser candidate");
 			}
 			if (choice.mode === "endpoint") {
 				const conn = await tryConnect(await resolveHttpEndpointToWs(choice.cdpUrl));
@@ -270,7 +260,7 @@ export function createConnectionProvider(deps: ConnectionProviderDeps): Connecti
 		// Headless with exactly-one-candidate already handled above; here either
 		// no prompt fn or the single silent connect failed — first candidate wins.
 		if (live.length > 0) {
-			const conn = await tryConnect(live[0].wsUrl);
+			const conn = await tryConnect(live[0].wsUrl, live[0].label);
 			if (conn) {
 				return conn;
 			}

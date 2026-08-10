@@ -83,8 +83,8 @@ describeWithChrome("browser layer (real headless Chrome)", () => {
 
 		const mineA = await manager!.listTabs("agent-a", "mine", 0);
 		const mineB = await manager!.listTabs("agent-b", "mine", 0);
-		expect(mineA.map((t) => t.targetId)).toEqual([a.targetId]);
-		expect(mineB.map((t) => t.targetId)).toEqual([b.targetId]);
+		expect(mineA.tabs.map((t) => t.targetId)).toEqual([a.targetId]);
+		expect(mineB.tabs.map((t) => t.targetId)).toEqual([b.targetId]);
 	});
 
 	it("rejects cross-agent operations with NOT_OWNER", async () => {
@@ -304,8 +304,8 @@ describeWithChrome("browser layer (real headless Chrome)", () => {
 		});
 		expect(info.result?.value).toBeDefined();
 		const mine = await manager!.listTabs("agent-focusfall", "mine", 0);
-		expect(mine.map((t) => t.targetId)).toEqual([first.targetId]);
-		expect(mine[0].focused).toBe(true);
+		expect(mine.tabs.map((t) => t.targetId)).toEqual([first.targetId]);
+		expect(mine.tabs[0]!.focused).toBe(true);
 	});
 
 	it("scrolls a background tab via JS (CDP wheel events are dropped when hidden)", async () => {

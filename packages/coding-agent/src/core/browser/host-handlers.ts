@@ -13,7 +13,7 @@
  */
 
 import type { HostRequestHandlers } from "../kernel/index.js";
-import { BrowserError, type BrowserManager, type BrowserTabInfo } from "./browser-manager.js";
+import { BrowserError, type BrowserManager } from "./browser-manager.js";
 
 export interface BrowserHostHandlerDeps {
 	manager: BrowserManager;
@@ -429,14 +429,35 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 	const { manager, agentId, rlmDepth } = deps;
 	const domSnapshots = new Map<string, DomSnapshot>();
 	const targetOf = (payload: Record<string, unknown>) => optionalString(payload, "target_id");
+	/** Which browser this agent is connected to, for self-describing responses. */
+	const browserField = () => {
+		const label = manager.connectionLabelFor(agentId);
+		return label ? { browser: label } : {};
+	};
 
 	/**
-	 * All action paths go through here: the first action auto-creates a tab when
-	 * the agent has none, so agents never see NOT_CONNECTED for forgetting
-	 * ensure_session — it just works.
+	 * All action paths go through here. Without a targetId the first action
+	 * auto-creates a tab when the agent has none, so agents never see
+	 * NOT_CONNECTED for forgetting ensure_session — it just works. With an
+	 * explicit targetId the tab must exist instead: main-agent operations on
+	 * an unowned user tab ADOPT it on the fly (no separate attach_tab
+	 * round-trip, no junk auto-created tab).
 	 */
-	async function run<T>(method: string, params?: Record<string, unknown>, targetId?: string): Promise<T> {
-		await manager.ensureSession(agentId);
+	async function run<T>(
+		method: string,
+		params?: Record<string, unknown>,
+		targetId?: string,
+		autoCreateTab = true,
+	): Promise<T> {
+		if (targetId === undefined) {
+			// autoCreateTab=false (pure observers like page_info): no tab means a
+			// clean NOT_CONNECTED from runForAgent, not a junk auto-created tab.
+			if (autoCreateTab) {
+				await manager.ensureSession(agentId);
+			}
+		} else {
+			await manager.ensureOperable(agentId, targetId, rlmDepth);
+		}
 		return manager.runForAgent<T>(agentId, method, params, targetId);
 	}
 
@@ -472,14 +493,17 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 		await run("Input.insertText", { text }, targetId);
 	}
 
-	async function evaluate<T>(expression: string, targetId?: string): Promise<T> {
-		// Goes through run() (not runForAgent directly) so js()/dom()/scroll()
-		// auto-create a tab on first use, same as the action handlers.
+	async function evaluate<T>(expression: string, targetId?: string, autoCreateTab = true): Promise<T> {
+		// Goes through run() so js()/dom()/scroll() auto-create a tab on first
+		// use and explicit target_ids auto-adopt, same as the action handlers.
+		// Pure observers (page_info) pass autoCreateTab=false: silently creating
+		// a new-tab page and reporting it as "the current page" is worse than a
+		// clean NOT_CONNECTED.
 		const attempt = (code: string) =>
 			run<{
 				result?: { value?: T; description?: string };
 				exceptionDetails?: { exception?: { description?: string }; text?: string };
-			}>("Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true }, targetId);
+			}>("Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true }, targetId, autoCreateTab);
 		let response = await attempt(expression);
 		// Top-level `return` is only legal inside a function. Retry wrapped in an
 		// async IIFE ONLY on that exact syntax error — grepping the source for
@@ -502,7 +526,7 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 		"browser.ensure_session": async () => {
 			try {
 				const target = await manager.ensureSession(agentId);
-				return { target_id: target.targetId };
+				return { target_id: target.targetId, ...browserField() };
 			} catch (err) {
 				rethrow(err);
 			}
@@ -512,7 +536,7 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 			try {
 				const url = optionalString(payload, "url") ?? "chrome://newtab/";
 				const target = await manager.createTab(agentId, url);
-				return { target_id: target.targetId, url };
+				return { target_id: target.targetId, url, ...browserField() };
 			} catch (err) {
 				rethrow(err);
 			}
@@ -522,7 +546,7 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 			try {
 				const targetId = requireString(payload, "target_id");
 				const target = await manager.attachTab(agentId, targetId, rlmDepth);
-				return { target_id: target.targetId };
+				return { target_id: target.targetId, ...browserField() };
 			} catch (err) {
 				rethrow(err);
 			}
@@ -533,7 +557,7 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 				let targetId = targetOf(payload);
 				if (!targetId) {
 					const mine = await manager.listTabs(agentId, "mine", rlmDepth);
-					targetId = mine.find((t) => t.focused)?.targetId ?? mine[0]?.targetId;
+					targetId = mine.tabs.find((t) => t.focused)?.targetId ?? mine.tabs[0]?.targetId;
 					if (!targetId) {
 						throw new BrowserError("TARGET_NOT_FOUND", "no tab to close");
 					}
@@ -560,14 +584,16 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 			try {
 				const scope = optionalString(payload, "scope") === "all" ? "all" : "mine";
 				// Active detection defaults ON for scope="all" — an agent listing
-				// the user's tabs almost always wants the marker, and in attach
-				// mode the debugging consent that makes attaches silent was
-				// already granted during connection setup. Pass
-				// include_active=false to skip the per-tab inspection.
+				// the user's tabs almost always wants the marker. Chrome 150+ needs
+				// no attaches at all; older Chrome attaches one cached probe
+				// session per user tab (the first may show a one-time consent
+				// dialog; the attach mutex keeps dialogs serialized). Pass
+				// include_active=false for a cheap, probe-free listing.
 				const detectActive =
 					payload.include_active === undefined ? scope === "all" : payload.include_active === true;
-				const tabs: BrowserTabInfo[] = await manager.listTabs(agentId, scope, rlmDepth, detectActive);
+				const { tabs, detection, browser } = await manager.listTabs(agentId, scope, rlmDepth, detectActive);
 				return {
+					browser,
 					tabs: tabs.map((t) => ({
 						target_id: t.targetId,
 						url: t.url,
@@ -577,6 +603,18 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 						...(t.focused ? { focused: true } : {}),
 						...(t.active ? { active: true } : {}),
 					})),
+					// Make probe failures visible to the agent: "no active tab" must
+					// be distinguishable from "couldn't probe (consent dialog
+					// unanswered)" — otherwise the agent can only shrug.
+					...(detection && detection.failed > 0
+						? {
+								active_detection_note: `${detection.failed} tab(s) could not be probed (${detection.probed} succeeded) — the browser's "Allow remote debugging" dialog is likely waiting for a click; ask the user to allow it, then retry`,
+							}
+						: detection && detection.visible === 0 && detection.probed > 0 && !detection.authoritative
+							? {
+									active_detection_note: `all ${detection.probed} probed tab(s) report hidden — the browser window may be minimized/occluded, or its visibility state is stale; if the user IS looking at a tab, ask them to click the page once, then retry`,
+								}
+							: {}),
 				};
 			} catch (err) {
 				rethrow(err);
@@ -790,9 +828,14 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 
 		"browser.page_info": async (payload) => {
 			try {
+				// autoCreateTab=false: page_info is an observer. Auto-creating a
+				// chrome://newtab and reporting it as "the current page" misleads
+				// agents answering "what page is the user on" — NOT_CONNECTED
+				// sends them down the list_tabs/attach_tab path instead.
 				const info = await evaluate<Record<string, unknown>>(
 					"({url: location.href, title: document.title, w: innerWidth, h: innerHeight, sx: scrollX, sy: scrollY, pw: document.documentElement ? document.documentElement.scrollWidth : 0, ph: document.documentElement ? document.documentElement.scrollHeight : 0})",
 					targetOf(payload),
+					false,
 				);
 				return { ...info };
 			} catch (err) {
@@ -847,7 +890,7 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 				}>(`${DOM_SNAPSHOT_JS}(${maxElements})`, targetId);
 				// Resolve which target this snapshot belongs to for later index clicks.
 				const mine = await manager.listTabs(agentId, "mine", rlmDepth);
-				const resolvedTarget = targetId ?? mine.find((t) => t.focused)?.targetId ?? mine[0]?.targetId;
+				const resolvedTarget = targetId ?? mine.tabs.find((t) => t.focused)?.targetId ?? mine.tabs[0]?.targetId;
 				if (resolvedTarget) {
 					domSnapshots.set(agentId, { targetId: resolvedTarget, count: snapshot.elements.length });
 				}

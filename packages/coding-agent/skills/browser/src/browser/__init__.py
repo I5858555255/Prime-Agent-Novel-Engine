@@ -60,7 +60,9 @@ async def new_tab(url: str = "chrome://newtab/") -> dict[str, Any]:
 async def attach_tab(target_id: str) -> dict[str, Any]:
     """Adopt an existing user tab (main agent only; child agents are rejected).
 
-    Adopted tabs are released — never closed — when this agent's session ends.
+    Usually unnecessary: passing a user tab's target_id to any operation
+    (page_info, dom, js, screenshot, ...) adopts it on the fly. Adopted tabs
+    are released — never closed — when this agent's session ends.
     """
     return await host_request("browser.attach_tab", {"target_id": _require_str(target_id, "target_id")})
 
@@ -84,9 +86,17 @@ async def list_tabs(scope: str = "mine", include_active: bool | None = None) -> 
     agent only): also the user's unassigned tabs, with the tab(s) the user is
     currently looking at marked `active: true` — one per browser window when
     several windows are open (CDP cannot tell which window is frontmost).
-    Active detection defaults ON for scope="all" (it briefly inspects each
-    tab — silent once the browser's remote-debugging consent was granted
-    during connection setup); pass include_active=False to skip it."""
+
+    Active detection is ON by default for scope="all" (Chrome 150+ needs
+    no attaches at all; older Chrome may show a one-time consent dialog
+    per user tab, cached afterwards). Pass include_active=False for a
+    cheap, probe-free listing. The result's `browser` field names which
+    browser you are connected to — "managed browser" means the user's tabs
+    are not visible here; call reconnect() to switch.
+
+    When some tabs could not be probed, the result includes an
+    `active_detection_note` explaining why (usually an unanswered consent
+    dialog) — relay it to the user instead of shrugging."""
     if scope not in ("mine", "all"):
         raise ValueError(f'scope must be "mine" or "all", got {scope!r}')
     payload: dict[str, Any] = {"scope": scope}
@@ -179,7 +189,13 @@ async def js(expression: str, target_id: str | None = None) -> Any:
 
 
 async def page_info(target_id: str | None = None) -> dict[str, Any]:
-    """Return {url, title, viewport w/h, scroll x/y, page w/h} — the cheapest liveness check."""
+    """Return {url, title, viewport w/h, scroll x/y, page w/h} — the cheapest liveness check.
+
+    Reports THIS agent's tab only — never which tab the user is looking at
+    (use list_tabs(scope="all", include_active=True) + attach_tab for that).
+    Fails with [NOT_CONNECTED] when this agent has no tab yet; it never
+    auto-creates one.
+    """
     return await host_request("browser.page_info", _payload(target_id=target_id))
 
 

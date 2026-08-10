@@ -43,7 +43,7 @@ try {
 	console.log("[5] detach (created tab should close)…");
 	await manager.detachSession("smoke-agent");
 	const tabs = await manager.listTabs("smoke-agent", "mine", 0);
-	console.log("    remaining tabs for agent:", tabs.length);
+	console.log("    remaining tabs for agent:", tabs.tabs.length);
 
 	console.log("SMOKE OK");
 } finally {
