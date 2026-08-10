@@ -729,7 +729,17 @@ export class AgentCronJobStore {
 					return job;
 				}
 				if (result.outcome === "skipped" && result.error === undefined) {
-					const nextRunAt = nextRunAtForSchedule(job.schedule, now);
+					const scheduledNextRunAt = nextRunAtForSchedule(job.schedule, now);
+					// A deferred heartbeat fire retries at the next scheduler tick instead of
+					// losing the fire until the following full interval.
+					const heartbeatRetryAt =
+						isHeartbeatCronJob(job) && job.schedule.kind !== "once"
+							? new Date(now.getTime() + ONE_MINUTE_MS)
+							: undefined;
+					const nextRunAt =
+						heartbeatRetryAt && (!scheduledNextRunAt || heartbeatRetryAt < scheduledNextRunAt)
+							? heartbeatRetryAt
+							: scheduledNextRunAt;
 					updated = {
 						...job,
 						status: job.schedule.kind === "once" ? "completed" : job.status,

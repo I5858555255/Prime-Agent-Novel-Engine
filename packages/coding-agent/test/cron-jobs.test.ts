@@ -1128,10 +1128,12 @@ describe("AgentCronScheduler", () => {
 		const handled = await scheduler.runDue(new Date("2026-01-01T12:39:00.000Z"));
 
 		expect(handled).toBe(0);
+		// A skipped heartbeat fire retries at the next scheduler tick instead of
+		// waiting out the whole interval.
 		expect(store.getHeartbeat("active-1")).toMatchObject({
 			id: job.id,
 			status: "active",
-			nextRunAt: "2026-01-01T12:45:00.000Z",
+			nextRunAt: "2026-01-01T12:41:00.000Z",
 			lastSkippedAt: "2026-01-01T12:40:00.000Z",
 			runCount: 0,
 		});
