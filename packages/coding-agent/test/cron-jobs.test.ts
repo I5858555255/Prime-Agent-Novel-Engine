@@ -30,6 +30,27 @@ describe("parseAgentCronSchedule", () => {
 		expect(parseAgentCronSchedule("*/30 * * * *", start).nextRunAt.toISOString()).toBe("2026-01-01T13:00:00.000Z");
 	});
 
+	it("finds valid leap-day schedules beyond the next year", () => {
+		const after = new Date(2025, 2, 1, 0, 0, 0, 0);
+		const nextRunAt = parseAgentCronSchedule("0 0 29 2 *", after).nextRunAt;
+
+		expect([
+			nextRunAt.getFullYear(),
+			nextRunAt.getMonth(),
+			nextRunAt.getDate(),
+			nextRunAt.getHours(),
+			nextRunAt.getMinutes(),
+		]).toEqual([2028, 1, 29, 0, 0]);
+	});
+
+	it("rejects impossible calendar dates after a finite scan", () => {
+		const after = new Date(2025, 2, 1, 0, 0, 0, 0);
+
+		expect(() => parseAgentCronSchedule("0 0 31 2 *", after)).toThrow(
+			"Cron schedule has no matching date: 0 0 31 2 *",
+		);
+	});
+
 	it("parses recurring heartbeat intervals with seconds", () => {
 		const parsed = parseAgentCronSchedule("every 30s", start);
 

@@ -1377,14 +1377,23 @@ function nextCronRunAfter(expression: string, after: Date): Date {
 	candidate.setSeconds(0, 0);
 	candidate.setMinutes(candidate.getMinutes() + 1);
 
-	const deadline = candidate.getTime() + 366 * 24 * 60 * ONE_MINUTE_MS;
-	while (candidate.getTime() <= deadline) {
+	// Gregorian calendar date/weekday combinations repeat every 400 years. Scan
+	// that full cycle so valid sparse schedules such as leap day are not rejected,
+	// while skipping non-matching calendar days instead of checking every minute.
+	const deadline = new Date(candidate.getTime());
+	deadline.setFullYear(deadline.getFullYear() + 400);
+	while (candidate.getTime() <= deadline.getTime()) {
+		if (!matchesCronCalendarDay(candidate, fields)) {
+			candidate.setDate(candidate.getDate() + 1);
+			candidate.setHours(0, 0, 0, 0);
+			continue;
+		}
 		if (matchesCronFields(candidate, fields)) {
 			return candidate;
 		}
 		candidate.setMinutes(candidate.getMinutes() + 1);
 	}
-	throw new Error(`Cron schedule did not match within one year: ${expression}`);
+	throw new Error(`Cron schedule has no matching date: ${expression}`);
 }
 
 function parseCronExpression(expression: string): CronFields {
@@ -1453,15 +1462,15 @@ function parseCronNumber(value: string | undefined, min: number, max: number): n
 	return parsed;
 }
 
-function matchesCronFields(date: Date, fields: CronFields): boolean {
+function matchesCronCalendarDay(date: Date, fields: CronFields): boolean {
 	const day = date.getDay();
-	const dayMatches = fields.dayOfWeek.has(day) || (day === 0 && fields.dayOfWeek.has(7));
+	const dayOfWeekMatches = fields.dayOfWeek.has(day) || (day === 0 && fields.dayOfWeek.has(7));
+	return fields.dayOfMonth.has(date.getDate()) && fields.month.has(date.getMonth() + 1) && dayOfWeekMatches;
+}
+
+function matchesCronFields(date: Date, fields: CronFields): boolean {
 	return (
-		fields.minute.has(date.getMinutes()) &&
-		fields.hour.has(date.getHours()) &&
-		fields.dayOfMonth.has(date.getDate()) &&
-		fields.month.has(date.getMonth() + 1) &&
-		dayMatches
+		fields.minute.has(date.getMinutes()) && fields.hour.has(date.getHours()) && matchesCronCalendarDay(date, fields)
 	);
 }
 
