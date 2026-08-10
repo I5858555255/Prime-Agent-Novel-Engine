@@ -14,6 +14,7 @@ import {
 	parseAgentSessionMessagePromptId,
 	sessionNameReservationKey,
 } from "../src/core/agent-messages.js";
+import { SessionAlreadyActiveError } from "../src/core/session-lease.js";
 
 describe("agent session bus", () => {
 	it("formats routed messages with sender and target context", () => {
@@ -259,6 +260,48 @@ describe("agent session bus", () => {
 				{ target: "sibling", error: "rate limited" },
 			],
 		});
+	});
+
+	it("explains cross-daemon ownership failures without exposing lease details", async () => {
+		const sendAgentMessage = vi
+			.fn()
+			.mockRejectedValueOnce(new SessionAlreadyActiveError("/private/session.jsonl", "daemon-session-id"))
+			.mockRejectedValue(
+				Object.assign(new Error("Session is already active in legacy-daemon: /private/session.jsonl"), {
+					code: "session_already_active",
+				}),
+			);
+		const handlers = createAgentMessageHostHandlers({
+			roster: () => ({
+				current: { name: "builder", id: "builder", depth: 1 },
+				entries: [{ relationship: "sibling", name: "reviewer", id: "sibling", depth: 1, status: "running" }],
+			}),
+			sendAgentMessage,
+		});
+
+		await expect(
+			handlers["agent_message.send"]!({
+				message: "status",
+				receiver_role: "sibling",
+				receiver_name: "reviewer",
+			}),
+		).rejects.toThrow(
+			"Agent message delivery failed: the target session is already active elsewhere. Cross-daemon routing is not supported.",
+		);
+
+		const broadcast = (await handlers["agent_message.send"]!({ target: "all", message: "status" })) as {
+			receipts: Array<{ target?: string; error?: string }>;
+		};
+		expect(broadcast).toEqual({
+			receipts: [
+				{
+					target: "sibling",
+					error: "Agent message delivery failed: the target session is already active elsewhere. Cross-daemon routing is not supported.",
+				},
+			],
+		});
+		expect(broadcast.receipts[0]?.error).not.toContain("/private/session.jsonl");
+		expect(broadcast.receipts[0]?.error).not.toContain("daemon-session-id");
 	});
 
 	it("authorizes exactly one persisted nuclear-family edge", () => {
