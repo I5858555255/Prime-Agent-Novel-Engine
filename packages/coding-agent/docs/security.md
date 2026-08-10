@@ -53,7 +53,42 @@ Two things persist across runs by default:
 - **Session history**, written as append-only JSONL under `sessionDir` (default `.prime/agent/sessions`, configurable in `settings.json`). It can contain paths, command output, and other details from the session. There's no dedicated clear command today; delete the relevant session file or directory directly to reset it.
 - **Stored credentials**, written to `~/.prime/agent/auth.json` (created with 0600 permissions) after `/login` or when an API key is configured this way. This lives outside `sessionDir`.
 
-`--no-session` skips persisting or resuming a session under `sessionDir` for that run. It is not a guarantee that nothing is written anywhere: whether logs, tool-approval state, or caches outside `sessionDir` are also skipped isn't documented at the time of writing. For a run that needs to leave no trace, pair `--no-session` with an ephemeral container filesystem (as in the Docker example above) rather than relying on the flag alone.
+### Disposable Runs with `--no-session`
+
+`--no-session` is useful for one-shot/disposable runs because it avoids starting or resuming a persisted session. It should not be assumed to make the run fully stateless unless verified for your prime-agent version.
+
+Until the exact scope is confirmed, assume that logs, tool-approval/policy caches, command history, package/download caches, temporary files, or files created by executed commands may still be written outside the target workspace.
+
+**Known gap:** the exact state skipped by `--no-session` is not currently documented. If you need strong disposable behavior, run the agent in a fresh container/VM with an ephemeral `HOME` and workspace mount.
+
+### Auditing State Between Runs
+
+Until the gap above is closed, you can check for yourself what a run actually touches. On the host, redirect `HOME` and the XDG dirs to a scratch location and diff before/after:
+
+```bash
+tmp=$(mktemp -d)
+mkdir -p "$tmp/home" "$tmp/config" "$tmp/cache" "$tmp/state"
+HOME="$tmp/home" \
+XDG_CONFIG_HOME="$tmp/config" \
+XDG_CACHE_HOME="$tmp/cache" \
+XDG_STATE_HOME="$tmp/state" \
+prime-agent --no-session ...
+find "$tmp" -type f | sort
+```
+
+That won't catch writes outside `$HOME`/XDG dirs. For a stronger check inside a container:
+
+```bash
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  --cap-drop=ALL \
+  --security-opt no-new-privileges \
+  --env HOME=/tmp/home \
+  -v "$PWD/scratch-repo:/workspace" \
+  -w /workspace \
+  <agent-image> \
+  sh -c 'mkdir -p "$HOME"; touch /tmp/.state-marker; prime-agent --no-session ...; find / -xdev -newer /tmp/.state-marker -type f'
+```
 
 ## Pre-Run Checklist
 
