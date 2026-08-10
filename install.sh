@@ -135,11 +135,30 @@ main() {
 The $prime_agent_cmd command was installed, but it is not on your PATH yet.
 Check npm's global bin directory with:
 
-  npm bin -g
+  echo "\$(npm prefix -g)/bin"
 
 Then add that directory to your shell PATH.
+(npm 10 removed the old "npm bin -g" command.)
 EOF
 	fi
+}
+
+# npm 12 defaults allow-remote=none, and the published prime-agent tarball
+# carries transitive URL dependencies (R2-hosted @earendil-works tarballs),
+# so a plain "npm install -g" exits with EALLOWREMOTE. "root" is not enough —
+# the blocked tarballs are transitive — so the install invocation is scoped
+# to allow-remote=all via env, without touching the user's ~/.npmrc. (#741,
+# verified by @d4not on npm 12.0.2.) Gated to npm >= 12 so older npm versions
+# see no unknown-config warnings.
+npm_allow_remote_env() {
+	case "$(npm --version 2>/dev/null)" in
+	1[2-9].* | [2-9][0-9].*)
+		printf 'npm_config_allow_remote=all'
+		;;
+	*)
+		printf ''
+		;;
+	esac
 }
 
 create_temp_dir() {
@@ -1602,7 +1621,7 @@ Finalizing npm install."
 			"Installing Prime Agent" \
 			"Installing Prime Agent" \
 			"$npm_install_details" \
-			env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1 PRIME_AGENT_INSTALL_UV=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+			env $(npm_allow_remote_env) PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1 PRIME_AGENT_INSTALL_UV=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
 	else
 		npm_install_details="Preparing global install.
 Linking command binaries.
@@ -1613,7 +1632,7 @@ Finalizing npm install."
 			"Installing Prime Agent" \
 			"Installing Prime Agent" \
 			"$npm_install_details" \
-			env PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
+			env $(npm_allow_remote_env) PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g --no-fund --no-audit --loglevel=error --progress=false "$tarball_path"
 	fi
 }
 

@@ -36,6 +36,24 @@ import { isStdoutTakenOver } from "./output-guard.js";
 import type { PackageSource, SettingsManager } from "./settings-manager.js";
 
 const NETWORK_TIMEOUT_MS = 10000;
+
+/**
+ * Parse `npm view <pkg> version --json` output. npm 10 emits a bare JSON
+ * string; npm >= 11 emits a JSON array (e.g. `["2.87.2"]`). Comparing the
+ * un-normalized array against the installed version string made every
+ * startup report "Package updates available" as a false positive (#738).
+ * Exported for testing.
+ */
+export function normalizeNpmViewVersion(stdout: string): string {
+	const raw = stdout.trim();
+	if (!raw) throw new Error("Empty response from npm view");
+	const parsed: unknown = JSON.parse(raw);
+	const version = Array.isArray(parsed) ? parsed[parsed.length - 1] : parsed;
+	if (typeof version !== "string" || version.length === 0) {
+		throw new Error(`Unexpected npm view version output: ${raw}`);
+	}
+	return version;
+}
 const UPDATE_CHECK_CONCURRENCY = 4;
 const GIT_UPDATE_CONCURRENCY = 4;
 
