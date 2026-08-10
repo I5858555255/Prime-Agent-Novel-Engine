@@ -899,6 +899,13 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
+		// Slash command submit (when input starts with /)
+		if (this.getCurrentSlashCommandContext() !== null && kb.matches(data, "tui.input.slashSubmit")) {
+			if (this.disableSubmit) return;
+			this.submitValue();
+			return;
+		}
+
 		// New line
 		if (
 			kb.matches(data, "tui.input.newLine") ||
