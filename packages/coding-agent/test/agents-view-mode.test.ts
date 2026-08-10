@@ -535,52 +535,45 @@ describe("AgentsViewMode", () => {
 				true,
 			);
 			expect((Reflect.get(remount, "programShownParents") as Set<string>).has("file:/tmp/root.jsonl")).toBe(true);
+
+			// A collapsed-back list persists that way too.
+			(Reflect.get(remount, "expandedSubagentParents") as Set<string>).delete("file:/tmp/root.jsonl");
+			const collapsedRemount = new AgentsViewMode({ config: {}, uiServices: createUiServices() }, persistentState);
+			expect(
+				(Reflect.get(collapsedRemount, "expandedSubagentParents") as Set<string>).has("file:/tmp/root.jsonl"),
+			).toBe(false);
 		} finally {
 			stopThemeWatcher();
 		}
 	});
 
-	it("keeps the persisted expansion set in sync when selection collapses other lists", () => {
-		const persistentState: AgentsViewPersistentState = {};
+	it("toggles subagent list expansion from the summary row", () => {
+		const expandedSubagentParents = new Set(["root-row"]);
+		const programShownParents = new Set(["root-row"]);
+		const persistentState: AgentsViewPersistentState = {
+			expandedSubagentParents,
+			programShownParents,
+		};
 		const self: Record<string, unknown> = {
 			persistentState,
-			rows: [
-				{
-					kind: "agent",
-					section: "idle",
-					summary: summary({ id: "root", activeSessionId: "root", sessionId: "root" }),
-					selectable: true,
-					identity: "root-row",
-				},
-				{
-					kind: "subagent",
-					section: "running",
-					summary: summary({ id: "child", activeSessionId: "child", sessionId: "child" }),
-					selectable: true,
-					identity: "child-row",
-					parentIdentity: "root-row",
-				},
-				{
-					kind: "agent",
-					section: "idle",
-					summary: summary({ id: "other", activeSessionId: "other", sessionId: "other" }),
-					selectable: true,
-					identity: "other-row",
-				},
-			],
-			selectedIndex: 1,
-			expandedSubagentParents: new Set(["root-row", "other-row"]),
-			programShownParents: new Set(["root-row", "other-row"]),
+			expandedSubagentParents,
+			programShownParents,
 			rebuildRows: vi.fn(),
+			syncSelectedRowState: vi.fn(),
+			ui: { requestRender: vi.fn() },
 		};
+		const summaryRow = { kind: "subagent-summary", parentIdentity: "root-row", expanded: true };
 
-		invoke("collapseSubagentListsOutsideSelection", self);
+		invoke("toggleSubagentList", self, summaryRow);
+		expect(expandedSubagentParents.size).toBe(0);
+		// Collapsing the list hides its revealed program too.
+		expect(programShownParents.size).toBe(0);
+		expect(self.rebuildRows).toHaveBeenCalledTimes(1);
 
-		const pruned = Reflect.get(self, "expandedSubagentParents") as Set<string>;
-		expect(pruned).toEqual(new Set(["root-row"]));
-		expect(persistentState.expandedSubagentParents).toBe(pruned);
-		expect(Reflect.get(self, "programShownParents")).toEqual(new Set(["root-row"]));
-		expect(self.rebuildRows).toHaveBeenCalledOnce();
+		invoke("toggleSubagentList", self, { ...summaryRow, expanded: false });
+		expect(expandedSubagentParents).toEqual(new Set(["root-row"]));
+		expect(programShownParents.size).toBe(0);
+		expect(self.rebuildRows).toHaveBeenCalledTimes(2);
 	});
 });
 
