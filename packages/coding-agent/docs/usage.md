@@ -53,7 +53,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/clone` | Duplicate the current active branch into a new session |
 | `/compact [prompt]` | Manually compact context, optionally with custom instructions |
 | `/refine [--project\|--global] [instructions]` | Refine or roll back session, project, or global harness state |
-| `/harness [list\|enable <entry>\|disable <entry>]` | List harness entries and enable or disable them without deleting |
+| `/harness [list\|enable <entry>\|disable <entry>]` | Open the harness selector or enable/disable an entry without adding the command to the conversation |
 | `/copy` | Copy last assistant message to clipboard |
 | `/btw <question>`, `/side <question>` | Ask an inline side question without adding it to the session; replies continue the side conversation, esc returns |
 | `/export [file]` | Export session to HTML |

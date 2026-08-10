@@ -201,6 +201,7 @@ import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FEATURE_HINT_ANIMATION_INTERVAL_MS, FeatureHintComponent } from "./components/feature-hint.js";
 import { FooterComponent } from "./components/footer.js";
+import { HarnessSelectorComponent } from "./components/harness-selector.js";
 import { HeartbeatManagerComponent } from "./components/heartbeat-manager.js";
 import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
 import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
@@ -4695,7 +4696,6 @@ export class InteractiveMode {
 					return;
 				}
 				if (commandName === "harness") {
-					this.echoLocalCommand(text);
 					this.editor.setText("");
 					await this.handleHarnessCommand(commandArgs);
 					return;
@@ -8854,22 +8854,28 @@ export class InteractiveMode {
 			const entries = await this.agentConnection.listHarnessEntries();
 
 			if (options.action === "list") {
-				if (entries.length === 0) {
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(theme.fg("dim", "No continual harness entries yet."), 1, 0));
-					this.ui.requestRender();
-					return;
-				}
-				const lines = [theme.bold("Continual Harness Entries"), ""];
-				for (const entry of entries) {
-					const marker = entry.enabled ? "[x]" : "[ ]";
-					const state = entry.enabled ? "" : theme.fg("dim", " (disabled)");
-					lines.push(`${marker} ${entry.scope}:${entry.kind}:${entry.id} — ${entry.title}${state}`);
-				}
-				lines.push("", theme.fg("dim", "Toggle with /harness disable <entry> or /harness enable <entry>."));
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-				this.ui.requestRender();
+				this.showSelector((done) => {
+					const selector = new HarnessSelectorComponent(entries, {
+						onToggle: async (entry, enabled) => {
+							const updated = await this.agentConnection.setHarnessEntryEnabled(
+								entry.kind,
+								entry.id,
+								enabled,
+								entry.scope,
+							);
+							this.showStatus(
+								`${updated.enabled ? "Enabled" : "Disabled"} ${updated.scope}:${updated.kind}:${updated.id}`,
+							);
+							return updated;
+						},
+						onCancel: () => {
+							done();
+							this.ui.requestRender();
+						},
+						onRender: () => this.ui.requestRender(),
+					});
+					return { component: selector, focus: selector.getList() };
+				});
 				return;
 			}
 
@@ -8881,18 +8887,7 @@ export class InteractiveMode {
 				enabled,
 				target.scope,
 			);
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(
-					theme.fg(
-						"dim",
-						`${updated.enabled ? "Enabled" : "Disabled"} ${updated.scope}:${updated.kind}:${updated.id}`,
-					),
-					1,
-					0,
-				),
-			);
-			this.ui.requestRender();
+			this.showStatus(`${updated.enabled ? "Enabled" : "Disabled"} ${updated.scope}:${updated.kind}:${updated.id}`);
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
 		}

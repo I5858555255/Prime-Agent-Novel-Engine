@@ -227,8 +227,10 @@ The kernel resolves scopes from `RLM_HARNESS_STATE_DIR`/`RLM_SESSION_DIR` (local
 
 Entries carry an `enabled` flag. A disabled entry stays on disk and stays rollback-able, but is hidden from the system prompt, so a disabled subagent spec is never offered for delegation:
 
+Bare `/harness` and `/harness list` open a selector where Enter toggles the selected entry. Harness commands update configuration without being added to the conversation.
+
 ```text
-/harness                                  # list entries with their scope and state
+/harness
 /harness disable project:subagent:api_reviewer
 /harness enable api_reviewer
 ```
