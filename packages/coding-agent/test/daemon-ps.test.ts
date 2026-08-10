@@ -15,7 +15,7 @@ import {
 	sortDaemons,
 	verifyHelloSupervisorPid,
 } from "../src/cli/daemon-ps.js";
-import { getProcessStartId } from "../src/core/session-lease.js";
+import { getProcessStartId, getPsProcessStartId } from "../src/core/session-lease.js";
 import { defaultDaemonSocketDir } from "../src/modes/daemon/daemon-socket.js";
 
 describe("worker socket classification", () => {
@@ -112,6 +112,38 @@ describe("verifyHelloSupervisorPid", () => {
 		expect(verifyHelloSupervisorPid(process.pid, processStartId)).toBe(process.pid);
 		if (processStartId) {
 			expect(verifyHelloSupervisorPid(process.pid, `${processStartId}-stale`)).toBeUndefined();
+		}
+	});
+});
+
+describe("getPsProcessStartId", () => {
+	it("uses a stable timezone and locale for the portable process identity", () => {
+		let queryEnvironment: NodeJS.ProcessEnv | undefined;
+		const result = getPsProcessStartId(1234, (_command, _args, options) => {
+			queryEnvironment = options?.env;
+			return "Sat Aug  8 06:00:00 2026\n";
+		});
+
+		expect(result).toBe("ps:Sat Aug  8 06:00:00 2026");
+		expect(queryEnvironment).toMatchObject({ TZ: "UTC", LC_ALL: "C" });
+	});
+
+	it("preserves the surrounding environment", () => {
+		let queryEnvironment: NodeJS.ProcessEnv | undefined;
+		const previous = process.env.PRIME_AGENT_PROCESS_START_TEST;
+		process.env.PRIME_AGENT_PROCESS_START_TEST = "preserved";
+		try {
+			getPsProcessStartId(1234, (_command, _args, options) => {
+				queryEnvironment = options?.env;
+				return "Sat Aug  8 06:00:00 2026\n";
+			});
+			expect(queryEnvironment?.PRIME_AGENT_PROCESS_START_TEST).toBe("preserved");
+		} finally {
+			if (previous === undefined) {
+				delete process.env.PRIME_AGENT_PROCESS_START_TEST;
+			} else {
+				process.env.PRIME_AGENT_PROCESS_START_TEST = previous;
+			}
 		}
 	});
 });
