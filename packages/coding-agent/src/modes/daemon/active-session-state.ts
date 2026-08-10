@@ -29,6 +29,10 @@ export interface DaemonSocketClient {
 	supportsExtensionUi: boolean;
 	capabilities: Set<DaemonClientCapability>;
 	capabilitiesByActiveSessionId?: Map<string, Set<DaemonClientCapability>>;
+	/** Status keys observed by legacy clients, retained as tombstones for resync clears. */
+	extensionStatusKeysByActiveSessionId?: Map<string, Set<string>>;
+	/** Legacy status updates observed during snapshot transfer, replayed after it closes. */
+	pendingExtensionStatusReplayActiveSessionIds?: Set<string>;
 }
 
 export interface ActiveSessionState {
@@ -38,6 +42,8 @@ export interface ActiveSessionState {
 	/** Attach snapshots in flight: reserved for passivation busyness, but not yet event recipients. */
 	pendingAttaches: number;
 	extensionUiRequests: Map<string, ActiveSessionExtensionUiRequest>;
+	/** Last passive extension statuses, replayed in attach and replacement snapshots. */
+	extensionStatuses?: Map<string, string>;
 	eventGeneration: string;
 	lastEventSequence: DaemonEventSequence;
 	unsubscribe?: () => void;

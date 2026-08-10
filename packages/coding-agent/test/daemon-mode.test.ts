@@ -25,6 +25,9 @@ import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon
 import {
 	AgentDaemon,
 	cancelPendingExtensionUiRequests,
+	createExtensionStatusReplay,
+	daemonClientSupportsExtensionStatusSnapshot,
+	daemonOutboundForClient,
 	detachClientFromActiveSession,
 	finishClientSnapshotStreaming,
 	getChildActiveSessionStates,
@@ -4034,6 +4037,55 @@ describe("daemon mode helpers", () => {
 			}),
 		).rejects.toThrow("Agent messaging cannot target the sending session");
 		expect(state.runtime.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("capability-gates extension statuses in replacement snapshots", () => {
+		const legacyClient = makeClient("legacy-client", "active", true);
+		const capableClient = makeClient("capable-client", "active", true);
+		setDaemonClientSessionCapabilities(
+			capableClient,
+			"active",
+			new Set(["extension_ui", "extension_status_snapshot"]),
+		);
+		const state = makeState("active");
+		state.extensionStatuses = new Map([["codex", "23% 1.8d"]]);
+		const replacement: Extract<DaemonOutbound, { type: "session_replaced" }> = {
+			type: "session_replaced",
+			activeSessionId: "active",
+			state: { extensionStatuses: { codex: "23% 1.8d" } } as never,
+			messages: [],
+		};
+
+		expect(daemonClientSupportsExtensionStatusSnapshot(legacyClient, "active")).toBe(false);
+		expect(daemonOutboundForClient(legacyClient, replacement).state.extensionStatuses).toBeUndefined();
+		expect(daemonClientSupportsExtensionStatusSnapshot(capableClient, "active")).toBe(true);
+		expect(daemonOutboundForClient(capableClient, replacement)).toBe(replacement);
+		expect(createExtensionStatusReplay(state)).toEqual([
+			expect.objectContaining({
+				type: "extension_ui_request",
+				method: "setStatus",
+				payload: { statusKey: "codex", statusText: "23% 1.8d" },
+			}),
+		]);
+	});
+
+	it("replays legacy status tombstones before current values on resync", () => {
+		const state = makeState("active");
+		state.extensionStatuses = new Map([["current", "ready"]]);
+		const replay = createExtensionStatusReplay(state, new Set(["removed", "current"]));
+		expect(replay.map((message) => message.payload)).toEqual([
+			{ statusKey: "removed", statusText: undefined },
+			{ statusKey: "current", statusText: "ready" },
+		]);
+		const resynced: Extract<DaemonOutbound, { type: "session_resynced" }> = {
+			type: "session_resynced",
+			activeSessionId: "active",
+			snapshot: { state: { extensionStatuses: { current: "ready" } } as never, messages: [] } as never,
+		};
+		const legacyClient = makeClient("legacy-client", "active", true);
+		expect(
+			(daemonOutboundForClient(legacyClient, resynced) as typeof resynced).snapshot.state.extensionStatuses,
+		).toBeUndefined();
 	});
 
 	it("sends dialog extension UI requests only to UI-capable clients", () => {

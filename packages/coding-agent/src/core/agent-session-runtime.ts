@@ -87,6 +87,8 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	private rebindSession?: (session: AgentSession) => Promise<void>;
 	private readonly sessionReplacedListeners = new Set<(session: AgentSession) => void | Promise<void>>();
 	private runtimeEnvScope?: <T>(fn: () => Promise<T>) => Promise<T>;
+	private beforeSessionReplace?: () => void;
+	private sessionReplaceFailed?: () => void;
 	private beforeSessionInvalidate?: () => void;
 	private subagentRuntimeHost?: SubagentRuntimeHost;
 	private subagentRuntimes = new Map<string, AgentSessionRuntime>();
@@ -167,6 +169,16 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	setSubagentRuntimeHost(host?: SubagentRuntimeHost): void {
 		this.subagentRuntimeHost = host;
 		this.bindRuntimeHost();
+	}
+
+	/** Run synchronously before a session replacement starts its teardown. */
+	setBeforeSessionReplace(beforeSessionReplace?: () => void): void {
+		this.beforeSessionReplace = beforeSessionReplace;
+	}
+
+	/** Run when replacement teardown or runtime creation fails before rebinding. */
+	setSessionReplaceFailed(sessionReplaceFailed?: () => void): void {
+		this.sessionReplaceFailed = sessionReplaceFailed;
 	}
 
 	/**
@@ -275,6 +287,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		try {
 			result = await build();
 		} catch (error) {
+			this.sessionReplaceFailed?.();
 			this.releaseUncommittedLease(lease);
 			throw error;
 		}
@@ -288,8 +301,10 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		lease: SessionLease | undefined,
 	): Promise<void> {
 		try {
+			this.beforeSessionReplace?.();
 			await this.teardownCurrent(reason, targetSessionFile);
 		} catch (error) {
+			this.sessionReplaceFailed?.();
 			this.releaseUncommittedLease(lease);
 			throw error;
 		}

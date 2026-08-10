@@ -15,7 +15,7 @@ import type { AgentCronJob } from "../src/core/cron-jobs.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { ExtensionAPI, ExtensionFactory } from "../src/index.js";
 import { createAgentConnectionState } from "../src/modes/agent-connection/snapshot.js";
-import type { ActiveSessionState } from "../src/modes/daemon/active-session-state.js";
+import type { ActiveSessionState, DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import { bindActiveSessionState } from "../src/modes/daemon/daemon-extension-binding.js";
 import type { DaemonOutbound } from "../src/modes/daemon/daemon-protocol.js";
 
@@ -40,7 +40,11 @@ describe("daemon extension binding", () => {
 		}
 	});
 
-	async function createRuntimeForTest(extensionFactory: ExtensionFactory, responses: string[]) {
+	async function createRuntimeForTest(
+		extensionFactory: ExtensionFactory,
+		responses: string[],
+		beforeCreate?: (createCount: number) => void,
+	) {
 		const tempDir = join(tmpdir(), `pi-daemon-extension-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -52,7 +56,10 @@ describe("daemon extension binding", () => {
 		const authStorage = AuthStorage.inMemory();
 		authStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
 
+		let createCount = 0;
 		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+			createCount += 1;
+			beforeCreate?.(createCount);
 			const services = await createAgentSessionServices({
 				cwd,
 				agentDir: tempDir,
@@ -252,5 +259,146 @@ describe("daemon extension binding", () => {
 			"user:daemon replacement message",
 			"assistant:replacement reply",
 		]);
+	});
+
+	it("restores the last known extension status immediately after a session replacement", async () => {
+		let sessionStarts = 0;
+		const runtime = await createRuntimeForTest((pi) => {
+			pi.on("session_start", (_event, ctx) => {
+				sessionStarts += 1;
+				if (sessionStarts === 1) {
+					ctx.ui.setStatus("test-status", "known-status");
+				}
+			});
+			pi.on("session_shutdown", (_event, ctx) => {
+				ctx.ui.setStatus("test-status", undefined);
+			});
+		}, []);
+
+		const outbound: DaemonOutbound[] = [];
+		const state: ActiveSessionState = {
+			activeSessionId: "active-status",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-status",
+			lastEventSequence: 0,
+		};
+		await bindActiveSessionState(state, {
+			broadcast: (_state, message) => outbound.push(message),
+			shutdown: () => {},
+		});
+		expect(outbound).toContainEqual(
+			expect.objectContaining({
+				type: "extension_ui_request",
+				method: "setStatus",
+				payload: { statusKey: "test-status", statusText: "known-status" },
+			}),
+		);
+		for (let replacement = 0; replacement < 2; replacement += 1) {
+			outbound.length = 0;
+			await runtime.newSession();
+
+			const replacementMessage = outbound.find(
+				(message): message is Extract<DaemonOutbound, { type: "session_replaced" }> =>
+					message.type === "session_replaced",
+			);
+			expect(replacementMessage?.state.extensionStatuses).toEqual({ "test-status": "known-status" });
+		}
+	});
+
+	it("releases the extension UI replacement fence when runtime creation fails", async () => {
+		let sessionStarts = 0;
+		const runtime = await createRuntimeForTest(
+			(pi) => {
+				pi.on("session_start", (_event, ctx) => {
+					sessionStarts += 1;
+					ctx.ui.setStatus("test-status", `status-${sessionStarts}`);
+				});
+			},
+			[],
+			(createCount) => {
+				if (createCount === 2) throw new Error("replacement build failed");
+			},
+		);
+		const outbound: DaemonOutbound[] = [];
+		const state: ActiveSessionState = {
+			activeSessionId: "active-failed-replacement",
+			runtime,
+			clients: new Set(),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-failed-replacement",
+			lastEventSequence: 0,
+		};
+		await bindActiveSessionState(state, {
+			broadcast: (_state, message) => outbound.push(message),
+			shutdown: () => {},
+		});
+
+		await expect(runtime.newSession()).rejects.toThrow("replacement build failed");
+		await expect(runtime.newSession()).resolves.toEqual({ cancelled: false });
+
+		const replacement = [...outbound]
+			.reverse()
+			.find(
+				(message): message is Extract<DaemonOutbound, { type: "session_replaced" }> =>
+					message.type === "session_replaced",
+			);
+		expect(replacement?.state.extensionStatuses).toEqual({ "test-status": "status-2" });
+	});
+
+	it("does not let an old extension context overwrite a replacement status", async () => {
+		let sessionStarts = 0;
+		let emitOldStatus = () => {};
+		let confirmFromOldUi = async () => false;
+		const runtime = await createRuntimeForTest((pi) => {
+			pi.on("session_start", (_event, ctx) => {
+				sessionStarts += 1;
+				if (sessionStarts === 1) {
+					const oldUi = ctx.ui;
+					oldUi.setStatus("test-status", "old-status");
+					emitOldStatus = () => oldUi.setStatus("test-status", "late-old-status");
+					confirmFromOldUi = () => oldUi.confirm("stale dialog", "should not open", { timeout: 5 });
+				} else {
+					ctx.ui.setStatus("test-status", "new-status");
+				}
+			});
+		}, []);
+
+		const outbound: DaemonOutbound[] = [];
+		const extensionUiClient = { supportsExtensionUi: true } as unknown as DaemonSocketClient;
+		const state: ActiveSessionState = {
+			activeSessionId: "active-stale-status",
+			runtime,
+			clients: new Set([extensionUiClient]),
+			pendingAttaches: 0,
+			extensionUiRequests: new Map(),
+			eventGeneration: "generation-stale-status",
+			lastEventSequence: 0,
+		};
+		await bindActiveSessionState(state, {
+			broadcast: (_state, message) => outbound.push(message),
+			shutdown: () => {},
+		});
+		outbound.length = 0;
+
+		await runtime.newSession();
+		emitOldStatus();
+		expect(await confirmFromOldUi()).toBe(false);
+
+		const replacementMessage = outbound.find(
+			(message): message is Extract<DaemonOutbound, { type: "session_replaced" }> =>
+				message.type === "session_replaced",
+		);
+		expect(replacementMessage?.state.extensionStatuses).toEqual({ "test-status": "new-status" });
+		expect(outbound).not.toContainEqual(
+			expect.objectContaining({
+				type: "extension_ui_request",
+				payload: { statusKey: "test-status", statusText: "late-old-status" },
+			}),
+		);
+		expect(outbound).not.toContainEqual(expect.objectContaining({ method: "confirm" }));
 	});
 });

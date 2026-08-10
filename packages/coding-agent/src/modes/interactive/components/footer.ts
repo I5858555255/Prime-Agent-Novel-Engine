@@ -1,42 +1,37 @@
-import type { Component } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.js";
 
 /**
  * Footer component for the prime brand TUI.
  *
- * Renders nothing by default — token counters, cost, model name, cwd, and context %
- * are intentionally hidden. The setters and invalidate/dispose hooks are kept so the
- * existing call sites in interactive-mode keep working without modification, and so
- * `/usage` can expose telemetry without re-plumbing.
+ * The footer is intentionally limited to extension statuses. Token counters,
+ * cost, model name, cwd, and context % remain hidden and are available via
+ * `/usage` where applicable.
  */
 export class FooterComponent implements Component {
-	constructor(private footerData: ReadonlyFooterDataProvider) {
-		void this.footerData;
-	}
+	constructor(private footerData: ReadonlyFooterDataProvider) {}
 
 	setAutoCompactEnabled(_enabled: boolean): void {
-		// no-op while the footer is empty
+		// Kept for compatibility with existing interactive-mode call sites.
 	}
 
 	/**
-	 * No-op: git branch caching now handled by provider.
-	 * Kept for compatibility with existing call sites in interactive-mode.
+	 * No-op: git branch caching is handled by the provider.
 	 */
 	invalidate(): void {
-		// No-op: git branch is cached/invalidated by provider
+		// Git branch is cached and invalidated by the provider.
 	}
 
 	/**
 	 * Clean up resources.
-	 * Git watcher cleanup now handled by provider.
 	 */
 	dispose(): void {
-		// Git watcher cleanup handled by provider
+		// Git watcher cleanup is handled by the provider.
 	}
 
-	render(_width: number): string[] {
-		// Footer is intentionally empty in the prime brand TUI. Telemetry (cost, tokens, model,
-		// cwd, context %) is hidden by default; bring it back via /usage when needed.
-		return [];
+	render(width: number): string[] {
+		const statuses = [...this.footerData.getExtensionStatuses().values()].filter(Boolean);
+		if (statuses.length === 0) return [];
+		return [truncateToWidth(statuses.join("  "), width)];
 	}
 }

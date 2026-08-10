@@ -1283,6 +1283,35 @@ describe("InteractiveMode connection events", () => {
 		expect(restoreStreamingMessageFromSnapshot).toHaveBeenNthCalledWith(2, streamingMessage);
 	});
 
+	test("restores extension statuses from a connection snapshot", () => {
+		const restored = new Map<string, string>([["stale", "old"]]);
+		const footerDataProvider = {
+			clearExtensionStatuses: vi.fn(() => restored.clear()),
+			setExtensionStatus: vi.fn((key: string, text: string) => restored.set(key, text)),
+		};
+		const fakeThis = {
+			bindPromptStashSession: vi.fn(),
+			connectionState: undefined as AgentConnectionState | undefined,
+			footerDataProvider,
+			footer: { invalidate: vi.fn(), setAutoCompactEnabled: vi.fn() },
+			updateScopedHeartbeats: vi.fn(),
+			renderRecap: vi.fn(),
+			updateWorkingPulse: vi.fn(),
+			sessionRecap: undefined as string | undefined,
+		};
+		const state = { ...createConnectionState(), extensionStatuses: { codex: "23% 1.8d" } };
+
+		(
+			InteractiveMode.prototype as unknown as {
+				applyConnectionStateSnapshot(this: typeof fakeThis, state: AgentConnectionState): void;
+			}
+		).applyConnectionStateSnapshot.call(fakeThis, state);
+
+		expect([...restored]).toEqual([["codex", "23% 1.8d"]]);
+		expect(footerDataProvider.clearExtensionStatuses).toHaveBeenCalledOnce();
+		expect(fakeThis.footer.invalidate).toHaveBeenCalledOnce();
+	});
+
 	test("clears extension UI when a connection-backed session is replaced", async () => {
 		type SessionReplacedEvent = { type: "session_replaced"; state: AgentConnectionState; messages: [] };
 		let listener: ((event: SessionReplacedEvent) => Promise<void> | void) | undefined;
@@ -1319,6 +1348,7 @@ describe("InteractiveMode connection events", () => {
 		const resetRenderOrder = fakeThis.resetCurrentSessionRenderState.mock.invocationCallOrder[0];
 		const rebindOrder = fakeThis.rebindCurrentSession.mock.invocationCallOrder[0];
 		const renderMessagesOrder = fakeThis.renderInitialMessages.mock.invocationCallOrder[0];
+		expect(fakeThis.resetExtensionUI).toHaveBeenCalledWith({ preserveStatuses: false });
 		expect(resetOrder).toBeLessThan(applySnapshotOrder);
 		expect(applySnapshotOrder).toBeLessThan(resetRenderOrder);
 		expect(resetRenderOrder).toBeLessThan(rebindOrder);
@@ -1598,6 +1628,34 @@ describe("InteractiveMode connection events", () => {
 
 		expect(fakeThis.handleEvent).not.toHaveBeenCalled();
 		expect(fakeThis.renderInitialMessages).toHaveBeenCalledOnce();
+	});
+
+	test("does not queue a modal extension UI request behind session events", async () => {
+		type ExtensionUiEvent = { type: "extension_ui_request"; request: AgentConnectionExtensionUiRequest };
+		let listener: ((event: ExtensionUiEvent) => Promise<void>) | undefined;
+		const blockedQueue = new Promise<void>(() => {});
+		const handleConnectionExtensionUiRequest = vi.fn(async () => {});
+		const fakeThis = {
+			agentConnection: {
+				subscribe: (callback: (event: ExtensionUiEvent) => Promise<void>) => {
+					listener = callback;
+					return vi.fn();
+				},
+			},
+			sessionEventQueue: blockedQueue,
+			sessionEventGeneration: 0,
+			expectsConnectionExtensionUiResponse: () => true,
+			handleConnectionExtensionUiRequest,
+			showError: vi.fn(),
+		};
+		(InteractiveMode.prototype as unknown as { subscribeToAgent(this: typeof fakeThis): void }).subscribeToAgent.call(
+			fakeThis,
+		);
+
+		const request = { id: "dialog-1", method: "confirm", payload: {} };
+		await listener?.({ type: "extension_ui_request", request });
+
+		expect(handleConnectionExtensionUiRequest).toHaveBeenCalledWith(request);
 	});
 });
 
