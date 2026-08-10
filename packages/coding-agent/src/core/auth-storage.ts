@@ -15,7 +15,7 @@ import {
 	type OAuthProviderId,
 } from "@earendil-works/pi-ai";
 import { getOAuthApiKey, getOAuthProvider, getOAuthProviders } from "@earendil-works/pi-ai/oauth";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.js";
@@ -115,11 +115,25 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
-	private ensureFileExists(): void {
-		if (!existsSync(this.authPath)) {
-			writeFileSync(this.authPath, "{}", "utf-8");
-			chmodSync(this.authPath, 0o600);
+	private ensureFileSecure(): void {
+		let stat: ReturnType<typeof lstatSync>;
+		try {
+			stat = lstatSync(this.authPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
 		}
+		if (!stat.isFile() || stat.isSymbolicLink())
+			throw new Error(`Auth storage must be a regular file: ${this.authPath}`);
+		if (typeof process.getuid === "function" && stat.uid !== process.getuid())
+			throw new Error(`Auth storage is not owned by the current user: ${this.authPath}`);
+		chmodSync(this.authPath, 0o600);
+	}
+
+	private ensureFileExists(): void {
+		if (!existsSync(this.authPath))
+			writeFileSync(this.authPath, "{}", { encoding: "utf-8", mode: 0o600, flag: "wx" });
+		this.ensureFileSecure();
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -156,10 +170,11 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		let release: (() => void) | undefined;
 		try {
 			release = this.acquireLockSyncWithRetry(this.authPath);
+			this.ensureFileSecure();
 			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
 			const { result, next } = fn(current);
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, "utf-8");
+				writeFileSync(this.authPath, next, { encoding: "utf-8", mode: 0o600 });
 				chmodSync(this.authPath, 0o600);
 			}
 			return result;
@@ -200,11 +215,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			});
 
 			throwIfCompromised();
+			this.ensureFileSecure();
 			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
 			const { result, next } = await fn(current);
 			throwIfCompromised();
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, "utf-8");
+				writeFileSync(this.authPath, next, { encoding: "utf-8", mode: 0o600 });
 				chmodSync(this.authPath, 0o600);
 			}
 			throwIfCompromised();

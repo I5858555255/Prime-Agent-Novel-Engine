@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -92,9 +95,35 @@ describe("buildSnapshotCode", () => {
 		expect(code).toContain(String(DEFAULT_SNAPSHOT_MAX_BYTES));
 	});
 
+	it("executes the generated writer and keeps snapshot files private", () => {
+		const tempRoot = mkdtempSync(join(tmpdir(), "kernel-state-snapshot-"));
+		const artifactDir = join(tempRoot, "artifacts", "session");
+		try {
+			const payloadPath = snapshotPathIn(artifactDir);
+			const manifestPath = manifestPathIn(artifactDir);
+			const runSnapshot = (source: string) =>
+				execFileSync(
+					"python3",
+					["-c", `${source}\n${buildSnapshotCode(payloadPath, manifestPath, DEFAULT_SNAPSHOT_MAX_BYTES)}`],
+					{ encoding: "utf8" },
+				);
+			runSnapshot(`value = "first"`);
+			expect(statSync(artifactDir).mode & 0o777).toBe(0o700);
+			expect(statSync(payloadPath).mode & 0o777).toBe(0o600);
+			expect(statSync(manifestPath).mode & 0o777).toBe(0o600);
+			expect(JSON.parse(readFileSync(manifestPath, "utf8")).savedNames).toContain("value");
+			runSnapshot(`value = "second"\nsecondOnly = 1`);
+			expect(JSON.parse(readFileSync(manifestPath, "utf8")).savedNames).toContain("secondOnly");
+		} finally {
+			rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("uses dill, an atomic write, and skips internal handles", () => {
 		expect(code).toContain("import dill");
 		expect(code).toContain("os.replace");
+		expect(code).toContain("os.fdopen");
+		expect(code).toContain("os.O_EXCL");
 		// rlm and the IPython display names must never be serialized.
 		expect(code).toContain('"rlm"');
 		expect(code).toContain(`print(${JSON.stringify(MARKER)}`);

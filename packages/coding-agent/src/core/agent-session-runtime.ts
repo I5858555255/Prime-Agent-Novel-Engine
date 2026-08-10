@@ -1,5 +1,15 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import {
+	chmodSync,
+	closeSync,
+	constants,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	renameSync,
+	rmSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type { AgentSession } from "./agent-session.js";
 import type { AgentSessionRuntimeConfig } from "./agent-session-config.js";
 import type {
@@ -657,9 +667,8 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		}
 
 		const sessionDir = this.session.sessionManager.getSessionDir();
-		if (!existsSync(sessionDir)) {
-			mkdirSync(sessionDir, { recursive: true });
-		}
+		if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+		chmodSync(sessionDir, 0o700);
 
 		const destinationPath = join(sessionDir, basename(resolvedPath));
 		const beforeResult = await this.emitBeforeSwitch("resume", destinationPath);
@@ -672,7 +681,25 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 		let sessionManager: SessionManager;
 		try {
 			if (resolve(destinationPath) !== resolvedPath) {
-				copyFileSync(resolvedPath, destinationPath);
+				const tempPath = join(
+					dirname(destinationPath),
+					`.${basename(destinationPath)}.${process.pid}.${Date.now()}.tmp`,
+				);
+				try {
+					const tempFd = openSync(
+						tempPath,
+						constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+						0o600,
+					);
+					closeSync(tempFd);
+					copyFileSync(resolvedPath, tempPath);
+					chmodSync(tempPath, 0o600);
+					renameSync(tempPath, destinationPath);
+				} finally {
+					rmSync(tempPath, { force: true });
+				}
+			} else {
+				chmodSync(destinationPath, 0o600);
 			}
 
 			sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);

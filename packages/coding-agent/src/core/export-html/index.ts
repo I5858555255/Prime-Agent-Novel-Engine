@@ -1,11 +1,25 @@
+import { closeSync, constants, existsSync, fchmodSync, openSync, readFileSync, writeSync } from "node:fs";
+import { basename, join } from "node:path";
 import type { AgentState } from "@earendil-works/pi-agent-core";
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.js";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.js";
 import type { ToolDefinition } from "../extensions/types.js";
 import type { SessionEntry } from "../session-manager.js";
 import { SessionManager } from "../session-manager.js";
+
+function writeExclusiveHtml(outputPath: string, html: string): void {
+	const fd = openSync(
+		outputPath,
+		constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+		0o600,
+	);
+	try {
+		fchmodSync(fd, 0o600);
+		writeSync(fd, html, undefined, "utf8");
+	} finally {
+		closeSync(fd);
+	}
+}
 
 /**
  * Interface for rendering custom tools to HTML.
@@ -276,7 +290,7 @@ export async function exportSessionToHtml(
 		outputPath = `${APP_NAME}-session-${sessionBasename}.html`;
 	}
 
-	writeFileSync(outputPath, html, "utf8");
+	writeExclusiveHtml(outputPath, html);
 	return outputPath;
 }
 
@@ -309,6 +323,6 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		outputPath = `${APP_NAME}-session-${inputBasename}.html`;
 	}
 
-	writeFileSync(outputPath, html, "utf8");
+	writeExclusiveHtml(outputPath, html);
 	return outputPath;
 }

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
+
 import { setKittyProtocolActive } from "./keys.js";
 import { StdinBuffer } from "./stdin-buffer.js";
 import {
@@ -10,6 +11,20 @@ import {
 	type Rgb,
 	setDefaultTerminalColors,
 } from "./terminal-colors.js";
+
+function appendPrivateFile(filePath: string, data: string): void {
+	const fd = fs.openSync(
+		filePath,
+		fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW,
+		0o600,
+	);
+	try {
+		fs.fchmodSync(fd, 0o600);
+		fs.writeSync(fd, data, undefined, "utf8");
+	} finally {
+		fs.closeSync(fd);
+	}
+}
 
 const cjsRequire = createRequire(import.meta.url);
 
@@ -492,7 +507,7 @@ export class ProcessTerminal implements Terminal {
 		process.stdout.write(data);
 		if (this.writeLogPath) {
 			try {
-				fs.appendFileSync(this.writeLogPath, data, { encoding: "utf8" });
+				appendPrivateFile(this.writeLogPath, data);
 			} catch {
 				// Ignore logging errors
 			}

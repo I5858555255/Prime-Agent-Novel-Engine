@@ -7037,7 +7037,7 @@ export class InteractiveMode {
 
 		try {
 			// Write current content to temp file
-			fs.writeFileSync(tmpFile, currentText, "utf-8");
+			fs.writeFileSync(tmpFile, currentText, { encoding: "utf-8", mode: 0o600 });
 
 			// Stop TUI to release terminal
 			this.ui.stop();
@@ -8713,83 +8713,106 @@ export class InteractiveMode {
 			return;
 		}
 
-		// Export to a temp file
-		const tmpFile = path.join(os.tmpdir(), "session.html");
-		try {
-			await this.agentConnection.exportToHtml(tmpFile);
-		} catch (error: unknown) {
-			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
-			return;
-		}
-
-		// Show cancellable loader, replacing the editor
-		const loader = new BorderedLoader(this.ui, theme, "Creating gist...");
-		this.editorContainer.clear();
-		this.editorContainer.addChild(loader);
-		this.ui.setFocus(loader);
-		this.ui.requestRender();
-
-		const restoreEditor = () => {
-			loader.dispose();
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.editor);
-			this.ui.setFocus(this.editor);
+		// Export to a private temporary directory and never reuse a fixed path.
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prime-agent-share-"));
+		fs.chmodSync(tmpDir, 0o700);
+		const tmpFile = path.join(tmpDir, "session.html");
+		let tmpDirCleaned = false;
+		const cleanupTmpDir = () => {
+			if (tmpDirCleaned) return;
+			tmpDirCleaned = true;
 			try {
-				fs.unlinkSync(tmpFile);
+				fs.rmSync(tmpDir, { recursive: true, force: true });
 			} catch {
 				// Ignore cleanup errors
 			}
 		};
-
-		// Create a secret gist asynchronously
-		let proc: ReturnType<typeof spawn> | null = null;
-
-		loader.onAbort = () => {
-			proc?.kill();
-			restoreEditor();
-			this.showStatus("Share cancelled");
+		let loader: BorderedLoader | undefined;
+		let editorReplaced = false;
+		let editorRestored = false;
+		const restoreEditor = () => {
+			if (editorRestored) return;
+			editorRestored = true;
+			if (!editorReplaced) return;
+			loader?.dispose();
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor);
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
 		};
 
 		try {
-			const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-				proc = spawn("gh", ["gist", "create", "--public=false", tmpFile]);
-				let stdout = "";
-				let stderr = "";
-				proc.stdout?.on("data", (data) => {
-					stdout += data.toString();
-				});
-				proc.stderr?.on("data", (data) => {
-					stderr += data.toString();
-				});
-				proc.on("close", (code) => resolve({ stdout, stderr, code }));
-			});
-
-			if (loader.signal.aborted) return;
-
-			restoreEditor();
-
-			if (result.code !== 0) {
-				const errorMsg = result.stderr?.trim() || "Unknown error";
-				this.showError(`Failed to create gist: ${errorMsg}`);
+			try {
+				await this.agentConnection.exportToHtml(tmpFile);
+			} catch (error: unknown) {
+				this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 				return;
 			}
 
-			// Extract gist ID from the URL returned by gh
-			// gh returns something like: https://gist.github.com/username/GIST_ID
-			const gistUrl = result.stdout?.trim();
-			const gistId = gistUrl?.split("/").pop();
-			if (!gistId) {
-				this.showError("Failed to parse gist ID from gh output");
-				return;
-			}
+			// Show cancellable loader, replacing the editor
+			loader = new BorderedLoader(this.ui, theme, "Creating gist...");
+			editorReplaced = true;
+			this.editorContainer.clear();
+			this.editorContainer.addChild(loader);
+			this.ui.setFocus(loader);
+			this.ui.requestRender();
 
-			// Create the preview URL
-			const previewUrl = getShareViewerUrl(gistId);
-			this.showStatus(`Share URL: ${previewUrl}\nGist: ${gistUrl}`);
-		} catch (error: unknown) {
-			if (!loader.signal.aborted) {
+			// Create a secret gist asynchronously
+			let proc: ReturnType<typeof spawn> | null = null;
+
+			loader.onAbort = () => {
+				proc?.kill();
 				restoreEditor();
-				this.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
+				this.showStatus("Share cancelled");
+			};
+
+			try {
+				const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
+					proc = spawn("gh", ["gist", "create", "--public=false", tmpFile]);
+					let stdout = "";
+					let stderr = "";
+					proc.stdout?.on("data", (data) => {
+						stdout += data.toString();
+					});
+					proc.stderr?.on("data", (data) => {
+						stderr += data.toString();
+					});
+					proc.on("close", (code) => resolve({ stdout, stderr, code }));
+				});
+
+				if (loader?.signal.aborted) return;
+
+				restoreEditor();
+
+				if (result.code !== 0) {
+					const errorMsg = result.stderr?.trim() || "Unknown error";
+					this.showError(`Failed to create gist: ${errorMsg}`);
+					return;
+				}
+
+				// Extract gist ID from the URL returned by gh
+				// gh returns something like: https://gist.github.com/username/GIST_ID
+				const gistUrl = result.stdout?.trim();
+				const gistId = gistUrl?.split("/").pop();
+				if (!gistId) {
+					this.showError("Failed to parse gist ID from gh output");
+					return;
+				}
+
+				// Create the preview URL
+				const previewUrl = getShareViewerUrl(gistId);
+				this.showStatus(`Share URL: ${previewUrl}\nGist: ${gistUrl}`);
+			} catch (error: unknown) {
+				if (!loader?.signal.aborted) {
+					restoreEditor();
+					this.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
+				}
+			}
+		} finally {
+			try {
+				restoreEditor();
+			} finally {
+				cleanupTmpDir();
 			}
 		}
 	}
@@ -9662,8 +9685,8 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 				"",
 			].join("\n");
 
-			fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
-			fs.writeFileSync(debugLogPath, debugData);
+			fs.mkdirSync(path.dirname(debugLogPath), { recursive: true, mode: 0o700 });
+			fs.writeFileSync(debugLogPath, debugData, { mode: 0o600 });
 
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(

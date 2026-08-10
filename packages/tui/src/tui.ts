@@ -24,6 +24,42 @@ import {
 	visibleWidth,
 } from "./utils.js";
 
+function privateDebugDirectory(): string {
+	const uid = typeof process.getuid === "function" ? String(process.getuid()) : process.env.USER || "user";
+	const dir = path.join(os.tmpdir(), `prime-agent-tui-${uid}`);
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	fs.chmodSync(dir, 0o700);
+	return dir;
+}
+
+function appendPrivateLog(filePath: string, data: string): void {
+	const fd = fs.openSync(
+		filePath,
+		fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW,
+		0o600,
+	);
+	try {
+		fs.fchmodSync(fd, 0o600);
+		fs.writeSync(fd, data, undefined, "utf8");
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function writePrivateLog(filePath: string, data: string): void {
+	const fd = fs.openSync(
+		filePath,
+		fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+		0o600,
+	);
+	try {
+		fs.fchmodSync(fd, 0o600);
+		fs.writeSync(fd, data, undefined, "utf8");
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
 function extractKittyImageIds(line: string): number[] {
@@ -1611,9 +1647,12 @@ export class TUI extends Container {
 		const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
 		const logRedraw = (reason: string): void => {
 			if (!debugRedraw) return;
-			const logPath = path.join(os.homedir(), ".prime", "agent", "pi-debug.log");
+			const logDir = path.join(os.homedir(), ".prime", "agent");
+			fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+			fs.chmodSync(logDir, 0o700);
+			const logPath = path.join(logDir, "pi-debug.log");
 			const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, height=${height})\n`;
-			fs.appendFileSync(logPath, msg);
+			appendPrivateLog(logPath, msg);
 		};
 
 		// First render - just output everything without clearing (assumes clean screen)
@@ -1803,8 +1842,10 @@ export class TUI extends Container {
 					...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
 					"",
 				].join("\n");
-				fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
-				fs.writeFileSync(crashLogPath, crashData);
+				const crashDir = path.dirname(crashLogPath);
+				fs.mkdirSync(crashDir, { recursive: true, mode: 0o700 });
+				fs.chmodSync(crashDir, 0o700);
+				appendPrivateLog(crashLogPath, crashData);
 
 				// Clean up terminal state before throwing
 				this.stop();
@@ -1844,8 +1885,7 @@ export class TUI extends Container {
 		buffer += "\x1b[?2026l"; // End synchronized output
 
 		if (process.env.PI_TUI_DEBUG === "1") {
-			const debugDir = "/tmp/tui";
-			fs.mkdirSync(debugDir, { recursive: true });
+			const debugDir = privateDebugDirectory();
 			const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
 			const debugData = [
 				`firstChanged: ${firstChanged}`,
@@ -1869,7 +1909,7 @@ export class TUI extends Container {
 				"=== buffer ===",
 				JSON.stringify(buffer),
 			].join("\n");
-			fs.writeFileSync(debugPath, debugData);
+			writePrivateLog(debugPath, debugData);
 		}
 
 		// Write entire buffer at once

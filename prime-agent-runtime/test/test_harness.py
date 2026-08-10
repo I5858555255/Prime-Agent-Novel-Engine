@@ -20,6 +20,19 @@ PYTHON_REFERENCE = {
 }
 
 
+class HarnessStateSecurityTest(unittest.TestCase):
+    def test_state_uses_private_directory_and_file_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous = os.umask(0o022)
+            try:
+                state = HarnessState(Path(temp_dir) / "nested" / "harness_state.json")
+                state.upsert("memory", "private", "secret")
+            finally:
+                os.umask(previous)
+            self.assertEqual((Path(temp_dir) / "nested").stat().st_mode & 0o777, 0o700)
+            self.assertEqual(state.file_path.stat().st_mode & 0o777, 0o600)
+
+
 class HarnessStateTest(unittest.TestCase):
     def test_crud_for_all_entry_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
