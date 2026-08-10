@@ -7,6 +7,7 @@ import type { ExtensionContext } from "../src/core/extensions/types.js";
 import type { KernelBootstrapProgressHandler } from "../src/core/kernel/bootstrap.js";
 import { type ExecuteResult, KernelBusyAfterInterruptError, KernelManager } from "../src/core/kernel/index.js";
 import { createIpythonToolDefinition, IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
+import * as shellModule from "../src/utils/shell.js";
 
 let tempDir = "";
 
@@ -261,6 +262,75 @@ describe("IpythonKernelProvisioner", () => {
 			"\n \r\n\t%%script /custom/bash\r\nexport TEST_PREFIX=1\necho body",
 			expect.objectContaining({ signal: undefined, onStream: expect.any(Function) }),
 		);
+	});
+
+	it("defaults bare %%bash cells to the Windows Git Bash script path", async () => {
+		const getDefaultShell = vi
+			.spyOn(shellModule, "getWindowsIpythonBashScriptPath")
+			.mockReturnValue("C:/PROGRA~1/Git/bin/bash.exe");
+		try {
+			const execute = vi.fn<KernelManager["execute"]>().mockResolvedValueOnce(okExecuteResult());
+			const manager = { execute } as unknown as KernelManager;
+			const ensure = vi.fn(async () => manager);
+			const kill = vi.fn(async () => {});
+			const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
+			const tool = createIpythonToolDefinition(tempDir, { provisioner });
+
+			await tool.execute("tool-call", { code: "%%bash\ngit push" }, undefined, undefined, {} as ExtensionContext);
+
+			// The 8.3 short path must survive unquoted: IPython parses %%script lines
+			// with shlex in non-posix mode on Windows, where quotes are kept literally.
+			expect(execute).toHaveBeenCalledWith(
+				"%%script C:/PROGRA~1/Git/bin/bash.exe\ngit push",
+				expect.objectContaining({ signal: undefined, onStream: expect.any(Function) }),
+			);
+		} finally {
+			getDefaultShell.mockRestore();
+		}
+	});
+
+	it("prefers an explicit shellPath over the Windows default", async () => {
+		const getDefaultShell = vi
+			.spyOn(shellModule, "getWindowsIpythonBashScriptPath")
+			.mockReturnValue("C:/PROGRA~1/Git/bin/bash.exe");
+		try {
+			const execute = vi.fn<KernelManager["execute"]>().mockResolvedValueOnce(okExecuteResult());
+			const manager = { execute } as unknown as KernelManager;
+			const ensure = vi.fn(async () => manager);
+			const kill = vi.fn(async () => {});
+			const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
+			const tool = createIpythonToolDefinition(tempDir, { provisioner, shellPath: "/custom/bash" });
+
+			await tool.execute("tool-call", { code: "%%bash\ngit push" }, undefined, undefined, {} as ExtensionContext);
+
+			expect(execute).toHaveBeenCalledWith(
+				"%%script /custom/bash\ngit push",
+				expect.objectContaining({ signal: undefined, onStream: expect.any(Function) }),
+			);
+		} finally {
+			getDefaultShell.mockRestore();
+		}
+	});
+
+	it("leaves bare %%bash cells untouched when no Windows Git Bash is resolvable", async () => {
+		const getDefaultShell = vi.spyOn(shellModule, "getWindowsIpythonBashScriptPath").mockReturnValue(undefined);
+		try {
+			const execute = vi.fn<KernelManager["execute"]>().mockResolvedValueOnce(okExecuteResult());
+			const manager = { execute } as unknown as KernelManager;
+			const ensure = vi.fn(async () => manager);
+			const kill = vi.fn(async () => {});
+			const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
+			const tool = createIpythonToolDefinition(tempDir, { provisioner });
+
+			await tool.execute("tool-call", { code: "%%bash\ngit push" }, undefined, undefined, {} as ExtensionContext);
+
+			expect(execute).toHaveBeenCalledWith(
+				"%%bash\ngit push",
+				expect.objectContaining({ signal: undefined, onStream: expect.any(Function) }),
+			);
+		} finally {
+			getDefaultShell.mockRestore();
+		}
 	});
 
 	it("lets the user wait when an interrupted kernel is still busy", async () => {

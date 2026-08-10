@@ -4,6 +4,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
+import { getWindowsIpythonBashScriptPath } from "../../utils/shell.js";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.js";
 import { withKernelBootPermit } from "../kernel/boot-gate.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
@@ -273,7 +274,7 @@ export interface IpythonToolOptions {
 	env?: Record<string, string>;
 	/** Command prefix prepended to every %%bash cell. */
 	commandPrefix?: string;
-	/** Optional explicit shell path for bare %%bash cells. */
+	/** Optional explicit shell path for bare %%bash cells. Defaults to Git Bash on Windows. */
 	shellPath?: string;
 	sessionId?: string;
 	/** Typed host request handlers for the kernel↔host bridge (rlm.run, goal.*, …). */
@@ -297,19 +298,24 @@ export interface IpythonToolOptions {
 }
 
 function quoteScriptMagicArgument(value: string): string {
-	return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\"'\"'")}'`;
+	// `~` must stay unquoted: it appears in 8.3 short paths (C:/PROGRA~1/...), and
+	// on Windows IPython parses the %%script line with shlex in non-posix mode,
+	// where quotes are kept literally and would corrupt the program path.
+	return /^[A-Za-z0-9_@%+=:,./~-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\"'\"'")}'`;
 }
 
 function applyShellSettingsToBashMagicCell(
 	code: string,
 	options: Pick<IpythonToolOptions, "commandPrefix" | "shellPath"> | undefined,
 ): string {
-	const commandPrefix = options?.commandPrefix;
-	const shellPath = options?.shellPath?.trim();
-	if (!commandPrefix && !shellPath) return code;
-
 	const bashCell = parseIpythonBashCell(code);
 	if (!bashCell) return code;
+
+	const commandPrefix = options?.commandPrefix;
+	// On Windows, default bare %%bash cells to Git Bash; a bare "bash" would
+	// resolve to WSL's System32\bash.exe (see getWindowsIpythonBashScriptPath).
+	const shellPath = options?.shellPath?.trim() || getWindowsIpythonBashScriptPath();
+	if (!commandPrefix && !shellPath) return code;
 
 	const firstLine =
 		shellPath && bashCell.magicArguments.trim().length === 0

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { delimiter } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.js";
 import { recordOrphanProcessState } from "../core/orphan-process-journal.js";
@@ -45,6 +45,40 @@ function findBashOnPath(): string | null {
 }
 
 /**
+ * Candidate Git Bash locations on Windows, in preference order: the standard
+ * install dirs first, then bash resolved relative to any git.exe on PATH
+ * (`Git\cmd\git.exe` / `Git\mingw64\bin\git.exe` → `Git\bin\bash.exe`).
+ */
+function findGitBashCandidates(): string[] {
+	const paths: string[] = [];
+	const programFiles = process.env.ProgramFiles;
+	if (programFiles) {
+		paths.push(`${programFiles}\\Git\\bin\\bash.exe`);
+	}
+	const programFilesX86 = process.env["ProgramFiles(x86)"];
+	if (programFilesX86) {
+		paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
+	}
+
+	try {
+		const result = spawnSync("where", ["git.exe"], { encoding: "utf-8", timeout: 5000, windowsHide: true });
+		if (result.status === 0 && result.stdout) {
+			for (const line of result.stdout.trim().split(/\r?\n/)) {
+				const gitExe = line.trim();
+				if (!gitExe) continue;
+				const dir = dirname(gitExe);
+				paths.push(resolve(dir, "..", "bin", "bash.exe"));
+				paths.push(resolve(dir, "..", "..", "bin", "bash.exe"));
+			}
+		}
+	} catch {
+		// Ignore errors
+	}
+
+	return paths;
+}
+
+/**
  * Resolve shell configuration based on platform and an optional explicit shell path.
  * Resolution order:
  * 1. User-specified shellPath
@@ -62,15 +96,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 
 	if (process.platform === "win32") {
 		// 2. Try Git Bash in known locations
-		const paths: string[] = [];
-		const programFiles = process.env.ProgramFiles;
-		if (programFiles) {
-			paths.push(`${programFiles}\\Git\\bin\\bash.exe`);
-		}
-		const programFilesX86 = process.env["ProgramFiles(x86)"];
-		if (programFilesX86) {
-			paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
-		}
+		const paths = findGitBashCandidates();
 
 		for (const path of paths) {
 			if (existsSync(path)) {
@@ -104,6 +130,70 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	}
 
 	return { shell: "sh", args: ["-c"] };
+}
+
+/**
+ * Convert a Windows bash path into a form IPython's `%%script` magic can parse.
+ * IPython splits the magic line with shlex in non-posix mode on Windows, which
+ * keeps quotes literally and mangles backslash escapes, so the program token
+ * must use forward slashes and contain no spaces. Paths under "Program Files"
+ * are converted to their 8.3 short name (e.g. C:/PROGRA~1/Git/bin/bash.exe).
+ * Returns undefined when no space-free form can be produced.
+ */
+function toIpythonScriptPath(bashPath: string): string | undefined {
+	if (!bashPath.includes(" ")) {
+		return bashPath.replace(/\\/g, "/");
+	}
+
+	try {
+		const escaped = bashPath.replace(/'/g, "''");
+		const result = spawnSync(
+			"powershell.exe",
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`(New-Object -ComObject Scripting.FileSystemObject).GetFile('${escaped}').ShortPath`,
+			],
+			{ encoding: "utf-8", timeout: 10000, windowsHide: true },
+		);
+		const shortPath = result.status === 0 ? result.stdout.trim().split(/\r?\n/)[0] : "";
+		if (shortPath && !shortPath.includes(" ") && existsSync(shortPath)) {
+			return shortPath.replace(/\\/g, "/");
+		}
+	} catch {
+		// Ignore errors
+	}
+	return undefined;
+}
+
+let cachedWindowsIpythonBashScriptPath: string | null | undefined;
+
+/**
+ * Default shell for `%%bash` cells on Windows: Git Bash, as a `%%script`-parseable
+ * path. Without this, a bare `%%bash` resolves "bash" through CreateProcess, which
+ * finds C:\Windows\System32\bash.exe (WSL) before anything on PATH — and inside WSL
+ * there is no Git Credential Manager, so `git push` blocks on a credential prompt
+ * the kernel can never answer and the cell hangs until aborted.
+ * Returns undefined off Windows or when no usable Git Bash is found (the caller
+ * then leaves bare `%%bash` cells untouched). Memoized per process.
+ */
+export function getWindowsIpythonBashScriptPath(): string | undefined {
+	if (process.platform !== "win32") {
+		return undefined;
+	}
+	if (cachedWindowsIpythonBashScriptPath === undefined) {
+		cachedWindowsIpythonBashScriptPath = null;
+		for (const candidate of findGitBashCandidates()) {
+			if (!existsSync(candidate)) continue;
+			const scriptPath = toIpythonScriptPath(candidate);
+			if (scriptPath) {
+				cachedWindowsIpythonBashScriptPath = scriptPath;
+				break;
+			}
+		}
+	}
+	return cachedWindowsIpythonBashScriptPath ?? undefined;
 }
 
 export function getShellEnv(): NodeJS.ProcessEnv {
