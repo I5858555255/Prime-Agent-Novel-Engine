@@ -33,6 +33,7 @@ export interface AppKeybindings {
 	"app.message.moveEarlier": true;
 	"app.message.moveLater": true;
 	"app.clipboard.pasteImage": true;
+	"app.clipboard.copyLoginUrl": true;
 	"app.session.new": true;
 	"app.session.tree": true;
 	"app.session.fork": true;
@@ -132,6 +133,10 @@ export const KEYBINDINGS = {
 	"app.clipboard.pasteImage": {
 		defaultKeys: process.platform === "win32" ? "alt+v" : "ctrl+v",
 		description: "Paste image from clipboard",
+	},
+	"app.clipboard.copyLoginUrl": {
+		defaultKeys: ["c", "alt+c"],
+		description: "Copy login URL",
 	},
 	"app.session.new": { defaultKeys: [], description: "Start a new session" },
 	"app.session.tree": { defaultKeys: [], description: "Open session tree" },
