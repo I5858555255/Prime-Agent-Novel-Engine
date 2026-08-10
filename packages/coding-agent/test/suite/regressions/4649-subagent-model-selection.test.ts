@@ -327,6 +327,70 @@ describe("ENG-4649 subagent model selection", () => {
 		}
 	});
 
+	it("uses the configured default model when no override is supplied", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model" }, { id: "child-model" }],
+			settings: { subagents: { defaultModel: `${provider}/child-model` } },
+		});
+		try {
+			let seenModel: string | undefined;
+			harness.setResponses([
+				(_context, _options, _state, model) => {
+					seenModel = model.id;
+					return fauxAssistantMessage("configured child answer");
+				},
+			]);
+
+			const result = await harness.session.runRlmChild("use configured model");
+			expect(result.model).toBe(`${provider}/child-model`);
+			await vi.waitFor(() => expect(seenModel).toBe("child-model"));
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("gives an explicit model precedence over the configured default", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model" }, { id: "child-model" }],
+			settings: { subagents: { defaultModel: `${provider}/child-model` } },
+		});
+		try {
+			let seenModel: string | undefined;
+			harness.setResponses([
+				(_context, _options, _state, model) => {
+					seenModel = model.id;
+					return fauxAssistantMessage("explicit parent answer");
+				},
+			]);
+
+			const result = await harness.session.runRlmChild("use explicit model", {
+				model: `${provider}/parent-model`,
+			});
+			expect(result.model).toBe(`${provider}/parent-model`);
+			await vi.waitFor(() => expect(seenModel).toBe("parent-model"));
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("rejects an unavailable configured default model without falling back", async () => {
+		const harness = await createHarness({
+			provider,
+			models: [{ id: "parent-model" }, { id: "child-model" }],
+			settings: { subagents: { defaultModel: `${provider}/missing-model` } },
+		});
+		try {
+			await expect(harness.session.runRlmChild("reject unavailable configured model")).rejects.toThrow(
+				`Requested subagent model "${provider}/missing-model" is unavailable, unauthenticated, or expired`,
+			);
+			expect((await harness.session.listRlmSubagents()).subagents).toEqual([]);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("accepts a selected model authenticated by headers", async () => {
 		const harness = await createHarness({
 			provider,

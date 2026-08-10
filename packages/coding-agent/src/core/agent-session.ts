@@ -9628,7 +9628,9 @@ export class AgentSession {
 		let modelSelection: RlmSubagentModelSelection;
 		try {
 			if (requestedSessionName) await this._assertRlmSubagentSessionNameAvailable(requestedSessionName, true);
-			modelSelection = await this._resolveRlmSubagentModel(requestedModel);
+			modelSelection = await this._resolveRlmSubagentModel(
+				requestedModel ?? this.settingsManager.getSubagentDefaultModel(),
+			);
 		} finally {
 			if (requestedSessionName) this._pendingRlmSubagentSessionNames.delete(requestedSessionName);
 		}
