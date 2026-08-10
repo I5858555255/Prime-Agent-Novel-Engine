@@ -3,6 +3,72 @@
  */
 
 export {
+	type AgentConflictResolutionExecutionResult,
+	type AgentConflictResolutionRecord,
+	type AgentConflictResolutionRequest,
+	type AgentConflictResolutionStatus,
+	type AgentConflictResolutionTrigger,
+	type AgentConflictResolutionWorkspace,
+	type AgentConflictResolverContext,
+	AgentConflictResolverManager,
+	type AgentConflictResolverRunner,
+	type AgentConflictResolverRunnerResult,
+	type CreateAgentConflictResolverManagerOptions,
+} from "./agent-conflict-resolver.js";
+export {
+	AGENT_RUNTIME_RESULT_MANIFEST_VERSION,
+	AGENT_RUNTIME_TASK_CONTRACT_VERSION,
+	type AgentGitRepositoryCapability,
+	type AgentGitWorkspace,
+	AgentGitWorktreeManager,
+	type AgentRuntimeResultManifest,
+	type AgentRuntimeTaskContract,
+	formatAgentRuntimeTaskPrompt,
+	parseAgentRuntimeResultManifest,
+	parseAgentRuntimeTaskContract,
+} from "./agent-git-worktree.js";
+export {
+	type AgentIntegrationGateResult,
+	type AgentIntegrationQualityGate,
+	type AgentIntegrationWorkspace,
+	AgentMergeManager,
+	type AgentMergeOutcome,
+	type AgentMergeRequest,
+	type AgentMergeResult,
+	type AgentResolutionMergeRequest,
+	type CreateAgentMergeManagerOptions,
+} from "./agent-merge-manager.js";
+export {
+	AGENT_RUNTIME_SCHEDULER_STATE_VERSION,
+	type AgentRuntimeAgentRecord,
+	type AgentRuntimeAgentStatus,
+	type AgentRuntimeIntegrationRecord,
+	type AgentRuntimeIntegrationStatus,
+	type AgentRuntimeResourceAcquisitionResult,
+	type AgentRuntimeResourceBlockRecord,
+	type AgentRuntimeResourceConflict,
+	type AgentRuntimeResourceLease,
+	type AgentRuntimeResourceLeaseStatus,
+	type AgentRuntimeResourceReleaseReason,
+	AgentRuntimeScheduler,
+	type AgentRuntimeSchedulerEvent,
+	type AgentRuntimeSchedulerEventListener,
+	type AgentRuntimeSchedulerEventType,
+	type AgentRuntimeSchedulerSnapshot,
+	type AgentRuntimeSchedulerSummary,
+	type AgentRuntimeTaskReadiness,
+	type AgentRuntimeTaskRecord,
+	type AgentRuntimeTaskResourceSummary,
+	type AgentRuntimeTaskStatus,
+	type AgentRuntimeWorkspaceAuthority,
+	type IntegrateAgentRuntimeWorkspaceOptions,
+} from "./agent-runtime-scheduler.js";
+export {
+	type AcquireAgentRuntimeWorkspaceSchedulerOptions,
+	type AgentRuntimeWorkspaceSchedulerHandle,
+	acquireAgentRuntimeWorkspaceScheduler,
+} from "./agent-runtime-workspace-service.js";
+export {
 	AgentSession,
 	type AgentSessionConfig,
 	type AgentSessionEvent,

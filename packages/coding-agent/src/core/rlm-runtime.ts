@@ -1,5 +1,11 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
+import type { AgentGitWorkspace } from "./agent-git-worktree.js";
+import type {
+	AgentRuntimeIntegrationRecord,
+	AgentRuntimeScheduler,
+	AgentRuntimeSchedulerSummary,
+} from "./agent-runtime-scheduler.js";
 import type { AgentSession } from "./agent-session.js";
 import type { ToolDefinition } from "./extensions/index.js";
 import type { HostRequestHandler } from "./kernel/index.js";
@@ -38,6 +44,17 @@ export interface RlmDeleteSubagentResult {
 	outcome?: "deleted" | "skipped_running";
 }
 
+export interface RlmCancelSubagentResult {
+	subagent: RlmSubagentRegistryEntry;
+	outcome: "cancelled" | "already_terminal";
+}
+
+export interface RlmIntegrationControlResult {
+	subagent: RlmSubagentRegistryEntry;
+	outcome: "promoted" | "conflict" | "abandoned";
+	integration: AgentRuntimeIntegrationRecord;
+}
+
 export interface RlmModelMatch {
 	provider: string;
 	id: string;
@@ -52,9 +69,16 @@ export interface RlmFindModelsResult {
 export type RlmRunHandler = (request: RlmRunRequest) => Promise<Record<string, unknown>>;
 export type RlmListSubagentsHandler = () => RlmListSubagentsResult | Promise<RlmListSubagentsResult>;
 export type RlmDeleteSubagentHandler = (target: string) => Promise<RlmDeleteSubagentResult>;
+export type RlmCancelSubagentHandler = (target: string) => Promise<RlmCancelSubagentResult>;
+export type RlmRetryIntegrationHandler = (target: string) => Promise<RlmIntegrationControlResult>;
+export type RlmAbandonIntegrationHandler = (target: string, reason?: string) => Promise<RlmIntegrationControlResult>;
+export type RlmSchedulerSummaryHandler = () => AgentRuntimeSchedulerSummary | Promise<AgentRuntimeSchedulerSummary>;
 export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindModelsResult | Promise<RlmFindModelsResult>;
 
 const RLM_SUBAGENT_SESSION_NAME_MAX_LENGTH = 64;
+const RLM_RESOURCE_SCOPE_MAX_LENGTH = 256;
+const RLM_RESOURCE_SCOPE_MAX_COUNT = 32;
+const RLM_INTEGRATION_REASON_MAX_LENGTH = 1024;
 export const DEFAULT_RLM_MODEL_SEARCH_LIMIT = 8;
 export const MAX_RLM_MODEL_SEARCH_LIMIT = 20;
 
@@ -89,6 +113,25 @@ export function normalizeRequestedRlmSubagentModel(value: unknown): string | und
 		throw new Error("rlm.run model must not be empty");
 	}
 	return model;
+}
+
+/** Validate exact exclusive resource scopes declared by an orchestrator. */
+export function normalizeRequestedRlmResources(value: unknown): string[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw new Error("rlm.run resources must be a list of strings");
+	if (value.length > RLM_RESOURCE_SCOPE_MAX_COUNT) {
+		throw new Error(`rlm.run resources must contain at most ${RLM_RESOURCE_SCOPE_MAX_COUNT} scopes`);
+	}
+	const resources = value.map((resource) => {
+		if (typeof resource !== "string") throw new Error("rlm.run resources must contain only strings");
+		const scope = resource.trim();
+		if (!scope) throw new Error("rlm.run resource scopes must not be empty");
+		if (scope.length > RLM_RESOURCE_SCOPE_MAX_LENGTH) {
+			throw new Error(`rlm.run resource scopes must be at most ${RLM_RESOURCE_SCOPE_MAX_LENGTH} characters`);
+		}
+		return scope;
+	});
+	return [...new Set(resources)].sort();
 }
 
 /** Create a readable, collision-resistant default name usable as an agent-message selector. */
@@ -198,12 +241,64 @@ export function createRlmDeleteSubagentHostHandler(handler: RlmDeleteSubagentHan
 	};
 }
 
+/** Cancel one running direct child without conflating cancellation with cleanup. */
+export function createRlmCancelSubagentHostHandler(handler: RlmCancelSubagentHandler): HostRequestHandler {
+	return async (payload) => {
+		if (typeof payload.target !== "string" || !payload.target.trim()) {
+			throw new Error("rlm.cancel_subagent target must be a non-empty string");
+		}
+		return (await handler(payload.target.trim())) as unknown as Record<string, unknown>;
+	};
+}
+
+function normalizedIntegrationTarget(payload: Record<string, unknown>, operation: string): string {
+	if (typeof payload.target !== "string" || !payload.target.trim()) {
+		throw new Error(`${operation} target must be a non-empty string`);
+	}
+	return payload.target.trim();
+}
+
+/** Retry guarded promotion for one retained direct child. */
+export function createRlmRetryIntegrationHostHandler(handler: RlmRetryIntegrationHandler): HostRequestHandler {
+	return async (payload) => {
+		const target = normalizedIntegrationTarget(payload, "rlm.retry_integration");
+		return (await handler(target)) as unknown as Record<string, unknown>;
+	};
+}
+
+/** Abandon one retained integration candidate without deleting its evidence. */
+export function createRlmAbandonIntegrationHostHandler(handler: RlmAbandonIntegrationHandler): HostRequestHandler {
+	return async (payload) => {
+		const target = normalizedIntegrationTarget(payload, "rlm.abandon_integration");
+		if (payload.reason !== undefined && (typeof payload.reason !== "string" || !payload.reason.trim())) {
+			throw new Error("rlm.abandon_integration reason must be a non-empty string when provided");
+		}
+		const reason = typeof payload.reason === "string" ? payload.reason.trim() : undefined;
+		if (reason && reason.length > RLM_INTEGRATION_REASON_MAX_LENGTH) {
+			throw new Error(
+				`rlm.abandon_integration reason must be at most ${RLM_INTEGRATION_REASON_MAX_LENGTH} characters`,
+			);
+		}
+		return (await handler(target, reason)) as unknown as Record<string, unknown>;
+	};
+}
+
+/** Expose the host-owned scheduler summary to the current orchestrator. */
+export function createRlmSchedulerSummaryHostHandler(handler: RlmSchedulerSummaryHandler): HostRequestHandler {
+	return async () => (await handler()) as unknown as Record<string, unknown>;
+}
+
 export interface RlmSubagentRuntime {
 	session: AgentSession;
 }
 
 export interface CreateRlmSubagentRuntimeOptions {
 	parentSession: AgentSession;
+	agentRuntimeScheduler?: AgentRuntimeScheduler;
+	/** Isolated repository cwd assigned by the scheduler for write-capable Git tasks. */
+	cwd?: string;
+	/** Persisted Git workspace assignment used to produce the candidate result. */
+	gitWorkspace?: AgentGitWorkspace;
 	id: string;
 	prompt: string;
 	sessionName: string;
@@ -230,6 +325,8 @@ export interface SubagentRuntimeHost {
 	createRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): Promise<RlmSubagentRuntime>;
 	/** Persist host-owned completion before the child becomes passivation-eligible. */
 	completeRlmSubagentRuntime?(childId: string, session: AgentSession): boolean;
+	/** Persist a retained child's recovered completion after a successful integration retry. */
+	reconcileRlmSubagentRuntime?(childId: string): Promise<void>;
 	/** Release a host-owned child after its detached initial task settles. */
 	releaseRlmSubagentRuntime?: (
 		runtime: RlmSubagentRuntime,

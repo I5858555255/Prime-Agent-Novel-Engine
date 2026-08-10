@@ -61,6 +61,18 @@ except Exception as _prime_agent_rlm_error:
         async def delete_subagent(self, target):
             self._raise_missing()
 
+        async def cancel_subagent(self, target):
+            self._raise_missing()
+
+        async def retry_integration(self, target):
+            self._raise_missing()
+
+        async def abandon_integration(self, target, reason=None):
+            self._raise_missing()
+
+        async def scheduler_summary(self):
+            self._raise_missing()
+
         async def __call__(self, prompt, **kwargs):
             return await self.run(prompt, **kwargs)
 

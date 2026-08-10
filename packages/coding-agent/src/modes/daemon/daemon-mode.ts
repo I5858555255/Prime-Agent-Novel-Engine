@@ -2237,6 +2237,24 @@ export class AgentDaemon {
 					createdAt: metadata.createdAt,
 				});
 			},
+			reconcileRlmSubagentRuntime: async (childId) => {
+				const latest = (await this.readLatestRlmSubagentRegistry(parentState, true)).find(
+					(entry) => entry.childId === childId,
+				);
+				if (!latest || latest.status === "deleted") {
+					throw new Error(`Cannot reconcile missing RLM subagent registry entry ${childId}`);
+				}
+				if (latest.status === "completed") return;
+				if (
+					!this.appendRlmSubagentRegistryEntry(parentState, {
+						...latest,
+						status: "completed",
+						updatedAt: new Date().toISOString(),
+					})
+				) {
+					throw new Error(`Failed to persist recovered completion for RLM subagent ${childId}`);
+				}
+			},
 			releaseRlmSubagentRuntime: async (runtime, options, status) => {
 				// Persist the deletion boundary first, but never let a registry failure
 				// strand the cancelled child as a stale resident session.
@@ -2304,7 +2322,8 @@ export class AgentDaemon {
 		parentState: ActiveSessionState,
 		options: CreateRlmSubagentRuntimeOptions,
 	): Promise<AgentSessionRuntime> {
-		const sessionManager = SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
+		const childCwd = options.cwd ?? options.parentSession.sessionManager.getCwd();
+		const sessionManager = SessionManager.create(childCwd, options.sessionDir);
 		sessionManager.newSession({
 			parentSession: options.parentSession.sessionFile,
 			rlmDepth: options.rlmDepth,
@@ -2718,6 +2737,7 @@ export class AgentDaemon {
 					sessionLease,
 					sessionOptions: {
 						...(rehydratedModel ? { model: rehydratedModel } : {}),
+						agentRuntimeScheduler: parentState.runtime.session.getAgentRuntimeScheduler?.(),
 						agentMessageController: this.createAgentMessageController(() => stateRef),
 						agentObserveController: this.createAgentObserveController(() => stateRef),
 						rlmHeartbeatController: {

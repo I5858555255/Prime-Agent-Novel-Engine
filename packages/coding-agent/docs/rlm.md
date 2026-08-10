@@ -97,10 +97,60 @@ for child in children:
     print(child.session_name, child.status, child.active_session_id)
 ```
 
-Successfully completed daemon-backed children remain addressable while their parent session is open. Delete a child only when its context is no longer needed:
+The host also maintains a persisted scheduler summary for task readiness and active-worker state:
+
+```python
+summary = await rlm.scheduler_summary()
+print(summary["readyTaskIds"], summary["activeAgents"], summary["integrationRecords"])
+```
+
+Declare integration-sensitive resources when spawning write-capable children:
+
+```python
+worker = await rlm(
+    "Run the schema migration and update generated clients",
+    name="migration-worker",
+    resources=["database:migrations", "port:4100"],
+)
+```
+
+Resource scopes are exact, exclusive scheduler identifiers. Admission fails with the owning task and Agent when another active child already holds a requested scope. The scheduler renews leases from worker heartbeats, releases them at terminal lifecycle states, and recovers expired ownership after restart. `activeResourceLeases`, `blockedResourceTasks`, `taskResources`, and `recentEvents` expose the persisted coordination state.
+
+When the parent runs inside a supported Git working tree, each write-capable RLM child receives a scheduler-owned branch and worktree. Dirty tracked and non-ignored untracked parent state is captured through a temporary Git index without changing the parent's branch or index. The child task message includes its immutable base, branch, and assigned worktree.
+
+After the child completes, the host commits its work, validates `agent-runtime-result.json`, and places the candidate in a serialized integration queue. A scheduler-owned integration worktree applies a Git three-way merge and configured quality gates. The host then promotes only the incremental integration patch into the user's working tree after checking its expected HEAD, index, tracked and untracked state, and after running final gates against the combined parent-plus-candidate result in a temporary worktree. Promotion never moves the user's branch or stages files, and it records a recovery snapshot before applying the patch. A concurrent or incompatible parent change produces a retained, recoverable conflict instead of overwriting user work.
+
+`integrationRecords` reports the candidate, recovery, result, and promotion-recovery SHAs; changed or conflicted files; gate output; `promotionStatus`; and the final `integrated`, `conflict`, or `failed` status. Candidate branches, worktrees, and evidence remain intact when integration or promotion conflicts or a gate fails. The child remains in the error state until promotion succeeds. After reconciling the parent working tree, retry the retained promotion through the host-owned control path:
+
+```python
+result = await rlm.retry_integration("api-reviewer")
+print(result.outcome, result.integration["promotionStatus"])
+```
+
+A failed retry remains `conflict` and keeps its evidence. To stop retrying without deleting that evidence, abandon it explicitly:
+
+```python
+result = await rlm.abandon_integration("api-reviewer", reason="Parent chose another implementation")
+```
+
+A successful retry changes the retained child registry entry from `error` to `completed` and injects a recovery notice into the root orchestrator's next turn. Abandonment keeps the child non-successful, releases retained ownership, and records the supplied reason.
+
+When the root session is available, Git conflicts and quality-gate failures enter a bounded automatic resolution workflow. Each attempt receives its own scheduler-owned resolver branch and worktree, both relevant task contracts, the candidate patch, conflict files, and failed gate output. The resolver never edits a worker branch or the integration worktree. The Merge Manager promotes a resolution only after it contains both candidate histories and every configured integration gate passes again. Attempts default to two with a five-minute timeout each. Exhausted, timed-out, or restart-interrupted attempts retain their context and worktree evidence, appear in `conflictResolutions`, and request user direction.
+
+Scheduler lifecycle, integration, promotion, resource, and conflict-resolution events are persisted in sequence order. The root Orchestrator receives a coalesced ownership update as host-provided next-turn context when workers, leases, integration results, or resolver attempts change, so correctness does not depend on calling `scheduler_summary()` voluntarily.
+
+Non-Git working directories keep the existing shared-cwd behavior. Git worktrees isolate ordinary relative-path writes, but they are not an operating-system sandbox and do not prevent writes through unrelated absolute paths.
+
+Successfully completed daemon-backed children remain addressable while their parent session is open. Delete an inactive child only when its context is no longer needed:
 
 ```python
 await rlm.delete_subagent(children[0])
+```
+
+Ordinary deletion refuses running work. Stop a running child explicitly, then allow its cancellation cleanup to finish:
+
+```python
+await rlm.cancel_subagent(children[0])
 ```
 
 The default recursion depth allows a root agent to create children. Raising the configured depth allows descendants to recurse further.

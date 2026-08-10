@@ -333,7 +333,8 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 	}
 
 	async createRlmSubagentRuntime(options: CreateRlmSubagentRuntimeOptions): Promise<RlmSubagentRuntime> {
-		const sessionManager = SessionManager.create(options.parentSession.sessionManager.getCwd(), options.sessionDir);
+		const childCwd = options.cwd ?? options.parentSession.sessionManager.getCwd();
+		const sessionManager = SessionManager.create(childCwd, options.sessionDir);
 		if (options.parentSession.sessionFile) {
 			sessionManager.newSession({
 				parentSession: options.parentSession.sessionFile,
@@ -357,6 +358,7 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 					customTools: options.customTools,
 					includeGoals: options.includeGoals,
 					includeCompactSkill: options.includeCompactSkill,
+					agentRuntimeScheduler: options.agentRuntimeScheduler,
 					rlmDepth: options.rlmDepth,
 					rlmMaxDepth: options.rlmMaxDepth,
 					rlmSessionDir: options.sessionDir,

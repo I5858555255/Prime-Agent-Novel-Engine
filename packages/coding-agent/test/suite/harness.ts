@@ -11,6 +11,7 @@ import type { FauxModelDefinition, FauxProviderRegistration, FauxResponseStep, M
 import { registerFauxProvider } from "@earendil-works/pi-ai";
 import type { AgentSessionMessageController } from "../../src/core/agent-messages.js";
 import type { AgentObserveController } from "../../src/core/agent-observe.js";
+import type { AgentRuntimeScheduler } from "../../src/core/agent-runtime-scheduler.js";
 import { AgentSession, type AgentSessionEvent, type AutoRefineReviewer } from "../../src/core/agent-session.js";
 import { AuthStorage } from "../../src/core/auth-storage.js";
 import type { AgentAutonomousConfig } from "../../src/core/autonomous.js";
@@ -60,6 +61,7 @@ export function getAssistantTexts(harness: Harness): string[] {
 }
 
 export interface HarnessOptions {
+	cwd?: string;
 	api?: string;
 	provider?: string;
 	models?: FauxModelDefinition[];
@@ -72,6 +74,8 @@ export interface HarnessOptions {
 	agentObserveController?: AgentObserveController;
 	agentMessageController?: AgentSessionMessageController;
 	subagentRuntimeHost?: SubagentRuntimeHost;
+	agentRuntimeScheduler?: AgentRuntimeScheduler;
+	agentRuntimeHeartbeatIntervalMs?: number;
 	persistSession?: boolean;
 	rlmDepth?: number;
 	rlmMaxDepth?: number;
@@ -106,7 +110,8 @@ function createTempDir(): string {
 }
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
-	const tempDir = createTempDir();
+	const ownsTempDir = options.cwd === undefined;
+	const tempDir = options.cwd ?? createTempDir();
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
 		api: options.api,
 		provider: options.provider,
@@ -195,6 +200,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		agentObserveController: options.agentObserveController,
 		agentMessageController: options.agentMessageController,
 		subagentRuntimeHost: options.subagentRuntimeHost,
+		agentRuntimeScheduler: options.agentRuntimeScheduler,
+		agentRuntimeHeartbeatIntervalMs: options.agentRuntimeHeartbeatIntervalMs,
 		baseToolsOverride: toolMap,
 		extensionRunnerRef,
 		rlmDepth: options.rlmDepth,
@@ -229,7 +236,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		cleanup() {
 			session.dispose();
 			fauxProvider.unregister();
-			if (existsSync(tempDir)) {
+			if (ownsTempDir && existsSync(tempDir)) {
 				// Spawned fixture processes may still be flushing their final registry
 				// writes; retry briefly instead of failing the suite on ENOTEMPTY.
 				rmSync(tempDir, { recursive: true, force: true, maxRetries: 40, retryDelay: 50 });
