@@ -82,7 +82,11 @@ import {
 	normalizeObserveMaxChars,
 	ORCHESTRATION_HEARTBEAT_SKILL_NAME,
 } from "./agent-observe.js";
-import { AgentRuntimeScheduler, type AgentRuntimeSchedulerSummary } from "./agent-runtime-scheduler.js";
+import {
+	AgentRuntimeScheduler,
+	type AgentRuntimeSchedulerEvent,
+	type AgentRuntimeSchedulerSummary,
+} from "./agent-runtime-scheduler.js";
 import { flushAgentTraceUpload } from "./agent-traces.js";
 import {
 	addLoginGuidanceToAuthError,
@@ -226,6 +230,7 @@ import {
 	createRlmRunHostHandler,
 	createRlmSchedulerSummaryHostHandler,
 	findRlmModelMatches,
+	normalizeRequestedRlmResources,
 	normalizeRequestedRlmSubagentModel,
 	normalizeRequestedRlmSubagentSessionName,
 	type RlmCancelSubagentResult,
@@ -278,6 +283,9 @@ import { addAssistantUsage, emptyUsage } from "./usage.js";
 import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR, WEBSEARCH_SKILL_NAME } from "./websearch-credential.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
+
+const AGENT_RUNTIME_SCHEDULER_CONTEXT_CUSTOM_TYPE = "agent_runtime_scheduler_context";
+
 export type { SessionStats } from "./session-stats.js";
 export { type ParsedSkillBlock, parseSkillBlock } from "./skill-blocks.js";
 
@@ -1219,6 +1227,7 @@ export class AgentSession {
 	private _parentReplyCount = 0;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private readonly _agentRuntimeScheduler: AgentRuntimeScheduler;
+	private _unsubscribeAgentRuntimeScheduler?: () => void;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
 	private _pendingRlmSubagentSessionNames = new Set<string>();
 	// Inline mode keeps finished child sessions so the inspector can still read them;
@@ -1338,6 +1347,17 @@ export class AgentSession {
 				statePath: schedulerArtifactDir ? join(schedulerArtifactDir, "agent-runtime-scheduler.json") : undefined,
 			});
 		if (this._rlmDepth === 0) {
+			this._unsubscribeAgentRuntimeScheduler = this._agentRuntimeScheduler.subscribe((event) => {
+				this._queueAgentRuntimeSchedulerContext(event);
+			});
+			const schedulerSummary = this._agentRuntimeScheduler.summary();
+			if (
+				schedulerSummary.activeAgents.length > 0 ||
+				schedulerSummary.activeResourceLeases.length > 0 ||
+				schedulerSummary.blockedResourceTasks.length > 0
+			) {
+				this._queueAgentRuntimeSchedulerContext();
+			}
 			void this._agentRuntimeScheduler.resumePendingIntegrations().catch(() => undefined);
 		}
 		// A resumed child may have replied before this process started; false would
@@ -3993,6 +4013,8 @@ export class AgentSession {
 			return;
 		}
 		this._disposed = true;
+		this._unsubscribeAgentRuntimeScheduler?.();
+		this._unsubscribeAgentRuntimeScheduler = undefined;
 		this._sessionActionCommitDisposeAbortController.abort();
 		try {
 			// Invalidate scheduled timers and abort any in-flight review so a late
@@ -9117,6 +9139,50 @@ export class AgentSession {
 		return this._agentRuntimeScheduler.summary();
 	}
 
+	private _queueAgentRuntimeSchedulerContext(event?: AgentRuntimeSchedulerEvent): void {
+		if (this._disposed || this._disposing || this._rlmDepth !== 0 || event?.type === "agent_heartbeat") return;
+		const summary = this._agentRuntimeScheduler.summary();
+		const lines = [
+			"<agent_runtime_scheduler_update>",
+			`event: ${event?.type ?? "scheduler_restored"}`,
+			...(event?.taskId ? [`task: ${event.taskId}`] : []),
+			...(event?.message ? [`detail: ${event.message}`] : []),
+			"active_workers:",
+			...(summary.activeAgents.length > 0
+				? summary.activeAgents.slice(0, 20).map((agent) => `- ${agent.sessionName ?? agent.id}: ${agent.status}`)
+				: ["- none"]),
+			"resource_ownership:",
+			...(summary.activeResourceLeases.length > 0
+				? summary.activeResourceLeases
+						.slice(0, 20)
+						.map(
+							(lease) => `- ${lease.scope}: ${lease.agentId} (epoch ${lease.epoch}, expires ${lease.expiresAt})`,
+						)
+				: ["- none"]),
+			"blocked_resource_tasks:",
+			...(summary.blockedResourceTasks.length > 0
+				? summary.blockedResourceTasks.slice(0, 20).map((block) => {
+						const scopes = block.conflicts.map((conflict) => conflict.scope).join(", ");
+						return `- ${block.taskId}: ${scopes}`;
+					})
+				: ["- none"]),
+			"This is host-owned coordination state. Do not infer ownership from memory or edit another active agent's resources.",
+			"</agent_runtime_scheduler_update>",
+		];
+		this._pendingNextTurnMessages = this._pendingNextTurnMessages.filter(
+			(message) => message.customType !== AGENT_RUNTIME_SCHEDULER_CONTEXT_CUSTOM_TYPE,
+		);
+		void this.sendCustomMessage(
+			{
+				customType: AGENT_RUNTIME_SCHEDULER_CONTEXT_CUSTOM_TYPE,
+				content: lines.join("\n"),
+				display: false,
+				details: { eventSequence: event?.sequence ?? summary.latestEventSequence },
+			},
+			{ deliverAs: "nextTurn" },
+		).catch(() => undefined);
+	}
+
 	getAgentRuntimeScheduler(): AgentRuntimeScheduler {
 		return this._agentRuntimeScheduler;
 	}
@@ -9665,13 +9731,14 @@ export class AgentSession {
 		kwargs: Record<string, unknown> = {},
 		spawnCode?: string,
 	): Promise<RlmSpawnHandle> {
-		const { name: rawName, model: rawModel, ...unsupported } = kwargs;
+		const { name: rawName, model: rawModel, resources: rawResources, ...unsupported } = kwargs;
 		const unsupportedKwargs = Object.keys(unsupported);
 		if (unsupportedKwargs.length > 0) {
 			throw new Error(`Unsupported rlm.run kwargs: ${unsupportedKwargs.sort().join(", ")}`);
 		}
 		const requestedSessionName = normalizeRequestedRlmSubagentSessionName(rawName);
 		const requestedModel = normalizeRequestedRlmSubagentModel(rawModel);
+		const requestedResources = normalizeRequestedRlmResources(rawResources);
 		if (requestedSessionName) assertDirectAgentMessageTarget(requestedSessionName);
 		if (this._rlmDepth >= this._rlmMaxDepth) {
 			throw new Error(
@@ -9719,6 +9786,7 @@ export class AgentSession {
 		this._agentRuntimeScheduler.registerTask({
 			id: run.id,
 			objective: prompt,
+			resources: requestedResources,
 			status: "queued",
 		});
 		this._agentRuntimeScheduler.registerAgent({
@@ -9727,6 +9795,16 @@ export class AgentSession {
 			parentAgentId: this.sessionId,
 			sessionName,
 		});
+		const resourceAcquisition = this._agentRuntimeScheduler.acquireTaskResources(run.id);
+		if (!resourceAcquisition.acquired) {
+			const detail = resourceAcquisition.conflicts
+				.map((conflict) => `${conflict.scope} is owned by ${conflict.ownerAgentId}`)
+				.join("; ");
+			const message = `RLM task resource acquisition blocked: ${detail}`;
+			this._agentRuntimeScheduler.failAgent(run.id, message);
+			this._agentRuntimeScheduler.transitionTask(run.id, "failed", message);
+			throw new Error(message);
+		}
 		const throwIfCancelled = () => {
 			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
 		};
@@ -9892,9 +9970,21 @@ export class AgentSession {
 					}
 				});
 				run.unsubscribe = unsubscribeChildEvents;
-				const content = gitWorkspace?.taskContract
+				const baseContent = gitWorkspace?.taskContract
 					? formatAgentRuntimeTaskPrompt(gitWorkspace.taskContract, prompt)
 					: `[task from parent]\n\n${prompt}`;
+				const resourceSummary = this._agentRuntimeScheduler.getTaskResourceSummary(run.id);
+				const content =
+					resourceSummary.resources.length > 0
+						? [
+								"[agent runtime resource ownership]",
+								...resourceSummary.ownedResources.map((resource) => `exclusive: ${resource}`),
+								"These resources are exclusively leased to this task until it reaches a terminal state.",
+								"Do not use undeclared integration-sensitive resources.",
+								"",
+								baseContent,
+							].join("\n")
+						: baseContent;
 				const spawnMessage: AgentSessionMessage = {
 					role: "custom",
 					customType: AGENT_MESSAGE_CUSTOM_TYPE,

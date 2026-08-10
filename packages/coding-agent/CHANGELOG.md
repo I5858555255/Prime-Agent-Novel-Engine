@@ -6,6 +6,7 @@
 - Added a persisted agent runtime scheduler registry with Task DAG readiness, worker heartbeat and recovery state, explicit child cancellation, and protection against deleting running children ([#1056](https://github.com/PrimeIntellect-ai/prime-agent/issues/1056)).
 - Added isolated Git worktrees for RLM children, including dirty-workspace base snapshots, scheduler-owned candidate branches, validated result manifests, and safe worktree cleanup ([#1056](https://github.com/PrimeIntellect-ai/prime-agent/issues/1056)).
 - Added serialized scheduler-owned integration with Git conflict diagnostics, recovery points, rollback, and configurable quality gates for RLM candidate branches ([#1056](https://github.com/PrimeIntellect-ai/prime-agent/issues/1056)).
+- Added scheduler-owned exclusive resource leases, typed coordination events, blocked-task diagnostics, stale ownership recovery, and automatic ownership context for RLM orchestration ([#1056](https://github.com/PrimeIntellect-ai/prime-agent/issues/1056)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
 

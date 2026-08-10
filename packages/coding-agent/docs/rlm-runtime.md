@@ -155,7 +155,8 @@ await rlm.run("subtask")
 Supported `rlm.run` options are:
 
 - `name`: a unique readable child session name; and
-- `model`: an exact `provider/model` selector from `rlm.find_models()`.
+- `model`: an exact `provider/model` selector from `rlm.find_models()`; and
+- `resources`: up to 32 exact exclusive scheduler scopes, such as `port:4100`, `database:migrations`, or `deployment:staging`.
 
 Unknown options fail instead of being ignored. Model search is bounded to active, non-expired credentials. If an exact selection is unavailable or fails auth preflight, spawn fails instead of silently falling back to another model. A child otherwise inherits the parent model.
 
@@ -195,7 +196,9 @@ This registry survives kernel restart, compaction, and parent restore. Successfu
 
 The parent can continue a retained daemon child with `await agent_message.send(..., receiver_role="child", receiver_name=child.session_name)`. `rlm.delete_subagent()` accepts an exact child ID, active-session ID, session ID, or unique name, but refuses queued or running work. Use `rlm.cancel_subagent()` for an explicit cancellation. Deleting an inactive child closes the retained runtime, writes a durable tombstone, and removes it from messaging and observation. It does not erase the transcript, scheduler audit record, or artifacts on disk.
 
-`await rlm.scheduler_summary()` returns the host-owned run ID, workspace ID, task and agent counts, ready and blocked task IDs, active agent records, and every retained Git workspace assignment. Completed workspace records expose the immutable base, candidate commit, branch, worktree, task contract, and result manifest paths. Scheduler state is stored independently from model context. Reloading an interrupted run marks admitted or running agents as `recovering` until their next runtime heartbeat.
+`await rlm.scheduler_summary()` returns the host-owned run ID, workspace ID, task and agent counts, ready and blocked task IDs, active agent records, retained Git workspace assignments, active resource leases, blocked-resource diagnostics, task scopes, and recent typed scheduler events. Completed workspace records expose the immutable base, candidate commit, branch, worktree, task contract, and result manifest paths. Scheduler state is stored independently from model context. Reloading an interrupted run marks admitted or running agents as `recovering` until their next runtime heartbeat, while expired leases are recovered before new ownership is admitted.
+
+The root Orchestrator subscribes to Scheduler events in-process. Worker, integration, and ownership changes are coalesced into host-provided next-turn context containing current active workers, lease owners, and blocked tasks. This adds coordination without changing the daemon command or response protocol.
 
 Dirty base creation uses `GIT_INDEX_FILE` with `read-tree`, `git add -A`, `write-tree`, and `commit-tree`. It never stages files in the user's index or moves the user's branch. Ignored files are not copied into the snapshot. The worktree backend does not copy ignored dependency directories and does not provide OS-level filesystem isolation.
 
@@ -276,6 +279,9 @@ Provider credentials are resolved by the TypeScript host. The bounded model cata
 | Child cancellation | `rlm.cancel_subagent()` records cancellation before aborting the child and cleaning up its live registry entry. |
 | Unsupported or unborn Git repository | Repository capability check declines worktree provisioning and preserves the existing shared-cwd runtime behavior. |
 | Candidate commit or manifest validation fails | The scheduler marks the task failed and retains the worktree for inspection. |
+| Requested resource is already leased | Child admission fails before runtime startup and reports the owning task and Agent; no partial lease is acquired. |
+| Worker exits or is cancelled | Its active resource leases are released before the terminal lifecycle event is delivered. |
+| Scheduler restarts with stale ownership | Heartbeat-renewed expiry timestamps bound ownership; expired leases are recorded and released during recovery or the next scheduler action. |
 | Worktree cleanup requested before integration/cancellation | The scheduler rejects cleanup; clean candidate branches remain available for later integration. |
 | Parent teardown | Active descendants are cancelled and their runtimes are closed. |
 

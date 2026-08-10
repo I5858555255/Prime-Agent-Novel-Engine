@@ -64,6 +64,8 @@ export type RlmSchedulerSummaryHandler = () => AgentRuntimeSchedulerSummary | Pr
 export type RlmFindModelsHandler = (query: string, limit: number) => RlmFindModelsResult | Promise<RlmFindModelsResult>;
 
 const RLM_SUBAGENT_SESSION_NAME_MAX_LENGTH = 64;
+const RLM_RESOURCE_SCOPE_MAX_LENGTH = 256;
+const RLM_RESOURCE_SCOPE_MAX_COUNT = 32;
 export const DEFAULT_RLM_MODEL_SEARCH_LIMIT = 8;
 export const MAX_RLM_MODEL_SEARCH_LIMIT = 20;
 
@@ -98,6 +100,25 @@ export function normalizeRequestedRlmSubagentModel(value: unknown): string | und
 		throw new Error("rlm.run model must not be empty");
 	}
 	return model;
+}
+
+/** Validate exact exclusive resource scopes declared by an orchestrator. */
+export function normalizeRequestedRlmResources(value: unknown): string[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw new Error("rlm.run resources must be a list of strings");
+	if (value.length > RLM_RESOURCE_SCOPE_MAX_COUNT) {
+		throw new Error(`rlm.run resources must contain at most ${RLM_RESOURCE_SCOPE_MAX_COUNT} scopes`);
+	}
+	const resources = value.map((resource) => {
+		if (typeof resource !== "string") throw new Error("rlm.run resources must contain only strings");
+		const scope = resource.trim();
+		if (!scope) throw new Error("rlm.run resource scopes must not be empty");
+		if (scope.length > RLM_RESOURCE_SCOPE_MAX_LENGTH) {
+			throw new Error(`rlm.run resource scopes must be at most ${RLM_RESOURCE_SCOPE_MAX_LENGTH} characters`);
+		}
+		return scope;
+	});
+	return [...new Set(resources)].sort();
 }
 
 /** Create a readable, collision-resistant default name usable as an agent-message selector. */

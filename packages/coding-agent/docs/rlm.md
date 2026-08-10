@@ -104,9 +104,23 @@ summary = await rlm.scheduler_summary()
 print(summary["readyTaskIds"], summary["activeAgents"], summary["integrationRecords"])
 ```
 
+Declare integration-sensitive resources when spawning write-capable children:
+
+```python
+worker = await rlm(
+    "Run the schema migration and update generated clients",
+    name="migration-worker",
+    resources=["database:migrations", "port:4100"],
+)
+```
+
+Resource scopes are exact, exclusive scheduler identifiers. Admission fails with the owning task and Agent when another active child already holds a requested scope. The scheduler renews leases from worker heartbeats, releases them at terminal lifecycle states, and recovers expired ownership after restart. `activeResourceLeases`, `blockedResourceTasks`, `taskResources`, and `recentEvents` expose the persisted coordination state.
+
 When the parent runs inside a supported Git working tree, each write-capable RLM child receives a scheduler-owned branch and worktree. Dirty tracked and non-ignored untracked parent state is captured through a temporary Git index without changing the parent's branch or index. The child task message includes its immutable base, branch, and assigned worktree.
 
 After the child completes, the host commits its work, validates `agent-runtime-result.json`, and places the candidate in a serialized integration queue. A scheduler-owned integration worktree applies a Git three-way merge and configured quality gates without changing the user's working tree. `integrationRecords` reports the candidate and recovery SHAs, changed or conflicted files, gate output, and the final `integrated`, `conflict`, or `failed` status. Candidate branches and worktrees remain intact when integration conflicts or a gate fails.
+
+Scheduler lifecycle, integration, and resource events are persisted in sequence order. The root Orchestrator receives a coalesced ownership update as host-provided next-turn context when workers or leases change, so correctness does not depend on calling `scheduler_summary()` voluntarily.
 
 Non-Git working directories keep the existing shared-cwd behavior. Git worktrees isolate ordinary relative-path writes, but they are not an operating-system sandbox and do not prevent writes through unrelated absolute paths.
 
