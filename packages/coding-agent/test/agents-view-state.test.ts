@@ -231,6 +231,78 @@ describe("agents view state", () => {
 		expect(rows.map((row) => row.summary.sessionId)).toEqual(["alpha", "beta-1", "beta-2"]);
 	});
 
+	test("sorts rows by last message activity within a section, newest first", () => {
+		const rows = buildAgentsViewRows([
+			makeSummary({
+				id: "created-newest",
+				sessionId: "created-newest",
+				sessionName: "created newest",
+				activity: "working",
+				isStreaming: true,
+				created: "2026-01-03T00:00:00Z",
+				lastActivityAt: "2026-01-01T00:00:00Z",
+			}),
+			makeSummary({
+				id: "middle",
+				sessionId: "middle",
+				sessionName: "middle",
+				activity: "working",
+				isStreaming: true,
+				created: "2026-01-02T00:00:00Z",
+				lastActivityAt: "2026-01-02T00:00:00Z",
+			}),
+			makeSummary({
+				id: "active-newest",
+				sessionId: "active-newest",
+				sessionName: "active newest",
+				activity: "working",
+				isStreaming: true,
+				created: "2026-01-01T00:00:00Z",
+				lastActivityAt: "2026-01-03T00:00:00Z",
+			}),
+			makeSummary({
+				id: "idle-newest",
+				sessionId: "idle-newest",
+				sessionName: "idle newest",
+				activity: "idle",
+				created: "2026-01-04T00:00:00Z",
+				lastActivityAt: "2026-01-04T00:00:00Z",
+			}),
+		]);
+
+		expect(rows.map((row) => row.title)).toEqual(["active newest", "middle", "created newest", "idle newest"]);
+		expect(rows.map((row) => row.section)).toEqual(["running", "running", "running", "idle"]);
+	});
+
+	test("moves a session up when it receives a newer message", () => {
+		const first = makeSummary({
+			id: "first",
+			sessionId: "first",
+			sessionName: "first",
+			activity: "working",
+			isStreaming: true,
+			created: "2026-01-02T00:00:00Z",
+			lastActivityAt: "2026-01-02T00:00:00Z",
+		});
+		const second = makeSummary({
+			id: "second",
+			sessionId: "second",
+			sessionName: "second",
+			activity: "working",
+			isStreaming: true,
+			created: "2026-01-01T00:00:00Z",
+			lastActivityAt: "2026-01-01T00:00:00Z",
+		});
+
+		const initialOrder = buildAgentsViewRows([first, second]).map((row) => row.summary.sessionId);
+		const repliedOrder = buildAgentsViewRows([first, { ...second, lastActivityAt: "2026-01-03T00:00:00Z" }]).map(
+			(row) => row.summary.sessionId,
+		);
+
+		expect(initialOrder).toEqual(["first", "second"]);
+		expect(repliedOrder).toEqual(["second", "first"]);
+	});
+
 	test("summarizes subagents on their parent and omits subagent rows", () => {
 		const rows = buildAgentsViewRows([
 			makeSummary({
@@ -1363,12 +1435,17 @@ describe("agents view state", () => {
 						id: "saved-child",
 						path: "/tmp/project/saved-child.jsonl",
 						parentSessionPath: "/tmp/project/missing-parent.jsonl",
+						modified: new Date("2026-01-04T00:00:00Z"),
 					}),
 				],
 			);
 
 			expect(buildAgentsViewRows([child!])).toMatchObject([
-				{ kind: "agent", depth: 0, summary: { sessionId: "saved-child" } },
+				{
+					kind: "agent",
+					depth: 0,
+					summary: { sessionId: "saved-child", lastActivityAt: "2026-01-04T00:00:00.000Z" },
+				},
 			]);
 		});
 
