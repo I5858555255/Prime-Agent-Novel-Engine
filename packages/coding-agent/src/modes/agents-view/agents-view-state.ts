@@ -832,9 +832,12 @@ function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
 	if (sectionDiff !== 0) {
 		return sectionDiff;
 	}
-	const activityDiff = getTimestamp(b.summary.lastActivityAt) - getTimestamp(a.summary.lastActivityAt);
-	if (activityDiff !== 0) {
-		return activityDiff;
+	// Running rows churn on every tool result; keep them frozen on created order (ENG-4650).
+	if (a.section !== "running") {
+		const activityDiff = getTimestamp(b.summary.lastActivityAt) - getTimestamp(a.summary.lastActivityAt);
+		if (activityDiff !== 0) {
+			return activityDiff;
+		}
 	}
 	const createdDiff = getTimestamp(b.summary.created) - getTimestamp(a.summary.created);
 	if (createdDiff !== 0) {
