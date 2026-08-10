@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, existsSync, readdirSync, readFileSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { stderr, stdin } from "node:process";
@@ -89,6 +89,12 @@ function errorMessage(error: unknown): string {
 
 function isNodeError(error: unknown, code: string): boolean {
 	return error instanceof Error && "code" in error && error.code === code;
+}
+
+function isLockDirExistsError(error: unknown): boolean {
+	if (isNodeError(error, "EEXIST") || isNodeError(error, "ENOTEMPTY")) return true;
+	// Windows fails any directory rename onto an existing target with EPERM.
+	return process.platform === "win32" && isNodeError(error, "EPERM");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -474,21 +480,33 @@ async function lockMissingPidIsStale(lockDir: string): Promise<boolean> {
 	}
 }
 
-async function acquireBootstrapLock(venv: string): Promise<() => Promise<void>> {
+export async function acquireBootstrapLock(venv: string): Promise<() => Promise<void>> {
 	const lockDir = bootstrapLockDir(venv);
 	await mkdir(path.dirname(lockDir), { recursive: true });
 
 	for (;;) {
+		const token = randomUUID();
+		const candidateDir = `${lockDir}.candidate-${process.pid}-${token}`;
+		await mkdir(candidateDir);
+		await writeFile(path.join(candidateDir, "pid"), `${process.pid}\n`, "utf8");
 		try {
-			await mkdir(lockDir);
-			await writeFile(path.join(lockDir, "pid"), `${process.pid}\n`, "utf8");
+			await rename(candidateDir, lockDir);
 			return () => rm(lockDir, { recursive: true, force: true });
 		} catch (error) {
-			if (!isNodeError(error, "EEXIST")) throw error;
+			await rm(candidateDir, { recursive: true, force: true });
+			if (!isLockDirExistsError(error)) throw error;
 
 			const pid = await readLockPid(lockDir);
 			if (pid === null ? await lockMissingPidIsStale(lockDir) : !processIsRunning(pid)) {
-				await rm(lockDir, { recursive: true, force: true });
+				// Rename aside before removing so a lock another process creates in the
+				// meantime is never destroyed; the rename fails harmlessly if it is gone.
+				const staleDir = `${lockDir}.stale-${process.pid}-${token}`;
+				try {
+					await rename(lockDir, staleDir);
+					await rm(staleDir, { recursive: true, force: true });
+				} catch (reclaimError) {
+					if (!isNodeError(reclaimError, "ENOENT")) throw reclaimError;
+				}
 				continue;
 			}
 
