@@ -19,14 +19,18 @@ Use ACP mode when something external needs to *drive* a session interactively: p
 | Method | Notes |
 |---|---|
 | `initialize` | Returns protocol version, capabilities, and agent info. |
-| `session/new` | Creates the session. One session per connection. |
+| `session/list` | Lists persisted Prime Agent sessions, with optional `cwd` filtering and cursor pagination. |
+| `session/load` | Loads a persisted session and replays its text conversation history. |
+| `session/new` | Creates the session. One active session per connection. |
 | `session/prompt` | Runs one turn and resolves with a stop reason. |
 | `session/cancel` | Notification; aborts the addressed session's turn. |
-| `session/close` | Releases the session and frees the connection for a new one. |
+| `session/close` | Releases the session and frees the connection for a new or loaded one. |
 
-One session per connection is a deliberate limit: Prime Agent's underlying session is fixed at process startup, so a second concurrent session would silently share its conversation, working directory, and model. A second `session/new` is refused rather than pretending to isolate. Start another process for a second session.
+One active session per connection is a deliberate limit: Prime Agent's underlying connection drives one live session at a time, so concurrent sessions would silently share conversation state, working directory, and model. A second `session/new` or `session/load` is refused while a session is active; close the active session first or start another Prime Agent process.
 
-Likewise `session/prompt` refuses a concurrent turn while one is running, and the working directory cannot be changed after startup — a client-supplied `cwd` that differs from the agent's real one is reported back in `_meta` rather than silently ignored.
+`session/list` exposes Prime Agent's persisted session IDs, working directories, titles, and modification timestamps through ACP's standard `SessionInfo` shape. `session/load` resolves one of those IDs through Prime Agent's saved-session registry, switches the underlying connection to it, and replays user and assistant text as normal ACP `session/update` notifications before returning.
+
+Likewise `session/prompt` refuses a concurrent turn while one is running. For a new session, a client-supplied `cwd` that differs from the agent's real one is reported back in `_meta` rather than silently ignored. Loading an existing session uses the `cwd` supplied by the ACP client as the session's cwd override.
 
 ## Streamed updates
 
