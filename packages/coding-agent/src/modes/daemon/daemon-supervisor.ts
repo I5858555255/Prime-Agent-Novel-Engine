@@ -134,6 +134,7 @@ const UPDATE_RESTART_WORKER_REQUEST_TIMEOUT_MS = 90_000;
 // an abandoned prepare leaves the daemon permanently fenced with workers stopped.
 const UPDATE_RESTART_PREPARE_DEADLINE_MS = 100_000;
 const WORKER_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
+const AGENT_PEER_SYNC_RETRY_DELAYS_MS = [250, 1000, 5000] as const;
 const DEFERRED_RECOVERY_RECHECK_MS = 5000;
 const OWNED_WORKER_DISCONNECT_GRACE_MS = 30_000;
 const IDLE_EVICTION_MAX_SWEEP_INTERVAL_MS = 5 * 60_000;
@@ -304,6 +305,18 @@ interface WorkerAttachData {
 	worker: ResidentWorker;
 	transcript?: SnapshotTranscriptCache;
 	releaseTranscript?: () => void;
+}
+
+interface AgentPeerCatalogWorkerSnapshot {
+	readonly workerId: string;
+	readonly worker: ResidentWorker;
+	readonly client: DaemonWorkerClient;
+	readonly peer?: Readonly<AgentSessionMessageAgentSummary>;
+}
+
+interface AgentPeerCatalogSnapshot {
+	readonly revision: number;
+	readonly workers: readonly AgentPeerCatalogWorkerSnapshot[];
 }
 
 interface SupervisorPromptAdmission {
@@ -604,7 +617,16 @@ export class DaemonSupervisor {
 	private commandJournal!: CommandRecoveryJournal;
 	private readonly streamReconstructor = new CompactAssistantStreamReconstructor();
 	private readonly compactCatchupInProgress = new Set<string>();
-	private agentPeerSyncQueue: Promise<void> = Promise.resolve();
+	private agentPeerSyncDirty = false;
+	private agentPeerSyncDrain?: Promise<void>;
+	private agentPeerSyncRetryTimer?: ReturnType<typeof setTimeout>;
+	private agentPeerSyncRetryAttempt = 0;
+	private readonly deliveredAgentPeerPayloads = new WeakMap<
+		DaemonWorkerClient,
+		{ revision: number; fingerprint: string }
+	>();
+	private agentPeerCatalogFingerprint?: string;
+	private readonly agentPeerSyncStats = { passes: 0, sends: 0, catalogRevision: 0 };
 	private readonly pendingSessionNames = new Set<string>();
 	private readonly catalog: DaemonCatalogClient;
 	private readonly settingsManager: SettingsManager;
@@ -742,6 +764,12 @@ export class DaemonSupervisor {
 		if (!this.idleEvictionTimer) return;
 		clearTimeout(this.idleEvictionTimer);
 		this.idleEvictionTimer = undefined;
+	}
+
+	private beginShutdown(): void {
+		this.shuttingDown = true;
+		this.agentPeerSyncDirty = false;
+		this.resetAgentPeerSyncRetry();
 	}
 
 	private scheduleIdleEvictionSweep(): void {
@@ -3052,34 +3080,144 @@ export class DaemonSupervisor {
 	}
 
 	private syncAgentPeers(): Promise<void> {
-		const sync = this.agentPeerSyncQueue
-			.catch(() => undefined)
-			.then(async () => {
-				const readyWorkers = [...this.workers.values()].filter(
+		if (this.shuttingDown) {
+			this.resetAgentPeerSyncRetry();
+			return Promise.resolve();
+		}
+		this.clearAgentPeerSyncRetryTimer();
+		this.agentPeerSyncDirty = true;
+		if (this.agentPeerSyncDrain) return this.agentPeerSyncDrain;
+		return this.startAgentPeerSyncDrain();
+	}
+
+	private startAgentPeerSyncDrain(): Promise<void> {
+		const drain = Promise.resolve().then(() => this.drainAgentPeerSync());
+		let trackedDrain!: Promise<void>;
+		trackedDrain = drain.finally(() => {
+			if (this.agentPeerSyncDrain !== trackedDrain) return;
+			this.agentPeerSyncDrain = undefined;
+			if (this.shuttingDown || !this.agentPeerSyncDirty) return;
+			void this.startAgentPeerSyncDrain().catch((error) => {
+				if (!this.shuttingDown) {
+					this.log(`Could not synchronize agent peers after a settling update: ${String(error)}`);
+				}
+			});
+		});
+		this.agentPeerSyncDrain = trackedDrain;
+		return trackedDrain;
+	}
+
+	private async drainAgentPeerSync(): Promise<void> {
+		let retryAvailable = true;
+		let failures: Error[] = [];
+		while (this.agentPeerSyncDirty && !this.shuttingDown) {
+			this.agentPeerSyncDirty = false;
+			failures = await this.runAgentPeerSyncPass(this.createAgentPeerCatalogSnapshot());
+			if (failures.length > 0 && retryAvailable && !this.shuttingDown) {
+				retryAvailable = false;
+				this.agentPeerSyncDirty = true;
+			}
+		}
+		if (failures.length > 0) {
+			if (this.shuttingDown) this.resetAgentPeerSyncRetry();
+			else this.scheduleAgentPeerSyncRetry();
+			throw new AggregateError(failures, `Could not synchronize agent peers with ${failures.length} worker(s)`);
+		}
+		this.resetAgentPeerSyncRetry();
+	}
+
+	private scheduleAgentPeerSyncRetry(): void {
+		if (this.shuttingDown || this.agentPeerSyncRetryTimer) return;
+		const delayMs =
+			AGENT_PEER_SYNC_RETRY_DELAYS_MS[
+				Math.min(this.agentPeerSyncRetryAttempt, AGENT_PEER_SYNC_RETRY_DELAYS_MS.length - 1)
+			]!;
+		this.agentPeerSyncRetryAttempt = Math.min(
+			this.agentPeerSyncRetryAttempt + 1,
+			AGENT_PEER_SYNC_RETRY_DELAYS_MS.length,
+		);
+		const timer = setTimeout(() => {
+			if (this.agentPeerSyncRetryTimer !== timer) return;
+			this.agentPeerSyncRetryTimer = undefined;
+			if (this.shuttingDown) return;
+			void this.syncAgentPeers().catch((error) => {
+				if (!this.shuttingDown) this.log(`Could not synchronize agent peers during retry: ${String(error)}`);
+			});
+		}, delayMs);
+		timer.unref();
+		this.agentPeerSyncRetryTimer = timer;
+	}
+
+	private clearAgentPeerSyncRetryTimer(): void {
+		if (!this.agentPeerSyncRetryTimer) return;
+		clearTimeout(this.agentPeerSyncRetryTimer);
+		this.agentPeerSyncRetryTimer = undefined;
+	}
+
+	private resetAgentPeerSyncRetry(): void {
+		this.clearAgentPeerSyncRetryTimer();
+		this.agentPeerSyncRetryAttempt = 0;
+	}
+
+	private createAgentPeerCatalogSnapshot(): AgentPeerCatalogSnapshot {
+		const workers = Object.freeze(
+			[...this.workers.values()]
+				.filter(
 					(worker): worker is ResidentWorker & { client: DaemonWorkerClient } =>
 						this.isVisibleWorker(worker) &&
 						worker.descriptor.lifecycle === "ready" &&
 						worker.client !== undefined,
+				)
+				.map((worker): AgentPeerCatalogWorkerSnapshot => {
+					const root = worker.summaries.get(worker.descriptor.rootActiveSessionId);
+					return Object.freeze({
+						workerId: worker.descriptor.workerId,
+						worker,
+						client: worker.client,
+						...(root ? { peer: Object.freeze(this.agentPeerSummary(root)) } : {}),
+					});
+				}),
+		);
+		const fingerprint = createHash("sha256")
+			.update(JSON.stringify(workers.map((worker) => [worker.workerId, worker.peer])))
+			.digest("base64url");
+		if (fingerprint !== this.agentPeerCatalogFingerprint) {
+			this.agentPeerCatalogFingerprint = fingerprint;
+			this.agentPeerSyncStats.catalogRevision++;
+		}
+		return Object.freeze({ revision: this.agentPeerSyncStats.catalogRevision, workers });
+	}
+
+	private async runAgentPeerSyncPass(snapshot: AgentPeerCatalogSnapshot): Promise<Error[]> {
+		this.agentPeerSyncStats.passes++;
+		const results = await Promise.all(
+			snapshot.workers.map(async (target): Promise<Error | undefined> => {
+				const peers = snapshot.workers.flatMap((candidate) =>
+					candidate.workerId !== target.workerId && candidate.peer ? [candidate.peer] : [],
 				);
-				await Promise.all(
-					readyWorkers.map(async (worker) => {
-						const peers = [
-							...readyWorkers
-								.filter((candidate) => candidate !== worker)
-								.flatMap((candidate) => {
-									const root = candidate.summaries.get(candidate.descriptor.rootActiveSessionId);
-									return root ? [this.agentPeerSummary(root)] : [];
-								}),
-						];
-						const response = await worker.client.requestWorker({ type: "worker_sync_agent_peers", peers }, 5000);
-						if (!response.success) {
-							throw new Error(response.error);
-						}
-					}),
-				);
-			});
-		this.agentPeerSyncQueue = sync;
-		return sync;
+				Object.freeze(peers);
+				const fingerprint = createHash("sha256").update(JSON.stringify(peers)).digest("base64url");
+				if (this.deliveredAgentPeerPayloads.get(target.client)?.fingerprint === fingerprint) return undefined;
+				this.agentPeerSyncStats.sends++;
+				try {
+					const response = await target.client.requestWorker({ type: "worker_sync_agent_peers", peers }, 5000);
+					if (!response.success) throw new Error(response.error);
+					const current = this.workers.get(target.workerId);
+					if (
+						current === target.worker &&
+						current.client === target.client &&
+						this.isVisibleWorker(current) &&
+						current.descriptor.lifecycle === "ready"
+					) {
+						this.deliveredAgentPeerPayloads.set(target.client, { revision: snapshot.revision, fingerprint });
+					}
+					return undefined;
+				} catch (error) {
+					return error instanceof Error ? error : new Error(String(error));
+				}
+			}),
+		);
+		return results.filter((error): error is Error => error !== undefined);
 	}
 
 	private isVisibleWorker(worker: ResidentWorker): boolean {
@@ -4707,7 +4845,7 @@ export class DaemonSupervisor {
 	}
 
 	private async cleanupSupervisorResourcesOnce(): Promise<void> {
-		this.shuttingDown = true;
+		this.beginShutdown();
 		this.clearIdleEvictionTimer();
 		await this.idleEvictionSweep?.catch(() => undefined);
 		for (const cleanup of this.signalCleanupHandlers.splice(0)) {
@@ -4806,7 +4944,7 @@ export class DaemonSupervisor {
 		if (this.shuttingDown) {
 			process.exit(exitCode);
 		}
-		this.shuttingDown = true;
+		this.beginShutdown();
 		this.clearIdleEvictionTimer();
 		await this.idleEvictionSweep?.catch(() => undefined);
 		if (closingReason) {
