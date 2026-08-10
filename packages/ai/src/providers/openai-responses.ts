@@ -244,7 +244,7 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		params.temperature = options?.temperature;
 	}
 
-	if (options?.serviceTier !== undefined) {
+	if (model.provider !== "github-copilot" && options?.serviceTier !== undefined) {
 		params.service_tier = options.serviceTier;
 	}
 
