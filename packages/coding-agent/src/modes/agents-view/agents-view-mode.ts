@@ -2081,6 +2081,14 @@ export class AgentsViewMode implements Component, Focusable {
 			this.pendingDeleteAgent = undefined;
 			this.clearDeleteConfirmation({ render: false });
 			this.selectedActiveSessionId = undefined;
+			// The deactivated session stays in the roster but moves to the
+			// Inactive section; clear the selection anchors so the next
+			// restoreSelection() keeps the cursor where it was in the list
+			// instead of re-anchoring onto the now-inactive row.
+			this.selectedRowIdentity = undefined;
+			this.selectedSessionKey = undefined;
+			this.persistentState.selectedRowIdentity = undefined;
+			this.persistentState.selectedSessionKey = undefined;
 			this.setStatusMessage("Agent inactive", { render: false });
 			await this.refreshSessions();
 		} catch (error) {
