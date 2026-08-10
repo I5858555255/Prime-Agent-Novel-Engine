@@ -31,7 +31,7 @@ import type { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { shortHash } from "../utils/hash.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
-import { classifyStreamFailure, StreamFailureError } from "../utils/stream-failure.js";
+import { classifyStreamFailure, StreamFailureError, streamFailureFromStopReason } from "../utils/stream-failure.js";
 import { transformMessages } from "./transform-messages.js";
 
 // =============================================================================
@@ -486,7 +486,7 @@ export async function processResponsesStream<TApi extends Api>(
 				currentBlock = null;
 				stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
 			}
-		} else if (event.type === "response.completed") {
+		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
 			const response = event.response;
 			if (response?.id) {
 				output.responseId = response.id;
@@ -510,13 +510,22 @@ export async function processResponsesStream<TApi extends Api>(
 					: (response?.service_tier ?? options.serviceTier);
 				options.applyServiceTierPricing(output.usage, serviceTier);
 			}
-			// Map status to stop reason
-			output.stopReason = mapStopReason(response?.status);
+			// Map status to stop reason. An incomplete response says why it stopped in
+			// incomplete_details, which distinguishes truncation from a blocked response.
+			const incompleteReason = response?.incomplete_details?.reason;
+			output.stopReason = mapStopReason(response?.status, incompleteReason);
 			if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
 				output.stopReason = "toolUse";
 			}
-			if (output.stopReason === "error" && response?.status) {
-				output.stopReasonRaw = response.status;
+			// Prefer the incomplete reason over the status: "content_filter" classifies as a
+			// safety failure, "incomplete" classifies as nothing.
+			const rawStopReason = incompleteReason ?? response?.status;
+			if (output.stopReason === "error" && rawStopReason) {
+				output.stopReasonRaw = rawStopReason;
+				// The transports that throw on an error stop reason overwrite this from the
+				// same helper. The ones that push the message straight through would otherwise
+				// hand the user a turn that failed with no reason on it.
+				output.errorMessage = streamFailureFromStopReason(rawStopReason).message;
 			}
 		} else if (event.type === "error") {
 			throw new StreamFailureError(`Error Code ${event.code}: ${event.message}`, {
@@ -540,13 +549,39 @@ export async function processResponsesStream<TApi extends Api>(
 	}
 }
 
-function mapStopReason(status: OpenAI.Responses.ResponseStatus | undefined): StopReason {
+/**
+ * The API declares two incomplete reasons: "max_output_tokens" (the turn was cut
+ * short) and "content_filter" (the response was blocked). A blocked response maps
+ * to "error", the same mapping openai-completions gives the "content_filter"
+ * finish reason.
+ */
+function mapIncompleteReason(reason: OpenAI.Responses.Response.IncompleteDetails["reason"]): StopReason {
+	switch (reason) {
+		case "content_filter":
+			return "error";
+		case "max_output_tokens":
+		case undefined:
+			return "length";
+		default:
+			// Unlike mapStopReason below, an unrecognized value does not throw: the
+			// "incomplete" status already says the turn was cut short, so a reason the
+			// API adds later still maps to "length". The check goes red when the SDK's
+			// declared union grows, so a new reason gets a deliberate mapping.
+			reason satisfies never;
+			return "length";
+	}
+}
+
+function mapStopReason(
+	status: OpenAI.Responses.ResponseStatus | undefined,
+	incompleteReason: OpenAI.Responses.Response.IncompleteDetails["reason"],
+): StopReason {
 	if (!status) return "stop";
 	switch (status) {
 		case "completed":
 			return "stop";
 		case "incomplete":
-			return "length";
+			return mapIncompleteReason(incompleteReason);
 		case "failed":
 		case "cancelled":
 			return "error";
