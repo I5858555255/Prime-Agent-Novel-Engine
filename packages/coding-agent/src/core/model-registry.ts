@@ -27,7 +27,7 @@ import { dirname, join } from "path";
 import { type Static, type TProperties, Type } from "typebox";
 import type { Validator } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
-import { getAgentDir, VERSION } from "../config.js";
+import { getAgentDir } from "../config.js";
 import type { AuthSourceToken, AuthStatus, AuthStorage } from "./auth-storage.js";
 import { PRIME_INFERENCE_PROVIDER_ID } from "./prime-inference-auth.js";
 import {
@@ -372,6 +372,14 @@ function readOpenAICodexAccountId(token: string): string | undefined {
 	}
 }
 
+/**
+ * The ChatGPT backend gates the Codex model catalog by Codex CLI version, not
+ * ours: sending prime-agent's own package version (0.x) reads as an ancient
+ * client and returns an empty catalog, which hides every openai-codex model
+ * from discovery and subagent spawns (#702). Pin a verified Codex CLI version.
+ */
+const OPENAI_CODEX_CLIENT_VERSION = "0.146.1";
+
 function openAICodexModelsUrl(baseUrl: string): string {
 	const normalized = baseUrl.replace(/\/+$/, "");
 	let path: string;
@@ -383,7 +391,7 @@ function openAICodexModelsUrl(baseUrl: string): string {
 		path = `${normalized}/codex/models`;
 	}
 	const url = new URL(path);
-	url.searchParams.set("client_version", VERSION);
+	url.searchParams.set("client_version", OPENAI_CODEX_CLIENT_VERSION);
 	return url.toString();
 }
 
