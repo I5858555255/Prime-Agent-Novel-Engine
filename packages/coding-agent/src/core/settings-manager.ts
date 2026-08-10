@@ -66,6 +66,7 @@ export interface MarkdownSettings {
 
 export interface BundledSkillsSettings {
 	websearch?: boolean; // default: true
+	firecrawl?: boolean; // default: true
 }
 
 export interface WarningSettings {
@@ -1082,14 +1083,19 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getBundledSkills(): { websearch: boolean } {
+	getBundledSkills(): { websearch: boolean; firecrawl: boolean } {
 		return {
 			websearch: this.settings.bundledSkills?.websearch ?? true,
+			firecrawl: this.settings.bundledSkills?.firecrawl ?? true,
 		};
 	}
 
 	getBundledWebsearchEnabled(): boolean {
 		return this.getBundledSkills().websearch;
+	}
+
+	getBundledFirecrawlEnabled(): boolean {
+		return this.getBundledSkills().firecrawl;
 	}
 
 	getEnableBuiltinSkills(): boolean {

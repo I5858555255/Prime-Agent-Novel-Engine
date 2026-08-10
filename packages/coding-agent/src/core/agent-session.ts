@@ -270,7 +270,7 @@ import { createAllToolDefinitions } from "./tools/index.js";
 import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
 import { addAssistantUsage, emptyUsage } from "./usage.js";
-import { SERPER_CREDENTIAL_ID, SERPER_ENV_VAR, WEBSEARCH_SKILL_NAME } from "./websearch-credential.js";
+import { BUNDLED_SKILL_CREDENTIALS } from "./websearch-credential.js";
 
 export type { GoalState, GoalStatus } from "./goals.js";
 export type { SessionStats } from "./session-stats.js";
@@ -8832,30 +8832,33 @@ export class AgentSession {
 			// ephemeral sessions fall back to the RLM session dir once it exists.
 			env.RLM_HARNESS_STATE_DIR = this._localHarnessStateDir() ?? getLocalHarnessStateDir(rlmSessionDir)!;
 		}
-		this._addWebsearchKeyEnv(env);
+		this._addSkillCredentialEnv(env);
 		return env;
 	}
 
-	private _addWebsearchKeyEnv(env: Record<string, string>): void {
+	private _addSkillCredentialEnv(env: Record<string, string>): void {
 		if (this._agentDir) {
 			env.PRIME_AGENT_CODING_AGENT_DIR = this._agentDir;
 		}
 
-		if (process.env[SERPER_ENV_VAR]?.trim()) {
-			return;
-		}
-		// Inject only when a websearch skill (bundled or custom) is actually loaded,
-		// so the key isn't exposed to kernels that can't use it.
-		if (!this._resourceLoader.getSkills().skills.some((skill) => skill.name === WEBSEARCH_SKILL_NAME)) {
-			return;
-		}
-		const cred = this._modelRegistry.authStorage.get(SERPER_CREDENTIAL_ID);
-		if (cred?.type !== "api_key") {
-			return;
-		}
-		const resolved = resolveConfigValue(cred.key)?.trim();
-		if (resolved) {
-			env[SERPER_ENV_VAR] = resolved;
+		const loadedSkills = new Set(this._resourceLoader.getSkills().skills.map((skill) => skill.name));
+		for (const { skill, credentialId, envVar } of BUNDLED_SKILL_CREDENTIALS) {
+			if (process.env[envVar]?.trim()) {
+				continue;
+			}
+			// Inject only when the matching skill (bundled or custom) is actually loaded,
+			// so the key isn't exposed to kernels that can't use it.
+			if (!loadedSkills.has(skill)) {
+				continue;
+			}
+			const cred = this._modelRegistry.authStorage.get(credentialId);
+			if (cred?.type !== "api_key") {
+				continue;
+			}
+			const resolved = resolveConfigValue(cred.key)?.trim();
+			if (resolved) {
+				env[envVar] = resolved;
+			}
 		}
 	}
 

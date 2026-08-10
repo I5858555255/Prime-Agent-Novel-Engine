@@ -51,6 +51,7 @@ Prime Agent ships with built-in skills that load by default:
 - `prime-intellect` - Prime Intellect products and workflows via the prime CLI: verifiers environments and the Environments Hub, evaluations (local and hosted), Hosted Training and prime-rl, sandboxes, tunnels, Prime Inference, GPU compute, and storage. Reference docs for each area load on demand from the skill's `references/` directory.
 - `skill-creator` - teaches the agent to create new skills: markdown skill layout, frontmatter rules, placement and precedence, and the full Python-backed skill contract (package layout, `run()` convention, optional CLI, kernel venv behavior) with a working template in `references/python-skills.md`.
 - `websearch` - a Python-backed Google search skill using the [Serper](https://serper.dev) API.
+- `firecrawl` - a Python-backed web search and page extraction skill using the [Firecrawl](https://firecrawl.dev) API.
 
 Built-in skills behave like any other skill but have the lowest precedence: a user, project, package, or `--skill` skill with the same name overrides the built-in one.
 
@@ -86,6 +87,69 @@ Disable only the built-in `websearch` skill in settings:
 {
   "bundledSkills": {
     "websearch": false
+  }
+}
+```
+
+### firecrawl
+
+Web search *and* page extraction: unlike `websearch`, this skill can read the
+pages it finds, so the agent does not have to shell out to `curl` and parse HTML
+to follow up on a result.
+
+Setup: get an API key at [firecrawl.dev](https://firecrawl.dev), then run
+`/login`, switch to **MCP Connections** using the displayed tab shortcuts, and
+choose **Firecrawl (web search + scrape)** to paste it. As with Serper, the key
+is stored in `auth.json` and read on each call, so adding it mid-session works.
+
+Optional overrides (environment variables):
+
+```bash
+export FIRECRAWL_API_URL=https://api.firecrawl.dev   # or a self-hosted instance
+export PRIME_AGENT_FIRECRAWL_TIMEOUT=60
+export PRIME_AGENT_FIRECRAWL_NUM_RESULTS=5
+```
+
+A `FIRECRAWL_API_KEY` in the environment, if set, takes precedence over the
+stored key.
+
+Callable from the kernel by import name:
+
+```python
+print(await firecrawl("latest Prime Agent release"))                  # web search
+print(await firecrawl("INTELLECT-3 results", fetch_content=True))     # search + page markdown
+print(await firecrawl.scrape("https://docs.firecrawl.dev/introduction"))
+```
+
+Two specialized indexes answer questions a web search answers poorly. The
+**developer index** searches GitHub issues, merged pull requests, READMEs and
+curated documentation, returning the matched passages rather than a link:
+
+```python
+print(await firecrawl.developer("TypeError: cannot read properties of undefined",
+                                types=["issue", "pull_request"]))
+```
+
+The **research index** does semantic search over paper abstracts, structural
+expansion from a seed paper, and in-body reading:
+
+```python
+print(await firecrawl.research("training-free detection of AI-generated text"))
+print(await firecrawl.inspect_paper("arxiv:2105.05233"))
+print(await firecrawl.related_papers("arxiv:2105.05233", intent="rival methods", mode="citers"))
+print(await firecrawl.read_paper("arxiv:2105.05233", "what FID did they report?"))
+```
+
+Every call truncates its output (8 KB for search and paper listings, 12 KB for
+developer results and paper passages, 20 KB for scrape) so a long page cannot
+flood the transcript; pass `max_output` to raise the ceiling.
+
+Disable only the built-in `firecrawl` skill in settings:
+
+```json
+{
+  "bundledSkills": {
+    "firecrawl": false
   }
 }
 ```
