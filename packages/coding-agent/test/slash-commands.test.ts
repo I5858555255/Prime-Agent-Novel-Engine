@@ -119,6 +119,21 @@ describe("slash command aliases", () => {
 		});
 	});
 
+	test("resolves /exit to /quit through the alias path", () => {
+		const parsed = parseSlashCommand("/exit");
+
+		expect(parsed).toEqual({ name: "exit", args: "" });
+		expect(isBuiltinSlashCommandName("exit")).toBe(true);
+		expect(resolveBuiltinSlashCommandName("exit")).toBe("quit");
+		expect(resolveSlashCommand(parsed!)).toEqual({
+			name: "quit",
+			args: "",
+			originalName: "exit",
+			isAlias: true,
+		});
+		expect(BUILTIN_SLASH_COMMANDS.some((command) => command.name === "exit")).toBe(false);
+	});
+
 	test("resolves /rename to /name through the alias path", () => {
 		const parsed = parseSlashCommand("/rename my session");
 
