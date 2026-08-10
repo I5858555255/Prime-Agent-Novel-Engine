@@ -9685,8 +9685,8 @@ ${interrupt ? `| \`${interrupt}\` | Interrupt current operation |\n` : ""}${shor
 				"",
 			].join("\n");
 
-			fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
-			fs.writeFileSync(debugLogPath, debugData);
+			fs.mkdirSync(path.dirname(debugLogPath), { recursive: true, mode: 0o700 });
+			fs.writeFileSync(debugLogPath, debugData, { mode: 0o600 });
 
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(

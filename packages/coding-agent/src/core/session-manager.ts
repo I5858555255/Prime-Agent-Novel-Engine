@@ -1391,11 +1391,11 @@ export class SessionManager {
 		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
 		const targetPath = realpathIfPresent(this.sessionFile);
 		const directory = dirname(targetPath);
-		mkdirSync(directory, { recursive: true });
+		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const tempPath = join(directory, `.${basename(targetPath)}.${process.pid}.${randomUUID()}.tmp`);
 		try {
 			const metadata = statMetadataIfPresent(targetPath);
-			writeFileSync(tempPath, content, metadata === undefined ? undefined : { mode: metadata.mode });
+			writeFileSync(tempPath, content, { mode: metadata?.mode ?? 0o600 });
 			if (metadata !== undefined) {
 				chownSync(tempPath, metadata.uid, metadata.gid);
 				chmodSync(tempPath, metadata.mode);
@@ -1453,7 +1453,7 @@ export class SessionManager {
 		}
 		const dir = sessionDir ?? (this.sessionDir || getDefaultSessionDir(this.cwd));
 		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
+			mkdirSync(dir, { recursive: true, mode: 0o700 });
 		}
 		const previousHeader = this.getHeader();
 		const target = createUniqueSessionFileTarget(dir);
@@ -1512,8 +1512,8 @@ export class SessionManager {
 			this._rewriteFile();
 			this.flushed = true;
 		} else {
-			mkdirSync(dirname(this.sessionFile), { recursive: true });
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			mkdirSync(dirname(this.sessionFile), { recursive: true, mode: 0o700 });
+			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
 			this._notifyPersistListeners();
 		}
 	}
@@ -2286,7 +2286,7 @@ export class SessionManager {
 
 		const dir = sessionDir ?? getDefaultSessionDir(targetCwd);
 		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
+			mkdirSync(dir, { recursive: true, mode: 0o700 });
 		}
 
 		// Create new session file with new ID but forked content
@@ -2306,7 +2306,7 @@ export class SessionManager {
 			rlmDepth: resolveSessionRlmDepth(sourceHeader, sourcePath),
 			git: captureGitContext(targetCwd) ?? undefined,
 		};
-		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
+		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { encoding: "utf8", mode: 0o600 });
 
 		// Drop the source's git_state entries (re-linking children): they describe the source repo,
 		// so the fork would otherwise report the source's git instead of its own target context.
@@ -2323,7 +2323,7 @@ export class SessionManager {
 			if (entry.type === "session" || entry.type === "git_state") continue;
 			const parentId = liveParent(entry.parentId);
 			const out = parentId === entry.parentId ? entry : { ...entry, parentId };
-			appendFileSync(newSessionFile, `${JSON.stringify(out)}\n`);
+			appendFileSync(newSessionFile, `${JSON.stringify(out)}\n`, { encoding: "utf8", mode: 0o600 });
 		}
 
 		return new SessionManager(targetCwd, dir, newSessionFile, true);
