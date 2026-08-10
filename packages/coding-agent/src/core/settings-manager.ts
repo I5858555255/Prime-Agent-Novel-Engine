@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
-import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import { getAgentDir, getProjectConfigDir } from "../config.js";
 
 const RECENT_MODELS_LIMIT = 20;
 export const DEFAULT_IDLE_EVICTION_MINUTES = 90;
@@ -66,6 +66,13 @@ export interface MarkdownSettings {
 
 export interface BundledSkillsSettings {
 	websearch?: boolean; // default: true
+}
+
+/** Controls AGENTS.md / CLAUDE.md discovery. Set per project to keep unrelated instructions out. */
+export interface ContextFilesSettings {
+	enabled?: boolean; // default: true - load AGENTS.md/CLAUDE.md at all
+	global?: boolean; // default: true - include the agent dir's own AGENTS.md (e.g. ~/.prime/agent/AGENTS.md)
+	ancestors?: boolean; // default: true - include directories above the project root
 }
 
 export interface WarningSettings {
@@ -153,6 +160,7 @@ export interface Settings {
 	enableSkillCommands?: boolean; // default: true - register skills as /skill:name commands
 	bundledSkills?: BundledSkillsSettings; // Configure built-in skills shipped with Prime Agent
 	enableBuiltinSkills?: boolean; // default: true - load built-in skills shipped with prime-agent
+	contextFiles?: ContextFilesSettings; // Control AGENTS.md/CLAUDE.md discovery (global and project scoped)
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
@@ -223,7 +231,7 @@ export class FileSettingsStorage implements SettingsStorage {
 
 	constructor(cwd: string, agentDir: string) {
 		this.globalSettingsPath = join(agentDir, "settings.json");
-		this.projectSettingsPath = join(cwd, CONFIG_DIR_NAME, "settings.json");
+		this.projectSettingsPath = join(getProjectConfigDir(cwd), "settings.json");
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -768,11 +776,18 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getRlmMaxDepth(): number | undefined {
-		return this.globalSettings.rlmMaxDepth;
+	getRlmMaxDepth(scope: SettingsScope = "global"): number | undefined {
+		return scope === "project" ? this.projectSettings.rlmMaxDepth : this.globalSettings.rlmMaxDepth;
 	}
 
-	setRlmMaxDepth(maxDepth: number): void {
+	setRlmMaxDepth(maxDepth: number, scope: SettingsScope = "global"): void {
+		if (scope === "project") {
+			const projectSettings = structuredClone(this.projectSettings);
+			projectSettings.rlmMaxDepth = maxDepth;
+			this.markProjectModified("rlmMaxDepth");
+			this.saveProjectSettings(projectSettings);
+			return;
+		}
 		this.globalSettings.rlmMaxDepth = maxDepth;
 		this.markModified("rlmMaxDepth");
 		this.save();
@@ -1099,6 +1114,31 @@ export class SettingsManager {
 	setEnableBuiltinSkills(enabled: boolean): void {
 		this.globalSettings.enableBuiltinSkills = enabled;
 		this.markModified("enableBuiltinSkills");
+		this.save();
+	}
+
+	getContextFiles(): Required<ContextFilesSettings> {
+		return {
+			enabled: this.settings.contextFiles?.enabled ?? true,
+			global: this.settings.contextFiles?.global ?? true,
+			ancestors: this.settings.contextFiles?.ancestors ?? true,
+		};
+	}
+
+	/** Write one context-file toggle. Project scope keeps the choice with the repository. */
+	setContextFilesOption(option: keyof ContextFilesSettings, enabled: boolean, scope: SettingsScope = "global"): void {
+		if (scope === "project") {
+			const projectSettings = structuredClone(this.projectSettings);
+			projectSettings.contextFiles = { ...projectSettings.contextFiles, [option]: enabled };
+			this.markProjectModified("contextFiles", option);
+			this.saveProjectSettings(projectSettings);
+			return;
+		}
+		if (!this.globalSettings.contextFiles) {
+			this.globalSettings.contextFiles = {};
+		}
+		this.globalSettings.contextFiles[option] = enabled;
+		this.markModified("contextFiles", option);
 		this.save();
 	}
 

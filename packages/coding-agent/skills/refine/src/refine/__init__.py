@@ -22,9 +22,12 @@ async def status() -> dict[str, Any]:
     return await host_request("refine.status")
 
 
+SCOPES = ("local", "project", "global")
+
+
 async def run(
     instructions: str | None = None,
-    global_: bool = False,
+    scope: str | None = None,
 ) -> dict[str, Any]:
     """Schedule continual harness refinement.
 
@@ -33,18 +36,19 @@ async def run(
     you automatically. Returns `{"scheduled": True}`, or
     `{"scheduled": False, "reason": ...}` when refinement cannot start.
     Optional `instructions` focus the refinement on a specific observation.
-    Set `global_=True` to target the global (cross-session) harness store;
-    omit for local (session-scoped) refinement.
+    `scope` selects the target store: "local" (this session, the default),
+    "project" (this repository, across sessions), or "global" (every session
+    and project).
     """
     if instructions is not None and not isinstance(instructions, str):
         raise TypeError(
             f"instructions must be str or None, got {type(instructions).__name__}"
         )
-    if not isinstance(global_, bool):
-        raise TypeError(f"global_ must be bool, got {type(global_).__name__}")
+    if scope is not None and scope not in SCOPES:
+        raise ValueError(f"scope must be one of {SCOPES}, got {scope!r}")
     payload: dict[str, Any] = {}
     if instructions is not None:
         payload["instructions"] = instructions
-    if global_:
-        payload["global"] = True
+    if scope is not None:
+        payload["scope"] = scope
     return await host_request("refine.run", payload)

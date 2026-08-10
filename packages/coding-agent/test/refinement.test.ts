@@ -6,7 +6,7 @@ import type * as PiAi from "@earendil-works/pi-ai";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	appendGlobalRefinement,
+	appendSharedRefinement,
 	applyRefinementProposal,
 	formatHarnessStateForPrompt,
 	getGlobalHarnessStateDir,
@@ -16,8 +16,8 @@ import {
 	getRefinementHistoryPath,
 	type HarnessState,
 	inferRefinementResultScope,
-	loadGlobalRefinementHistory,
 	loadHarnessState,
+	loadSharedRefinementHistory,
 	mergeHarnessStates,
 	mergeRefinementHistory,
 	planRefinement,
@@ -592,7 +592,7 @@ describe("harness refinement", () => {
 			{ id: "refine_local", scope: "local" },
 		);
 
-		const merged = mergeHarnessStates(globalState, localState);
+		const merged = mergeHarnessStates({ global: globalState, local: localState });
 
 		expect(merged.entries.memory.shared.content).toBe("Global content.");
 		expect(merged.entries.memory.shared.scope).toBe("global");
@@ -627,7 +627,7 @@ describe("harness refinement", () => {
 			{ id: "refine_local_in_global_file", scope: "local" },
 		);
 
-		const merged = mergeHarnessStates(globalState);
+		const merged = mergeHarnessStates({ global: globalState });
 
 		expect(merged.entries.memory.session_note.scope).toBe("local");
 	});
@@ -1017,17 +1017,20 @@ describe("harness refinement", () => {
 
 		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
 		expect(completeSimpleMock.mock.calls[0][1]).toMatchObject({
-			systemPrompt: expect.stringContaining("The default editable continual harness store is local"),
+			systemPrompt: expect.stringContaining("The default store is local"),
 		});
 		expect(completeSimpleMock.mock.calls[0][1]).toMatchObject({
-			systemPrompt: expect.stringContaining("A caller may explicitly request global refinement"),
+			systemPrompt: expect.stringContaining("Project edits must be repository-specific"),
+		});
+		expect(completeSimpleMock.mock.calls[0][1]).toMatchObject({
+			systemPrompt: expect.stringContaining("Global edits must be stable cross-session lessons"),
 		});
 		expect(completeSimpleMock.mock.calls[0][1]).toMatchObject({
 			systemPrompt: expect.stringContaining("Always use the bare id (no prefix) in edits"),
 		});
 		expect(completeSimpleMock.mock.calls[0][1]).toMatchObject({
 			systemPrompt: expect.stringContaining(
-				"During a local refinement, global entries are read-only context: never propose update or delete edits for them",
+				"Entries from the other scopes are read-only context: never propose update or delete edits for them",
 			),
 		});
 		// Budget is derived from the model (8192) rather than a fixed literal.
@@ -1211,15 +1214,15 @@ describe("global refinement history", () => {
 
 	it("appends and reloads refinement results across calls", () => {
 		const dir = makeTempDir();
-		expect(loadGlobalRefinementHistory(dir)).toEqual([]);
+		expect(loadSharedRefinementHistory(dir)).toEqual([]);
 
 		const first = sampleResult("refine_1");
 		const second = sampleResult("refine_2");
-		const historyPath = appendGlobalRefinement(dir, first);
-		appendGlobalRefinement(dir, second);
+		const historyPath = appendSharedRefinement(dir, first);
+		appendSharedRefinement(dir, second);
 
 		expect(historyPath).toBe(getRefinementHistoryPath(dir));
-		expect(loadGlobalRefinementHistory(dir)).toEqual([
+		expect(loadSharedRefinementHistory(dir)).toEqual([
 			{ ...first, scope: "global" },
 			{ ...second, scope: "global" },
 		]);
@@ -1235,7 +1238,7 @@ describe("global refinement history", () => {
 			"utf8",
 		);
 
-		expect(loadGlobalRefinementHistory(dir)[0]).toMatchObject({ id: "refine_legacy_global", scope: "global" });
+		expect(loadSharedRefinementHistory(dir)[0]).toMatchObject({ id: "refine_legacy_global", scope: "global" });
 	});
 
 	it("writes inferred legacy history scope back onto loaded results", () => {
@@ -1270,7 +1273,7 @@ describe("global refinement history", () => {
 		});
 		appendFileSync(getRefinementHistoryPath(dir), `${JSON.stringify(legacy)}\n`, "utf8");
 
-		expect(loadGlobalRefinementHistory(dir)[0]).toMatchObject({
+		expect(loadSharedRefinementHistory(dir)[0]).toMatchObject({
 			id: "refine_legacy_inferred",
 			scope: "global",
 		});
@@ -1289,12 +1292,12 @@ describe("global refinement history", () => {
 	it("skips malformed history lines without throwing", () => {
 		const dir = makeTempDir();
 		const valid = sampleResult("refine_valid");
-		appendGlobalRefinement(dir, valid);
+		appendSharedRefinement(dir, valid);
 		// Corrupt append: a non-JSON line and a JSON object that is not a refinement result.
 		appendFileSync(getRefinementHistoryPath(dir), "not json\n", "utf8");
 		appendFileSync(getRefinementHistoryPath(dir), `${JSON.stringify({ id: "x" })}\n`, "utf8");
 
-		expect(loadGlobalRefinementHistory(dir)).toEqual([{ ...valid, scope: "global" }]);
+		expect(loadSharedRefinementHistory(dir)).toEqual([{ ...valid, scope: "global" }]);
 	});
 
 	it("merges global and session history, preferring session entries by id", () => {
@@ -1350,7 +1353,7 @@ describe("global refinement history", () => {
 		const request = completeSimpleMock.mock.calls[0][1];
 		const userPrompt = request.messages[0].content[0].text;
 		expect(userPrompt).toContain("Requested refinement scope: local");
-		expect(userPrompt).toContain("Global entries in the overview are read-only context");
+		expect(userPrompt).toContain("Project and global entries in the overview are read-only context");
 		expect(request.systemPrompt).toContain('handle = await rlm("sub-task")');
 		expect(request.systemPrompt).toContain("never the child's answer");
 		expect(request.systemPrompt).toContain('receiver_role="parent"');
@@ -1385,12 +1388,39 @@ describe("global refinement history", () => {
 			[],
 			createRefineModel(false),
 			"api-key",
-			{ global: true },
+			{ scope: "global" },
 		);
 
 		const userPrompt = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
 		expect(userPrompt).toContain("Requested refinement scope: global");
 		expect(userPrompt).toContain("Do not persist session-only progress");
+	});
+
+	it("adds project-only scope policy when planning a project refinement", async () => {
+		const state = loadHarnessState(makeTempDir(), "project");
+		completeSimpleMock.mockResolvedValueOnce(
+			assistantText(
+				JSON.stringify({
+					summary: "No project edit",
+					rationale: "No repository-specific lesson.",
+					expectedOutcome: "No change.",
+					edits: [],
+				}),
+			),
+		);
+
+		await planRefinement(
+			[{ role: "user", content: "remember this for this repo", timestamp: Date.now() } satisfies AgentMessage],
+			state,
+			[],
+			createRefineModel(false),
+			"api-key",
+			{ scope: "project" },
+		);
+
+		const userPrompt = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
+		expect(userPrompt).toContain("Requested refinement scope: project");
+		expect(userPrompt).toContain("Do not persist session-only progress or user-wide preferences here");
 	});
 
 	it("plans a rollback without mutating harness state", async () => {
@@ -1433,14 +1463,14 @@ describe("global refinement history", () => {
 			{ id: "refine_session_a" },
 		);
 		applied.harnessStatePath = saveHarnessState(dir, sessionAState);
-		appendGlobalRefinement(dir, applied);
+		appendSharedRefinement(dir, applied);
 
 		// A fresh session loads the global state and the global history (its own session
 		// has no record of refine_session_a) and can still roll it back.
 		const sessionBState = loadHarnessState(dir);
 		expect(sessionBState.entries.memory.session_a_memory).toBeDefined();
 
-		const globalHistory = mergeRefinementHistory(loadGlobalRefinementHistory(dir), getRefinementHistory([]));
+		const globalHistory = mergeRefinementHistory(loadSharedRefinementHistory(dir), getRefinementHistory([]));
 		const rollback = await refineHarness([], sessionBState, globalHistory, {} as never, "api-key", {
 			rollbackId: "refine_session_a",
 		});

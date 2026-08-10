@@ -1,4 +1,5 @@
 import { APP_NAME } from "../config.js";
+import type { HarnessScope } from "./refinement/index.js";
 import type { SourceInfo } from "./source-info.js";
 
 export type SlashCommandSource = "extension" | "prompt" | "skill";
@@ -29,15 +30,24 @@ export interface SessionSlashCommand {
 export interface RefineCommandOptions {
 	instructions?: string;
 	rollbackId?: string;
-	global?: boolean;
+	scope?: HarnessScope;
 }
+
+const REFINE_SCOPE_FLAGS: ReadonlyArray<{ flag: string; scope: HarnessScope }> = [
+	{ flag: "--global", scope: "global" },
+	{ flag: "--project", scope: "project" },
+];
 
 export function parseRefineCommandOptions(args: string): RefineCommandOptions {
 	let rest = args.trim();
-	let global = false;
-	if (/^--global(?=\s|$)/.test(rest)) {
-		global = true;
-		rest = rest.replace(/^--global(?=\s|$)/, "").trim();
+	let scope: HarnessScope | undefined;
+	for (const { flag, scope: flagScope } of REFINE_SCOPE_FLAGS) {
+		const leading = new RegExp(`^${flag}(?=\\s|$)`);
+		if (leading.test(rest)) {
+			scope = flagScope;
+			rest = rest.replace(leading, "").trim();
+			break;
+		}
 	}
 	if (rest === "rollback") throw new Error("Usage: /refine rollback <refinement-id>");
 	// Slash-command args keep their original separators (tabs, Unicode spaces);
@@ -45,17 +55,21 @@ export function parseRefineCommandOptions(args: string): RefineCommandOptions {
 	const rollbackMatch = /^rollback[\t\p{Zs}]/u.exec(rest);
 	if (rollbackMatch) {
 		let rollbackId = rest.slice(rollbackMatch[0].length).trim();
-		if (rollbackId === "--global") {
-			throw new Error("Usage: /refine rollback <refinement-id>");
-		}
-		if (/\s--global$/.test(rollbackId)) {
-			global = true;
-			rollbackId = rollbackId.replace(/\s--global$/, "").trim();
+		for (const { flag, scope: flagScope } of REFINE_SCOPE_FLAGS) {
+			if (rollbackId === flag) {
+				throw new Error("Usage: /refine rollback <refinement-id>");
+			}
+			const trailing = new RegExp(`\\s${flag}$`);
+			if (trailing.test(rollbackId)) {
+				scope = flagScope;
+				rollbackId = rollbackId.replace(trailing, "").trim();
+				break;
+			}
 		}
 		if (!rollbackId) throw new Error("Usage: /refine rollback <refinement-id>");
-		return { rollbackId, global };
+		return { rollbackId, scope };
 	}
-	return { instructions: rest || undefined, global };
+	return { instructions: rest || undefined, scope };
 }
 
 export interface BuiltinSlashCommand {
@@ -158,6 +172,7 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "refine",
 		description: "Refine continual harness prompt notes, skills, subagents, and memory",
+		argumentHint: "[--project|--global] [instructions]",
 	},
 	{
 		name: "goal",

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
-import { getAgentDir } from "../../config.js";
+import { getAgentDir, getProjectConfigDir } from "../../config.js";
 import { serializeConversation } from "../compaction/utils.js";
 import { convertToLlm } from "../messages.js";
 import type { CustomEntry } from "../session-manager.js";
@@ -29,7 +29,10 @@ const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
-export type HarnessScope = "local" | "global";
+export type HarnessScope = "local" | "project" | "global";
+
+/** Merge order: later scopes overlay earlier ones and win id collisions. */
+export const HARNESS_SCOPES: readonly HarnessScope[] = ["global", "project", "local"];
 
 export interface HarnessEntry {
 	id: string;
@@ -104,7 +107,7 @@ export interface RefinementResult {
 export interface RefineOptions {
 	instructions?: string;
 	rollbackId?: string;
-	global?: boolean;
+	scope?: HarnessScope;
 }
 
 export type AutoRefineReason = "turn_interval" | "compact";
@@ -138,14 +141,15 @@ Continual harness components:
 - subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: compose a concise task prompt and spawn with \`handle = await rlm("sub-task")\`; admission returns immediately with \`rlm_child_id\`, \`name\`, \`session_dir\`, and \`model\`, never the child's answer. Results arrive only through explicit \`agent_message\` replies or files; children reply with \`await agent_message.send(message, receiver_role="parent")\`. Use \`await rlm.list_subagents()\` to recover direct child handles and \`await agent_message.send(..., receiver_role="child", receiver_name=handle.name)\` for follow-ups. Do not invent wrappers like \`run_subagent(...)\`.
 
 Scope and persistence policy:
-- The default editable continual harness store is local to the current Prime Agent session. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and project facts that should not affect other sessions.
-- A caller may explicitly request global refinement. Global edits must be stable cross-session lessons, durable user preferences, reusable skills/subagents, or tool/environment facts that should affect future sessions.
-- Entry ids in the harness overview may carry a display-only \`local:\` or \`global:\` prefix. Always use the bare id (no prefix) in edits.
-- All edits in one refinement apply only to the requested scope's store. During a local refinement, global entries are read-only context: never propose update or delete edits for them; create a local entry instead when a session-specific override is genuinely needed.
-- Project/workspace-specific lessons may be persisted globally only when the title, path, or content explicitly names the project/workspace and the lesson is likely to be reused in future sessions for that project. Prefer local edits when the lesson only belongs in the current conversation.
+- There are three editable stores. \`local\` belongs to the current Prime Agent session, \`project\` belongs to the current repository/workspace, and \`global\` belongs to the user across every project.
+- The default store is local. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and facts that should not affect other sessions.
+- Project edits must be repository-specific and reusable in future sessions on that repository: build/test commands, layout, conventions, recurring pitfalls, and project-scoped subagent specs. Never persist another project's facts or user-wide preferences there.
+- Global edits must be stable cross-session lessons, durable user preferences, reusable skills/subagents, or tool/environment facts that apply regardless of which repository is open. Project-specific detail does not belong in the global store.
+- Entry ids in the harness overview may carry a display-only \`local:\`, \`project:\`, or \`global:\` prefix. Always use the bare id (no prefix) in edits.
+- All edits in one refinement apply only to the requested scope's store. Entries from the other scopes are read-only context: never propose update or delete edits for them; create an entry in the requested scope instead when an override is genuinely needed.
 - Use memory for declarative facts and preferences, skill for repeatable procedures exposed as Python calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.
 - Create or update the smallest relevant component: repeated delegation roles should become subagent specs, repeated procedures should become skills, durable facts/preferences should become memories, and narrow behavioral policies should become prompt addendums.
-- When an edit is persisted, include metadata such as \`{"scope":"local"}\` or \`{"scope":"global"}\` when that helps future review understand the intended blast radius.
+- When an edit is persisted, include metadata such as \`{"scope":"local"}\`, \`{"scope":"project"}\`, or \`{"scope":"global"}\` when that helps future review understand the intended blast radius.
 
 Use the trajectory, current continual harness state, and prior refinement history. Prefer
 small evidence-backed edits. If prior refinements caused issues, rollback or
@@ -175,7 +179,7 @@ JSON only with this exact shape:
 const AUTO_REFINE_REVIEW_SYSTEM_PROMPT = `You are Prime Agent's automatic /refine review gate.
 
 Decide whether this checkpoint should run /refine. Auto /refine writes local continual harness state by default, so approve when the trajectory contains evidence useful to this session's future turns.
-Reject one-off noise, unsupported hypotheses, and transient tool outputs. Ask for global refinement only for durable cross-session lessons or explicitly project-qualified lessons likely to be reused in future sessions.
+Reject one-off noise, unsupported hypotheses, and transient tool outputs. Ask for project refinement only for repository-specific lessons likely to be reused in future sessions on this repository, and for global refinement only for durable cross-project lessons.
 
 Return JSON only:
 {
@@ -243,7 +247,7 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 function normalizeHarnessScope(value: unknown, fallback: HarnessScope): HarnessScope {
-	return value === "global" || value === "local" ? value : fallback;
+	return HARNESS_SCOPES.includes(value as HarnessScope) ? (value as HarnessScope) : fallback;
 }
 
 export function inferRefinementResultScope(result: RefinementResult): HarnessScope | undefined {
@@ -268,6 +272,11 @@ function withDefaultRefinementScope(result: RefinementResult, scope: HarnessScop
 
 export function getGlobalHarnessStateDir(agentDir: string = getAgentDir()): string {
 	return join(agentDir, HARNESS_STATE_DIR_NAME);
+}
+
+/** Per-repository harness store, next to the project settings file. */
+export function getProjectHarnessStateDir(cwd: string): string {
+	return join(getProjectConfigDir(cwd), HARNESS_STATE_DIR_NAME);
 }
 
 export function getLocalHarnessStateDir(sessionArtifactDir: string | undefined): string | undefined {
@@ -323,22 +332,30 @@ export function loadHarnessState(
 	return state;
 }
 
-export function mergeHarnessStates(globalState: HarnessState, localState?: HarnessState): HarnessState {
+export interface ScopedHarnessStates {
+	global: HarnessState;
+	project?: HarnessState;
+	local?: HarnessState;
+}
+
+/**
+ * Overlay the scoped stores into one view. Narrower scopes win id collisions and
+ * keep their `<scope>:<id>` display key so the model can address either entry.
+ */
+export function mergeHarnessStates(states: ScopedHarnessStates): HarnessState {
 	const merged = emptyHarnessState();
-	merged.schema = Math.max(globalState.schema, localState?.schema ?? 1);
+	merged.schema = Math.max(states.global.schema, states.project?.schema ?? 1, states.local?.schema ?? 1);
 	for (const kind of Object.keys(merged.entries) as RefinementKind[]) {
-		for (const [id, entry] of Object.entries(globalState.entries[kind])) {
-			const cloned = cloneEntry(entry)!;
-			merged.entries[kind][id] = { ...cloned, scope: normalizeHarnessScope(cloned.scope, "global") };
-		}
-		for (const [id, entry] of Object.entries(localState?.entries[kind] ?? {})) {
-			const cloned = cloneEntry(entry)!;
-			const scopedEntry = { ...cloned, scope: normalizeHarnessScope(cloned.scope, "local") };
-			const mergedId = merged.entries[kind][id] ? `${scopedEntry.scope}:${id}` : id;
-			merged.entries[kind][mergedId] = scopedEntry;
+		for (const scope of HARNESS_SCOPES) {
+			for (const [id, entry] of Object.entries(states[scope]?.entries[kind] ?? {})) {
+				const cloned = cloneEntry(entry)!;
+				const scopedEntry = { ...cloned, scope: normalizeHarnessScope(cloned.scope, scope) };
+				const mergedId = merged.entries[kind][id] ? `${scopedEntry.scope}:${id}` : id;
+				merged.entries[kind][mergedId] = scopedEntry;
+			}
 		}
 	}
-	merged.refinements = [...globalState.refinements, ...(localState?.refinements ?? [])];
+	merged.refinements = HARNESS_SCOPES.flatMap((scope) => states[scope]?.refinements ?? []);
 	return merged;
 }
 
@@ -367,18 +384,22 @@ function isRefinementResult(data: unknown): data is RefinementResult {
 }
 
 /**
- * Append a global-scope refinement to the cross-session history log so it can be
- * rolled back from any session. Local-scope refinements are recorded only in the
- * session JSONL and roll back via their recorded harnessStatePath.
+ * Append a persisted-scope (global or project) refinement to its cross-session
+ * history log so it can be rolled back from any session. Local-scope refinements
+ * are recorded only in the session JSONL and roll back via their recorded
+ * harnessStatePath.
  */
-export function appendGlobalRefinement(harnessStateDir: string, result: RefinementResult): string {
+export function appendSharedRefinement(harnessStateDir: string, result: RefinementResult): string {
 	const historyPath = getRefinementHistoryPath(harnessStateDir);
 	mkdirSync(harnessStateDir, { recursive: true });
 	appendFileSync(historyPath, `${JSON.stringify(result)}\n`, "utf8");
 	return historyPath;
 }
 
-export function loadGlobalRefinementHistory(harnessStateDir: string = getGlobalHarnessStateDir()): RefinementResult[] {
+export function loadSharedRefinementHistory(
+	harnessStateDir: string = getGlobalHarnessStateDir(),
+	scope: HarnessScope = "global",
+): RefinementResult[] {
 	const historyPath = getRefinementHistoryPath(harnessStateDir);
 	if (!existsSync(historyPath)) {
 		return [];
@@ -390,7 +411,7 @@ export function loadGlobalRefinementHistory(harnessStateDir: string = getGlobalH
 		try {
 			const parsed = JSON.parse(trimmed);
 			if (isRefinementResult(parsed)) {
-				results.push(withDefaultRefinementScope(parsed, "global"));
+				results.push(withDefaultRefinementScope(parsed, scope));
 			}
 		} catch {
 			// Skip malformed lines so a single bad append cannot break rollback.
@@ -400,15 +421,16 @@ export function loadGlobalRefinementHistory(harnessStateDir: string = getGlobalH
 }
 
 /**
- * Merge global and session refinement history, de-duplicating by id. Session entries
- * win on conflict so a session that is mid-flight still resolves its own latest result.
+ * Merge persisted (global, project) and session refinement history, de-duplicating
+ * by id. Session entries win on conflict so a session that is mid-flight still
+ * resolves its own latest result.
  */
 export function mergeRefinementHistory(
-	global: readonly RefinementResult[],
+	persisted: readonly RefinementResult[],
 	session: readonly RefinementResult[],
 ): RefinementResult[] {
 	const byId = new Map<string, RefinementResult>();
-	for (const result of global) {
+	for (const result of persisted) {
 		byId.set(result.id, result);
 	}
 	for (const result of session) {
@@ -445,14 +467,14 @@ export function formatHarnessStateForPrompt(
 	const lines = [
 		"# Continual Harness State",
 		"",
-		"Local continual harness entries belong to this Prime Agent session. Global continual harness entries persist across Prime Agent sessions.",
+		"Local continual harness entries belong to this Prime Agent session. Project entries belong to the current repository and persist across sessions in it. Global entries persist across every Prime Agent session and project.",
 		"The continual harness entries below are compact summaries, not full descriptions. Use them as routing/context hints; inspect or refine the underlying continual harness entry only when detail matters.",
-		"Default to local continual harness refinement for current task progress, temporary blockers, and session coordination. Use global continual harness refinement only for stable cross-session lessons, durable user preferences, reusable skills/subagents, or explicitly project-qualified facts.",
+		"Default to local continual harness refinement for current task progress, temporary blockers, and session coordination. Use project refinement for repository-specific conventions, commands, and pitfalls worth reusing in this repository. Use global refinement only for stable cross-project lessons, durable user preferences, and reusable skills/subagents.",
 		"Use these continual harness prompt notes, memories, skills, and subagent specs when they are relevant. The base system prompt is immutable; prompt entries below are supplemental notes only.",
 		"",
 		includeRefineExamples
-			? "When to call `await refine.run()`: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `await refine.run()` continual harness edits small and evidence-backed."
-			: "When to refine the continual harness: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep continual harness edits small and evidence-backed.",
+			? 'When to call `await refine.run()`: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist for this session, this repository, or every project, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Pass `scope="project"` for repository-specific lessons and `scope="global"` for cross-project ones. Keep `await refine.run()` continual harness edits small and evidence-backed.'
+			: "When to refine the continual harness: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist for this session, this repository, or every project, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep continual harness edits small and evidence-backed.",
 		"",
 		includeIpythonExamples
 			? "Call contract: read each installed Python skill's SKILL.md and call its documented module function in IPython; do not assume a `.run` entrypoint. Use `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a continual harness subagent spec by composing a concise task prompt and calling `handle = await rlm('sub-task')`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role='parent')`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role='child', receiver_name=handle.name)` for follow-ups. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries."
@@ -853,6 +875,17 @@ export interface RefinementPlan {
 	baselineState?: HarnessState;
 }
 
+function refinementScopeInstruction(scope: HarnessScope): string {
+	switch (scope) {
+		case "global":
+			return "Requested refinement scope: global. Only propose stable cross-project continual harness edits, durable user preferences, reusable skills/subagents, or tool/environment facts that should affect every future Prime Agent session. Do not persist session-only progress, temporary blockers, or repository-specific detail globally.";
+		case "project":
+			return "Requested refinement scope: project. Only propose edits that describe the current repository/workspace and are reusable in future sessions on it: build/test commands, layout, conventions, recurring pitfalls, and project-scoped subagent specs. Do not persist session-only progress or user-wide preferences here. Local and global entries in the overview are read-only context.";
+		default:
+			return "Requested refinement scope: local. Prefer local continual harness edits for current task progress, temporary blockers, current-run coordination, and facts that are not clearly reusable in future sessions. Project and global entries in the overview are read-only context: do not propose update or delete edits for them; create a local entry instead if an override is needed.";
+	}
+}
+
 /**
  * Produce a refinement proposal (the LLM pass, or a rollback proposal) without
  * mutating any harness state. Separated from {@link applyRefinementProposal} so
@@ -880,7 +913,7 @@ export async function planRefinement(
 		if (!target) {
 			throw new Error(`Refinement ${options.rollbackId} not found`);
 		}
-		const fallbackScope: HarnessScope = options.global ? "global" : "local";
+		const fallbackScope: HarnessScope = options.scope ?? "local";
 		return {
 			proposal: rollbackProposal(target),
 			id,
@@ -890,9 +923,7 @@ export async function planRefinement(
 	}
 
 	const conversationText = serializeConversation(convertToLlm(messages)).slice(-80_000);
-	const scopeInstruction = options.global
-		? "Requested refinement scope: global. Only propose stable cross-session continual harness edits, durable user preferences, reusable skills/subagents, or explicitly project-qualified facts that should affect future Prime Agent sessions. Do not persist session-only progress, temporary blockers, or current-run coordination globally."
-		: "Requested refinement scope: local. Prefer local continual harness edits for current task progress, temporary blockers, current-run coordination, and project facts that are not clearly reusable across Prime Agent sessions. Global entries in the overview are read-only context: do not propose update or delete edits for them; create a local entry instead if an override is needed.";
+	const scopeInstruction = refinementScopeInstruction(options.scope ?? "local");
 	const userPrompt = [
 		`<current_harness_state>\n${overviewForPrompt(state)}\n</current_harness_state>`,
 		`<refinement_history>\n${historyForPrompt(history)}\n</refinement_history>`,
@@ -971,7 +1002,7 @@ ${historyForPrompt(history)}
 		`<conversation>
 ${conversationText}
 </conversation>`,
-		"Return shouldRefine=true when the trajectory contains evidence useful to this session's future turns. Prefer local harness edits for current task progress, temporary blockers, and current-run coordination. Ask for global refinement only for durable cross-session lessons or explicitly project-qualified facts likely to be reused in future sessions.",
+		"Return shouldRefine=true when the trajectory contains evidence useful to this session's future turns. Prefer local harness edits for current task progress, temporary blockers, and current-run coordination. Ask for project refinement only for repository-specific facts likely to be reused in future sessions on this repository, and for global refinement only for durable cross-project lessons.",
 	].join("\n\n");
 	// Auto-refine review requires parseable JSON. Keep it non-reasoning so
 	// reasoning-capable models use final text budget for the JSON object.
@@ -1012,6 +1043,6 @@ export async function refineHarness(
 	return applyRefinementProposal(state, plan.proposal, {
 		id: plan.id,
 		rollbackOf: plan.rollbackOf,
-		scope: plan.rollbackScope ?? (options.global ? "global" : "local"),
+		scope: plan.rollbackScope ?? options.scope ?? "local",
 	});
 }

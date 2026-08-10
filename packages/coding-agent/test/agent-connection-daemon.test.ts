@@ -398,6 +398,13 @@ class FakeDaemonClient {
 					success: true,
 					data: { ok: true, method: "trash" },
 				};
+			case "set_rlm_max_depth":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { maxDepth: command.maxDepth, source: "chat", globalSaved: false },
+				};
 			case "refine":
 				return {
 					type: "response",
@@ -932,6 +939,39 @@ describe("DaemonAgentConnection", () => {
 				command.type === "start_side_question",
 		);
 		expect(sent?.previousTurns).toEqual([{ question: "What changed?", answer: "The parser." }]);
+	});
+
+	it("gates project config scope on the daemon capability", async () => {
+		const oldDaemonClient = new FakeDaemonClient();
+		const oldConnection = new DaemonAgentConnection(asDaemonClient(oldDaemonClient), "active-original");
+
+		// Global and local refinement keep working on old daemons.
+		await oldConnection.refine({ scope: "global" });
+		expect(oldDaemonClient.requests.at(-1)).toMatchObject({ type: "refine", scope: "global", global: true });
+
+		// A project refinement on an old daemon would silently write session-local state.
+		await expect(oldConnection.refine({ scope: "project" })).rejects.toThrow(
+			"older build without project harness scope",
+		);
+		await expect(oldConnection.setRlmMaxDepth(2, { scope: "project" })).rejects.toThrow(
+			"older build without project config scope",
+		);
+		expect(oldDaemonClient.requests).toHaveLength(1);
+
+		const newDaemonClient = new FakeDaemonClient();
+		newDaemonClient.serverCapabilities.add("config_scopes");
+		const newConnection = new DaemonAgentConnection(asDaemonClient(newDaemonClient), "active-original");
+
+		await newConnection.refine({ scope: "project" });
+		expect(newDaemonClient.requests.at(-1)).toMatchObject({ type: "refine", scope: "project" });
+		expect(newDaemonClient.requests.at(-1)).not.toHaveProperty("global", true);
+
+		await newConnection.setRlmMaxDepth(2, { scope: "project" });
+		expect(newDaemonClient.requests.at(-1)).toMatchObject({
+			type: "set_rlm_max_depth",
+			maxDepth: 2,
+			scope: "project",
+		});
 	});
 
 	it("gates transient bash on the daemon capability", async () => {

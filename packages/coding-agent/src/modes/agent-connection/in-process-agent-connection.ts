@@ -14,10 +14,11 @@ import type {
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
 import type { ExtensionUIContext } from "../../core/extensions/types.js";
-import type { RefinementResult } from "../../core/refinement/index.js";
+import type { HarnessScope, RefinementResult } from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
 import { SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
+import type { SettingsScope } from "../../core/settings-manager.js";
 import { type SideQuestionRun, startSideQuestion } from "../../core/side-question.js";
 import { waitForHeadlessCompletion } from "../headless-completion.js";
 import {
@@ -455,7 +456,7 @@ export class InProcessAgentConnection implements AgentConnection {
 	}
 
 	async refine(
-		options: { instructions?: string; rollbackId?: string; global?: boolean } = {},
+		options: { instructions?: string; rollbackId?: string; scope?: HarnessScope } = {},
 	): Promise<RefinementResult> {
 		return this.session.refine(options);
 	}
@@ -525,7 +526,7 @@ export class InProcessAgentConnection implements AgentConnection {
 		return this.session.getRlmMaxDepthStatus();
 	}
 
-	async setRlmMaxDepth(maxDepth: number, options?: { global?: boolean }) {
+	async setRlmMaxDepth(maxDepth: number, options?: { scope?: SettingsScope }) {
 		return this.session.setRlmMaxDepth(maxDepth, options);
 	}
 

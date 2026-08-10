@@ -17,7 +17,7 @@ import type {
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
 import type { GoalState } from "../../core/goals.js";
-import type { RefinementResult } from "../../core/refinement/index.js";
+import type { HarnessScope, RefinementResult } from "../../core/refinement/index.js";
 import type { SessionActionSnapshot } from "../../core/session-action-store.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import type { AgentConnectionHeartbeat, AgentConnectionSourceInfo } from "../agent-connection/types.js";
@@ -52,7 +52,7 @@ export type RpcCommand =
 
 	// Compaction
 	| { id?: string; type: "compact"; customInstructions?: string }
-	| { id?: string; type: "refine"; instructions?: string; rollbackId?: string; global?: boolean }
+	| { id?: string; type: "refine"; instructions?: string; rollbackId?: string; scope?: HarnessScope }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 
 	// Retry

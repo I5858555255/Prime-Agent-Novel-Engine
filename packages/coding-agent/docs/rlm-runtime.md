@@ -208,9 +208,24 @@ On reload, the aggregate is reapplied to the parent message. Context-tree report
 
 `rlm.harness` is a persisted state ledger for prompt notes, memories, reusable skill descriptions, sub-agent specifications, and refinement events. It is not a second execution engine.
 
-Session-local state lives in the session artifact directory under `harness/harness_state.json`. Explicitly global entries live under `~/.prime/agent/harness/`. The Python store reloads after external modification so host-side `/refine` writes and kernel writes do not overwrite each other.
+State is stored in three scopes:
 
-`/refine` runs a dedicated review over the current trajectory and applies small create/update/delete edits. Rollback uses recorded before/after snapshots. The base system prompt remains immutable; refinements are supplemental state.
+| Scope | Location | Use for |
+|---|---|---|
+| `local` (default) | session artifact dir, `harness/harness_state.json` | current task progress, temporary blockers, session coordination |
+| `project` | `<repo>/.prime/agent/harness/harness_state.json` | repository conventions, build/test commands, recurring pitfalls |
+| `global` | `~/.prime/agent/harness/harness_state.json` | cross-project lessons, durable user preferences, reusable skills and subagent specs |
+
+The system prompt shows all three merged, with narrower scopes winning id collisions and keeping a `<scope>:<id>` display key. Writes target one scope:
+
+```python
+rlm.harness.create_memory("Test command", "npm run check", scope="project")
+await refine.run("record how this repository runs its tests", scope="project")
+```
+
+The kernel resolves scopes from `RLM_HARNESS_STATE_DIR`/`RLM_SESSION_DIR` (local), `RLM_PROJECT_HARNESS_STATE_DIR` (project), and `RLM_GLOBAL_HARNESS_STATE_DIR` (global). The Python store reloads after external modification so host-side `/refine` writes and kernel writes do not overwrite each other.
+
+`/refine` runs a dedicated review over the current trajectory and applies small create/update/delete edits. `/refine --project` and `/refine --global` select the target store. Rollback uses recorded before/after snapshots; project and global refinements are also recorded in `refinements.jsonl` next to their store so they can be rolled back from a later session. The base system prompt remains immutable; refinements are supplemental state.
 
 ## Goal Requests
 

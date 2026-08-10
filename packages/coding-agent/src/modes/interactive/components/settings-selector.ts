@@ -38,6 +38,8 @@ export interface SettingsConfig {
 	blockImages: boolean;
 	enableSkillCommands: boolean;
 	enableBuiltinSkills: boolean;
+	contextFiles: boolean;
+	globalContextFiles: boolean;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	transport: Transport;
@@ -65,6 +67,8 @@ export interface SettingsCallbacks {
 	onBlockImagesChange: (blocked: boolean) => void;
 	onEnableSkillCommandsChange: (enabled: boolean) => void;
 	onEnableBuiltinSkillsChange: (enabled: boolean) => void;
+	onContextFilesChange: (enabled: boolean) => void;
+	onGlobalContextFilesChange: (enabled: boolean) => void;
 	onSteeringModeChange: (mode: "all" | "one-at-a-time") => void;
 	onFollowUpModeChange: (mode: "all" | "one-at-a-time") => void;
 	onTransportChange: (transport: Transport) => void;
@@ -383,8 +387,29 @@ export class SettingsSelectorComponent extends Container {
 			values: ["true", "false"],
 		});
 
-		// Hardware cursor toggle (insert after builtin-skills)
-		const skillCommandsIndex = items.findIndex((item) => item.id === "builtin-skills");
+		// Context file toggles (insert after builtin-skills)
+		const builtinSkillsIndex = items.findIndex((item) => item.id === "builtin-skills");
+		items.splice(
+			builtinSkillsIndex + 1,
+			0,
+			{
+				id: "context-files",
+				label: "AGENTS.md context",
+				description: "Load AGENTS.md and CLAUDE.md into the system prompt (takes effect after reload)",
+				currentValue: config.contextFiles ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "global-context-files",
+				label: "Global AGENTS.md",
+				description: "Include the agent dir's own AGENTS.md in every project (takes effect after reload)",
+				currentValue: config.globalContextFiles ? "true" : "false",
+				values: ["true", "false"],
+			},
+		);
+
+		// Hardware cursor toggle (insert after the context file toggles)
+		const skillCommandsIndex = items.findIndex((item) => item.id === "global-context-files");
 		items.splice(skillCommandsIndex + 1, 0, {
 			id: "show-hardware-cursor",
 			label: "Show hardware cursor",
@@ -472,6 +497,12 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "builtin-skills":
 						callbacks.onEnableBuiltinSkillsChange(newValue === "true");
+						break;
+					case "context-files":
+						callbacks.onContextFilesChange(newValue === "true");
+						break;
+					case "global-context-files":
+						callbacks.onGlobalContextFilesChange(newValue === "true");
 						break;
 					case "steering-mode":
 						callbacks.onSteeringModeChange(newValue as "all" | "one-at-a-time");

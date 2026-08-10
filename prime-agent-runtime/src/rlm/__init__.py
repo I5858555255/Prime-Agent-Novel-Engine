@@ -257,7 +257,7 @@ class _HarnessProxy:
                         in_memory=True,
                         local_write_error=(
                             f"{exc} This session has no persistent local harness store; "
-                            "pass global_=True to persist across sessions."
+                            'pass scope="project" or scope="global" to persist across sessions.'
                         ),
                     )
                 return _HarnessProxy._unpersisted

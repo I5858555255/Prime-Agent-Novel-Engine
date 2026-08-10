@@ -49,6 +49,7 @@ import type { ReadonlyFooterDataProvider } from "../footer-data-provider.js";
 import type { KeybindingsManager } from "../keybindings.js";
 import type { CustomMessage } from "../messages.js";
 import type { ModelRegistry } from "../model-registry.js";
+import type { HarnessScope } from "../refinement/index.js";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -654,8 +655,8 @@ export interface RefineCompleteEvent {
 	summary: string;
 	/** Number of edits applied. */
 	appliedEdits: number;
-	/** Whether the refinement was applied to the global or local harness. */
-	scope: "global" | "local";
+	/** Which harness store the refinement was applied to. */
+	scope: HarnessScope;
 }
 
 /** Fired at the start of each turn */

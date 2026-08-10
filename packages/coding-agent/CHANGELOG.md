@@ -5,6 +5,11 @@
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+- Added a project harness scope stored in `<project>/.prime/agent/harness/`, selectable with `/refine --project`, `await refine.run(scope="project")`, and `rlm.harness.*(scope="project")`.
+- Added `contextFiles` settings to disable `AGENTS.md`/`CLAUDE.md` discovery, drop the global `AGENTS.md`, or stop walking above the project root, with `/settings` toggles for the first two.
+- Changed `rlmMaxDepth` to be read from project settings before global settings, and `/rlm-max-depth` to accept `--project` alongside `--global`.
+- Changed project settings, `SYSTEM.md`, and `APPEND_SYSTEM.md` to resolve against the project root, so running Prime Agent from a subdirectory uses the repository's configuration.
+- Changed the harness Python API from `global_=True` to `scope="local"|"project"|"global"` on `rlm.harness.*`, `rlm.get_harness_state()`, and `refine.run()`.
 
 ## [0.7.1] - 2026-08-07
 

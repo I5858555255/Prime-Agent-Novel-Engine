@@ -16,11 +16,12 @@ import type { ReplayBuiltInToolName } from "../../core/extensions/index.js";
 import type { InputSource } from "../../core/extensions/types.js";
 import type { GoalState } from "../../core/goals.js";
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
-import type { RefinementResult } from "../../core/refinement/index.js";
+import type { HarnessScope, RefinementResult } from "../../core/refinement/index.js";
 import type { RlmMaxDepthStatus, SetRlmMaxDepthResult } from "../../core/rlm-max-depth.js";
 import type { SessionActionSnapshot } from "../../core/session-action-store.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SessionStats } from "../../core/session-stats.js";
+import type { SettingsScope } from "../../core/settings-manager.js";
 
 /**
  * Client-side interaction boundary consumed by InteractiveMode.
@@ -708,7 +709,7 @@ export interface AgentConnection {
 	setAutoRetryEnabled(enabled: boolean): Promise<void>;
 
 	compact(customInstructions?: string): Promise<CompactionResult>;
-	refine(options?: { instructions?: string; rollbackId?: string; global?: boolean }): Promise<RefinementResult>;
+	refine(options?: { instructions?: string; rollbackId?: string; scope?: HarnessScope }): Promise<RefinementResult>;
 	abortCompaction(): Promise<void>;
 	abortBranchSummary(): Promise<void>;
 	abortRetry(): Promise<void>;
@@ -726,7 +727,7 @@ export interface AgentConnection {
 	exportToJsonl(outputPath?: string): Promise<string>;
 	setSessionName(name: string): Promise<void>;
 	getRlmMaxDepthStatus(): Promise<RlmMaxDepthStatus>;
-	setRlmMaxDepth(maxDepth: number, options?: { global?: boolean }): Promise<SetRlmMaxDepthResult>;
+	setRlmMaxDepth(maxDepth: number, options?: { scope?: SettingsScope }): Promise<SetRlmMaxDepthResult>;
 	renameSavedSession(sessionPath: string, name: string): Promise<void>;
 	deleteSavedSession(sessionPath: string): Promise<DeleteSessionFileResult>;
 
