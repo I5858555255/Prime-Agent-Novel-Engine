@@ -356,6 +356,8 @@ export async function runOwnedSessionWorkerFrontend(
 				[SESSION_LEASE_OWNER_ID_ENV]: `owned-${randomUUID()}`,
 			},
 			stdio,
+			// Console-less parents would otherwise flash a console window on Windows.
+			windowsHide: true,
 		});
 		currentChild = child;
 		if (!interactive) {

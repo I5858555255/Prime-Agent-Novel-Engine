@@ -396,6 +396,8 @@ export class DaemonCatalogClient {
 			cwd: process.cwd(),
 			env: createCliSubprocessEnv({ ...process.env, [DAEMON_CATALOG_ROLE_ENV]: "1" }),
 			stdio: ["ignore", "ignore", "ignore", "ipc"],
+			// The daemon has no console; without this Windows pops one for the child.
+			windowsHide: true,
 		});
 		this.child = child;
 		child.on("message", (value: unknown) => this.handleMessage(value));
