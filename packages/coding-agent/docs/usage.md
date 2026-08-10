@@ -1,5 +1,7 @@
 # Using Prime Agent
 
+> **中文文档**：[usage.zh-CN.md](usage.zh-CN.md)
+
 This page collects day-to-day usage details that do not fit on the quickstart page.
 
 Prime Agent is built around one model-facing tool: a persistent IPython kernel. The kernel retains Python state across turns and acts as a control environment for file operations, project commands, installed Python skills, MCP-backed skills, and recursive subagents. The TypeScript host remains responsible for provider calls, session state, tool execution, scheduling, and child-agent lifecycles.
