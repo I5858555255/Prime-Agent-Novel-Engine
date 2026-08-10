@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added `tui.input.slashSubmit` keybinding for submitting slash commands with a dedicated key.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
