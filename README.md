@@ -64,6 +64,7 @@ On first launch, run `/login` to choose a subscription or API-key provider. Prim
 
 > [!WARNING]
 > Prime Agent executes model-generated Python and project commands with your user permissions. Its worker and kernel processes improve lifecycle isolation and recovery; they are **not** a security sandbox. Review changes and use trusted repositories, instructions, skills, and extensions only. Run untrusted code or instructions in an external sandbox or restricted environment.
+> See [Security and sandboxing](./packages/coding-agent/docs/security.md) for isolation recommendations and a pre-run checklist.
 
 Useful commands:
 

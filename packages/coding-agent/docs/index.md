@@ -26,6 +26,7 @@ Public releases are currently installed from versioned release artifacts. The in
 - [Quickstart](quickstart.md) - install, authenticate, and run a first session.
 - [Using Prime Agent](usage.md) - interactive mode, RLM subagents, slash commands, context files, and CLI reference.
 - [Architecture overview](architecture.md) - client, daemon, worker, session, kernel, provider, and storage boundaries.
+- [Security and sandboxing](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/security.md) - trust model, what isn't sandboxed, and how to reduce risk for long-running or autonomous runs.
 - [RLM programming model](rlm.md) - programmatic execution, native subagents, Python skills, and durable state.
 - [Long-running and background agents](long-running-agents.md) - daemon workers, messaging, heartbeats, goals, schedules, and autonomous mode.
 - [Providers](providers.md) - subscription and API-key setup for built-in providers.
