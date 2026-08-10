@@ -101,12 +101,38 @@ function readLeaseOwner(directory: string): SessionLeaseOwner | undefined {
 	}
 }
 
-function isProcessAlive(pid: number): boolean {
+type ProcessProbe = (pid: number) => void;
+
+const probeProcessSignal: ProcessProbe = (pid) => {
+	process.kill(pid, 0);
+};
+
+const probeProcStat: ProcessProbe = (pid) => {
+	readFileSync(`/proc/${pid}/stat`);
+};
+
+export function isProcessAlive(
+	pid: number,
+	signalProbe: ProcessProbe = probeProcessSignal,
+	procStatProbe: ProcessProbe = probeProcStat,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
 	try {
-		process.kill(pid, 0);
+		signalProbe(pid);
 		return true;
 	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
+		if ((error as NodeJS.ErrnoException).code !== "EPERM") {
+			return false;
+		}
+	}
+	if (platform !== "linux" && platform !== "android") {
+		return true;
+	}
+	try {
+		procStatProbe(pid);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ENOENT";
 	}
 }
 
