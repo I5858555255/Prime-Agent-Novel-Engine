@@ -77,6 +77,14 @@ prime-agent
 
 Reference for environment variables and `auth.json` keys: [`env-api-keys.ts`](../../ai/src/env-api-keys.ts).
 
+#### Keyless Free Tier (OpenCode Zen)
+
+Free-tier models on the `opencode` provider (zero-cost models such as
+`deepseek-v4-flash-free`) work without any API key: requests are sent without
+an `Authorization` header. They are treated as configured even when
+`OPENCODE_API_KEY` is unset. Paid `opencode` models and all `opencode-go`
+models still require a key.
+
 #### Auth File
 
 Store credentials in `~/.prime/agent/auth.json`:
