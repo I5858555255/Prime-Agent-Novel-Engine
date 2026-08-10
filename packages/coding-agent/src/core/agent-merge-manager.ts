@@ -54,6 +54,16 @@ export interface AgentMergeRequest {
 	onPrepared: (workspace: AgentIntegrationWorkspace, recoverySha: string) => void;
 }
 
+export interface AgentResolutionMergeRequest {
+	taskId: string;
+	candidateSha: string;
+	resolutionSha: string;
+	recoverySha: string;
+	candidateWorkspace: AgentGitWorkspace;
+	integrationWorkspace: AgentIntegrationWorkspace;
+	qualityGates: AgentIntegrationQualityGate[];
+}
+
 export interface CreateAgentMergeManagerOptions {
 	runId: string;
 	preferredRoot: string;
@@ -292,6 +302,105 @@ export class AgentMergeManager {
 		}
 	}
 
+	async integrateResolution(request: AgentResolutionMergeRequest): Promise<AgentMergeResult> {
+		const integrationWorkspace = { ...request.integrationWorkspace };
+		this.assertOwnedIntegrationPath(integrationWorkspace);
+		if (integrationWorkspace.repositoryId !== request.candidateWorkspace.repositoryId) {
+			throw new Error("Resolution and candidate repository identities do not match");
+		}
+		if (
+			canonicalPath(integrationWorkspace.repositoryRoot) !== canonicalPath(request.candidateWorkspace.repositoryRoot)
+		) {
+			throw new Error("Resolution and candidate repository roots do not match");
+		}
+		if (!existsSync(integrationWorkspace.worktreePath)) {
+			throw new Error(`Persisted integration worktree is missing: ${integrationWorkspace.worktreePath}`);
+		}
+		const checkedOutBranch = (await runGit(integrationWorkspace.worktreePath, ["branch", "--show-current"])).trim();
+		if (checkedOutBranch !== integrationWorkspace.branch) {
+			throw new Error(`Integration worktree branch changed from ${integrationWorkspace.branch}`);
+		}
+		const currentSha = (await runGit(integrationWorkspace.worktreePath, ["rev-parse", "HEAD^{commit}"])).trim();
+		if (currentSha !== request.recoverySha) {
+			throw new Error("Integration head changed while conflict resolution was running");
+		}
+		if (
+			!(await this.isAncestor(integrationWorkspace.repositoryRoot, request.recoverySha, request.resolutionSha)) ||
+			!(await this.isAncestor(integrationWorkspace.repositoryRoot, request.candidateSha, request.resolutionSha))
+		) {
+			throw new Error("Resolution commit must contain both the recovery head and candidate commit");
+		}
+		const cleanStatus = await runGit(integrationWorkspace.worktreePath, [
+			"status",
+			"--porcelain=v1",
+			"--untracked-files=all",
+		]);
+		if (cleanStatus.length > 0) {
+			throw new Error("Integration worktree contains unexpected changes before resolution promotion");
+		}
+		const changedFiles = splitNullOutput(
+			await runGit(integrationWorkspace.repositoryRoot, [
+				"diff",
+				"--name-only",
+				"-z",
+				request.recoverySha,
+				request.resolutionSha,
+			]),
+		);
+		const gateResults = await this.runQualityGates(
+			{
+				taskId: request.taskId,
+				candidateWorkspace: request.candidateWorkspace,
+				qualityGates: request.qualityGates,
+			},
+			request.resolutionSha,
+		);
+		const failedGate = gateResults.find((gate) => !gate.passed);
+		if (failedGate) {
+			return {
+				outcome: "failed",
+				integrationWorkspace,
+				recoverySha: request.recoverySha,
+				attemptedSha: request.resolutionSha,
+				changedFiles,
+				conflictFiles: [],
+				gateResults,
+				error: `Conflict resolution quality gate failed: ${failedGate.id}`,
+			};
+		}
+
+		let advanced = false;
+		try {
+			await runGit(integrationWorkspace.repositoryRoot, [
+				"update-ref",
+				`refs/heads/${integrationWorkspace.branch}`,
+				request.resolutionSha,
+				request.recoverySha,
+			]);
+			advanced = true;
+			await runGit(integrationWorkspace.worktreePath, ["read-tree", "--reset", "-u", request.resolutionSha]);
+			const promotedSha = (await runGit(integrationWorkspace.worktreePath, ["rev-parse", "HEAD^{commit}"])).trim();
+			if (promotedSha !== request.resolutionSha) {
+				throw new Error("Conflict resolution promotion did not update the integration worktree");
+			}
+			integrationWorkspace.headSha = request.resolutionSha;
+			return {
+				outcome: "integrated",
+				integrationWorkspace,
+				recoverySha: request.recoverySha,
+				resultSha: request.resolutionSha,
+				changedFiles,
+				conflictFiles: [],
+				gateResults,
+			};
+		} catch (error) {
+			if (advanced) {
+				await this.restoreRecoveryPoint(integrationWorkspace, request.recoverySha, request.resolutionSha);
+			}
+			throw error;
+		}
+	}
+
 	private async ensureIntegrationWorkspace(request: AgentMergeRequest): Promise<AgentIntegrationWorkspace> {
 		if (request.integrationWorkspace) {
 			this.assertOwnedIntegrationPath(request.integrationWorkspace);
@@ -335,7 +444,10 @@ export class AgentMergeManager {
 		};
 	}
 
-	private async runQualityGates(request: AgentMergeRequest, resultSha: string): Promise<AgentIntegrationGateResult[]> {
+	private async runQualityGates(
+		request: Pick<AgentMergeRequest, "taskId" | "candidateWorkspace" | "qualityGates">,
+		resultSha: string,
+	): Promise<AgentIntegrationGateResult[]> {
 		if (request.qualityGates.length === 0) return [];
 		const gateRoot = join(
 			this.preferredRoot,

@@ -169,13 +169,14 @@ describe("issue 1056 agent runtime scheduler phase four", () => {
 		});
 		expect(restored.getTask("legacy-task")?.resources).toEqual([]);
 		expect(restored.snapshot()).toMatchObject({
-			version: 4,
+			version: 5,
 			resourceLeases: [],
 			resourceBlocks: [],
+			conflictResolutions: [],
 			events: [],
 			nextEventSequence: 1,
 		});
-		expect(JSON.parse(readFileSync(fixture.statePath, "utf8"))).toMatchObject({ version: 4 });
+		expect(JSON.parse(readFileSync(fixture.statePath, "utf8"))).toMatchObject({ version: 5 });
 	});
 
 	it("injects current ownership into the root orchestrator and rejects a conflicting spawn", async () => {

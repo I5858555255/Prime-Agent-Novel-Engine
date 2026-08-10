@@ -51,6 +51,11 @@ import {
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
+import type {
+	AgentConflictResolverContext,
+	AgentConflictResolverRunner,
+	AgentConflictResolverRunnerResult,
+} from "./agent-conflict-resolver.js";
 import { formatAgentRuntimeTaskPrompt } from "./agent-git-worktree.js";
 import {
 	AGENT_MESSAGE_CUSTOM_TYPE,
@@ -1227,6 +1232,7 @@ export class AgentSession {
 	private _parentReplyCount = 0;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
 	private readonly _agentRuntimeScheduler: AgentRuntimeScheduler;
+	private _agentRuntimeConflictResolver?: AgentConflictResolverRunner;
 	private _unsubscribeAgentRuntimeScheduler?: () => void;
 	private _activeRlmChildRuns = new Map<string, RlmChildRun>();
 	private _pendingRlmSubagentSessionNames = new Set<string>();
@@ -1347,6 +1353,10 @@ export class AgentSession {
 				statePath: schedulerArtifactDir ? join(schedulerArtifactDir, "agent-runtime-scheduler.json") : undefined,
 			});
 		if (this._rlmDepth === 0) {
+			if (!this._agentRuntimeScheduler.hasConflictResolver()) {
+				this._agentRuntimeConflictResolver = (context) => this._runAgentConflictResolver(context);
+				this._agentRuntimeScheduler.setConflictResolver(this._agentRuntimeConflictResolver);
+			}
 			this._unsubscribeAgentRuntimeScheduler = this._agentRuntimeScheduler.subscribe((event) => {
 				this._queueAgentRuntimeSchedulerContext(event);
 			});
@@ -1354,7 +1364,8 @@ export class AgentSession {
 			if (
 				schedulerSummary.activeAgents.length > 0 ||
 				schedulerSummary.activeResourceLeases.length > 0 ||
-				schedulerSummary.blockedResourceTasks.length > 0
+				schedulerSummary.blockedResourceTasks.length > 0 ||
+				schedulerSummary.conflictResolutions.some((resolution) => resolution.status === "escalated")
 			) {
 				this._queueAgentRuntimeSchedulerContext();
 			}
@@ -4013,6 +4024,10 @@ export class AgentSession {
 			return;
 		}
 		this._disposed = true;
+		if (this._agentRuntimeConflictResolver) {
+			this._agentRuntimeScheduler.clearConflictResolver(this._agentRuntimeConflictResolver);
+			this._agentRuntimeConflictResolver = undefined;
+		}
 		this._unsubscribeAgentRuntimeScheduler?.();
 		this._unsubscribeAgentRuntimeScheduler = undefined;
 		this._sessionActionCommitDisposeAbortController.abort();
@@ -9139,6 +9154,65 @@ export class AgentSession {
 		return this._agentRuntimeScheduler.summary();
 	}
 
+	private async _runAgentConflictResolver(
+		context: AgentConflictResolverContext,
+	): Promise<AgentConflictResolverRunnerResult> {
+		const model = this.model;
+		if (!model) throw new Error(formatNoModelSelectedMessage());
+		const sessionDir = this._createChildRlmSessionDir();
+		const childId = basename(sessionDir);
+		const sessionName = createDefaultRlmSubagentSessionName(`resolve-${context.taskId}`, childId);
+		const options: CreateRlmSubagentRuntimeOptions = {
+			...this._createRlmSubagentRuntimeOptions({
+				id: childId,
+				prompt: context.prompt,
+				sessionName,
+				sessionDir,
+				model,
+			}),
+			cwd: context.workspace.worktreePath,
+		};
+		let runtime: RlmSubagentRuntime | undefined;
+		let outcome: "done" | "error" | "cancelled" = "error";
+		const abortResolver = () => void runtime?.session.abort();
+		context.signal.addEventListener("abort", abortResolver, { once: true });
+		try {
+			runtime = await this._createRlmSubagentRuntime(options);
+			if (context.signal.aborted) {
+				outcome = "cancelled";
+				throw new Error("Conflict resolver was cancelled before startup completed");
+			}
+			await runtime.session.promptAndWait(context.prompt, {
+				expandPromptTemplates: false,
+				source: "extension",
+			});
+			if (context.signal.aborted) {
+				outcome = "cancelled";
+				throw new Error("Conflict resolver was cancelled");
+			}
+			outcome = "done";
+			return {
+				sessionId: runtime.session.sessionId,
+				summary: runtime.session.getLastAssistantText()?.trim() || "Conflict resolver completed without a summary.",
+			};
+		} finally {
+			context.signal.removeEventListener("abort", abortResolver);
+			if (runtime) {
+				if (this._subagentRuntimeHost?.releaseRlmSubagentRuntime) {
+					await this._subagentRuntimeHost
+						.releaseRlmSubagentRuntime(runtime, options, outcome)
+						.catch(() => void runtime?.session.disposeAsync().catch(() => undefined));
+				} else if (this._subagentRuntimeHost) {
+					await this._subagentRuntimeHost
+						.deleteRlmSubagentRuntime(childId, runtime.session)
+						.catch(() => void runtime?.session.disposeAsync().catch(() => undefined));
+				} else {
+					await runtime.session.disposeAsync().catch(() => undefined);
+				}
+			}
+		}
+	}
+
 	private _queueAgentRuntimeSchedulerContext(event?: AgentRuntimeSchedulerEvent): void {
 		if (this._disposed || this._disposing || this._rlmDepth !== 0 || event?.type === "agent_heartbeat") return;
 		const summary = this._agentRuntimeScheduler.summary();
@@ -9146,6 +9220,7 @@ export class AgentSession {
 			"<agent_runtime_scheduler_update>",
 			`event: ${event?.type ?? "scheduler_restored"}`,
 			...(event?.taskId ? [`task: ${event.taskId}`] : []),
+			...(event?.resolutionId ? [`resolution: ${event.resolutionId}`] : []),
 			...(event?.message ? [`detail: ${event.message}`] : []),
 			"active_workers:",
 			...(summary.activeAgents.length > 0
@@ -9164,6 +9239,13 @@ export class AgentSession {
 				? summary.blockedResourceTasks.slice(0, 20).map((block) => {
 						const scopes = block.conflicts.map((conflict) => conflict.scope).join(", ");
 						return `- ${block.taskId}: ${scopes}`;
+					})
+				: ["- none"]),
+			"conflict_resolution:",
+			...(summary.conflictResolutions.length > 0
+				? summary.conflictResolutions.slice(-10).map((resolution) => {
+						const evidence = resolution.error ? `: ${resolution.error}` : "";
+						return `- ${resolution.taskId} attempt ${resolution.attempt}/${resolution.maxAttempts}: ${resolution.status}${evidence}`;
 					})
 				: ["- none"]),
 			"This is host-owned coordination state. Do not infer ownership from memory or edit another active agent's resources.",

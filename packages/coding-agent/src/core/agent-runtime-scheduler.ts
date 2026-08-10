@@ -3,9 +3,18 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
+	type AgentConflictResolutionRecord,
+	type AgentConflictResolutionStatus,
+	type AgentConflictResolutionTrigger,
+	AgentConflictResolverManager,
+	type AgentConflictResolverRunner,
+} from "./agent-conflict-resolver.js";
+import {
 	type AgentGitWorkspace,
 	AgentGitWorktreeManager,
 	type AgentRuntimeResultManifest,
+	type AgentRuntimeTaskContract,
+	parseAgentRuntimeTaskContract,
 } from "./agent-git-worktree.js";
 import {
 	type AgentIntegrationGateResult,
@@ -15,8 +24,9 @@ import {
 	type AgentMergeOutcome,
 } from "./agent-merge-manager.js";
 
-export const AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 4;
-const PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 3;
+export const AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 5;
+const PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 4;
+const LEGACY_AGENT_RUNTIME_SCHEDULER_STATE_VERSION = 3;
 
 export type AgentRuntimeTaskStatus =
 	| "planned"
@@ -78,6 +88,7 @@ export interface AgentRuntimeSchedulerSnapshot {
 	integrationWorkspaces: AgentIntegrationWorkspace[];
 	resourceLeases: AgentRuntimeResourceLease[];
 	resourceBlocks: AgentRuntimeResourceBlockRecord[];
+	conflictResolutions: AgentConflictResolutionRecord[];
 	events: AgentRuntimeSchedulerEvent[];
 	nextEventSequence: number;
 }
@@ -174,7 +185,12 @@ export type AgentRuntimeSchedulerEventType =
 	| "resource_acquired"
 	| "resource_released"
 	| "resource_blocked"
-	| "resource_expired";
+	| "resource_expired"
+	| "resolution_queued"
+	| "resolution_started"
+	| "resolution_succeeded"
+	| "resolution_retrying"
+	| "resolution_escalated";
 
 export interface AgentRuntimeSchedulerEvent {
 	id: string;
@@ -183,6 +199,7 @@ export interface AgentRuntimeSchedulerEvent {
 	occurredAt: string;
 	taskId?: string;
 	agentId?: string;
+	resolutionId?: string;
 	previousStatus?: AgentRuntimeTaskStatus | AgentRuntimeAgentStatus;
 	status?: AgentRuntimeTaskStatus | AgentRuntimeAgentStatus;
 	resourceScopes: string[];
@@ -220,6 +237,7 @@ export interface AgentRuntimeSchedulerSummary {
 	activeResourceLeases: AgentRuntimeResourceLease[];
 	blockedResourceTasks: AgentRuntimeResourceBlockRecord[];
 	taskResources: AgentRuntimeTaskResourceSummary[];
+	conflictResolutions: AgentConflictResolutionRecord[];
 	recentEvents: AgentRuntimeSchedulerEvent[];
 	latestEventSequence: number;
 }
@@ -231,6 +249,9 @@ export interface CreateAgentRuntimeSchedulerOptions {
 	now?: () => number;
 	integrationQualityGates?: AgentIntegrationQualityGate[];
 	resourceLeaseTtlMs?: number;
+	conflictResolver?: AgentConflictResolverRunner;
+	conflictResolutionMaxAttempts?: number;
+	conflictResolutionTimeoutMs?: number;
 }
 
 export interface RegisterAgentRuntimeTaskInput {
@@ -305,8 +326,27 @@ const SCHEDULER_EVENT_TYPES: readonly AgentRuntimeSchedulerEventType[] = [
 	"resource_released",
 	"resource_blocked",
 	"resource_expired",
+	"resolution_queued",
+	"resolution_started",
+	"resolution_succeeded",
+	"resolution_retrying",
+	"resolution_escalated",
+];
+const CONFLICT_RESOLUTION_STATUSES: readonly AgentConflictResolutionStatus[] = [
+	"queued",
+	"running",
+	"resolved",
+	"failed",
+	"timed_out",
+	"escalated",
+];
+const CONFLICT_RESOLUTION_TRIGGERS: readonly AgentConflictResolutionTrigger[] = [
+	"git_conflict",
+	"quality_gate_failure",
 ];
 const DEFAULT_RESOURCE_LEASE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_CONFLICT_RESOLUTION_MAX_ATTEMPTS = 2;
+const DEFAULT_CONFLICT_RESOLUTION_TIMEOUT_MS = 5 * 60 * 1000;
 const HEARTBEAT_EVENT_INTERVAL_MS = 30 * 1000;
 const MAX_PERSISTED_SCHEDULER_EVENTS = 512;
 const MAX_SUMMARY_SCHEDULER_EVENTS = 32;
@@ -485,6 +525,7 @@ function parseSchedulerEvent(value: unknown): AgentRuntimeSchedulerEvent {
 		occurredAt: requiredString(value, "occurredAt"),
 		taskId: optionalString(value, "taskId"),
 		agentId: optionalString(value, "agentId"),
+		resolutionId: optionalString(value, "resolutionId"),
 		previousStatus,
 		status,
 		resourceScopes: stringArray(value, "resourceScopes"),
@@ -582,10 +623,68 @@ function parseIntegrationWorkspace(value: unknown): AgentIntegrationWorkspace {
 	};
 }
 
+function parseConflictResolutionStatus(value: unknown): AgentConflictResolutionStatus {
+	if (!CONFLICT_RESOLUTION_STATUSES.includes(value as AgentConflictResolutionStatus)) {
+		throw new Error("Agent runtime scheduler state has invalid conflict resolution status");
+	}
+	return value as AgentConflictResolutionStatus;
+}
+
+function parseConflictResolutionTrigger(value: unknown): AgentConflictResolutionTrigger {
+	if (!CONFLICT_RESOLUTION_TRIGGERS.includes(value as AgentConflictResolutionTrigger)) {
+		throw new Error("Agent runtime scheduler state has invalid conflict resolution trigger");
+	}
+	return value as AgentConflictResolutionTrigger;
+}
+
+function positiveInteger(record: Record<string, unknown>, key: string): number {
+	const value = record[key];
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+		throw new Error(`Agent runtime scheduler state has invalid ${key}`);
+	}
+	return value;
+}
+
+function parseConflictResolutionRecord(value: unknown): AgentConflictResolutionRecord {
+	if (!isRecord(value) || !Array.isArray(value.inputGateResults) || !Array.isArray(value.validationGateResults)) {
+		throw new Error("Agent runtime scheduler state has invalid conflict resolution record");
+	}
+	return {
+		id: requiredString(value, "id"),
+		taskId: requiredString(value, "taskId"),
+		agentId: requiredString(value, "agentId"),
+		repositoryId: requiredString(value, "repositoryId"),
+		trigger: parseConflictResolutionTrigger(value.trigger),
+		status: parseConflictResolutionStatus(value.status),
+		attempt: positiveInteger(value, "attempt"),
+		maxAttempts: positiveInteger(value, "maxAttempts"),
+		timeoutMs: positiveInteger(value, "timeoutMs"),
+		candidateSha: requiredString(value, "candidateSha"),
+		recoverySha: requiredString(value, "recoverySha"),
+		attemptedSha: optionalString(value, "attemptedSha"),
+		resolutionSha: optionalString(value, "resolutionSha"),
+		resolverSessionId: optionalString(value, "resolverSessionId"),
+		branch: optionalString(value, "branch"),
+		worktreePath: optionalString(value, "worktreePath"),
+		contextPath: optionalString(value, "contextPath"),
+		conflictFiles: stringArray(value, "conflictFiles"),
+		candidateChangedFiles: stringArray(value, "candidateChangedFiles"),
+		inputGateResults: value.inputGateResults.map(parseGateResult),
+		validationGateResults: value.validationGateResults.map(parseGateResult),
+		createdAt: requiredString(value, "createdAt"),
+		startedAt: optionalString(value, "startedAt"),
+		completedAt: optionalString(value, "completedAt"),
+		workspaceCleanedAt: optionalString(value, "workspaceCleanedAt"),
+		summary: optionalString(value, "summary"),
+		error: optionalString(value, "error"),
+	};
+}
+
 function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 	if (!isRecord(value)) throw new Error("Agent runtime scheduler state must be an object");
 	const isPreviousVersion = value.version === PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION;
-	if (!isPreviousVersion && value.version !== AGENT_RUNTIME_SCHEDULER_STATE_VERSION) {
+	const isLegacyVersion = value.version === LEGACY_AGENT_RUNTIME_SCHEDULER_STATE_VERSION;
+	if (!isLegacyVersion && !isPreviousVersion && value.version !== AGENT_RUNTIME_SCHEDULER_STATE_VERSION) {
 		throw new Error(`Unsupported agent runtime scheduler state version: ${String(value.version)}`);
 	}
 	if (
@@ -593,8 +692,11 @@ function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 		!Array.isArray(value.agents) ||
 		!Array.isArray(value.integrationRecords) ||
 		!Array.isArray(value.integrationWorkspaces) ||
-		(!isPreviousVersion &&
-			(!Array.isArray(value.resourceLeases) || !Array.isArray(value.resourceBlocks) || !Array.isArray(value.events)))
+		(!isLegacyVersion &&
+			(!Array.isArray(value.resourceLeases) ||
+				!Array.isArray(value.resourceBlocks) ||
+				!Array.isArray(value.events))) ||
+		(!isLegacyVersion && !isPreviousVersion && !Array.isArray(value.conflictResolutions))
 	) {
 		throw new Error("Agent runtime scheduler state has invalid registry arrays");
 	}
@@ -608,10 +710,14 @@ function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 		agents: value.agents.map(parseAgent),
 		integrationRecords: value.integrationRecords.map(parseIntegrationRecord),
 		integrationWorkspaces: value.integrationWorkspaces.map(parseIntegrationWorkspace),
-		resourceLeases: isPreviousVersion ? [] : (value.resourceLeases as unknown[]).map(parseResourceLease),
-		resourceBlocks: isPreviousVersion ? [] : (value.resourceBlocks as unknown[]).map(parseResourceBlock),
-		events: isPreviousVersion ? [] : (value.events as unknown[]).map(parseSchedulerEvent),
-		nextEventSequence: isPreviousVersion ? 1 : parseNextEventSequence(value.nextEventSequence),
+		resourceLeases: isLegacyVersion ? [] : (value.resourceLeases as unknown[]).map(parseResourceLease),
+		resourceBlocks: isLegacyVersion ? [] : (value.resourceBlocks as unknown[]).map(parseResourceBlock),
+		conflictResolutions:
+			isLegacyVersion || isPreviousVersion
+				? []
+				: (value.conflictResolutions as unknown[]).map(parseConflictResolutionRecord),
+		events: isLegacyVersion ? [] : (value.events as unknown[]).map(parseSchedulerEvent),
+		nextEventSequence: isLegacyVersion ? 1 : parseNextEventSequence(value.nextEventSequence),
 	};
 	assertUniqueIds(snapshot.tasks, "task");
 	assertUniqueIds(snapshot.agents, "agent");
@@ -625,6 +731,7 @@ function parseSnapshot(value: unknown): AgentRuntimeSchedulerSnapshot {
 	);
 	assertUniqueIds(snapshot.resourceLeases, "resource lease");
 	assertUniqueIds(snapshot.resourceBlocks, "resource block");
+	assertUniqueIds(snapshot.conflictResolutions, "conflict resolution");
 	assertUniqueIds(snapshot.events, "scheduler event");
 	const highestEventSequence = snapshot.events.reduce((highest, event) => Math.max(highest, event.sequence), 0);
 	if (snapshot.nextEventSequence <= highestEventSequence) {
@@ -701,6 +808,16 @@ function cloneSchedulerEvent(event: AgentRuntimeSchedulerEvent): AgentRuntimeSch
 	};
 }
 
+function cloneConflictResolution(record: AgentConflictResolutionRecord): AgentConflictResolutionRecord {
+	return {
+		...record,
+		conflictFiles: [...record.conflictFiles],
+		candidateChangedFiles: [...record.candidateChangedFiles],
+		inputGateResults: record.inputGateResults.map((gate) => ({ ...gate, args: [...gate.args] })),
+		validationGateResults: record.validationGateResults.map((gate) => ({ ...gate, args: [...gate.args] })),
+	};
+}
+
 function normalizeResourceScopes(resources: readonly string[]): string[] {
 	const normalized = resources.map((resource) => resource.trim());
 	if (normalized.some((resource) => !resource)) {
@@ -718,11 +835,16 @@ export class AgentRuntimeScheduler {
 	private readonly integrationWorkspaces = new Map<string, AgentIntegrationWorkspace>();
 	private readonly resourceLeases = new Map<string, AgentRuntimeResourceLease>();
 	private readonly resourceBlocks = new Map<string, AgentRuntimeResourceBlockRecord>();
+	private readonly conflictResolutions = new Map<string, AgentConflictResolutionRecord>();
 	private readonly eventListeners = new Set<AgentRuntimeSchedulerEventListener>();
 	private readonly worktreeManager: AgentGitWorktreeManager;
 	private readonly mergeManager: AgentMergeManager;
+	private readonly conflictResolverManager: AgentConflictResolverManager;
 	private readonly integrationQualityGates: AgentIntegrationQualityGate[];
 	private readonly resourceLeaseTtlMs: number;
+	private readonly conflictResolutionMaxAttempts: number;
+	private readonly conflictResolutionTimeoutMs: number;
+	private conflictResolver?: AgentConflictResolverRunner;
 	private readonly integrationOperations = new Map<string, Promise<AgentRuntimeIntegrationRecord>>();
 	private integrationTail: Promise<void> = Promise.resolve();
 	private state: AgentRuntimeSchedulerSnapshot;
@@ -735,6 +857,16 @@ export class AgentRuntimeScheduler {
 		if (!Number.isFinite(this.resourceLeaseTtlMs) || this.resourceLeaseTtlMs <= 0) {
 			throw new Error("Agent runtime resourceLeaseTtlMs must be a positive finite number");
 		}
+		this.conflictResolutionMaxAttempts =
+			options.conflictResolutionMaxAttempts ?? DEFAULT_CONFLICT_RESOLUTION_MAX_ATTEMPTS;
+		if (!Number.isInteger(this.conflictResolutionMaxAttempts) || this.conflictResolutionMaxAttempts < 1) {
+			throw new Error("Agent runtime conflictResolutionMaxAttempts must be a positive integer");
+		}
+		this.conflictResolutionTimeoutMs = options.conflictResolutionTimeoutMs ?? DEFAULT_CONFLICT_RESOLUTION_TIMEOUT_MS;
+		if (!Number.isInteger(this.conflictResolutionTimeoutMs) || this.conflictResolutionTimeoutMs <= 0) {
+			throw new Error("Agent runtime conflictResolutionTimeoutMs must be a positive integer");
+		}
+		this.conflictResolver = options.conflictResolver;
 		this.worktreeManager = new AgentGitWorktreeManager({
 			runId: options.runId,
 			preferredRoot: options.statePath ? resolve(dirname(options.statePath), "worktrees") : undefined,
@@ -751,6 +883,20 @@ export class AgentRuntimeScheduler {
 						.slice(0, 16),
 				);
 		this.mergeManager = new AgentMergeManager({ runId: options.runId, preferredRoot: integrationRoot });
+		const resolutionRoot = options.statePath
+			? resolve(dirname(options.statePath), "resolutions")
+			: resolve(
+					tmpdir(),
+					"prime-agent-resolutions",
+					createHash("sha256")
+						.update(`${canonicalWorkspaceId(options.workspacePath)}\0${options.runId}`)
+						.digest("hex")
+						.slice(0, 16),
+				);
+		this.conflictResolverManager = new AgentConflictResolverManager({
+			runId: options.runId,
+			preferredRoot: resolutionRoot,
+		});
 		this.integrationQualityGates = (options.integrationQualityGates ?? []).map((gate) => ({
 			...gate,
 			args: gate.args ? [...gate.args] : undefined,
@@ -777,6 +923,7 @@ export class AgentRuntimeScheduler {
 				integrationWorkspaces: [],
 				resourceLeases: [],
 				resourceBlocks: [],
+				conflictResolutions: [],
 				events: [],
 				nextEventSequence: 1,
 			};
@@ -789,6 +936,9 @@ export class AgentRuntimeScheduler {
 		}
 		for (const lease of this.state.resourceLeases) this.resourceLeases.set(lease.id, lease);
 		for (const block of this.state.resourceBlocks) this.resourceBlocks.set(block.id, block);
+		for (const resolutionRecord of this.state.conflictResolutions) {
+			this.conflictResolutions.set(resolutionRecord.id, resolutionRecord);
+		}
 		const expiredLeases = this.expireStaleResourceLeases();
 		if (expiredLeases.length > 0) {
 			this.resolveResourceBlocks();
@@ -801,7 +951,14 @@ export class AgentRuntimeScheduler {
 		}
 		const recoveredAgents = this.markInterruptedAgentsRecovering();
 		const recoveredIntegrations = this.markInterruptedIntegrationsQueued();
-		if (loadedState?.migrated || expiredLeases.length > 0 || recoveredAgents || recoveredIntegrations) {
+		const recoveredResolutions = this.markInterruptedResolutionsEscalated();
+		if (
+			loadedState?.migrated ||
+			expiredLeases.length > 0 ||
+			recoveredAgents ||
+			recoveredIntegrations ||
+			recoveredResolutions
+		) {
 			this.persist();
 		} else if (!loaded) this.persist();
 	}
@@ -1141,15 +1298,32 @@ export class AgentRuntimeScheduler {
 		return this.state.events.filter((event) => event.sequence > sequence).map(cloneSchedulerEvent);
 	}
 
+	setConflictResolver(runner: AgentConflictResolverRunner | undefined): void {
+		this.conflictResolver = runner;
+	}
+
+	hasConflictResolver(): boolean {
+		return this.conflictResolver !== undefined;
+	}
+
+	clearConflictResolver(runner: AgentConflictResolverRunner): void {
+		if (this.conflictResolver === runner) this.conflictResolver = undefined;
+	}
+
+	getConflictResolution(resolutionId: string): AgentConflictResolutionRecord | undefined {
+		const record = this.conflictResolutions.get(resolutionId);
+		return record ? cloneConflictResolution(record) : undefined;
+	}
+
 	async integrateAgentWorkspace(agentId: string): Promise<AgentRuntimeIntegrationRecord | undefined> {
 		const agent = this.requireAgent(agentId);
 		const workspace = this.workspaceForAgent(agent);
 		if (!workspace || !agent.candidateSha) return undefined;
 		const existing = this.integrationRecords.get(agent.taskId);
-		if (
-			existing &&
-			(existing.status === "integrated" || existing.status === "conflict" || existing.status === "failed")
-		) {
+		if (existing && (existing.status === "integrated" || existing.status === "failed")) {
+			return cloneIntegrationRecord(existing);
+		}
+		if (existing?.status === "conflict" && !this.canAttemptConflictResolution(existing.taskId)) {
 			return cloneIntegrationRecord(existing);
 		}
 		const activeOperation = this.integrationOperations.get(agent.taskId);
@@ -1186,7 +1360,12 @@ export class AgentRuntimeScheduler {
 
 	async resumePendingIntegrations(): Promise<AgentRuntimeIntegrationRecord[]> {
 		const pending = [...this.integrationRecords.values()]
-			.filter((record) => record.status === "queued" || record.status === "integrating")
+			.filter(
+				(record) =>
+					record.status === "queued" ||
+					record.status === "integrating" ||
+					(record.status === "conflict" && this.canAttemptConflictResolution(record.taskId)),
+			)
 			.sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.taskId.localeCompare(b.taskId));
 		const results: AgentRuntimeIntegrationRecord[] = [];
 		for (const record of pending) {
@@ -1289,8 +1468,6 @@ export class AgentRuntimeScheduler {
 				},
 			});
 			this.integrationWorkspaces.set(result.integrationWorkspace.repositoryId, { ...result.integrationWorkspace });
-			record.status = result.outcome;
-			record.completedAt = this.timestamp();
 			record.recoverySha = result.recoverySha;
 			record.resultSha = result.resultSha;
 			record.attemptedSha = result.attemptedSha;
@@ -1298,6 +1475,16 @@ export class AgentRuntimeScheduler {
 			record.conflictFiles = [...result.conflictFiles];
 			record.gateResults = result.gateResults.map((gate) => ({ ...gate, args: [...gate.args] }));
 			record.error = result.error;
+			const resolutionTrigger = this.conflictResolutionTrigger(result.outcome, result.gateResults);
+			if (resolutionTrigger && this.conflictResolver) {
+				record.status = "conflict";
+				record.completedAt = this.timestamp();
+				this.transitionTask(task.id, "conflict", result.error);
+				await this.performConflictResolution(record, agent, workspace, resolutionTrigger);
+				return cloneIntegrationRecord(record);
+			}
+			record.status = result.outcome;
+			record.completedAt = this.timestamp();
 			this.transitionTask(task.id, result.outcome, result.error);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -1311,6 +1498,244 @@ export class AgentRuntimeScheduler {
 			}
 		}
 		return cloneIntegrationRecord(record);
+	}
+
+	private async performConflictResolution(
+		integrationRecord: AgentRuntimeIntegrationRecord,
+		agent: AgentRuntimeAgentRecord,
+		candidateWorkspace: AgentGitWorkspace,
+		trigger: AgentConflictResolutionTrigger,
+	): Promise<void> {
+		const runner = this.conflictResolver;
+		const recoverySha = integrationRecord.recoverySha;
+		const integrationWorkspace = this.integrationWorkspaces.get(candidateWorkspace.repositoryId);
+		if (!runner || !recoverySha || !integrationWorkspace) return;
+
+		let attempt = this.conflictResolutionAttempts(integrationRecord.taskId).length + 1;
+		while (attempt <= this.conflictResolutionMaxAttempts) {
+			const resolution: AgentConflictResolutionRecord = {
+				id: randomUUID(),
+				taskId: integrationRecord.taskId,
+				agentId: agent.id,
+				repositoryId: candidateWorkspace.repositoryId,
+				trigger,
+				status: "queued",
+				attempt,
+				maxAttempts: this.conflictResolutionMaxAttempts,
+				timeoutMs: this.conflictResolutionTimeoutMs,
+				candidateSha: integrationRecord.candidateSha,
+				recoverySha,
+				attemptedSha: integrationRecord.attemptedSha,
+				conflictFiles: [...integrationRecord.conflictFiles],
+				candidateChangedFiles: [],
+				inputGateResults: integrationRecord.gateResults.map((gate) => ({ ...gate, args: [...gate.args] })),
+				validationGateResults: [],
+				createdAt: this.timestamp(),
+			};
+			this.conflictResolutions.set(resolution.id, resolution);
+			this.persist();
+			this.publishEvent({
+				type: "resolution_queued",
+				resolutionId: resolution.id,
+				taskId: resolution.taskId,
+				agentId: resolution.agentId,
+				message: `Conflict resolution attempt ${attempt}/${this.conflictResolutionMaxAttempts} queued`,
+			});
+
+			try {
+				const execution = await this.conflictResolverManager.execute({
+					resolutionId: resolution.id,
+					taskId: resolution.taskId,
+					trigger,
+					attempt,
+					maxAttempts: this.conflictResolutionMaxAttempts,
+					timeoutMs: this.conflictResolutionTimeoutMs,
+					candidateSha: integrationRecord.candidateSha,
+					recoverySha,
+					attemptedSha: integrationRecord.attemptedSha,
+					conflictFiles: integrationRecord.conflictFiles,
+					inputGateResults: integrationRecord.gateResults,
+					taskContracts: this.taskContractsForResolution(candidateWorkspace.repositoryId, resolution.taskId),
+					candidateWorkspace,
+					runner,
+					onPrepared: (workspace, candidateChangedFiles) => {
+						resolution.status = "running";
+						resolution.startedAt = this.timestamp();
+						resolution.branch = workspace.branch;
+						resolution.worktreePath = workspace.worktreePath;
+						resolution.contextPath = workspace.contextPath;
+						resolution.candidateChangedFiles = [...candidateChangedFiles];
+						this.persist();
+						this.publishEvent({
+							type: "resolution_started",
+							resolutionId: resolution.id,
+							taskId: resolution.taskId,
+							agentId: resolution.agentId,
+							message: `Conflict resolver started in ${workspace.worktreePath}`,
+						});
+					},
+				});
+				resolution.resolverSessionId = execution.resolverSessionId;
+				resolution.summary = execution.summary?.trim() || undefined;
+				resolution.candidateChangedFiles = [...execution.candidateChangedFiles];
+				resolution.completedAt = this.timestamp();
+				if (execution.outcome !== "candidate" || !execution.resolutionSha) {
+					resolution.status = execution.outcome === "timed_out" ? "timed_out" : "failed";
+					resolution.error = execution.error ?? "Conflict resolver did not produce a candidate";
+					if (this.finishResolutionAttempt(resolution)) return;
+					attempt += 1;
+					continue;
+				}
+
+				resolution.resolutionSha = execution.resolutionSha;
+				const promotion = await this.mergeManager.integrateResolution({
+					taskId: resolution.taskId,
+					candidateSha: integrationRecord.candidateSha,
+					resolutionSha: execution.resolutionSha,
+					recoverySha,
+					candidateWorkspace,
+					integrationWorkspace,
+					qualityGates: this.integrationQualityGates,
+				});
+				resolution.validationGateResults = promotion.gateResults.map((gate) => ({
+					...gate,
+					args: [...gate.args],
+				}));
+				if (promotion.outcome !== "integrated" || !promotion.resultSha) {
+					resolution.status = "failed";
+					resolution.error = promotion.error ?? "Conflict resolution validation failed";
+					if (this.finishResolutionAttempt(resolution)) return;
+					attempt += 1;
+					continue;
+				}
+
+				resolution.status = "resolved";
+				resolution.completedAt = this.timestamp();
+				this.integrationWorkspaces.set(promotion.integrationWorkspace.repositoryId, {
+					...promotion.integrationWorkspace,
+				});
+				integrationRecord.status = "integrating";
+				integrationRecord.completedAt = undefined;
+				this.transitionTask(resolution.taskId, "integrating");
+				integrationRecord.status = "integrated";
+				integrationRecord.completedAt = resolution.completedAt;
+				integrationRecord.resultSha = promotion.resultSha;
+				integrationRecord.attemptedSha = execution.resolutionSha;
+				integrationRecord.changedFiles = [...promotion.changedFiles];
+				integrationRecord.gateResults = promotion.gateResults.map((gate) => ({ ...gate, args: [...gate.args] }));
+				integrationRecord.error = undefined;
+				this.transitionTask(resolution.taskId, "integrated");
+				try {
+					await this.conflictResolverManager.cleanupSuccessful(execution.workspace);
+					resolution.workspaceCleanedAt = this.timestamp();
+				} catch {
+					// The integrated commit is authoritative; retained resolver evidence remains safe to inspect.
+				}
+				this.persist();
+				this.publishEvent({
+					type: "resolution_succeeded",
+					resolutionId: resolution.id,
+					taskId: resolution.taskId,
+					agentId: resolution.agentId,
+					message: `Conflict resolution attempt ${attempt} passed all integration gates`,
+				});
+				return;
+			} catch (error) {
+				resolution.status = "failed";
+				resolution.completedAt = this.timestamp();
+				resolution.error = error instanceof Error ? error.message : String(error);
+				if (this.finishResolutionAttempt(resolution)) return;
+				attempt += 1;
+			}
+		}
+	}
+
+	private finishResolutionAttempt(resolution: AgentConflictResolutionRecord): boolean {
+		const exhausted = resolution.attempt >= resolution.maxAttempts;
+		if (exhausted) {
+			resolution.status = "escalated";
+			this.persist();
+			this.publishEvent({
+				type: "resolution_escalated",
+				resolutionId: resolution.id,
+				taskId: resolution.taskId,
+				agentId: resolution.agentId,
+				message:
+					`Conflict resolution exhausted ${resolution.maxAttempts} attempts; user direction is required. ${resolution.error ?? ""}`.trim(),
+			});
+			return true;
+		}
+		this.persist();
+		this.publishEvent({
+			type: "resolution_retrying",
+			resolutionId: resolution.id,
+			taskId: resolution.taskId,
+			agentId: resolution.agentId,
+			message:
+				`Conflict resolution attempt ${resolution.attempt} failed; retrying. ${resolution.error ?? ""}`.trim(),
+		});
+		return false;
+	}
+
+	private conflictResolutionTrigger(
+		outcome: AgentMergeOutcome,
+		gateResults: readonly AgentIntegrationGateResult[],
+	): AgentConflictResolutionTrigger | undefined {
+		if (outcome === "conflict") return "git_conflict";
+		if (outcome === "failed" && gateResults.some((gate) => !gate.passed)) return "quality_gate_failure";
+		return undefined;
+	}
+
+	private conflictResolutionAttempts(taskId: string): AgentConflictResolutionRecord[] {
+		return [...this.conflictResolutions.values()]
+			.filter((record) => record.taskId === taskId)
+			.sort((a, b) => a.attempt - b.attempt || a.createdAt.localeCompare(b.createdAt));
+	}
+
+	private canAttemptConflictResolution(taskId: string): boolean {
+		const attempts = this.conflictResolutionAttempts(taskId);
+		return Boolean(
+			this.conflictResolver &&
+				attempts.length < this.conflictResolutionMaxAttempts &&
+				attempts.at(-1)?.status !== "escalated",
+		);
+	}
+
+	private taskContractsForResolution(repositoryId: string, candidateTaskId: string): AgentRuntimeTaskContract[] {
+		const contracts: AgentRuntimeTaskContract[] = [];
+		for (const agent of this.agents.values()) {
+			if (agent.repositoryId !== repositoryId || !agent.taskContractPath || !existsSync(agent.taskContractPath)) {
+				continue;
+			}
+			const integration = this.integrationRecords.get(agent.taskId);
+			if (agent.taskId !== candidateTaskId && integration?.status !== "integrated") continue;
+			try {
+				const contract = parseAgentRuntimeTaskContract(
+					JSON.parse(readFileSync(agent.taskContractPath, "utf8")) as unknown,
+				);
+				if (
+					contract.runId === this.runId &&
+					contract.repositoryId === repositoryId &&
+					contract.taskId === agent.taskId &&
+					contract.agentId === agent.id &&
+					contract.baseSha === agent.baseSha &&
+					contract.branch === agent.branch &&
+					agent.repositoryRoot !== undefined &&
+					agent.worktreePath !== undefined &&
+					canonicalWorkspaceId(contract.repositoryRoot) === canonicalWorkspaceId(agent.repositoryRoot) &&
+					canonicalWorkspaceId(contract.worktreePath) === canonicalWorkspaceId(agent.worktreePath)
+				) {
+					contracts.push(contract);
+				}
+			} catch {
+				// Invalid contracts are excluded; the persisted resolution record still retains candidate evidence.
+			}
+		}
+		return contracts.sort((a, b) => {
+			if (a.taskId === candidateTaskId) return -1;
+			if (b.taskId === candidateTaskId) return 1;
+			return a.taskId.localeCompare(b.taskId);
+		});
 	}
 
 	summary(): AgentRuntimeSchedulerSummary {
@@ -1361,6 +1786,9 @@ export class AgentRuntimeScheduler {
 				.filter((task) => task.resources.length > 0)
 				.map((task) => this.getTaskResourceSummary(task.id))
 				.sort((a, b) => a.taskId.localeCompare(b.taskId)),
+			conflictResolutions: [...this.conflictResolutions.values()]
+				.map(cloneConflictResolution)
+				.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.attempt - b.attempt),
 			recentEvents: this.state.events.slice(-MAX_SUMMARY_SCHEDULER_EVENTS).map(cloneSchedulerEvent),
 			latestEventSequence: this.state.nextEventSequence - 1,
 		};
@@ -1375,6 +1803,7 @@ export class AgentRuntimeScheduler {
 			integrationWorkspaces: [...this.integrationWorkspaces.values()].map((workspace) => ({ ...workspace })),
 			resourceLeases: [...this.resourceLeases.values()].map(cloneResourceLease),
 			resourceBlocks: [...this.resourceBlocks.values()].map(cloneResourceBlock),
+			conflictResolutions: [...this.conflictResolutions.values()].map(cloneConflictResolution),
 			events: this.state.events.map(cloneSchedulerEvent),
 		};
 	}
@@ -1566,12 +1995,34 @@ export class AgentRuntimeScheduler {
 		return changed;
 	}
 
+	private markInterruptedResolutionsEscalated(): boolean {
+		let changed = false;
+		for (const record of this.conflictResolutions.values()) {
+			if (record.status !== "queued" && record.status !== "running") continue;
+			record.status = "escalated";
+			record.completedAt = this.timestamp();
+			record.error = "Scheduler restarted while the conflict resolver was active; evidence was preserved";
+			this.appendEvent({
+				type: "resolution_escalated",
+				resolutionId: record.id,
+				taskId: record.taskId,
+				agentId: record.agentId,
+				message: `${record.error}; user direction is required before reusing the interrupted workspace`,
+			});
+			changed = true;
+		}
+		return changed;
+	}
+
 	private loadState(): { snapshot: AgentRuntimeSchedulerSnapshot; migrated: boolean } | undefined {
 		if (!this.statePath || !existsSync(this.statePath)) return undefined;
 		const value = JSON.parse(readFileSync(this.statePath, "utf8")) as unknown;
 		return {
 			snapshot: parseSnapshot(value),
-			migrated: isRecord(value) && value.version === PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION,
+			migrated:
+				isRecord(value) &&
+				(value.version === PREVIOUS_AGENT_RUNTIME_SCHEDULER_STATE_VERSION ||
+					value.version === LEGACY_AGENT_RUNTIME_SCHEDULER_STATE_VERSION),
 		};
 	}
 
@@ -1583,6 +2034,7 @@ export class AgentRuntimeScheduler {
 		this.state.integrationWorkspaces = [...this.integrationWorkspaces.values()];
 		this.state.resourceLeases = [...this.resourceLeases.values()];
 		this.state.resourceBlocks = [...this.resourceBlocks.values()];
+		this.state.conflictResolutions = [...this.conflictResolutions.values()];
 		this.state.updatedAt = this.timestamp();
 		if (!this.statePath) return;
 		mkdirSync(dirname(this.statePath), { recursive: true });

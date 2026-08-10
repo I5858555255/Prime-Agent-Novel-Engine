@@ -146,7 +146,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			parts.push("Inspect files a child wrote when you need to collect its work without an observation capability.");
 		}
 		parts.push(
-			'Spawn independent children in separate calls and end your turn instead of awaiting completion. Declare exact exclusive scopes with `resources=["port:4100", "database:migrations"]` when tasks use integration-sensitive ports, databases, migrations, deployments, or other shared resources. Multiple replies may arrive over multiple turns. The host injects current ownership changes automatically; use `await rlm.scheduler_summary()` for the full persisted task, worker, resource, candidate, and integration state, and inspect `blockedResourceTasks` or `integrationRecords` for diagnostics. Delete only inactive direct children with `await rlm.delete_subagent(child)`; explicitly stop active work with `await rlm.cancel_subagent(child)` first.',
+			'Spawn independent children in separate calls and end your turn instead of awaiting completion. Declare exact exclusive scopes with `resources=["port:4100", "database:migrations"]` when tasks use integration-sensitive ports, databases, migrations, deployments, or other shared resources. Multiple replies may arrive over multiple turns. The host injects current ownership and conflict-resolution changes automatically; use `await rlm.scheduler_summary()` for the full persisted task, worker, resource, candidate, integration, and resolver state, and inspect `blockedResourceTasks`, `integrationRecords`, or `conflictResolutions` for diagnostics. Resolver attempts are bounded and gate-validated; when one is escalated, use its retained evidence to request user direction. Delete only inactive direct children with `await rlm.delete_subagent(child)`; explicitly stop active work with `await rlm.cancel_subagent(child)` first.',
 		);
 	}
 
@@ -185,7 +185,7 @@ export function buildSubagentGuidance(
 		);
 	}
 	lines.push(
-		"Declare integration-sensitive exclusive resources in `rlm(..., resources=[...])`. The host injects ownership changes automatically; use `await rlm.list_subagents()` after kernel restart or compaction and `await rlm.scheduler_summary()` for full persisted task readiness, active-worker state, resource ownership, retained Git candidates, and integration diagnostics.",
+		"Declare integration-sensitive exclusive resources in `rlm(..., resources=[...])`. The host injects ownership and conflict-resolution changes automatically; use `await rlm.list_subagents()` after kernel restart or compaction and `await rlm.scheduler_summary()` for full persisted task readiness, active-worker state, resource ownership, retained Git candidates, integration diagnostics, and bounded resolver evidence.",
 	);
 	if (options.hasAgentObserve) {
 		lines.push("Use `agent_observe` for bounded transcript inspection.");

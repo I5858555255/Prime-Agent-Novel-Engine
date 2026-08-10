@@ -174,22 +174,46 @@ function writeJsonAtomically(path: string, value: unknown): void {
 	renameSync(temporaryPath, path);
 }
 
-function requiredString(record: Record<string, unknown>, key: string): string {
+function requiredString(record: Record<string, unknown>, key: string, kind = "Agent result manifest"): string {
 	const value = record[key];
-	if (typeof value !== "string" || !value) throw new Error(`Agent result manifest has invalid ${key}`);
+	if (typeof value !== "string" || !value) throw new Error(`${kind} has invalid ${key}`);
 	return value;
 }
 
-function stringArray(record: Record<string, unknown>, key: string): string[] {
+function stringArray(record: Record<string, unknown>, key: string, kind = "Agent result manifest"): string[] {
 	const value = record[key];
 	if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-		throw new Error(`Agent result manifest has invalid ${key}`);
+		throw new Error(`${kind} has invalid ${key}`);
 	}
 	return [...value] as string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function parseAgentRuntimeTaskContract(value: unknown): AgentRuntimeTaskContract {
+	if (!isRecord(value)) throw new Error("Agent task contract must be an object");
+	if (value.version !== AGENT_RUNTIME_TASK_CONTRACT_VERSION || value.writeMode !== "write") {
+		throw new Error("Agent task contract has invalid version or write mode");
+	}
+	const kind = "Agent task contract";
+	return {
+		version: AGENT_RUNTIME_TASK_CONTRACT_VERSION,
+		runId: requiredString(value, "runId", kind),
+		taskId: requiredString(value, "taskId", kind),
+		agentId: requiredString(value, "agentId", kind),
+		objective: requiredString(value, "objective", kind),
+		acceptanceCriteria: stringArray(value, "acceptanceCriteria", kind),
+		expectedOutputs: stringArray(value, "expectedOutputs", kind),
+		writeMode: "write",
+		repositoryId: requiredString(value, "repositoryId", kind),
+		repositoryRoot: requiredString(value, "repositoryRoot", kind),
+		baseSha: requiredString(value, "baseSha", kind),
+		branch: requiredString(value, "branch", kind),
+		worktreePath: requiredString(value, "worktreePath", kind),
+		createdAt: requiredString(value, "createdAt", kind),
+	};
 }
 
 export function parseAgentRuntimeResultManifest(value: unknown): AgentRuntimeResultManifest {

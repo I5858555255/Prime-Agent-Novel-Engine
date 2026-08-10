@@ -3,6 +3,19 @@
  */
 
 export {
+	type AgentConflictResolutionExecutionResult,
+	type AgentConflictResolutionRecord,
+	type AgentConflictResolutionRequest,
+	type AgentConflictResolutionStatus,
+	type AgentConflictResolutionTrigger,
+	type AgentConflictResolutionWorkspace,
+	type AgentConflictResolverContext,
+	AgentConflictResolverManager,
+	type AgentConflictResolverRunner,
+	type AgentConflictResolverRunnerResult,
+	type CreateAgentConflictResolverManagerOptions,
+} from "./agent-conflict-resolver.js";
+export {
 	AGENT_RUNTIME_RESULT_MANIFEST_VERSION,
 	AGENT_RUNTIME_TASK_CONTRACT_VERSION,
 	type AgentGitRepositoryCapability,
@@ -12,6 +25,7 @@ export {
 	type AgentRuntimeTaskContract,
 	formatAgentRuntimeTaskPrompt,
 	parseAgentRuntimeResultManifest,
+	parseAgentRuntimeTaskContract,
 } from "./agent-git-worktree.js";
 export {
 	type AgentIntegrationGateResult,
@@ -21,6 +35,7 @@ export {
 	type AgentMergeOutcome,
 	type AgentMergeRequest,
 	type AgentMergeResult,
+	type AgentResolutionMergeRequest,
 	type CreateAgentMergeManagerOptions,
 } from "./agent-merge-manager.js";
 export {
