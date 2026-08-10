@@ -213,6 +213,8 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"set_auto_retry",
 	"compact",
 	"refine",
+	"harness_entries",
+	"set_harness_entry_enabled",
 	"abort_compaction",
 	"abort_branch_summary",
 	"abort_retry",

@@ -18,7 +18,7 @@ import type {
 } from "../../core/cron-jobs.js";
 import type { InputSource } from "../../core/extensions/types.js";
 import type { CustomMessage } from "../../core/messages.js";
-import type { HarnessScope } from "../../core/refinement/index.js";
+import type { HarnessScope, RefinementKind } from "../../core/refinement/index.js";
 import type { SessionCwdIssue } from "../../core/session-cwd.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import type { SettingsScope } from "../../core/settings-manager.js";
@@ -60,8 +60,9 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 13 narrows agent-origin reach and roster wire shapes to the nuclear family.
 // Revision 14 carries the client's monotonic telemetry opt-out on attach and reattach.
 // Revision 15 adds per-repository config scopes to refine and set_rlm_max_depth.
-export const DAEMON_SCHEMA_REVISION = 15;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-15-b41c2c59c2c1";
+// Revision 16 adds harness entry listing and enable/disable commands.
+export const DAEMON_SCHEMA_REVISION = 16;
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-16-af7b4a1e4c1f";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -103,7 +104,9 @@ export type DaemonServerCapability =
 	// The daemon honors per-project config scopes: `scope` on refine (local,
 	// project, or global harness store) and on set_rlm_max_depth (project or
 	// global settings file). Clients must check before requesting project scope.
-	| "config_scopes";
+	| "config_scopes"
+	// The daemon can list harness entries and toggle their enabled flag.
+	| "harness_entries";
 
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
 
@@ -142,6 +145,7 @@ export const DAEMON_DEFAULT_SERVER_CAPABILITIES: readonly DaemonServerCapability
 	"session_input_admission",
 	"prompt_admission_cancellation",
 	"config_scopes",
+	"harness_entries",
 ];
 
 export interface DaemonRuntimeIdentity {
@@ -559,6 +563,16 @@ export type DaemonCommand =
 	| { id?: string; type: "set_auto_compaction"; activeSessionId: string; enabled: boolean }
 	| { id?: string; type: "set_auto_retry"; activeSessionId: string; enabled: boolean }
 	| { id?: string; type: "compact"; activeSessionId: string; customInstructions?: string }
+	| { id?: string; type: "harness_entries"; activeSessionId: string }
+	| {
+			id?: string;
+			type: "set_harness_entry_enabled";
+			activeSessionId: string;
+			kind: RefinementKind;
+			entryId: string;
+			enabled: boolean;
+			scope: HarnessScope;
+	  }
 	| {
 			id?: string;
 			type: "refine";
@@ -652,6 +666,10 @@ const DELETE_RLM_SUBAGENT_COMMAND = {
 	capability: "delete_rlm_subagent",
 } as const;
 const FLAT_SESSION_TREE_COMMAND = { minProtocol: 7 } as const;
+const HARNESS_ENTRY_COMMAND = {
+	minProtocol: 7,
+	capability: "harness_entries",
+} as const;
 const TELEMETRY_POLICY_COMMAND = { minProtocol: 7, minSchemaRevision: 14 } as const;
 
 export const DAEMON_COMMAND_COMPATIBILITY = {
@@ -723,6 +741,8 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	set_auto_retry: CURRENT_DAEMON_COMMAND,
 	compact: LEGACY_DAEMON_COMMAND,
 	refine: LEGACY_DAEMON_COMMAND,
+	harness_entries: HARNESS_ENTRY_COMMAND,
+	set_harness_entry_enabled: HARNESS_ENTRY_COMMAND,
 	abort_compaction: LEGACY_DAEMON_COMMAND,
 	abort_branch_summary: LEGACY_DAEMON_COMMAND,
 	abort_retry: LEGACY_DAEMON_COMMAND,
@@ -1060,6 +1080,7 @@ const READ_ONLY_DAEMON_COMMANDS: ReadonlySet<DaemonCommand["type"]> = new Set([
 	"get_system_prompt",
 	"get_rlm_max_depth_status",
 	"get_tool_definition",
+	"harness_entries",
 ]);
 
 export function isDaemonMutatingCommand(command: Pick<DaemonCommand, "type">): boolean {

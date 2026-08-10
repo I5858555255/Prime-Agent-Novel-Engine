@@ -201,21 +201,25 @@ import {
 	getProjectHarnessStateDir,
 	getRefinementHistory,
 	HARNESS_SCOPES,
+	type HarnessEntrySummary,
 	type HarnessScope,
 	type HarnessState,
 	inferRefinementResultScope,
+	listHarnessEntrySummaries,
 	loadHarnessState,
 	loadSharedRefinementHistory,
 	mergeHarnessStates,
 	mergeRefinementHistory,
 	planRefinement,
 	REFINE_SKILL_NAME,
+	type RefinementKind,
 	type RefinementPlan,
 	type RefinementResult,
 	type RefineOptions,
 	reviewAutoRefine,
 	type ScopedHarnessStates,
 	saveHarnessState,
+	setHarnessEntryEnabled as setHarnessEntryEnabledInState,
 } from "./refinement/index.js";
 import { resolveConfigValue } from "./resolve-config-value.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
@@ -7622,6 +7626,41 @@ export class AgentSession {
 	/** Global harness state overlaid with the project store and this session's local state. */
 	private _loadMergedHarnessState(): HarnessState {
 		return mergeHarnessStates(this._loadScopedHarnessStates());
+	}
+
+	/** Every stored harness entry across the three scopes, for `/harness`. */
+	listHarnessEntries(): HarnessEntrySummary[] {
+		const states = this._loadScopedHarnessStates();
+		return HARNESS_SCOPES.flatMap((scope) => {
+			const state = states[scope];
+			return state ? listHarnessEntrySummaries(state, scope) : [];
+		});
+	}
+
+	/**
+	 * Enable or disable one stored harness entry. A disabled entry stays on disk and
+	 * stays rollback-able, but is kept out of the system prompt, so a disabled
+	 * subagent spec is no longer offered for delegation.
+	 */
+	setHarnessEntryEnabled(
+		kind: RefinementKind,
+		id: string,
+		enabled: boolean,
+		scope: HarnessScope,
+	): HarnessEntrySummary {
+		const harnessStateDir = this._harnessStateDirForScope(scope);
+		if (!harnessStateDir) {
+			throw new Error("This session has no local harness store; use the project or global scope instead.");
+		}
+		const state = loadHarnessState(harnessStateDir, scope);
+		const summary = setHarnessEntryEnabledInState(state, kind, id, enabled, scope);
+		if (!summary) {
+			throw new Error(`No ${scope} harness ${kind} entry named "${id}".`);
+		}
+		saveHarnessState(harnessStateDir, state);
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		return summary;
 	}
 
 	private _loadRefinementHistory(): RefinementResult[] {

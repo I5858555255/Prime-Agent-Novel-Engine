@@ -16,7 +16,12 @@ import type { ReplayBuiltInToolName } from "../../core/extensions/index.js";
 import type { InputSource } from "../../core/extensions/types.js";
 import type { GoalState } from "../../core/goals.js";
 import type { KernelSentAgentMessage } from "../../core/kernel/index.js";
-import type { HarnessScope, RefinementResult } from "../../core/refinement/index.js";
+import type {
+	HarnessEntrySummary,
+	HarnessScope,
+	RefinementKind,
+	RefinementResult,
+} from "../../core/refinement/index.js";
 import type { RlmMaxDepthStatus, SetRlmMaxDepthResult } from "../../core/rlm-max-depth.js";
 import type { SessionActionSnapshot } from "../../core/session-action-store.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
@@ -710,6 +715,13 @@ export interface AgentConnection {
 
 	compact(customInstructions?: string): Promise<CompactionResult>;
 	refine(options?: { instructions?: string; rollbackId?: string; scope?: HarnessScope }): Promise<RefinementResult>;
+	listHarnessEntries(): Promise<HarnessEntrySummary[]>;
+	setHarnessEntryEnabled(
+		kind: RefinementKind,
+		entryId: string,
+		enabled: boolean,
+		scope: HarnessScope,
+	): Promise<HarnessEntrySummary>;
 	abortCompaction(): Promise<void>;
 	abortBranchSummary(): Promise<void>;
 	abortRetry(): Promise<void>;

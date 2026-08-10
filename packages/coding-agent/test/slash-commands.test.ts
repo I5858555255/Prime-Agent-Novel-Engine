@@ -5,10 +5,12 @@ import {
 	builtinSlashCommandTakesArgument,
 	isBuiltinSlashCommandName,
 	isSessionSlashCommandName,
+	parseHarnessCommandOptions,
 	parseRefineCommandOptions,
 	parseSessionSlashCommand,
 	parseSlashCommand,
 	resolveBuiltinSlashCommandName,
+	resolveHarnessEntryReference,
 	resolveSlashCommand,
 	SESSION_SLASH_COMMAND_NAMES,
 } from "../src/core/slash-commands.js";
@@ -215,6 +217,34 @@ describe("session slash commands", () => {
 			expect(parseSessionSlashCommand(`/goal\t${lineTerminator}ship it`)).toBeUndefined();
 			expect(parseSessionSlashCommand(`/autonomous\t${lineTerminator}on`)).toBeUndefined();
 		}
+	});
+
+	test("parses harness command actions and resolves entry references", () => {
+		expect(parseHarnessCommandOptions("")).toEqual({ action: "list" });
+		expect(parseHarnessCommandOptions("list")).toEqual({ action: "list" });
+		expect(parseHarnessCommandOptions("disable api-reviewer")).toEqual({
+			action: "disable",
+			reference: "api-reviewer",
+		});
+		expect(parseHarnessCommandOptions("enable project:subagent:api-reviewer")).toEqual({
+			action: "enable",
+			reference: "project:subagent:api-reviewer",
+		});
+		for (const args of ["disable", "enable", "toggle api-reviewer"]) {
+			expect(() => parseHarnessCommandOptions(args)).toThrow("Usage: /harness");
+		}
+
+		const entries = [
+			{ kind: "subagent", id: "reviewer", scope: "project", enabled: true, title: "Project reviewer" },
+			{ kind: "subagent", id: "reviewer", scope: "global", enabled: true, title: "Global reviewer" },
+			{ kind: "memory", id: "notes", scope: "local", enabled: false, title: "Notes" },
+		];
+
+		expect(resolveHarnessEntryReference(entries, "notes")).toMatchObject({ id: "notes", scope: "local" });
+		expect(resolveHarnessEntryReference(entries, "global:reviewer")).toMatchObject({ scope: "global" });
+		expect(resolveHarnessEntryReference(entries, "project:subagent:reviewer")).toMatchObject({ scope: "project" });
+		expect(() => resolveHarnessEntryReference(entries, "reviewer")).toThrow("matches several harness entries");
+		expect(() => resolveHarnessEntryReference(entries, "missing")).toThrow("No harness entry matches");
 	});
 
 	test("parses refine rollback ids and scope flag placement without consuming instruction text", () => {

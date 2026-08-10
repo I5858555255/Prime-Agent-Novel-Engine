@@ -988,6 +988,58 @@ describe("AgentSession queue characterization", () => {
 		}
 	});
 
+	it("disables a stored harness entry without deleting it", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = `${harness.tempDir}/agent`;
+		try {
+			const projectDir = getProjectHarnessStateDir(harness.tempDir);
+			const state = loadHarnessState(projectDir, "project");
+			applyRefinementProposal(
+				state,
+				{
+					summary: "seed",
+					rationale: "seed",
+					expectedOutcome: "seeded",
+					edits: [
+						{
+							action: "create",
+							kind: "subagent",
+							id: "api_reviewer",
+							title: "API reviewer",
+							content: "Reviews API diffs.",
+						},
+					],
+				},
+				{ id: "seed_project", scope: "project" },
+			);
+			saveHarnessState(projectDir, state);
+
+			expect(harness.session.listHarnessEntries()).toEqual([
+				expect.objectContaining({ kind: "subagent", id: "api_reviewer", scope: "project", enabled: true }),
+			]);
+
+			const disabled = harness.session.setHarnessEntryEnabled("subagent", "api_reviewer", false, "project");
+
+			expect(disabled).toMatchObject({ id: "api_reviewer", enabled: false });
+			expect(loadHarnessState(projectDir, "project").entries.subagent.api_reviewer.enabled).toBe(false);
+			expect(harness.session.systemPrompt).not.toContain("[project:api_reviewer]");
+			expect(() => harness.session.setHarnessEntryEnabled("subagent", "missing", false, "project")).toThrow(
+				'No project harness subagent entry named "missing"',
+			);
+
+			harness.session.setHarnessEntryEnabled("subagent", "api_reviewer", true, "project");
+			expect(harness.session.systemPrompt).toContain("[project:api_reviewer]");
+		} finally {
+			if (previousAgentDir === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = previousAgentDir;
+			}
+		}
+	});
+
 	it("rolls back copied local refinement history against the original local harness state", async () => {
 		const original = await createAutoRefineHarness();
 		const branched = await createAutoRefineHarness();

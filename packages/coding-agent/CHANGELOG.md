@@ -10,6 +10,7 @@
 - Changed `rlmMaxDepth` to be read from project settings before global settings, and `/rlm-max-depth` to accept `--project` alongside `--global`.
 - Changed project settings, `SYSTEM.md`, and `APPEND_SYSTEM.md` to resolve against the project root, so running Prime Agent from a subdirectory uses the repository's configuration.
 - Changed the harness Python API from `global_=True` to `scope="local"|"project"|"global"` on `rlm.harness.*`, `rlm.get_harness_state()`, and `refine.run()`.
+- Added enable/disable for continual harness entries, so a subagent spec can be retired without deleting it: `/harness`, `/harness disable <entry>`, `rlm.harness.disable_subagent(...)`, and `"enabled": false` refinement edits. Disabled entries are hidden from the system prompt.
 
 ## [0.7.1] - 2026-08-07
 

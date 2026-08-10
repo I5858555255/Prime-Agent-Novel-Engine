@@ -14,7 +14,12 @@ import type {
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
 import type { ExtensionUIContext } from "../../core/extensions/types.js";
-import type { HarnessScope, RefinementResult } from "../../core/refinement/index.js";
+import type {
+	HarnessEntrySummary,
+	HarnessScope,
+	RefinementKind,
+	RefinementResult,
+} from "../../core/refinement/index.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "../../core/session-file-actions.js";
 import { SessionManager } from "../../core/session-manager.js";
 import type { SessionStats } from "../../core/session-stats.js";
@@ -459,6 +464,19 @@ export class InProcessAgentConnection implements AgentConnection {
 		options: { instructions?: string; rollbackId?: string; scope?: HarnessScope } = {},
 	): Promise<RefinementResult> {
 		return this.session.refine(options);
+	}
+
+	async listHarnessEntries(): Promise<HarnessEntrySummary[]> {
+		return this.session.listHarnessEntries();
+	}
+
+	async setHarnessEntryEnabled(
+		kind: RefinementKind,
+		entryId: string,
+		enabled: boolean,
+		scope: HarnessScope,
+	): Promise<HarnessEntrySummary> {
+		return this.session.setHarnessEntryEnabled(kind, entryId, enabled, scope);
 	}
 
 	async abortCompaction(): Promise<void> {

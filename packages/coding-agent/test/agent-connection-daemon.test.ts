@@ -398,6 +398,42 @@ class FakeDaemonClient {
 					success: true,
 					data: { ok: true, method: "trash" },
 				};
+			case "harness_entries":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: {
+						entries: [
+							{
+								kind: "subagent",
+								id: "reviewer",
+								scope: "project",
+								title: "Reviewer",
+								path: "general",
+								enabled: true,
+								version: 1,
+							},
+						],
+					},
+				};
+			case "set_harness_entry_enabled":
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: {
+						entry: {
+							kind: command.kind,
+							id: command.entryId,
+							scope: command.scope,
+							title: "Reviewer",
+							path: "general",
+							enabled: command.enabled,
+							version: 2,
+						},
+					},
+				};
 			case "set_rlm_max_depth":
 				return {
 					type: "response",
@@ -970,6 +1006,36 @@ describe("DaemonAgentConnection", () => {
 		expect(newDaemonClient.requests.at(-1)).toMatchObject({
 			type: "set_rlm_max_depth",
 			maxDepth: 2,
+			scope: "project",
+		});
+	});
+
+	it("gates harness entry management on the daemon capability", async () => {
+		const oldDaemonClient = new FakeDaemonClient();
+		const oldConnection = new DaemonAgentConnection(asDaemonClient(oldDaemonClient), "active-original");
+
+		await expect(oldConnection.listHarnessEntries()).rejects.toThrow("older build without harness entry management");
+		await expect(oldConnection.setHarnessEntryEnabled("subagent", "reviewer", false, "project")).rejects.toThrow(
+			"older build without harness entry management",
+		);
+		expect(oldDaemonClient.requests).toHaveLength(0);
+
+		const newDaemonClient = new FakeDaemonClient();
+		newDaemonClient.serverCapabilities.add("harness_entries");
+		const newConnection = new DaemonAgentConnection(asDaemonClient(newDaemonClient), "active-original");
+
+		expect(await newConnection.listHarnessEntries()).toEqual([
+			expect.objectContaining({ kind: "subagent", id: "reviewer" }),
+		]);
+		expect(await newConnection.setHarnessEntryEnabled("subagent", "reviewer", false, "project")).toMatchObject({
+			id: "reviewer",
+			enabled: false,
+		});
+		expect(newDaemonClient.requests.at(-1)).toMatchObject({
+			type: "set_harness_entry_enabled",
+			kind: "subagent",
+			entryId: "reviewer",
+			enabled: false,
 			scope: "project",
 		});
 	});

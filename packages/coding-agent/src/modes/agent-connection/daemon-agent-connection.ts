@@ -14,7 +14,12 @@ import type {
 	AgentHeartbeatManagementAction,
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
-import type { HarnessScope, RefinementResult } from "../../core/refinement/index.js";
+import type {
+	HarnessEntrySummary,
+	HarnessScope,
+	RefinementKind,
+	RefinementResult,
+} from "../../core/refinement/index.js";
 import type { RlmMaxDepthStatus, SetRlmMaxDepthResult } from "../../core/rlm-max-depth.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import { SessionAlreadyActiveError } from "../../core/session-lease.js";
@@ -1068,6 +1073,41 @@ export class DaemonAgentConnection implements AgentConnection {
 			}
 		}
 		return this.requestData<RefinementResult>(command, DAEMON_REFINE_REQUEST_TIMEOUT_MS);
+	}
+
+	private assertHarnessEntrySupport(): void {
+		if (!this.client.supportsServerCapability("harness_entries")) {
+			throw new Error(
+				"the daemon is running an older build without harness entry management; restart the daemon and try again",
+			);
+		}
+	}
+
+	async listHarnessEntries(): Promise<HarnessEntrySummary[]> {
+		this.assertHarnessEntrySupport();
+		const { entries } = await this.requestData<{ entries: HarnessEntrySummary[] }>({
+			type: "harness_entries",
+			activeSessionId: this.activeSessionId,
+		});
+		return entries;
+	}
+
+	async setHarnessEntryEnabled(
+		kind: RefinementKind,
+		entryId: string,
+		enabled: boolean,
+		scope: HarnessScope,
+	): Promise<HarnessEntrySummary> {
+		this.assertHarnessEntrySupport();
+		const { entry } = await this.requestData<{ entry: HarnessEntrySummary }>({
+			type: "set_harness_entry_enabled",
+			activeSessionId: this.activeSessionId,
+			kind,
+			entryId,
+			enabled,
+			scope,
+		});
+		return entry;
 	}
 
 	async abortCompaction(): Promise<void> {

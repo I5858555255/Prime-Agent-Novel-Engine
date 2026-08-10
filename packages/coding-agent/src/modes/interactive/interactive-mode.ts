@@ -122,8 +122,10 @@ import {
 	BUILTIN_SLASH_COMMANDS,
 	builtinSlashCommandTakesArgument,
 	isBuiltinSlashCommandName,
+	parseHarnessCommandOptions,
 	parseSlashCommand,
 	resolveBuiltinSlashCommandName,
+	resolveHarnessEntryReference,
 } from "../../core/slash-commands.js";
 import {
 	captureAgentCommandUsed,
@@ -4692,6 +4694,12 @@ export class InteractiveMode {
 					await this.handleRlmMaxDepthCommand(commandArgs);
 					return;
 				}
+				if (commandName === "harness") {
+					this.echoLocalCommand(text);
+					this.editor.setText("");
+					await this.handleHarnessCommand(commandArgs);
+					return;
+				}
 				if (commandName === "session" && !commandArgs) {
 					this.echoLocalCommand(text);
 					await this.handleSessionCommand();
@@ -8838,6 +8846,56 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${name}`), 1, 0));
 		this.ui.requestRender();
+	}
+
+	private async handleHarnessCommand(args: string): Promise<void> {
+		try {
+			const options = parseHarnessCommandOptions(args);
+			const entries = await this.agentConnection.listHarnessEntries();
+
+			if (options.action === "list") {
+				if (entries.length === 0) {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(theme.fg("dim", "No continual harness entries yet."), 1, 0));
+					this.ui.requestRender();
+					return;
+				}
+				const lines = [theme.bold("Continual Harness Entries"), ""];
+				for (const entry of entries) {
+					const marker = entry.enabled ? "[x]" : "[ ]";
+					const state = entry.enabled ? "" : theme.fg("dim", " (disabled)");
+					lines.push(`${marker} ${entry.scope}:${entry.kind}:${entry.id} — ${entry.title}${state}`);
+				}
+				lines.push("", theme.fg("dim", "Toggle with /harness disable <entry> or /harness enable <entry>."));
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+				this.ui.requestRender();
+				return;
+			}
+
+			const target = resolveHarnessEntryReference(entries, options.reference!);
+			const enabled = options.action === "enable";
+			const updated = await this.agentConnection.setHarnessEntryEnabled(
+				target.kind,
+				target.id,
+				enabled,
+				target.scope,
+			);
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(
+				new Text(
+					theme.fg(
+						"dim",
+						`${updated.enabled ? "Enabled" : "Disabled"} ${updated.scope}:${updated.kind}:${updated.id}`,
+					),
+					1,
+					0,
+				),
+			);
+			this.ui.requestRender();
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	private async handleRlmMaxDepthCommand(args: string): Promise<void> {

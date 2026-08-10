@@ -16,6 +16,7 @@ import {
 	getRefinementHistoryPath,
 	type HarnessState,
 	inferRefinementResultScope,
+	listHarnessEntrySummaries,
 	loadHarnessState,
 	loadSharedRefinementHistory,
 	mergeHarnessStates,
@@ -27,6 +28,7 @@ import {
 	type RefinementResult,
 	refineHarness,
 	saveHarnessState,
+	setHarnessEntryEnabled,
 } from "../src/core/refinement/index.js";
 import type { CustomEntry } from "../src/core/session-manager.js";
 
@@ -608,6 +610,80 @@ describe("harness refinement", () => {
 		expect(promptOverview).toContain("[global:shared]");
 		expect(promptOverview).toContain("[local:shared]");
 		expect(globalState.entries.memory.shared.scope).toBe("global");
+	});
+
+	it("hides disabled entries from the system prompt but keeps them stored", () => {
+		const state = loadHarnessState(makeTempDir(), "project");
+		applyRefinementProposal(
+			state,
+			proposal("Two subagent specs", [
+				{
+					action: "create",
+					kind: "subagent",
+					id: "api_reviewer",
+					title: "API reviewer",
+					content: "Reviews API diffs.",
+				},
+				{
+					action: "create",
+					kind: "subagent",
+					id: "retired_runner",
+					title: "Retired runner",
+					content: "Runs the old pipeline.",
+				},
+			]),
+			{ id: "refine_specs", scope: "project" },
+		);
+
+		const summary = setHarnessEntryEnabled(state, "subagent", "retired_runner", false, "project");
+
+		expect(summary).toMatchObject({ kind: "subagent", id: "retired_runner", enabled: false, scope: "project" });
+		expect(state.entries.subagent.retired_runner).toBeDefined();
+
+		const promptOverview = formatHarnessStateForPrompt(state);
+		expect(promptOverview).toContain("[project:api_reviewer]");
+		// Only the refinement-history line may still name it; the roster must not.
+		expect(promptOverview).not.toContain("[project:retired_runner]");
+		expect(promptOverview).not.toContain("Runs the old pipeline");
+		expect(promptOverview).toContain("subagent: 1 (+1 disabled, not available)");
+
+		expect(setHarnessEntryEnabled(state, "subagent", "retired_runner", true, "project")).toMatchObject({
+			enabled: true,
+		});
+		expect(formatHarnessStateForPrompt(state)).toContain("[project:retired_runner]");
+		expect(setHarnessEntryEnabled(state, "subagent", "missing", false, "project")).toBeUndefined();
+	});
+
+	it("disables an entry through a refinement edit instead of deleting it", () => {
+		const state = loadHarnessState(makeTempDir(), "local");
+		applyRefinementProposal(
+			state,
+			proposal("Spec", [
+				{ action: "create", kind: "subagent", id: "flaky", title: "Flaky", content: "Unreliable spec." },
+			]),
+			{ id: "refine_create", scope: "local" },
+		);
+
+		const result = applyRefinementProposal(
+			state,
+			proposal("Retire the flaky spec", [
+				{
+					action: "update",
+					kind: "subagent",
+					id: "flaky",
+					title: "Flaky",
+					content: "Unreliable spec.",
+					enabled: false,
+				},
+			]),
+			{ id: "refine_disable", scope: "local" },
+		);
+
+		expect(result.appliedEdits[0]).toMatchObject({ applied: true });
+		expect(state.entries.subagent.flaky.enabled).toBe(false);
+		expect(listHarnessEntrySummaries(state, "local")).toEqual([
+			expect.objectContaining({ kind: "subagent", id: "flaky", enabled: false }),
+		]);
 	});
 
 	it("preserves entry scope stored inside the global harness file", () => {

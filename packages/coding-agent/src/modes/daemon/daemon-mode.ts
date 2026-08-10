@@ -303,6 +303,8 @@ const DAEMON_COMMAND_TYPES: ReadonlySet<string> = new Set([
 	"set_auto_retry",
 	"compact",
 	"refine",
+	"harness_entries",
+	"set_harness_entry_enabled",
 	"abort_compaction",
 	"abort_branch_summary",
 	"abort_retry",
@@ -4345,6 +4347,25 @@ export class AgentDaemon {
 				const state = this.getSessionState(command.activeSessionId);
 				const result = await state.runtime.session.compact(command.customInstructions);
 				return success(command.id, "compact", result);
+			}
+
+			case "harness_entries": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "harness_entries", {
+					entries: state.runtime.session.listHarnessEntries(),
+				});
+			}
+
+			case "set_harness_entry_enabled": {
+				const state = this.getSessionState(command.activeSessionId);
+				return success(command.id, "set_harness_entry_enabled", {
+					entry: state.runtime.session.setHarnessEntryEnabled(
+						command.kind,
+						command.entryId,
+						command.enabled,
+						command.scope,
+					),
+				});
 			}
 
 			case "refine": {

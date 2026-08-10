@@ -41,6 +41,8 @@ export interface HarnessEntry {
 	content: string;
 	path: string;
 	scope?: HarnessScope;
+	/** Disabled entries stay stored and rollback-able but are kept out of the system prompt. */
+	enabled?: boolean;
 	reference: Record<string, unknown>;
 	arguments: Record<string, unknown>;
 	metadata: Record<string, unknown>;
@@ -72,6 +74,7 @@ export interface RefinementEdit {
 	title?: string;
 	content?: string;
 	path?: string;
+	enabled?: boolean;
 	reference?: Record<string, unknown>;
 	arguments?: Record<string, unknown>;
 	metadata?: Record<string, unknown>;
@@ -148,6 +151,7 @@ Scope and persistence policy:
 - Entry ids in the harness overview may carry a display-only \`local:\`, \`project:\`, or \`global:\` prefix. Always use the bare id (no prefix) in edits.
 - All edits in one refinement apply only to the requested scope's store. Entries from the other scopes are read-only context: never propose update or delete edits for them; create an entry in the requested scope instead when an override is genuinely needed.
 - Use memory for declarative facts and preferences, skill for repeatable procedures exposed as Python calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.
+- Entries carry an \`enabled\` flag. A disabled entry stays stored but is hidden from the system prompt, so a disabled subagent spec is never available for delegation. Prefer an update edit with \`"enabled": false\` over delete when an entry may become useful again, and re-enable with \`"enabled": true\`. Entries marked \`[disabled]\` in the overview are currently inactive; do not recreate them under a new id.
 - Create or update the smallest relevant component: repeated delegation roles should become subagent specs, repeated procedures should become skills, durable facts/preferences should become memories, and narrow behavioral policies should become prompt addendums.
 - When an edit is persisted, include metadata such as \`{"scope":"local"}\`, \`{"scope":"project"}\`, or \`{"scope":"global"}\` when that helps future review understand the intended blast radius.
 
@@ -168,6 +172,7 @@ JSON only with this exact shape:
       "title": "required for create/update except delete",
       "content": "required for create/update except delete",
       "path": "optional grouping path",
+      "enabled": "optional boolean; false disables the entry without deleting it",
       "reference": {"type": "python", "import": "package.module", "callable": "function_name", "call_pattern": "await function_name(...)"},
       "arguments": {"name": {"type": "string", "required": true, "description": "accepted input"}},
       "metadata": {},
@@ -250,6 +255,67 @@ function normalizeHarnessScope(value: unknown, fallback: HarnessScope): HarnessS
 	return HARNESS_SCOPES.includes(value as HarnessScope) ? (value as HarnessScope) : fallback;
 }
 
+/** Entries are enabled unless explicitly disabled, so pre-existing state keeps working. */
+export function isHarnessEntryEnabled(entry: HarnessEntry): boolean {
+	return entry.enabled !== false;
+}
+
+/** One harness entry as shown by `/harness`, without its full content. */
+export interface HarnessEntrySummary {
+	kind: RefinementKind;
+	id: string;
+	scope: HarnessScope;
+	title: string;
+	path: string;
+	enabled: boolean;
+	version: number;
+}
+
+function toHarnessEntrySummary(entry: HarnessEntry, scope: HarnessScope, id: string): HarnessEntrySummary {
+	return {
+		kind: entry.kind,
+		id: entry.id || id,
+		scope: entry.scope ?? scope,
+		title: entry.title,
+		path: entry.path,
+		enabled: isHarnessEntryEnabled(entry),
+		version: entry.version,
+	};
+}
+
+/** Flatten one scope's store into summaries, sorted the way `/harness` lists them. */
+export function listHarnessEntrySummaries(state: HarnessState, scope: HarnessScope): HarnessEntrySummary[] {
+	const summaries: HarnessEntrySummary[] = [];
+	for (const kind of Object.keys(state.entries) as RefinementKind[]) {
+		for (const [id, entry] of Object.entries(state.entries[kind])) {
+			summaries.push(toHarnessEntrySummary(entry, scope, id));
+		}
+	}
+	return summaries.sort(
+		(a, b) => a.kind.localeCompare(b.kind) || a.path.localeCompare(b.path) || a.id.localeCompare(b.id),
+	);
+}
+
+/**
+ * Flip one entry's enabled flag in place. Returns the updated summary, or
+ * undefined when the store has no such entry.
+ */
+export function setHarnessEntryEnabled(
+	state: HarnessState,
+	kind: RefinementKind,
+	id: string,
+	enabled: boolean,
+	scope: HarnessScope,
+): HarnessEntrySummary | undefined {
+	const entry = state.entries[kind]?.[id];
+	if (!entry) {
+		return undefined;
+	}
+	entry.enabled = enabled;
+	entry.updated_at = now();
+	return toHarnessEntrySummary(entry, scope, id);
+}
+
 export function inferRefinementResultScope(result: RefinementResult): HarnessScope | undefined {
 	if (result.scope) {
 		return result.scope;
@@ -319,6 +385,7 @@ export function loadHarnessState(
 				state.entries[kind][id] = {
 					...(entry as unknown as HarnessEntry),
 					scope: normalizeHarnessScope(entry.scope, scope),
+					enabled: entry.enabled !== false,
 					reference: objectRecord(entry.reference) ?? {},
 					arguments: objectRecord(entry.arguments) ?? {},
 					metadata: objectRecord(entry.metadata) ?? {},
@@ -486,19 +553,24 @@ export function formatHarnessStateForPrompt(
 
 	let totalEntries = 0;
 	for (const kind of Object.keys(state.entries) as RefinementKind[]) {
-		const entries = Object.values(state.entries[kind]).sort((a, b) =>
+		const allEntries = Object.values(state.entries[kind]).sort((a, b) =>
 			[a.path, a.title, a.id].join("\0").localeCompare([b.path, b.title, b.id].join("\0")),
 		);
+		// Disabled entries stay stored but must not be advertised: a disabled subagent
+		// spec should never be matched against a task.
+		const entries = allEntries.filter(isHarnessEntryEnabled);
+		const disabledCount = allEntries.length - entries.length;
+		const disabledSuffix = disabledCount > 0 ? ` (+${disabledCount} disabled, not available)` : "";
 		totalEntries += entries.length;
 		// Render subagent specs as a task-shaped roster the model can match against — the
 		// analogue of Claude Code's agent-type menu — rather than a bare count. In
 		// IPython sessions, include the native `rlm` invocation hint.
 		if (kind === "subagent" && entries.length > 0 && includeIpythonExamples) {
 			lines.push(
-				`${kind}: ${entries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
+				`${kind}: ${entries.length}${disabledSuffix} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
 			);
 		} else {
-			lines.push(`${kind}: ${entries.length}`);
+			lines.push(`${kind}: ${entries.length}${disabledSuffix}`);
 		}
 		for (const entry of entries.slice(0, maxEntriesPerKind)) {
 			const argumentsText =
@@ -556,8 +628,9 @@ function overviewForPrompt(state: HarnessState): string {
 				entry.kind === "skill" && Object.keys(entry.reference).length > 0
 					? ` ref=${JSON.stringify(entry.reference).slice(0, 240)}`
 					: "";
+			const disabledText = isHarnessEntryEnabled(entry) ? "" : " [disabled]";
 			lines.push(
-				`- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${content}`,
+				`- [${entry.scope ?? "global"}:${entry.id}]${disabledText} ${entry.title} (${entry.path}, v${entry.version})${referenceText}${argumentsText}: ${content}`,
 			);
 		}
 		if (entries.length > 40) {
@@ -672,6 +745,7 @@ function parseProposal(text: string): RefinementProposal {
 				title: typeof edit.title === "string" ? edit.title : undefined,
 				content: typeof edit.content === "string" ? edit.content : undefined,
 				path: typeof edit.path === "string" ? edit.path : undefined,
+				enabled: typeof edit.enabled === "boolean" ? edit.enabled : undefined,
 				reference: objectRecord(edit.reference),
 				arguments: objectRecord(edit.arguments),
 				metadata:
@@ -788,6 +862,7 @@ export function applyRefinementProposal(
 			content: edit.content ?? before?.content ?? "",
 			path: edit.path ?? before?.path ?? "general",
 			scope: before?.scope ?? options.scope ?? "local",
+			enabled: edit.enabled ?? before?.enabled ?? true,
 			reference: edit.reference ?? before?.reference ?? {},
 			arguments: edit.arguments ?? before?.arguments ?? {},
 			metadata: edit.metadata ?? before?.metadata ?? {},
@@ -835,6 +910,7 @@ function rollbackProposal(target: RefinementResult): RefinementProposal {
 				title: edit.before.title,
 				content: edit.before.content,
 				path: edit.before.path,
+				enabled: edit.before.enabled,
 				reference: edit.before.reference,
 				arguments: edit.before.arguments,
 				metadata: edit.before.metadata,

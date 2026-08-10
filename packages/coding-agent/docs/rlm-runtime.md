@@ -225,6 +225,22 @@ await refine.run("record how this repository runs its tests", scope="project")
 
 The kernel resolves scopes from `RLM_HARNESS_STATE_DIR`/`RLM_SESSION_DIR` (local), `RLM_PROJECT_HARNESS_STATE_DIR` (project), and `RLM_GLOBAL_HARNESS_STATE_DIR` (global). The Python store reloads after external modification so host-side `/refine` writes and kernel writes do not overwrite each other.
 
+Entries carry an `enabled` flag. A disabled entry stays on disk and stays rollback-able, but is hidden from the system prompt, so a disabled subagent spec is never offered for delegation:
+
+```text
+/harness                                  # list entries with their scope and state
+/harness disable project:subagent:api_reviewer
+/harness enable api_reviewer
+```
+
+```python
+rlm.harness.disable_subagent("api_reviewer")
+rlm.harness.enable_subagent("api_reviewer")
+rlm.harness.set_enabled("memory", "stale_note", False, scope="global")
+```
+
+`/refine` can also disable an entry with an update edit carrying `"enabled": false` instead of deleting it.
+
 `/refine` runs a dedicated review over the current trajectory and applies small create/update/delete edits. `/refine --project` and `/refine --global` select the target store. Rollback uses recorded before/after snapshots; project and global refinements are also recorded in `refinements.jsonl` next to their store so they can be rolled back from a later session. The base system prompt remains immutable; refinements are supplemental state.
 
 ## Goal Requests

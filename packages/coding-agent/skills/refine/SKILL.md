@@ -31,6 +31,21 @@ await refine.run("promote the error-handling pattern to a global skill", scope="
   the default), `"project"` (this repository, across sessions), or `"global"`
   (every session and project).
 
+## Disabling entries
+
+Refinement can retire an entry without deleting it by updating it with
+`"enabled": false`; disabled entries stay stored and rollback-able but are hidden
+from the system prompt, so a disabled subagent spec is no longer available for
+delegation. From the kernel, toggle directly:
+
+```python
+rlm.harness.disable_subagent("api_reviewer")
+rlm.harness.enable_subagent("api_reviewer")
+rlm.harness.set_enabled("memory", "stale_note", False, scope="global")
+```
+
+Users can do the same from the TUI with `/harness disable <entry>`.
+
 ## Rules
 
 - Refinement never runs mid-cell. A scheduled refinement runs when the current

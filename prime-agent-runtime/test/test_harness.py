@@ -598,6 +598,57 @@ class HarnessStateTest(unittest.TestCase):
             self.assertEqual(state.scope, "global")
             self.assertEqual(state.file_path, global_dir.resolve() / "harness_state.json")
 
+    def test_disable_and_enable_keep_the_entry_stored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            state.create_subagent("Reviewer", "Reviews diffs", id="reviewer")
+
+            disabled = state.disable_subagent("reviewer")
+            self.assertFalse(disabled.enabled)
+            self.assertFalse(HarnessState(Path(temp_dir) / "harness_state.json").get("subagent", "reviewer").enabled)
+            self.assertIn("[disabled]", state.overview())
+
+            enabled = state.enable_subagent("reviewer")
+            self.assertTrue(enabled.enabled)
+            self.assertNotIn("[disabled]", state.overview())
+
+    def test_entries_are_enabled_by_default_and_missing_flag_is_tolerated(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "entries": {
+                            "subagent": {
+                                "legacy": {
+                                    "id": "legacy",
+                                    "kind": "subagent",
+                                    "title": "Legacy",
+                                    "content": "No enabled flag",
+                                }
+                            }
+                        },
+                        "refinements": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = HarnessState(state_path)
+
+            self.assertTrue(state.get("subagent", "legacy").enabled)
+
+    def test_set_enabled_rejects_unknown_entries_and_non_boolean_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            state.create_subagent("Reviewer", "Reviews diffs", id="reviewer")
+
+            with self.assertRaisesRegex(ValueError, "does not exist"):
+                state.disable_subagent("missing")
+            with self.assertRaisesRegex(TypeError, "enabled must be bool"):
+                state.set_enabled("subagent", "reviewer", "false")
+
     def test_project_scope_uses_project_env_dir(self) -> None:
         previous_local = os.environ.get("RLM_HARNESS_STATE_DIR")
         previous_project = os.environ.get("RLM_PROJECT_HARNESS_STATE_DIR")

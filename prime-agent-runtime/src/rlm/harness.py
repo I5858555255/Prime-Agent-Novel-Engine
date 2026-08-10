@@ -120,6 +120,9 @@ class HarnessEntry:
     content: str
     path: str = "general"
     scope: HarnessScope = "local"
+    # Disabled entries stay stored but are hidden from the system prompt, so a
+    # disabled subagent spec is never offered for delegation.
+    enabled: bool = True
     reference: dict[str, Any] = field(default_factory=dict)
     arguments: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -250,6 +253,7 @@ class HarnessState:
                             entry_data["path"] = "general"
                         if entry_data.get("scope") not in _SCOPES:
                             entry_data["scope"] = self.scope
+                        entry_data["enabled"] = entry_data.get("enabled") is not False
                         if not isinstance(entry_data.get("source"), str):
                             entry_data["source"] = "agent"
                         version = entry_data.get("version", 1)
@@ -417,6 +421,44 @@ class HarnessState:
             self.entries[kind][entry_id] = entry
         self.save()
         return entry
+
+    def set_enabled(
+        self,
+        kind: HarnessKind,
+        id: str,
+        enabled: bool,
+        *,
+        scope: HarnessScope | None = None,
+        **kwargs: Any,
+    ) -> HarnessEntry:
+        """Enable or disable one entry without deleting it.
+
+        A disabled entry stays stored and rollback-able but is hidden from the
+        system prompt, so a disabled subagent spec is no longer available for
+        delegation.
+        """
+        id, scope = _strip_scope_prefix(id, scope)
+        if target := self._scope_target(scope, kwargs):
+            return target.set_enabled(kind, id, enabled)
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be bool, got {type(enabled).__name__}")
+        self._ensure_local_writable()
+        self._sync_from_disk()
+        if kind not in self.entries:
+            raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
+        entry = self.entries[kind].get(id)
+        if entry is None:
+            raise ValueError(f"{kind} entry {id!r} does not exist")
+        entry.enabled = enabled
+        entry.updated_at = _now()
+        self.save()
+        return entry
+
+    def disable(self, kind: HarnessKind, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry:
+        return self.set_enabled(kind, id, False, scope=scope, **kwargs)
+
+    def enable(self, kind: HarnessKind, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry:
+        return self.set_enabled(kind, id, True, scope=scope, **kwargs)
 
     def get(self, kind: HarnessKind, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry | None:
         id, scope = _strip_scope_prefix(id, scope)
@@ -692,6 +734,13 @@ class HarnessState:
     def delete_subagent(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> bool:
         return self.delete("subagent", id, scope=scope, **kwargs)
 
+    def disable_subagent(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry:
+        """Keep a subagent spec but stop offering it for delegation."""
+        return self.set_enabled("subagent", id, False, scope=scope, **kwargs)
+
+    def enable_subagent(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry:
+        return self.set_enabled("subagent", id, True, scope=scope, **kwargs)
+
     def record_refinement(
         self,
         trigger: str,
@@ -771,8 +820,9 @@ class HarnessState:
                     if len(reference_text) > 120:
                         reference_text = f"{reference_text[:117]}..."
                     reference_summary = f" ref={reference_text}"
+                disabled_marker = "" if entry.enabled else " [disabled]"
                 lines.append(
-                    f"  - [{entry.scope}:{entry.id}] {entry.title} ({entry.path}, v{entry.version})"
+                    f"  - [{entry.scope}:{entry.id}]{disabled_marker} {entry.title} ({entry.path}, v{entry.version})"
                     f"{reference_summary}{argument_summary}: {summary}"
                 )
             overflow = len(self.entries[kind]) - len(records)
