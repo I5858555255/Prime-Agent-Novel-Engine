@@ -15,6 +15,16 @@ if (mainCallIndex === -1) {
 	process.exit(1);
 }
 
+const shellProbe = spawnSync("sh", ["-c", ":"], { encoding: "utf-8" });
+if (shellProbe.error?.code === "ENOENT" && process.platform === "win32") {
+	console.log("Installer render check skipped: POSIX sh is not available on Windows.");
+	process.exit(0);
+}
+if (shellProbe.error || shellProbe.status !== 0) {
+	console.error(`Installer render check failed: could not start POSIX sh.${formatSpawnFailure(shellProbe)}`);
+	process.exit(1);
+}
+
 const harnessSource = `${installerSource.slice(0, mainCallIndex)}
 
 prime_agent_test_cols=80
@@ -169,7 +179,7 @@ function runCase(name, initialCols, initialRows, resizedCols, resizedRows) {
 		encoding: "utf-8",
 	});
 	if (result.status !== 0) {
-		failures.push(`${name}: harness exited with ${result.status ?? "unknown"}\n${result.stderr}${result.stdout}`);
+		failures.push(`${name}: harness exited with ${result.status ?? "unknown"}${formatSpawnFailure(result)}`);
 		return emptyParsedCase();
 	}
 
@@ -312,4 +322,18 @@ function emptyParsedCase() {
 		screens: {},
 		progress: [],
 	};
+}
+
+function formatSpawnFailure(result) {
+	const details = [];
+	if (result.error) {
+		details.push(result.error.message);
+	}
+	if (result.stderr) {
+		details.push(result.stderr.trimEnd());
+	}
+	if (result.stdout) {
+		details.push(result.stdout.trimEnd());
+	}
+	return details.length > 0 ? `\n${details.join("\n")}` : "";
 }
