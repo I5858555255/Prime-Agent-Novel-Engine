@@ -6,6 +6,7 @@
 - Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+- Added in-flight tool-call count and elapsed time to `agent_observe` summaries, so an orchestrator can tell a child in a fast tool call from one wedged in a blocking call ([#822](https://github.com/PrimeIntellect-ai/prime-agent/issues/822))
 
 ## [0.7.1] - 2026-08-07
 

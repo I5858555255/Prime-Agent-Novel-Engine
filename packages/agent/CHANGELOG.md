@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added `AgentState.pendingToolCallStartedAt`, recording when each in-flight tool call started so observers can measure how long one has been running.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
