@@ -202,6 +202,7 @@ const BUILTIN_SLASH_COMMAND_ALIASES: ReadonlyArray<BuiltinSlashCommandAlias> = [
 	{ name: "thinking", aliasFor: "effort" },
 	{ name: "rename", aliasFor: "name" },
 	{ name: "side", aliasFor: "btw" },
+	{ name: "exit", aliasFor: "quit" },
 ];
 
 function buildBuiltinSlashCommands(): ReadonlyArray<BuiltinSlashCommand> {
