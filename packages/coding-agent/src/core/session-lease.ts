@@ -185,6 +185,18 @@ function isLeaseOwnerAlive(owner: SessionLeaseOwner): boolean {
 	return currentStartId === undefined || currentStartId === owner.processStartId;
 }
 
+/**
+ * True when the given session file currently holds a live ownership lease.
+ * Used by the daemon's orphaned-session sweep to avoid deleting a session a
+ * live process is still attached to. A lease is active only while its owner
+ * process is alive; stale owners left by crashed/killed daemons read as
+ * inactive and are safe to reap.
+ */
+export function hasActiveSessionLease(sessionPath: string, agentDir: string): boolean {
+	const owner = readLeaseOwner(leaseDirectory(agentDir, canonicalSessionPath(sessionPath)));
+	return owner !== undefined && isLeaseOwnerAlive(owner);
+}
+
 function withLeaseGuard<T>(directory: string, action: () => T): T {
 	let release: (() => void) | undefined;
 	for (let attempt = 0; attempt < 100; attempt++) {
