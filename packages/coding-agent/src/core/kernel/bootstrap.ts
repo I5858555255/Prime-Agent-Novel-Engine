@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, existsSync, readdirSync, readFileSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { stderr, stdin } from "node:process";
@@ -11,10 +11,15 @@ import { fileURLToPath } from "node:url";
 import { getPackageDir } from "../../config.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
 
-const BOOTSTRAP_SCHEMA = 8;
-const PYTHON_VERSION = "3.11";
+const BOOTSTRAP_SCHEMA = 10;
 const IPYKERNEL_REQUIREMENT = "ipykernel";
 const RUNTIME_REQUIREMENT = "prime-agent-runtime";
+const KERNEL_LOCK_DIR = "kernel";
+const KERNEL_LOCK_FILE = "uv.lock";
+const KERNEL_PROJECT_FILE = "pyproject.toml";
+const KERNEL_CONSTRAINTS_FILE = "constraints.txt";
+const KERNEL_TOOLCHAIN_FILE = "toolchain.json";
+const TERMUX_VENDOR_SCRIPT = "vendor_termux_packages.py";
 // Serializes the kernel's user namespace so it can be revived across session
 // resume. Internal-only; intentionally not surfaced to the model as an import.
 const STATE_SNAPSHOT_REQUIREMENT = "dill";
@@ -35,7 +40,6 @@ const DEFAULT_RLM_EXTRA_PACKAGES = [
 export const DEFAULT_RLM_EXTRA_UV_ARGS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.uvArg);
 export const DEFAULT_RLM_EXTRA_IMPORT_NAMES = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.importName);
 export const DEFAULT_RLM_EXTRA_IMPORT_LABELS = DEFAULT_RLM_EXTRA_PACKAGES.map((pkg) => pkg.promptLabel);
-const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 const REQUIRED_HARNESS_METHODS = [
 	"create_memory",
 	"update_memory",
@@ -79,8 +83,50 @@ interface BootstrapVersion {
 	ipykernel?: string;
 	runtime?: string;
 	snapshot?: string;
+	kernelLock?: string;
+	kernelPlatform?: string;
+	pythonIdentity?: string;
+	uvVersion?: string;
 	extraUvArgs?: string[];
 	pythonSkills?: BootstrapPythonSkill[];
+}
+
+interface KernelLock {
+	projectDir: string;
+	digest: string;
+	platform: string;
+	requireWheels: boolean;
+	managedPython: string | null;
+	toolchain: KernelToolchain;
+}
+
+interface KernelToolchain {
+	managedPython: string;
+	uv: string;
+	excludeNewer: string;
+	termuxPython: {
+		minimum: string;
+		maximumExclusive: string;
+		validation: string;
+		androidApiLevel: number;
+		buildRequirements: string[];
+		nativePackages: TermuxNativePackage[];
+	};
+}
+
+interface TermuxNativePackage {
+	systemPackage: string;
+	packageVersion: string;
+	distribution: string;
+	version: string;
+}
+
+interface KernelToolIdentity {
+	python: string;
+	bootstrapPython: string;
+	pythonIdentity: string;
+	uv: string;
+	uvVersion: string;
 }
 
 function errorMessage(error: unknown): string {
@@ -93,6 +139,16 @@ function isNodeError(error: unknown, code: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTermuxNativePackage(value: unknown): value is TermuxNativePackage {
+	return (
+		isRecord(value) &&
+		typeof value.systemPackage === "string" &&
+		typeof value.packageVersion === "string" &&
+		typeof value.distribution === "string" &&
+		typeof value.version === "string"
+	);
 }
 
 async function exists(filePath: string): Promise<boolean> {
@@ -371,10 +427,14 @@ async function resolveWritableKernelVenvDir(): Promise<string> {
 	}
 }
 
-function run(command: string, args: string[], options: { stdio?: "ignore" | "inherit" } = {}): Promise<void> {
+function run(
+	command: string,
+	args: string[],
+	options: { stdio?: "ignore" | "inherit"; env?: NodeJS.ProcessEnv } = {},
+): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
-			env: process.env,
+			env: options.env ?? process.env,
 			stdio: options.stdio ?? "ignore",
 		});
 		child.on("error", reject);
@@ -385,6 +445,31 @@ function run(command: string, args: string[], options: { stdio?: "ignore" | "inh
 			}
 			const reason = signal ? `signal ${signal}` : `exit code ${code}`;
 			reject(new Error(`${command} ${args.join(" ")} failed with ${reason}`));
+		});
+	});
+}
+
+function runOutput(command: string, args: string[], env: NodeJS.ProcessEnv = process.env): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr.on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		child.on("error", reject);
+		child.on("exit", (code, signal) => {
+			if (code === 0) {
+				resolve(stdout);
+				return;
+			}
+			const reason = signal ? `signal ${signal}` : `exit code ${code}`;
+			reject(new Error(`${command} ${args.join(" ")} failed with ${reason}: ${stderr.trim()}`));
 		});
 	});
 }
@@ -511,35 +596,54 @@ async function findExecutable(name: string): Promise<string | null> {
 	return null;
 }
 
-async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
-	const fromPath = await findExecutable("uv");
-	if (fromPath) return fromPath;
+async function readUvVersion(uv: string): Promise<string | null> {
+	try {
+		const output = (await runOutput(uv, ["--version"])).trim();
+		return output.match(/^uv (\S+)(?:\s|$)/)?.[1] ?? null;
+	} catch {
+		return null;
+	}
+}
 
+async function ensureUv(options: EnsureKernelPythonOptions, requiredVersion: string): Promise<string> {
 	const localUv = path.join(os.homedir(), ".local", "bin", process.platform === "win32" ? "uv.exe" : "uv");
-	if (await isExecutable(localUv)) return localUv;
+	const candidates = [await findExecutable("uv"), localUv];
+	for (const candidate of candidates) {
+		if (candidate && (await isExecutable(candidate)) && (await readUvVersion(candidate)) === requiredVersion) {
+			return candidate;
+		}
+	}
+	if (process.platform === "android") {
+		throw new Error(
+			`uv ${requiredVersion} is required on Termux. Install the documented Rust toolchain, then run ` +
+				"scripts/install-termux-uv.sh from the Prime Agent repository",
+		);
+	}
+
+	const installCommand = `curl -LsSf https://astral.sh/uv/${requiredVersion}/install.sh | sh`;
 
 	const shouldInstallUv =
 		process.env.PRIME_AGENT_INSTALL_UV === "1" || (!options.onProgress && (await confirmUvInstall()));
 	if (!shouldInstallUv) {
 		throw new Error(
-			`uv is required to set up the Python kernel. Install uv yourself: ${UV_INSTALL_COMMAND}, ` +
+			`uv ${requiredVersion} is required to set up the Python kernel. Install it yourself: ${installCommand}, ` +
 				"or set PRIME_AGENT_INSTALL_UV=1 to let prime-agent run that installer.",
 		);
 	}
 
 	reportProgress(options, "› installing uv (one-time)…");
 	try {
-		await run("sh", ["-c", UV_INSTALL_COMMAND], { stdio: options.onProgress ? "ignore" : "inherit" });
+		await run("sh", ["-c", installCommand], { stdio: options.onProgress ? "ignore" : "inherit" });
 	} catch (error) {
 		throw new Error(
-			`couldn't install uv from astral.sh; install it yourself: ${UV_INSTALL_COMMAND}, then re-run prime-agent. ${errorMessage(error)}`,
+			`couldn't install uv ${requiredVersion} from astral.sh; install it yourself: ${installCommand}, then re-run prime-agent. ${errorMessage(error)}`,
 		);
 	}
 
-	if (await isExecutable(localUv)) return localUv;
+	if ((await isExecutable(localUv)) && (await readUvVersion(localUv)) === requiredVersion) return localUv;
 	const installedFromPath = await findExecutable("uv");
-	if (installedFromPath) return installedFromPath;
-	throw new Error("uv install completed but binary not found at ~/.local/bin/uv");
+	if (installedFromPath && (await readUvVersion(installedFromPath)) === requiredVersion) return installedFromPath;
+	throw new Error(`uv install completed but uv ${requiredVersion} was not found at ~/.local/bin/uv`);
 }
 
 async function confirmUvInstall(): Promise<boolean> {
@@ -589,6 +693,10 @@ async function readBootstrapVersion(venv: string): Promise<BootstrapVersion | nu
 			ipykernel: typeof parsed.ipykernel === "string" ? parsed.ipykernel : undefined,
 			runtime: typeof parsed.runtime === "string" ? parsed.runtime : undefined,
 			snapshot: typeof parsed.snapshot === "string" ? parsed.snapshot : undefined,
+			kernelLock: typeof parsed.kernelLock === "string" ? parsed.kernelLock : undefined,
+			kernelPlatform: typeof parsed.kernelPlatform === "string" ? parsed.kernelPlatform : undefined,
+			pythonIdentity: typeof parsed.pythonIdentity === "string" ? parsed.pythonIdentity : undefined,
+			uvVersion: typeof parsed.uvVersion === "string" ? parsed.uvVersion : undefined,
 			extraUvArgs,
 			pythonSkills,
 		};
@@ -621,21 +729,32 @@ function pythonSkillsMatch(a: BootstrapPythonSkill[] | undefined, b: readonly Bo
 function bootstrapVersionCurrent(
 	version: BootstrapVersion | null,
 	runtimeIdentity: string,
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
 	pythonSkills: readonly BootstrapPythonSkill[],
 ): boolean {
 	return (
 		version !== null &&
-		bootstrapBaseVersionCurrent(version, runtimeIdentity) &&
+		bootstrapBaseVersionCurrent(version, runtimeIdentity, kernelLock, tools) &&
 		pythonSkillsMatch(version.pythonSkills, pythonSkills)
 	);
 }
 
-function bootstrapBaseVersionCurrent(version: BootstrapVersion | null, runtimeIdentity: string): boolean {
+function bootstrapBaseVersionCurrent(
+	version: BootstrapVersion | null,
+	runtimeIdentity: string,
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
+): boolean {
 	return (
 		version?.schema === BOOTSTRAP_SCHEMA &&
 		version.ipykernel === IPYKERNEL_REQUIREMENT &&
 		version.runtime === runtimeIdentity &&
 		version.snapshot === STATE_SNAPSHOT_REQUIREMENT &&
+		version.kernelLock === kernelLock.digest &&
+		version.kernelPlatform === kernelLock.platform &&
+		version.pythonIdentity === tools.pythonIdentity &&
+		version.uvVersion === tools.uvVersion &&
 		extraUvArgsMatch(version.extraUvArgs, DEFAULT_RLM_EXTRA_UV_ARGS)
 	);
 }
@@ -643,6 +762,8 @@ function bootstrapBaseVersionCurrent(version: BootstrapVersion | null, runtimeId
 async function writeBootstrapVersion(
 	venv: string,
 	runtimeIdentity: string,
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
 	pythonSkills: readonly BootstrapPythonSkill[],
 ): Promise<void> {
 	const version: BootstrapVersion = {
@@ -650,6 +771,10 @@ async function writeBootstrapVersion(
 		ipykernel: IPYKERNEL_REQUIREMENT,
 		runtime: runtimeIdentity,
 		snapshot: STATE_SNAPSHOT_REQUIREMENT,
+		kernelLock: kernelLock.digest,
+		kernelPlatform: kernelLock.platform,
+		pythonIdentity: tools.pythonIdentity,
+		uvVersion: tools.uvVersion,
 		extraUvArgs: DEFAULT_RLM_EXTRA_UV_ARGS,
 		pythonSkills: [...pythonSkills],
 	};
@@ -677,6 +802,99 @@ async function resolveRuntimeSourceDir(): Promise<string | null> {
 		}
 	}
 	return null;
+}
+
+function detectLinuxLibc(): "gnu" | "musl" {
+	const report = process.report?.getReport();
+	return isRecord(report) && isRecord(report.header) && typeof report.header.glibcVersionRuntime === "string"
+		? "gnu"
+		: "musl";
+}
+
+export function resolveKernelLockPlatform(
+	platform = process.platform,
+	arch = process.arch,
+	linuxLibc: "gnu" | "musl" = detectLinuxLibc(),
+): string {
+	const target = `${platform}-${arch}`;
+	switch (target) {
+		case "darwin-arm64":
+			return "aarch64-apple-darwin";
+		case "darwin-x64":
+			return "x86_64-apple-darwin";
+		case "linux-arm64":
+			return `aarch64-unknown-linux-${linuxLibc}`;
+		case "linux-x64":
+			return `x86_64-unknown-linux-${linuxLibc}`;
+		case "win32-x64":
+			return "x86_64-pc-windows-msvc";
+		case "android-arm64":
+			return "aarch64-linux-android";
+		default:
+			throw new Error(
+				`the managed Python kernel is unavailable on ${target}; set PRIME_AGENT_KERNEL_PYTHON to a compatible environment`,
+			);
+	}
+}
+
+export function getKernelPythonPath(venv: string, platform = process.platform): string {
+	return platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
+}
+
+async function resolveKernelLock(): Promise<KernelLock> {
+	const sourceDir = await resolveRuntimeSourceDir();
+	if (!sourceDir) {
+		throw new Error("bundled prime-agent-runtime source is missing");
+	}
+	const projectDir = path.join(sourceDir, KERNEL_LOCK_DIR);
+	const requiredFiles = [
+		KERNEL_PROJECT_FILE,
+		KERNEL_LOCK_FILE,
+		KERNEL_CONSTRAINTS_FILE,
+		KERNEL_TOOLCHAIN_FILE,
+		TERMUX_VENDOR_SCRIPT,
+	];
+	if (!(await Promise.all(requiredFiles.map((file) => exists(path.join(projectDir, file))))).every(Boolean)) {
+		throw new Error(`bundled Python kernel lock is missing from ${projectDir}`);
+	}
+	const toolchainValue: unknown = JSON.parse(await readFile(path.join(projectDir, KERNEL_TOOLCHAIN_FILE), "utf8"));
+	if (
+		!isRecord(toolchainValue) ||
+		typeof toolchainValue.managedPython !== "string" ||
+		typeof toolchainValue.uv !== "string" ||
+		typeof toolchainValue.excludeNewer !== "string" ||
+		!isRecord(toolchainValue.termuxPython) ||
+		typeof toolchainValue.termuxPython.minimum !== "string" ||
+		typeof toolchainValue.termuxPython.maximumExclusive !== "string" ||
+		typeof toolchainValue.termuxPython.validation !== "string" ||
+		typeof toolchainValue.termuxPython.androidApiLevel !== "number" ||
+		!Number.isInteger(toolchainValue.termuxPython.androidApiLevel) ||
+		!Array.isArray(toolchainValue.termuxPython.buildRequirements) ||
+		!toolchainValue.termuxPython.buildRequirements.every((requirement) => typeof requirement === "string") ||
+		!Array.isArray(toolchainValue.termuxPython.nativePackages) ||
+		!toolchainValue.termuxPython.nativePackages.every(isTermuxNativePackage)
+	) {
+		throw new Error(`bundled Python kernel toolchain is invalid in ${projectDir}`);
+	}
+	const hash = createHash("sha256");
+	for (const file of requiredFiles) {
+		hash.update(file);
+		hash.update("\0");
+		hash.update(await readFile(path.join(projectDir, file)));
+		hash.update("\0");
+	}
+	return {
+		projectDir,
+		digest: `sha256:${hash.digest("hex")}`,
+		platform: resolveKernelLockPlatform(),
+		requireWheels: process.platform !== "android",
+		managedPython: process.platform === "android" ? null : toolchainValue.managedPython,
+		toolchain: toolchainValue as unknown as KernelToolchain,
+	};
+}
+
+export async function resolveKernelLockDigest(): Promise<string> {
+	return (await resolveKernelLock()).digest;
 }
 
 // Identity of the runtime to be installed. For a local source checkout this is a
@@ -718,38 +936,242 @@ async function hashRuntimeSource(sourceDir: string): Promise<string> {
 	return `sha256:${hash.digest("hex")}`;
 }
 
+function versionParts(version: string): number[] {
+	return version.split(".").map((part) => Number.parseInt(part, 10));
+}
+
+function compareVersions(left: string, right: string): number {
+	const leftParts = versionParts(left);
+	const rightParts = versionParts(right);
+	for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index++) {
+		const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+		if (difference !== 0) return difference;
+	}
+	return 0;
+}
+
+async function resolveKernelTools(
+	venv: string,
+	kernelLock: KernelLock,
+	options: EnsureKernelPythonOptions,
+): Promise<KernelToolIdentity> {
+	const uv = await ensureUv(options, kernelLock.toolchain.uv);
+	const uvVersion = await readUvVersion(uv);
+	if (uvVersion !== kernelLock.toolchain.uv) {
+		throw new Error(`expected uv ${kernelLock.toolchain.uv}, found ${uvVersion ?? "an unreadable version"}`);
+	}
+	const python = getKernelPythonPath(venv);
+	if (kernelLock.managedPython) {
+		return {
+			python,
+			bootstrapPython: kernelLock.managedPython,
+			pythonIdentity: `managed:${kernelLock.managedPython}`,
+			uv,
+			uvVersion,
+		};
+	}
+
+	const systemPython = await findExecutable("python");
+	if (!systemPython) {
+		throw new Error("Termux system Python is required; run pkg install python or set PRIME_AGENT_KERNEL_PYTHON");
+	}
+	const output = (await runOutput(systemPython, ["--version"])).trim();
+	const pythonVersion = output.match(/^Python (\d+\.\d+\.\d+)/)?.[1];
+	if (
+		!pythonVersion ||
+		compareVersions(pythonVersion, kernelLock.toolchain.termuxPython.minimum) < 0 ||
+		compareVersions(pythonVersion, kernelLock.toolchain.termuxPython.maximumExclusive) >= 0
+	) {
+		throw new Error(
+			`Termux Python ${pythonVersion ?? "version could not be read"} is outside the supported range ` +
+				`>=${kernelLock.toolchain.termuxPython.minimum},<${kernelLock.toolchain.termuxPython.maximumExclusive}; ` +
+				"set PRIME_AGENT_KERNEL_PYTHON to a compatible environment",
+		);
+	}
+	const missingTools: string[] = [];
+	for (const tool of ["cargo", "clang", "cmake", "dpkg-query", "make", "ninja", "pkg-config", "rustc"]) {
+		if (!(await findExecutable(tool))) missingTools.push(tool);
+	}
+	if (missingTools.length > 0) {
+		throw new Error(
+			`Termux kernel builds require ${missingTools.join(", ")}; install the documented Termux toolchain or set PRIME_AGENT_KERNEL_PYTHON`,
+		);
+	}
+	const nativePackageIdentities: string[] = [];
+	for (const nativePackage of kernelLock.toolchain.termuxPython.nativePackages) {
+		let packageVersion: string;
+		try {
+			packageVersion = (
+				await runOutput("dpkg-query", ["-W", "-f=\u0024{Version}", nativePackage.systemPackage])
+			).trim();
+		} catch {
+			throw new Error(
+				`Termux kernel builds require ${nativePackage.systemPackage}=${nativePackage.packageVersion}; ` +
+					"install the exact documented native packages before starting Prime Agent",
+			);
+		}
+		if (packageVersion !== nativePackage.packageVersion) {
+			throw new Error(
+				`expected Termux ${nativePackage.systemPackage} ${nativePackage.packageVersion}, found ${packageVersion}; ` +
+					"review and refresh the kernel toolchain before using a newer native package",
+			);
+		}
+		const distributionVersion = (
+			await runOutput(systemPython, [
+				"-c",
+				"from importlib.metadata import version; import sys; print(version(sys.argv[1]))",
+				nativePackage.distribution,
+			])
+		).trim();
+		if (distributionVersion !== nativePackage.version) {
+			throw new Error(
+				`expected Termux ${nativePackage.distribution} ${nativePackage.version}, found ${distributionVersion}`,
+			);
+		}
+		nativePackageIdentities.push(`${nativePackage.systemPackage}@${packageVersion}`);
+	}
+	return {
+		python,
+		bootstrapPython: systemPython,
+		pythonIdentity: `system:${systemPython}@${pythonVersion};${nativePackageIdentities.join(",")}`,
+		uv,
+		uvVersion,
+	};
+}
+
+async function validateKernelLock(kernelLock: KernelLock, tools: KernelToolIdentity): Promise<void> {
+	await run(tools.uv, [
+		"lock",
+		"--project",
+		kernelLock.projectDir,
+		"--python",
+		kernelLock.toolchain.managedPython,
+		"--exclude-newer",
+		kernelLock.toolchain.excludeNewer,
+		"--check",
+	]);
+	const exported = await runOutput(tools.uv, [
+		"export",
+		"--project",
+		kernelLock.projectDir,
+		"--locked",
+		"--no-dev",
+		"--no-emit-project",
+		"--no-header",
+		"--no-hashes",
+		"--python",
+		kernelLock.toolchain.managedPython,
+		"--exclude-newer",
+		kernelLock.toolchain.excludeNewer,
+	]);
+	const constraints = await readFile(path.join(kernelLock.projectDir, KERNEL_CONSTRAINTS_FILE), "utf8");
+	if (exported !== constraints) {
+		throw new Error("bundled kernel constraints do not match uv.lock");
+	}
+	const constraintLines = constraints.split("\n");
+	for (const nativePackage of kernelLock.toolchain.termuxPython.nativePackages) {
+		const expected = `${nativePackage.distribution}==${nativePackage.version}`;
+		if (!constraintLines.some((line) => line === expected || line.startsWith(`${expected} `))) {
+			throw new Error(`Termux native package ${expected} does not match the bundled kernel lock`);
+		}
+	}
+}
+
+function kernelEnvironment(kernelLock: KernelLock, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+	return {
+		...process.env,
+		...(kernelLock.managedPython
+			? {}
+			: { ANDROID_API_LEVEL: String(kernelLock.toolchain.termuxPython.androidApiLevel) }),
+		...extra,
+	};
+}
+
+async function vendorTermuxPackages(kernelLock: KernelLock, tools: KernelToolIdentity, python: string): Promise<void> {
+	if (kernelLock.managedPython) return;
+	await run(tools.bootstrapPython, [path.join(kernelLock.projectDir, TERMUX_VENDOR_SCRIPT), python], {
+		env: kernelEnvironment(kernelLock),
+	});
+}
+
+async function installTermuxBuildRequirements(
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
+	python: string,
+): Promise<void> {
+	if (kernelLock.managedPython) return;
+	await run(
+		tools.uv,
+		[
+			"pip",
+			"install",
+			"--python",
+			python,
+			"--constraint",
+			path.join(kernelLock.projectDir, KERNEL_CONSTRAINTS_FILE),
+			...kernelLock.toolchain.termuxPython.buildRequirements,
+		],
+		{ env: kernelEnvironment(kernelLock) },
+	);
+}
+
 async function bootstrapVenv(
 	venv: string,
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
 	pythonSkills: readonly BootstrapPythonSkill[],
 	options: EnsureKernelPythonOptions,
 ): Promise<void> {
 	await mkdir(path.dirname(venv), { recursive: true });
-	const uv = await ensureUv(options);
-	const python = path.join(venv, "bin", "python");
+	const python = getKernelPythonPath(venv);
 	const sourceDir = await resolveRuntimeSourceDir();
 	const runtimeRequirement = sourceDir ?? RUNTIME_REQUIREMENT;
 	const runtimeIdentity = await resolveRuntimeIdentity();
 
-	await run(uv, ["python", "install", PYTHON_VERSION]);
-	await run(uv, ["venv", venv, "--python", PYTHON_VERSION, "--seed"]);
-	await run(uv, [
-		"pip",
-		"install",
-		"--python",
-		python,
-		IPYKERNEL_REQUIREMENT,
-		runtimeRequirement,
-		STATE_SNAPSHOT_REQUIREMENT,
-		...DEFAULT_RLM_EXTRA_UV_ARGS,
-	]);
-	await syncPythonSkills(uv, venv, python, runtimeIdentity, pythonSkills, options);
+	if (kernelLock.managedPython) {
+		await run(tools.uv, ["python", "install", kernelLock.managedPython]);
+	}
+	await run(tools.uv, ["venv", venv, "--python", tools.bootstrapPython, "--seed", "--relocatable"]);
+	await vendorTermuxPackages(kernelLock, tools, python);
+	await installTermuxBuildRequirements(kernelLock, tools, python);
+	const wheelArgs = kernelLock.requireWheels ? ["--no-build"] : [];
+	await run(
+		tools.uv,
+		[
+			"sync",
+			"--project",
+			kernelLock.projectDir,
+			"--locked",
+			"--active",
+			"--no-dev",
+			"--no-install-project",
+			...wheelArgs,
+			...(kernelLock.managedPython ? [] : ["--no-build-isolation-package", "pandas"]),
+			"--exclude-newer",
+			kernelLock.toolchain.excludeNewer,
+			"--python-platform",
+			kernelLock.platform,
+		],
+		{
+			env: kernelEnvironment(kernelLock, { VIRTUAL_ENV: venv }),
+		},
+	);
+	await run(
+		tools.uv,
+		["pip", "install", "--python", python, "--no-build-isolation", "--no-deps", runtimeRequirement],
+		{
+			env: kernelEnvironment(kernelLock),
+		},
+	);
+	await syncPythonSkills(tools, venv, python, runtimeIdentity, kernelLock, pythonSkills, options);
 }
 
 async function syncPythonSkills(
-	uv: string,
+	tools: KernelToolIdentity,
 	venv: string,
 	python: string,
 	runtimeIdentity: string,
+	kernelLock: KernelLock,
 	pythonSkills: readonly BootstrapPythonSkill[],
 	options: EnsureKernelPythonOptions,
 ): Promise<void> {
@@ -758,6 +1180,12 @@ async function syncPythonSkills(
 	const currentPythonSkills = new Map(
 		(version?.pythonSkills ?? []).map((skill) => [`${skill.importName}\0${skill.packagePath}`, skill]),
 	);
+	const requestedSkillKeys = new Set(pythonSkills.map((skill) => `${skill.importName}\0${skill.packagePath}`));
+	for (const installedSkill of version?.pythonSkills ?? []) {
+		if (!requestedSkillKeys.has(`${installedSkill.importName}\0${installedSkill.packagePath}`)) {
+			await run(tools.uv, ["pip", "uninstall", "--python", python, readPythonSkillProjectName(installedSkill)]);
+		}
+	}
 	const pythonSkillsByProjectName = new Map(
 		pythonSkills.map((skill) => [readPythonSkillProjectName(skill).replaceAll("_", "-").toLowerCase(), skill]),
 	);
@@ -801,14 +1229,20 @@ async function syncPythonSkills(
 			.flatMap(formatPythonSkillInstallArgs);
 
 		try {
-			await run(uv, [
-				"pip",
-				"install",
-				"--python",
-				python,
-				...formatPythonSkillInstallArgs(skill),
-				...localDependencyArgs,
-			]);
+			await run(
+				tools.uv,
+				[
+					"pip",
+					"install",
+					"--python",
+					python,
+					"--constraint",
+					path.join(kernelLock.projectDir, KERNEL_CONSTRAINTS_FILE),
+					...formatPythonSkillInstallArgs(skill),
+					...localDependencyArgs,
+				],
+				{ env: kernelEnvironment(kernelLock) },
+			);
 			installedPythonSkills.push(
 				skill,
 				...localDependencies.filter((dependency) => !installedPythonSkills.includes(dependency)),
@@ -820,14 +1254,41 @@ async function syncPythonSkills(
 			);
 		}
 	}
-	await writeBootstrapVersion(venv, runtimeIdentity, installedPythonSkills);
+	await run(
+		tools.uv,
+		[
+			"sync",
+			"--project",
+			kernelLock.projectDir,
+			"--locked",
+			"--active",
+			"--no-dev",
+			"--no-install-project",
+			"--inexact",
+			...(kernelLock.requireWheels ? ["--no-build"] : []),
+			...(kernelLock.managedPython ? [] : ["--no-build-isolation-package", "pandas"]),
+			"--exclude-newer",
+			kernelLock.toolchain.excludeNewer,
+			"--python-platform",
+			kernelLock.platform,
+		],
+		{ env: kernelEnvironment(kernelLock, { VIRTUAL_ENV: venv }) },
+	);
+	await run(tools.uv, ["pip", "check", "--python", python]);
+	await writeBootstrapVersion(venv, runtimeIdentity, kernelLock, tools, installedPythonSkills);
 }
 
-async function kernelBaseReady(python: string, venv: string, runtimeIdentity: string): Promise<boolean> {
+async function kernelBaseReady(
+	python: string,
+	venv: string,
+	runtimeIdentity: string,
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
+): Promise<boolean> {
 	return (
 		(await hasIpykernel(python)) &&
 		(await hasPrimeAgentRuntime(python)) &&
-		bootstrapBaseVersionCurrent(await readBootstrapVersion(venv), runtimeIdentity)
+		bootstrapBaseVersionCurrent(await readBootstrapVersion(venv), runtimeIdentity, kernelLock, tools)
 	);
 }
 
@@ -835,13 +1296,82 @@ async function kernelReady(
 	python: string,
 	venv: string,
 	runtimeIdentity: string,
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
 	pythonSkills: readonly BootstrapPythonSkill[],
 ): Promise<boolean> {
 	return (
 		(await hasIpykernel(python)) &&
 		(await hasPrimeAgentRuntime(python)) &&
-		bootstrapVersionCurrent(await readBootstrapVersion(venv), runtimeIdentity, pythonSkills)
+		bootstrapVersionCurrent(await readBootstrapVersion(venv), runtimeIdentity, kernelLock, tools, pythonSkills)
 	);
+}
+
+function stagingVenv(venv: string): string {
+	return `${venv}.next`;
+}
+
+function previousVenv(venv: string): string {
+	return `${venv}.previous`;
+}
+
+async function recoverInterruptedSwap(
+	venv: string,
+	runtimeIdentity: string,
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
+	pythonSkills: readonly BootstrapPythonSkill[],
+): Promise<void> {
+	const previous = previousVenv(venv);
+	if (!(await exists(venv)) && (await exists(previous))) {
+		await rename(previous, venv);
+	}
+	if ((await exists(venv)) && (await exists(previous))) {
+		if (await kernelReady(getKernelPythonPath(venv), venv, runtimeIdentity, kernelLock, tools, pythonSkills)) {
+			await rm(previous, { recursive: true, force: true });
+		} else {
+			await rm(venv, { recursive: true, force: true });
+			await rename(previous, venv);
+		}
+	}
+	await rm(stagingVenv(venv), { recursive: true, force: true });
+}
+
+async function replaceKernelVenv(
+	venv: string,
+	runtimeIdentity: string,
+	kernelLock: KernelLock,
+	tools: KernelToolIdentity,
+	pythonSkills: readonly BootstrapPythonSkill[],
+	options: EnsureKernelPythonOptions,
+): Promise<void> {
+	const staging = stagingVenv(venv);
+	const previous = previousVenv(venv);
+	await rm(staging, { recursive: true, force: true });
+	try {
+		await bootstrapVenv(staging, kernelLock, tools, pythonSkills, options);
+		if (!(await kernelBaseReady(getKernelPythonPath(staging), staging, runtimeIdentity, kernelLock, tools))) {
+			throw new Error("new kernel environment failed validation before activation");
+		}
+	} catch (error) {
+		await rm(staging, { recursive: true, force: true });
+		throw error;
+	}
+
+	await rm(previous, { recursive: true, force: true });
+	const hadVenv = await exists(venv);
+	if (hadVenv) await rename(venv, previous);
+	try {
+		await rename(staging, venv);
+		if (!(await kernelBaseReady(getKernelPythonPath(venv), venv, runtimeIdentity, kernelLock, tools))) {
+			throw new Error("new kernel environment failed validation after activation");
+		}
+		await rm(previous, { recursive: true, force: true });
+	} catch (error) {
+		await rm(venv, { recursive: true, force: true });
+		if (hadVenv && (await exists(previous))) await rename(previous, venv);
+		throw error;
+	}
 }
 
 function formatBootstrapFailure(error: unknown): Error {
@@ -886,26 +1416,32 @@ async function ensureKernelPythonUncached(
 	}
 
 	const venv = await resolveWritableKernelVenvDir();
-	const python = path.join(venv, "bin", "python");
+	const python = getKernelPythonPath(venv);
 	const runtimeIdentity = await resolveRuntimeIdentity();
-	if (await kernelReady(python, venv, runtimeIdentity, pythonSkills)) return python;
+	const kernelLock = await resolveKernelLock();
+	const tools = await resolveKernelTools(venv, kernelLock, options);
+	await validateKernelLock(kernelLock, tools);
+	if (
+		!(await exists(previousVenv(venv))) &&
+		!(await exists(stagingVenv(venv))) &&
+		(await kernelReady(python, venv, runtimeIdentity, kernelLock, tools, pythonSkills))
+	) {
+		return python;
+	}
 
 	const releaseLock = await acquireBootstrapLock(venv);
 	try {
-		if (await kernelReady(python, venv, runtimeIdentity, pythonSkills)) return python;
-		if (await kernelBaseReady(python, venv, runtimeIdentity)) {
-			await syncPythonSkills(await ensureUv(options), venv, python, runtimeIdentity, pythonSkills, options);
+		await recoverInterruptedSwap(venv, runtimeIdentity, kernelLock, tools, pythonSkills);
+		if (await kernelReady(python, venv, runtimeIdentity, kernelLock, tools, pythonSkills)) return python;
+		if (await kernelBaseReady(python, venv, runtimeIdentity, kernelLock, tools)) {
+			await syncPythonSkills(tools, venv, python, runtimeIdentity, kernelLock, pythonSkills, options);
 			return python;
 		}
 
 		const hadVenv = existsSync(venv);
 		reportProgress(options, "› setting up python kernel (one-time, ~30s)…");
-		if (hadVenv) {
-			reportProgress(options, "rebuilding kernel venv");
-			await rm(venv, { recursive: true, force: true });
-		}
-
-		await bootstrapVenv(venv, pythonSkills, options);
+		if (hadVenv) reportProgress(options, "rebuilding kernel venv");
+		await replaceKernelVenv(venv, runtimeIdentity, kernelLock, tools, pythonSkills, options);
 	} catch (error) {
 		throw formatBootstrapFailure(error);
 	} finally {

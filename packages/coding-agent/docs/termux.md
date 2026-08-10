@@ -13,12 +13,18 @@ Prime Agent runs on Android via [Termux](https://termux.dev/), a terminal emulat
 # Update packages
 pkg update && pkg upgrade
 
-# Install dependencies
-pkg install nodejs termux-api git ripgrep
+# Install application, build, and reviewed native Python dependencies
+pkg install nodejs termux-api git ripgrep python rust clang make cmake ninja pkg-config libxml2 libxslt libopenblas zstd flang binutils patchelf \
+  python-lxml=6.1.1-1 python-numpy=2.4.4-1 python-psutil=7.2.2-2 python-scipy=1.18.0-1
 
 # Clone and install Prime Agent from source
 git clone https://github.com/PrimeIntellect-ai/prime-agent.git
 cd prime-agent
+
+# Build the reviewed uv version using the official Termux recipe flags
+bash scripts/install-termux-uv.sh
+export PATH="$HOME/.local/bin:$PATH"
+
 npm ci
 
 # Run Prime Agent
@@ -30,6 +36,12 @@ npm ci
 Clipboard operations use `termux-clipboard-set` and `termux-clipboard-get` when running in Termux. The Termux:API app must be installed for these to work.
 
 Image clipboard is not supported on Termux (the `ctrl+v` image paste feature will not work).
+
+## Python Kernel
+
+Termux uses its system Python to create the kernel environment because uv-managed CPython builds do not support Android/Bionic. Prime Agent validates the supported Python range, pinned uv version, native build tools, and exact Termux package revisions before changing the kernel environment. Official Termux builds of lxml, NumPy, psutil, and SciPy contain Android patches absent from their PyPI source distributions; bootstrap copies those reviewed distributions into the isolated kernel venv. The remaining base packages come from `uv.lock`. Locally installed Python skills are constrained so they cannot replace locked packages such as NumPy, Pydantic, or HTTPX.
+
+The first bootstrap compiles packages that do not publish Android wheels and therefore needs the build dependencies listed above and an internet connection. Later bootstraps can reuse uv's cache. If Termux updates Python outside the range recorded in `prime-agent-runtime/kernel/toolchain.json`, update the repository lock through the documented review process or set `PRIME_AGENT_KERNEL_PYTHON` to a separately maintained compatible environment.
 
 ## Example AGENTS.md for Termux
 
@@ -96,6 +108,7 @@ termux-camera-photo out.jpg   # Take photo
 
 - **No image clipboard**: Termux clipboard API only supports text
 - **No native binaries**: Some optional native dependencies (like the clipboard module) are unavailable on Android ARM64 and are skipped during installation
+- **Kernel build time**: The initial locked Python kernel install may compile native packages for Android/Bionic
 - **Storage access**: To access files in `/storage/emulated/0` (Downloads, etc.), run `termux-setup-storage` once to grant permissions
 
 ## Troubleshooting
