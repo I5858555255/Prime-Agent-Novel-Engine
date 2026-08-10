@@ -12,7 +12,7 @@ import type {
 } from "openai/resources/chat/completions.js";
 import { getAnthropicCacheWriteCost, hasStandardAnthropicCachePricing } from "../cache-pricing.js";
 import { getEnvApiKey, getPrimeTeamId } from "../env-api-keys.js";
-import { calculateCost, clampThinkingLevel } from "../models.js";
+import { calculateCost, clampThinkingLevel, isKeylessModel } from "../models.js";
 import type {
 	AssistantMessage,
 	CacheRetention,
@@ -425,7 +425,7 @@ export const streamSimpleOpenAICompletions: StreamFunction<"openai-completions",
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
 	const apiKey = options?.apiKey || getEnvApiKey(model.provider);
-	if (!apiKey) {
+	if (!apiKey && !isKeylessModel(model)) {
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}
 
@@ -450,12 +450,19 @@ function createClient(
 	compat: ResolvedOpenAICompletionsCompat = getCompat(model),
 ) {
 	if (!apiKey) {
-		if (!process.env.OPENAI_API_KEY) {
+		if (isKeylessModel(model)) {
+			// OpenCode Zen free tier: no Authorization header may be sent (any
+			// non-empty key gets a 401). The placeholder satisfies the SDK's
+			// constructor credential check; the null default header below
+			// strips the header before the request goes out.
+			apiKey = "opencode-free";
+		} else if (process.env.OPENAI_API_KEY) {
+			apiKey = process.env.OPENAI_API_KEY;
+		} else {
 			throw new Error(
 				"OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it as an argument.",
 			);
 		}
-		apiKey = process.env.OPENAI_API_KEY;
 	}
 
 	const headers = { ...model.headers };
@@ -491,7 +498,9 @@ function createClient(
 					Authorization: headers.Authorization ?? null,
 					"cf-aig-authorization": `Bearer ${apiKey}`,
 				}
-			: headers;
+			: isKeylessModel(model)
+				? { ...headers, Authorization: null }
+				: headers;
 
 	return new OpenAI({
 		apiKey,

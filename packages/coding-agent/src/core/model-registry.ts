@@ -11,6 +11,7 @@ import {
 	type Context,
 	getModels,
 	getProviders,
+	isKeylessModel,
 	type KnownProvider,
 	type Model,
 	type OAuthProviderInterface,
@@ -1024,6 +1025,9 @@ export class ModelRegistry {
 	 * Get API key for a model.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
+		if (isKeylessModel(model)) {
+			return true;
+		}
 		return this.authStorage.hasAuth(model.provider) || this.hasConfiguredProviderRequestAuth(model.provider);
 	}
 
@@ -1356,6 +1360,10 @@ export class ModelRegistry {
 	 * This intentionally does not execute command-backed config values.
 	 */
 	getProviderAuthStatus(provider: string): AuthStatus {
+		if (provider === "opencode" && this.models.some((model) => isKeylessModel(model))) {
+			return { configured: true, source: "keyless", label: "keyless free tier" };
+		}
+
 		const authStatus = this.authStorage.getAuthStatus(provider);
 		if (authStatus.source && authStatus.source !== "stale") {
 			return authStatus;
