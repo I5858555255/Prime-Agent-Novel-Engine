@@ -32,7 +32,8 @@ class _FakeSession:
             t = Tool()
             t.name = name
             t.description = desc
-            t.inputSchema = schema
+            # Match mcp.types.Tool: field is input_schema, not inputSchema.
+            t.input_schema = schema
             return t
 
         resp = type("Resp", (), {})()
@@ -168,6 +169,23 @@ class McpIntegrationTest(unittest.TestCase):
             out = _run(integration.list_issues(team="Eng"))
         self.assertEqual(out, {"issues": [1, 2]})
         self.assertEqual(session.calls, [("list_issues", {"team": "Eng"})])
+
+    def test_list_tools_keeps_input_schema(self):
+        schema = {
+            "type": "object",
+            "properties": {"team": {"type": "string"}},
+            "required": ["team"],
+        }
+        session = _FakeSession(
+            tools=[("list_issues", "List issues", schema)],
+            result=None,
+        )
+        self._write_auth(
+            {"type": "oauth", "access": "t", "refresh": "r", "expires": (time.time() + 3600) * 1000}
+        )
+        with self._patch_session(session):
+            tools = _run(_Integration().list_tools())
+        self.assertEqual(tools[0]["inputSchema"], schema)
 
     def test_unknown_tool_raises_with_available_list(self):
         session = _FakeSession(tools=[("list_issues", "", {})], result=None)
