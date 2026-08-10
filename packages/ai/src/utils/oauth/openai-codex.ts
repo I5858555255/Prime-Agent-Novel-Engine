@@ -19,7 +19,20 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.js";
 import { generatePKCE } from "./pkce.js";
-import type { OAuthCredentials, OAuthLoginCallbacks, OAuthPrompt, OAuthProviderInterface } from "./types.js";
+import {
+	connectOAuthManualInput,
+	createOAuthTerminalWaiter,
+	type OAuthTerminalWaiter,
+	toOAuthLoginError,
+} from "./terminal-waiter.js";
+import {
+	type OAuthCredentials,
+	type OAuthLoginCallbacks,
+	OAuthLoginError,
+	type OAuthLoginErrorSource,
+	type OAuthPrompt,
+	type OAuthProviderInterface,
+} from "./types.js";
 
 const CALLBACK_HOST = process.env.PI_OAUTH_CALLBACK_HOST || "127.0.0.1";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -47,7 +60,7 @@ function createState(): string {
 	return _randomBytes(16).toString("hex");
 }
 
-function parseAuthorizationInput(input: string): { code?: string; state?: string } {
+function parseAuthorizationInput(input: string): { code?: string; state?: string; error?: string } {
 	const value = input.trim();
 	if (!value) return {};
 
@@ -56,6 +69,7 @@ function parseAuthorizationInput(input: string): { code?: string; state?: string
 		return {
 			code: url.searchParams.get("code") ?? undefined,
 			state: url.searchParams.get("state") ?? undefined,
+			error: url.searchParams.get("error") ?? undefined,
 		};
 	} catch {
 		// not a URL
@@ -66,11 +80,12 @@ function parseAuthorizationInput(input: string): { code?: string; state?: string
 		return { code, state };
 	}
 
-	if (value.includes("code=")) {
+	if (value.includes("=")) {
 		const params = new URLSearchParams(value);
 		return {
 			code: params.get("code") ?? undefined,
 			state: params.get("state") ?? undefined,
+			error: params.get("error") ?? undefined,
 		};
 	}
 
@@ -205,26 +220,29 @@ async function createAuthorizationFlow(
 	return { verifier, state, url: url.toString() };
 }
 
-type OAuthServerInfo = {
-	close: () => void;
-	cancelWait: () => void;
-	waitForCode: () => Promise<{ code: string } | null>;
-};
+type OAuthCode = { code: string };
 
-function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
+type OAuthServerInfo =
+	| {
+			available: true;
+			close: () => void;
+			waiter: OAuthTerminalWaiter<OAuthCode>;
+	  }
+	| {
+			available: false;
+			close: () => void;
+	  };
+
+function startLocalOAuthServer(
+	state: string,
+	options?: { callbackTimeoutMs?: number; signal?: AbortSignal },
+): Promise<OAuthServerInfo> {
 	if (!_http) {
 		throw new Error("OpenAI Codex OAuth is only available in Node.js environments");
 	}
 
-	let settleWait: ((value: { code: string } | null) => void) | undefined;
-	const waitForCodePromise = new Promise<{ code: string } | null>((resolve) => {
-		let settled = false;
-		settleWait = (value) => {
-			if (settled) return;
-			settled = true;
-			resolve(value);
-		};
-	});
+	let waiter: OAuthTerminalWaiter<OAuthCode> | undefined;
+	let listening = false;
 
 	const server = _http.createServer((req, res) => {
 		try {
@@ -235,10 +253,21 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
 				res.end(oauthErrorHtml("Callback route not found."));
 				return;
 			}
+			const error = url.searchParams.get("error");
+			if (error) {
+				res.statusCode = 400;
+				res.setHeader("Content-Type", "text/html; charset=utf-8");
+				res.end(oauthErrorHtml("OpenAI authentication did not complete.", `Error: ${error}`));
+				waiter?.fail(
+					new OAuthLoginError("authorization_error", "browser", `OpenAI authorization failed: ${error}`),
+				);
+				return;
+			}
 			if (url.searchParams.get("state") !== state) {
 				res.statusCode = 400;
 				res.setHeader("Content-Type", "text/html; charset=utf-8");
 				res.end(oauthErrorHtml("State mismatch."));
+				waiter?.fail(new OAuthLoginError("state_mismatch", "browser", "OAuth state mismatch"));
 				return;
 			}
 			const code = url.searchParams.get("code");
@@ -246,33 +275,42 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
 				res.statusCode = 400;
 				res.setHeader("Content-Type", "text/html; charset=utf-8");
 				res.end(oauthErrorHtml("Missing authorization code."));
+				waiter?.fail(new OAuthLoginError("invalid_callback", "browser", "Missing authorization code"));
 				return;
 			}
 			res.statusCode = 200;
 			res.setHeader("Content-Type", "text/html; charset=utf-8");
 			res.end(oauthSuccessHtml("OpenAI authentication completed. You can close this window."));
-			settleWait?.({ code });
-		} catch {
+			waiter?.succeed({ code });
+		} catch (error) {
 			res.statusCode = 500;
 			res.setHeader("Content-Type", "text/html; charset=utf-8");
 			res.end(oauthErrorHtml("Internal error while processing OAuth callback."));
+			waiter?.fail(toOAuthLoginError(error, "invalid_callback", "browser"));
 		}
 	});
 
 	return new Promise((resolve) => {
 		server
 			.listen(1455, CALLBACK_HOST, () => {
+				listening = true;
+				waiter = createOAuthTerminalWaiter<OAuthCode>({
+					timeoutMs: options?.callbackTimeoutMs,
+					signal: options?.signal,
+				});
 				resolve({
+					available: true,
 					close: () => server.close(),
-					cancelWait: () => {
-						settleWait?.(null);
-					},
-					waitForCode: () => waitForCodePromise,
+					waiter,
 				});
 			})
-			.on("error", (_err: NodeJS.ErrnoException) => {
-				settleWait?.(null);
+			.on("error", (error: NodeJS.ErrnoException) => {
+				if (listening) {
+					waiter?.fail(toOAuthLoginError(error, "callback_server_error", "server"));
+					return;
+				}
 				resolve({
+					available: false,
 					close: () => {
 						try {
 							server.close();
@@ -280,11 +318,23 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
 							// ignore
 						}
 					},
-					cancelWait: () => {},
-					waitForCode: async () => null,
 				});
 			});
 	});
+}
+
+function parseAuthorizationResult(input: string, state: string, source: OAuthLoginErrorSource): OAuthCode {
+	const parsed = parseAuthorizationInput(input);
+	if (parsed.error) {
+		throw new OAuthLoginError("authorization_error", source, `OpenAI authorization failed: ${parsed.error}`);
+	}
+	if (parsed.state && parsed.state !== state) {
+		throw new OAuthLoginError("state_mismatch", source, "OAuth state mismatch");
+	}
+	if (!parsed.code) {
+		throw new OAuthLoginError("invalid_callback", source, "Missing authorization code");
+	}
+	return { code: parsed.code };
 }
 
 function getAccountId(accessToken: string): string | null {
@@ -311,80 +361,42 @@ export async function loginOpenAICodex(options: {
 	onProgress?: (message: string) => void;
 	onManualCodeInput?: () => Promise<string>;
 	originator?: string;
+	signal?: AbortSignal;
+	callbackTimeoutMs?: number;
 }): Promise<OAuthCredentials> {
+	if (options.signal?.aborted) {
+		throw new OAuthLoginError("cancelled", "signal", "Login cancelled");
+	}
 	const { verifier, state, url } = await createAuthorizationFlow(options.originator);
-	const server = await startLocalOAuthServer(state);
-
-	options.onAuth({ url, instructions: "A browser window should open. Complete login to finish." });
+	const server = await startLocalOAuthServer(state, options);
 
 	let code: string | undefined;
+	let manualWaiter: OAuthTerminalWaiter<OAuthCode> | undefined;
 	try {
-		if (options.onManualCodeInput) {
-			// Race between browser callback and manual input
-			let manualCode: string | undefined;
-			let manualError: Error | undefined;
-			const manualPromise = options
-				.onManualCodeInput()
-				.then((input) => {
-					manualCode = input;
-					server.cancelWait();
-				})
-				.catch((err) => {
-					manualError = err instanceof Error ? err : new Error(String(err));
-					server.cancelWait();
-				});
+		options.onAuth({ url, instructions: "A browser window should open. Complete login to finish." });
 
-			const result = await server.waitForCode();
-
-			// If manual input was cancelled, throw that error
-			if (manualError) {
-				throw manualError;
+		if (server.available) {
+			if (options.onManualCodeInput) {
+				connectOAuthManualInput(server.waiter, options.onManualCodeInput, (input) =>
+					parseAuthorizationResult(input, state, "manual"),
+				);
 			}
-
-			if (result?.code) {
-				// Browser callback won
-				code = result.code;
-			} else if (manualCode) {
-				// Manual input won (or callback timed out and user had entered code)
-				const parsed = parseAuthorizationInput(manualCode);
-				if (parsed.state && parsed.state !== state) {
-					throw new Error("State mismatch");
-				}
-				code = parsed.code;
-			}
-
-			// If still no code, wait for manual promise to complete and try that
-			if (!code) {
-				await manualPromise;
-				if (manualError) {
-					throw manualError;
-				}
-				if (manualCode) {
-					const parsed = parseAuthorizationInput(manualCode);
-					if (parsed.state && parsed.state !== state) {
-						throw new Error("State mismatch");
-					}
-					code = parsed.code;
-				}
-			}
+			code = (await server.waiter.wait()).code;
 		} else {
-			// Original flow: wait for callback, then prompt if needed
-			const result = await server.waitForCode();
-			if (result?.code) {
-				code = result.code;
-			}
-		}
-
-		// Fallback to onPrompt if still no code
-		if (!code) {
-			const input = await options.onPrompt({
-				message: "Paste the authorization code (or full redirect URL):",
+			manualWaiter = createOAuthTerminalWaiter<OAuthCode>({
+				timeoutMs: options.callbackTimeoutMs,
+				signal: options.signal,
 			});
-			const parsed = parseAuthorizationInput(input);
-			if (parsed.state && parsed.state !== state) {
-				throw new Error("State mismatch");
-			}
-			code = parsed.code;
+			connectOAuthManualInput(
+				manualWaiter,
+				options.onManualCodeInput ??
+					(() =>
+						options.onPrompt({
+							message: "Paste the authorization code (or full redirect URL):",
+						})),
+				(input) => parseAuthorizationResult(input, state, "manual"),
+			);
+			code = (await manualWaiter.wait()).code;
 		}
 
 		if (!code) {
@@ -408,6 +420,10 @@ export async function loginOpenAICodex(options: {
 			accountId,
 		};
 	} finally {
+		manualWaiter?.fail(new OAuthLoginError("cancelled", "server", "OAuth manual callback wait closed"));
+		if (server.available) {
+			server.waiter.fail(new OAuthLoginError("cancelled", "server", "OAuth callback wait closed"));
+		}
 		server.close();
 	}
 }
@@ -445,6 +461,8 @@ export const openaiCodexOAuthProvider: OAuthProviderInterface = {
 			onPrompt: callbacks.onPrompt,
 			onProgress: callbacks.onProgress,
 			onManualCodeInput: callbacks.onManualCodeInput,
+			signal: callbacks.signal,
+			callbackTimeoutMs: callbacks.callbackTimeoutMs,
 		});
 	},
 

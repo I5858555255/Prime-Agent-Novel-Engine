@@ -4,7 +4,12 @@
 
 import { getModels } from "../../models.js";
 import type { Api, Model } from "../../types.js";
-import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "./types.js";
+import {
+	type OAuthCredentials,
+	type OAuthLoginCallbacks,
+	OAuthLoginError,
+	type OAuthProviderInterface,
+} from "./types.js";
 
 type CopilotCredentials = OAuthCredentials & {
 	enterpriseUrl?: string;
@@ -150,20 +155,21 @@ async function startDeviceFlow(domain: string): Promise<DeviceCodeResponse> {
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) {
-			reject(new Error("Login cancelled"));
+			reject(new OAuthLoginError("cancelled", "signal", "Login cancelled"));
 			return;
 		}
 
-		const timeout = setTimeout(resolve, ms);
+		const onAbort = () => {
+			clearTimeout(timeout);
+			signal?.removeEventListener("abort", onAbort);
+			reject(new OAuthLoginError("cancelled", "signal", "Login cancelled"));
+		};
+		const timeout = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
 
-		signal?.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(timeout);
-				reject(new Error("Login cancelled"));
-			},
-			{ once: true },
-		);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -182,7 +188,7 @@ async function pollForGitHubAccessToken(
 
 	while (Date.now() < deadline) {
 		if (signal?.aborted) {
-			throw new Error("Login cancelled");
+			throw new OAuthLoginError("cancelled", "signal", "Login cancelled");
 		}
 
 		const remainingMs = deadline - Date.now();
@@ -330,6 +336,9 @@ export async function loginGitHubCopilot(options: {
 	onProgress?: (message: string) => void;
 	signal?: AbortSignal;
 }): Promise<OAuthCredentials> {
+	if (options.signal?.aborted) {
+		throw new OAuthLoginError("cancelled", "signal", "Login cancelled");
+	}
 	const input = await options.onPrompt({
 		message: "GitHub Enterprise URL/domain (blank for github.com)",
 		placeholder: "company.ghe.com",
@@ -337,7 +346,7 @@ export async function loginGitHubCopilot(options: {
 	});
 
 	if (options.signal?.aborted) {
-		throw new Error("Login cancelled");
+		throw new OAuthLoginError("cancelled", "signal", "Login cancelled");
 	}
 
 	const trimmed = input.trim();

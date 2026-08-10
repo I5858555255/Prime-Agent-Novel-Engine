@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loginGitHubCopilot } from "../src/utils/oauth/github-copilot.js";
+import type { OAuthLoginError } from "../src/utils/oauth/types.js";
 
 function jsonResponse(body: unknown, status: number = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -25,6 +26,7 @@ function getUrl(input: unknown): string {
 
 describe("GitHub Copilot OAuth device flow", () => {
 	afterEach(() => {
+		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 		vi.useRealTimers();
 	});
@@ -192,5 +194,108 @@ describe("GitHub Copilot OAuth device flow", () => {
 			startTime.getTime() + 20000,
 			startTime.getTime() + 25000,
 		]);
+	});
+
+	it("removes each abort listener after repeated polling sleeps", async () => {
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		const addListener = vi.spyOn(controller.signal, "addEventListener");
+		const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+		let polls = 0;
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				const url = getUrl(input);
+				if (url.endsWith("/login/device/code")) {
+					return jsonResponse({
+						device_code: "device-code",
+						user_code: "ABCD-EFGH",
+						verification_uri: "https://github.com/login/device",
+						interval: 1,
+						expires_in: 60,
+					});
+				}
+				if (url.endsWith("/login/oauth/access_token")) {
+					polls += 1;
+					return polls < 20
+						? jsonResponse({ error: "authorization_pending" })
+						: jsonResponse({ access_token: "ghu_refresh_token" });
+				}
+				if (url.includes("/copilot_internal/v2/token")) {
+					return jsonResponse({
+						token: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;",
+						expires_at: 9999999999,
+					});
+				}
+				if (url.includes("/models/") && url.endsWith("/policy")) {
+					return new Response("", { status: 200 });
+				}
+				throw new Error(`Unexpected fetch URL: ${url}`);
+			}),
+		);
+
+		const loginPromise = loginGitHubCopilot({
+			onAuth: () => {},
+			onPrompt: async () => "",
+			signal: controller.signal,
+		});
+		await vi.runAllTimersAsync();
+		await loginPromise;
+
+		const abortAdds = addListener.mock.calls.filter(([type]) => type === "abort");
+		const abortRemovals = removeListener.mock.calls.filter(([type]) => type === "abort");
+		expect(abortAdds).toHaveLength(20);
+		expect(abortRemovals).toHaveLength(abortAdds.length);
+	});
+
+	it("rejects a pre-aborted login before prompting or fetching", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const onPrompt = vi.fn(async () => "");
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(loginGitHubCopilot({ onAuth: () => {}, onPrompt, signal: controller.signal })).rejects.toEqual(
+			expect.objectContaining<Partial<OAuthLoginError>>({ code: "cancelled", source: "signal" }),
+		);
+		expect(onPrompt).not.toHaveBeenCalled();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects when aborted during a polling sleep and removes the listener", async () => {
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				const url = getUrl(input);
+				if (url.endsWith("/login/device/code")) {
+					return jsonResponse({
+						device_code: "device-code",
+						user_code: "ABCD-EFGH",
+						verification_uri: "https://github.com/login/device",
+						interval: 5,
+						expires_in: 60,
+					});
+				}
+				throw new Error(`Unexpected fetch URL: ${url}`);
+			}),
+		);
+
+		const loginPromise = loginGitHubCopilot({
+			onAuth: () => {},
+			onPrompt: async () => "",
+			signal: controller.signal,
+		});
+		const rejection = expect(loginPromise).rejects.toEqual(
+			expect.objectContaining<Partial<OAuthLoginError>>({ code: "cancelled", source: "signal" }),
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		controller.abort();
+
+		await rejection;
+		expect(removeListener).toHaveBeenCalledOnce();
 	});
 });
