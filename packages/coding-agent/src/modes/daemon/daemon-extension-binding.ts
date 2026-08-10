@@ -217,8 +217,17 @@ function createExtensionUIContext(
 		setFooter: () => {},
 		setHeader: () => {},
 		setTitle: (title) => emitUiRequest("setTitle", { title }),
+		supportsCustom: false,
 		async custom<T>(): Promise<T> {
-			return undefined as T;
+			// Terminal-takeover UI has no wire-protocol path under the daemon/worker
+			// architecture: the worker running this handler doesn't own a real
+			// terminal, only the socket-attached client does. Reject instead of
+			// silently resolving so callers can't mistake this for a successful
+			// no-op render. See ctx.ui.supportsCustom to detect this ahead of time.
+			throw new Error(
+				"ctx.ui.custom() is not supported under the daemon/worker architecture. " +
+					"Check ctx.ui.supportsCustom before calling custom().",
+			);
 		},
 		pasteToEditor: (text) => emitUiRequest("setEditorText", { text }),
 		setEditorText: (text) => emitUiRequest("setEditorText", { text }),

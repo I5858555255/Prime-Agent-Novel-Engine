@@ -178,7 +178,19 @@ export interface ExtensionUIContext {
 	/** Set the terminal window/tab title. */
 	setTitle(title: string): void;
 
-	/** Show a custom component with keyboard focus. */
+	/**
+	 * Whether `custom()` can actually take over the terminal in this UI context.
+	 *
+	 * `hasUI` only indicates that a (non-no-op) UI context is bound; it does not
+	 * guarantee every method is functional. In particular, under the daemon/worker
+	 * architecture and over RPC, the extension handler runs in a process that does
+	 * not own a real terminal, so `custom()` cannot render anything even though
+	 * other UI methods (select, confirm, input, etc.) work over the wire protocol.
+	 * Check this flag before calling `custom()` to detect that case.
+	 */
+	readonly supportsCustom: boolean;
+
+	/** Show a custom component with keyboard focus. Rejects if `supportsCustom` is false. */
 	custom<T>(
 		factory: (
 			tui: TUI,
