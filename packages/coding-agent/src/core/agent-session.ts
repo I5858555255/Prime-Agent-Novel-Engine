@@ -246,7 +246,13 @@ import {
 	transitionSessionAction,
 	type WakePolicy,
 } from "./session-action-store.js";
-import type { BranchSummaryEntry, CompactionEntry, SessionContext, SessionMessageEntry } from "./session-manager.js";
+import type {
+	BranchSummaryEntry,
+	ChildUsageAttributionEntry,
+	CompactionEntry,
+	SessionContext,
+	SessionMessageEntry,
+} from "./session-manager.js";
 import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
@@ -9647,6 +9653,8 @@ export class AgentSession {
 		let runningToolCount = 0;
 		let activity: RlmChildAgentActivity | undefined;
 		let childSession: AgentSession | undefined;
+		let pendingChildUsage: Usage | undefined;
+		let pendingChildUsageOrigin: ChildUsageAttributionEntry["origin"] | undefined;
 		const run: RlmChildRun = {
 			id: childNodeId,
 			prompt,
@@ -9659,6 +9667,20 @@ export class AgentSession {
 		};
 		const throwIfCancelled = () => {
 			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
+		};
+		const flushChildUsage = () => {
+			if (!pendingChildUsage || !parentAssistantForUsage) return;
+			const parentEntry = this._findAssistantEntryForMessage(parentAssistantForUsage);
+			if (parentEntry) {
+				this.sessionManager.appendChildUsageAttribution(
+					parentEntry.id,
+					pendingChildUsage,
+					parentAssistantForUsage.usage,
+					pendingChildUsageOrigin,
+				);
+			}
+			pendingChildUsage = undefined;
+			pendingChildUsageOrigin = undefined;
 		};
 		this._activeRlmChildRuns.set(run.id, run);
 		const emitChildUpdate = () => {
@@ -9750,6 +9772,7 @@ export class AgentSession {
 						activity = { kind: "waiting" };
 						emitChildUpdate();
 					} else if (event.type === "agent_end") {
+						flushChildUsage();
 						activity = undefined;
 						emitChildUpdate();
 					} else if (event.type === "message_end" && event.message.role === "assistant") {
@@ -9757,27 +9780,22 @@ export class AgentSession {
 						if (assistant.stopReason !== "error" && assistant.stopReason !== "aborted") {
 							attributeChildUsage(parentAssistantForUsage?.usage ?? emptyUsage(), assistant.usage);
 							if (parentAssistantForUsage) {
-								const parentEntry = this._findAssistantEntryForMessage(parentAssistantForUsage);
-								if (parentEntry) {
-									const messages = child.messages;
-									const assistantIndex = messages.lastIndexOf(assistant);
-									const precedingPrompt = messages
-										.slice(0, assistantIndex)
-										.reverse()
-										.find((message) => message.role === "user" || message.role === "custom");
-									const origin =
-										precedingPrompt?.role === "custom" && isAgentSessionMessage(precedingPrompt)
-											? precedingPrompt.details.id.startsWith("spawn:")
-												? "spawn_task"
-												: "agent_message"
-											: "direct_user";
-									this.sessionManager.appendChildUsageAttribution(
-										parentEntry.id,
-										assistant.usage,
-										parentAssistantForUsage.usage,
-										origin,
-									);
-								}
+								const messages = child.messages;
+								const assistantIndex = messages.lastIndexOf(assistant);
+								const precedingPrompt = messages
+									.slice(0, assistantIndex)
+									.reverse()
+									.find((message) => message.role === "user" || message.role === "custom");
+								const origin =
+									precedingPrompt?.role === "custom" && isAgentSessionMessage(precedingPrompt)
+										? precedingPrompt.details.id.startsWith("spawn:")
+											? "spawn_task"
+											: "agent_message"
+										: "direct_user";
+								if (pendingChildUsageOrigin && pendingChildUsageOrigin !== origin) flushChildUsage();
+								pendingChildUsage ??= emptyUsage();
+								pendingChildUsageOrigin = origin;
+								addAssistantUsage(pendingChildUsage, assistant.usage);
 							}
 						}
 						const text = compactRlmText(readAssistantText(assistant));
@@ -9915,6 +9933,7 @@ export class AgentSession {
 					}
 				}
 			} finally {
+				flushChildUsage();
 				if (run.detachedDeletion && childRuntime) {
 					try {
 						await this._deleteRlmSubagentSession(run.id, childRuntime.session);
