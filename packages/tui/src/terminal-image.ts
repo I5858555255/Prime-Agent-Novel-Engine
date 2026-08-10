@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+
 export type ImageProtocol = "kitty" | "iterm2" | null;
 
 export interface TerminalCapabilities {
@@ -39,17 +41,29 @@ export function setCellDimensions(dims: CellDimensions): void {
 	cellDimensions = dims;
 }
 
+function tmuxSupportsHyperlinks(): boolean {
+	const result = spawnSync("tmux", ["display-message", "-p", "#{client_termfeatures}"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+		timeout: 250,
+	});
+	if (result.status !== 0 || typeof result.stdout !== "string") return false;
+	return result.stdout.split(/[,:]/).some((feature) => feature.trim() === "hyperlinks");
+}
+
 export function detectCapabilities(): TerminalCapabilities {
 	const termProgram = process.env.TERM_PROGRAM?.toLowerCase() || "";
 	const term = process.env.TERM?.toLowerCase() || "";
 	const colorTerm = process.env.COLORTERM?.toLowerCase() || "";
 
-	// tmux and screen swallow OSC 8 by default (passthrough is opt-in and wraps
-	// sequences differently). Force hyperlinks off whenever we detect them, even
-	// when the outer terminal would otherwise support OSC 8. Image protocols are
-	// also unreliable under tmux/screen, so leave `images: null` for safety.
-	const inTmuxOrScreen = !!process.env.TMUX || term.startsWith("tmux") || term.startsWith("screen");
-	if (inTmuxOrScreen) {
+	// Image protocols are unreliable under tmux/screen, so leave `images: null`
+	// for safety. tmux can preserve OSC 8 when its client negotiated support;
+	// screen remains conservative because it has no equivalent probe here.
+	if (process.env.TMUX) {
+		const trueColor = colorTerm === "truecolor" || colorTerm === "24bit";
+		return { images: null, trueColor, hyperlinks: tmuxSupportsHyperlinks() };
+	}
+	if (term.startsWith("tmux") || term.startsWith("screen")) {
 		const trueColor = colorTerm === "truecolor" || colorTerm === "24bit";
 		return { images: null, trueColor, hyperlinks: false };
 	}
