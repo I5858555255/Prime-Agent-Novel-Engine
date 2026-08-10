@@ -816,6 +816,7 @@ export class AgentDaemon {
 			delete environment[SESSION_LEASES_ENABLED_ENV];
 			delete environment[SESSION_LEASE_OWNER_ID_ENV];
 			const child = spawn(launch.command, launch.args, {
+				windowsHide: true,
 				cwd: this.options.defaultSessionConfig.cwd ?? process.cwd(),
 				detached: true,
 				env: environment,

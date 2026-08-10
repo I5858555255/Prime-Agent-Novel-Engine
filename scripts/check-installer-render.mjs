@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const installerSource = readFileSync("install.sh", "utf-8");
+const powershellInstallerSource = readFileSync("install.ps1", "utf-8");
 const mainCall = '\nmain "$@"';
 const mainCallIndex = installerSource.lastIndexOf(mainCall);
 const ansiPattern = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -156,12 +157,41 @@ try {
 	rmSync(tempDir, { recursive: true, force: true });
 }
 
+checkInstallerRelease("install.sh", installerSource);
+checkInstallerRelease("install.ps1", powershellInstallerSource);
+
 if (failures.length > 0) {
 	console.error(["Installer render check failed:", ...failures.map((failure) => `- ${failure}`)].join("\n"));
 	process.exit(1);
 }
 
 console.log("Installer render check passed.");
+
+// The release workflow rewrites the two configured sentinels in place. Unrendered
+// copies must keep the split literals so they can still detect "not configured yet".
+function checkInstallerRelease(name, source) {
+	const baseUrlSentinel = "__PRIME_AGENT_DOWNLOAD_BASE_URL__";
+	const channelSentinel = "__PRIME_AGENT_DEFAULT_RELEASE_CHANNEL__";
+	const baseUrl = "https://example.invalid/prime-agent";
+
+	check(source.includes(baseUrlSentinel), `${name}: expected a ${baseUrlSentinel} placeholder`);
+	check(source.includes(channelSentinel), `${name}: expected a ${channelSentinel} placeholder`);
+
+	for (const channel of ["stable", "beta"]) {
+		const rendered = source.replaceAll(baseUrlSentinel, baseUrl).replaceAll(channelSentinel, channel);
+		check(!rendered.includes(baseUrlSentinel), `${name}: ${channel} render left a ${baseUrlSentinel} placeholder`);
+		check(!rendered.includes(channelSentinel), `${name}: ${channel} render left a ${channelSentinel} placeholder`);
+		check(rendered.includes(baseUrl), `${name}: ${channel} render did not apply the download base URL`);
+		check(
+			rendered.includes('__PRIME_AGENT_DOWNLOAD_BASE"') || rendered.includes("__PRIME_AGENT_DOWNLOAD_BASE'"),
+			`${name}: ${channel} render lost the split unconfigured base URL sentinel`,
+		);
+		check(
+			rendered.includes('__PRIME_AGENT_DEFAULT_RELEASE_"') || rendered.includes("__PRIME_AGENT_DEFAULT_RELEASE_'"),
+			`${name}: ${channel} render lost the split unconfigured channel sentinel`,
+		);
+	}
+}
 
 function runCase(name, initialCols, initialRows, resizedCols, resizedRows) {
 	const result = spawnSync("sh", [harnessPath, String(initialCols), String(initialRows), String(resizedCols), String(resizedRows)], {
