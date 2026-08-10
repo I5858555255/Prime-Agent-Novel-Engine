@@ -73,6 +73,15 @@ npm run check
 
 This performs formatting, linting, type checking, installer rendering checks, and the browser smoke check. It does not run the test suite.
 
+The check is non-mutating and fails when formatting is invalid. Apply formatter and safe lint fixes explicitly, then rerun the check:
+
+```bash
+npm run format
+npm run check
+```
+
+The pre-commit hook and CI use the non-mutating check. They do not rewrite or restage contributor changes.
+
 Run focused tests from the package root. For example:
 
 ```bash
