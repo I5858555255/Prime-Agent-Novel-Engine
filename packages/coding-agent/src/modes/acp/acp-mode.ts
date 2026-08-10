@@ -84,6 +84,40 @@ function sameCwd(left: string, right: string): boolean {
 	}
 }
 
+const ACP_SESSION_PAGE_SIZE = 50;
+
+function sessionCursor(offset: number): string {
+	return Buffer.from(String(offset), "utf8").toString("base64url");
+}
+
+function sessionCursorOffset(cursor: unknown): number {
+	if (cursor === undefined) return 0;
+	if (typeof cursor !== "string") throw new Error("Invalid session/list cursor");
+	const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+	const offset = Number(decoded);
+	if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid session/list cursor");
+	return offset;
+}
+
+function messageReplayUpdates(message: AgentMessage): Record<string, unknown>[] {
+	const typed = message as AgentMessage & { content?: unknown };
+	const sessionUpdate =
+		message.role === "user" ? "user_message_chunk" : message.role === "assistant" ? "agent_message_chunk" : undefined;
+	if (!sessionUpdate) return [];
+	const blocks =
+		typeof typed.content === "string"
+			? [{ type: "text", text: typed.content }]
+			: Array.isArray(typed.content)
+				? typed.content
+				: [];
+	return blocks.flatMap((block) => {
+		if (!block || typeof block !== "object") return [];
+		const item = block as { type?: unknown; text?: unknown };
+		if (item.type !== "text" || typeof item.text !== "string" || item.text.length === 0) return [];
+		return [{ sessionUpdate, content: { type: "text", text: item.text } }];
+	});
+}
+
 export interface AcpModeOptions {
 	/** Bind headless extensions once the connection is live (in-process mode). */
 	bindHeadlessExtensions?: () => Promise<void>;
@@ -104,10 +138,6 @@ interface AcpSessionEntry {
 
 /**
  * Split ACP prompt blocks into the text and images prime-agent accepts.
- *
- * Image and embedded-resource blocks are advertised in `initialize`, so they must
- * actually reach the model: dropping them silently would let a client believe a
- * pasted screenshot was accepted.
  */
 function promptContent(blocks: readonly unknown[]): { text: string; images: ImageContent[] } {
 	const texts: string[] = [];
@@ -127,7 +157,6 @@ function promptContent(blocks: readonly unknown[]): { text: string; images: Imag
 		} else if (typed.type === "image" && typeof typed.data === "string" && typeof typed.mimeType === "string") {
 			images.push({ type: "image", data: typed.data, mimeType: typed.mimeType });
 		} else if (typed.type === "resource" && typeof typed.resource?.text === "string") {
-			// Embedded text resources become context the model can read.
 			const uri = typed.resource.uri ? `${typed.resource.uri}\n` : "";
 			texts.push(`${uri}${typed.resource.text}`);
 		} else if (typed.type === "resource_link" && typeof typed.uri === "string") {
@@ -151,25 +180,11 @@ function autonomousMeta(status: AgentAutonomousStatus | undefined): Record<strin
 	});
 }
 
-/**
- * The transcript as it stood before a turn started, recorded so the turn's own
- * messages can be told apart from everything older.
- *
- * A pre-turn message *count* cannot do that job: auto-compaction can fire during
- * a turn and rebuild `state.messages` (it filters, slices, and re-materializes
- * persisted entries), so this turn's failure can end up at a lower index than
- * the count taken before prompting. Membership is tracked by things a rebuild
- * preserves instead — the message objects themselves, plus a content key for
- * transports that hand back fresh copies (daemon RPC re-parses JSON, so identity
- * does not survive it) and for compaction paths that re-materialize a kept
- * message from its persisted entry with its original timestamp.
- */
 interface TurnBoundary {
 	identities: WeakSet<object>;
 	keys: Set<string>;
 }
 
-/** Key for a kept message: compaction drops messages, it does not rewrite them. */
 function messageKey(message: unknown): string | undefined {
 	if (typeof message !== "object" || message === null) return undefined;
 	const record = message as { role?: unknown; timestamp?: unknown; stopReason?: unknown; errorMessage?: unknown };
@@ -201,24 +216,11 @@ function isPreTurn(message: unknown, boundary: TurnBoundary): boolean {
 	return key !== undefined && boundary.keys.has(key);
 }
 
-/**
- * Error text from an assistant message this turn produced, when it failed.
- *
- * `promptAndWait` resolves for a failed turn just as it does for a successful
- * one, so the outcome has to be read off the transcript. Only messages that were
- * not in the transcript before the turn are considered: scanning the whole
- * transcript would let an earlier failed turn reject a later turn that never
- * called the model (a handled slash command, say), reporting a stale error.
- *
- * A transcript read that fails is not treated as success — that would restore
- * the silent-success behavior this exists to prevent.
- */
 async function turnFailure(connection: AgentConnection, boundary: TurnBoundary): Promise<string | undefined> {
 	const messages = await connection.getMessages();
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index];
 		if (message?.role !== "assistant") continue;
-		// The newest assistant message predates the turn, so the turn appended none.
 		if (isPreTurn(message, boundary)) return undefined;
 		const assistant = message as { stopReason?: string; errorMessage?: string };
 		if (assistant.stopReason !== "error") return undefined;
@@ -238,54 +240,108 @@ export async function runAcpModeWithConnection(
 	connection: AgentConnection,
 	options: AcpModeOptions = {},
 ): Promise<never> {
-	// ACP owns stdout: any stray write corrupts the JSON-RPC stream.
 	if (options.ownStdout !== false && !options.stream) {
 		takeOverStdout();
 	}
 
-	// One ACP connection drives one AgentConnection, whose newSession() replaces
-	// the live session rather than creating a parallel one. Tracking a single
-	// session keeps every event unambiguously attributable; a second session/new
-	// is refused rather than silently sharing conversation state, cwd, and queues.
 	let session: AcpSessionEntry | undefined;
 	let bound = false;
 
 	const stream =
 		options.stream ?? acp.ndJsonStream(rawStdoutSink(), Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>);
 
+	const subscribeSession = (ctx: any, sessionId: string): AcpSessionEntry => {
+		const entry: AcpSessionEntry = { id: sessionId, abort: undefined, unsubscribe: undefined };
+		const mappingState: AcpEventMappingState = {};
+		entry.unsubscribe = connection.subscribe((event) => {
+			const notify = (update: Record<string, unknown>) =>
+				void ctx.client.notify(acp.methods.client.session.update, { sessionId, update }).catch(() => undefined);
+			if (event.type === "heartbeats_changed") {
+				notify({ sessionUpdate: "session_info_update", _meta: primeAgentMeta({ heartbeatsChanged: true }) });
+				return;
+			}
+			if (event.type !== "session_event") return;
+			for (const update of acpUpdatesForSessionEvent(event.event, mappingState)) notify(update);
+		});
+		return entry;
+	};
+
+	const ensureBound = async () => {
+		if (bound) return;
+		await options.bindHeadlessExtensions?.();
+		bound = true;
+	};
+
 	const handle = acp
 		.agent({ name: "prime-agent" })
 		.onRequest("initialize", async () => ({
 			protocolVersion: acp.PROTOCOL_VERSION,
 			agentCapabilities: {
-				loadSession: false,
+				loadSession: true,
 				promptCapabilities: { image: true, embeddedContext: true },
-				// Advertise close so a client knows it can release the session (and
-				// the single-session slot) instead of dropping the connection.
-				sessionCapabilities: { close: {} },
+				sessionCapabilities: { close: {}, list: {} },
 			},
 			agentInfo: { name: "prime-agent", title: "Prime Agent", version: VERSION },
-			// Advertise prime-agent extras under a namespaced key: ACP reserves
-			// every object root for future protocol fields.
 			_meta: primeAgentMeta({}),
 		}))
-		.onRequest("session/new", async (ctx: any) => {
-			if (!bound) {
-				// Only latch after a successful bind: a rejected bind must not leave
-				// extensions permanently unavailable for the rest of the process.
-				await options.bindHeadlessExtensions?.();
-				bound = true;
+		.onRequest("session/list", async (ctx: any) => {
+			const params = (ctx.params ?? {}) as { cwd?: unknown; cursor?: unknown };
+			const offset = sessionCursorOffset(params.cursor);
+			const cwd = typeof params.cwd === "string" && params.cwd.length > 0 ? params.cwd : undefined;
+			const saved = await connection.listSavedSessions("all");
+			const matching = cwd ? saved.filter((item) => sameCwd(item.cwd, cwd)) : saved;
+			const page = matching.slice(offset, offset + ACP_SESSION_PAGE_SIZE);
+			const nextOffset = offset + page.length;
+			return {
+				sessions: page.map((item) => ({
+					sessionId: item.id,
+					cwd: item.cwd,
+					...(item.name || item.firstMessage ? { title: item.name || item.firstMessage } : {}),
+					updatedAt: item.modified.toISOString(),
+				})),
+				...(nextOffset < matching.length ? { nextCursor: sessionCursor(nextOffset) } : {}),
+			};
+		})
+		.onRequest("session/load", async (ctx: any) => {
+			if (session) {
+				throw new Error(
+					"prime-agent ACP mode hosts one session per connection; close the current session before loading another",
+				);
 			}
+			await ensureBound();
+			const params = ctx.params as { sessionId: string; cwd?: string };
+			const saved = await connection.listSavedSessions("all");
+			const target = saved.find((item) => item.id === params.sessionId);
+			if (!target) throw new Error(`Unknown saved session: ${params.sessionId}`);
+			const switched = await connection.switchSession(
+				target.path,
+				params.cwd ? { cwdOverride: params.cwd } : undefined,
+			);
+			if (switched.cancelled) throw new Error(`Loading saved session was cancelled: ${params.sessionId}`);
+
+			const entry = subscribeSession(ctx, params.sessionId);
+			session = entry;
+			try {
+				for (const message of await connection.getMessages()) {
+					for (const update of messageReplayUpdates(message)) {
+						await ctx.client.notify(acp.methods.client.session.update, { sessionId: params.sessionId, update });
+					}
+				}
+			} catch (error) {
+				entry.unsubscribe?.();
+				session = undefined;
+				throw error;
+			}
+			return {};
+		})
+		.onRequest("session/new", async (ctx: any) => {
+			await ensureBound();
 			if (session) {
 				throw new Error(
 					"prime-agent ACP mode hosts one session per connection; " +
 						"start another prime-agent process for a second session",
 				);
 			}
-			// prime-agent's cwd is fixed at startup by the session it was launched
-			// with, so a client-supplied cwd cannot be adopted after the fact.
-			// Report the real cwd back in `_meta` rather than failing the request or
-			// letting the client assume a directory the agent is not using.
 			const requestedCwd = (ctx.params as { cwd?: unknown } | undefined)?.cwd;
 			let cwdMismatch: { requested: string; actual: string } | undefined;
 			if (typeof requestedCwd === "string" && requestedCwd.length > 0) {
@@ -293,37 +349,10 @@ export async function runAcpModeWithConnection(
 					.getState()
 					.then((state) => state.cwd)
 					.catch(() => undefined);
-				if (actual && !sameCwd(requestedCwd, actual)) {
-					cwdMismatch = { requested: requestedCwd, actual };
-				}
+				if (actual && !sameCwd(requestedCwd, actual)) cwdMismatch = { requested: requestedCwd, actual };
 			}
 			const sessionId = randomUUID();
-			const entry: AcpSessionEntry = { id: sessionId, abort: undefined, unsubscribe: undefined };
-			// Subscribe for the session lifetime, not per prompt turn: prime-agent
-			// subagents are fire-and-forget and keep reporting after the spawning turn
-			// ends, so a turn-scoped subscription would drop their updates. One
-			// mapping state per session keeps streaming bash output correlated with
-			// the run that produced it.
-			const mappingState: AcpEventMappingState = {};
-			const unsubscribe = connection.subscribe((event) => {
-				const notify = (update: Record<string, unknown>) =>
-					void ctx.client.notify(acp.methods.client.session.update, { sessionId, update }).catch(() => undefined);
-				// Heartbeats and cron schedules are connection-level rather than
-				// session events, but they drive the long-running work an ACP client
-				// most needs to observe.
-				if (event.type === "heartbeats_changed") {
-					notify({ sessionUpdate: "session_info_update", _meta: primeAgentMeta({ heartbeatsChanged: true }) });
-					return;
-				}
-				if (event.type !== "session_event") return;
-				for (const update of acpUpdatesForSessionEvent(event.event, mappingState)) {
-					notify(update);
-				}
-			});
-			// Claim the single-session slot only once the subscription exists, so a
-			// failed subscribe cannot leave the slot occupied and unusable.
-			entry.unsubscribe = unsubscribe;
-			session = entry;
+			session = subscribeSession(ctx, sessionId);
 			return {
 				sessionId,
 				...(cwdMismatch ? { _meta: primeAgentMeta({ cwd: cwdMismatch }) } : {}),
@@ -333,25 +362,14 @@ export async function runAcpModeWithConnection(
 			const params = ctx.params as { sessionId: string; prompt: readonly unknown[] };
 			const entry = session?.id === params.sessionId ? session : undefined;
 			if (!entry) throw new Error(`Unknown ACP session: ${params.sessionId}`);
-
-			// ACP allows one turn at a time per session. Refuse a concurrent prompt
-			// rather than overwriting the running turn's controller, which would make
-			// the live turn uncancellable and let the loser's cleanup clear it.
-			if (entry.abort) {
-				throw new Error("A prompt turn is already running for this ACP session");
-			}
+			if (entry.abort) throw new Error("A prompt turn is already running for this ACP session");
 			const abort = new AbortController();
 			entry.abort = abort;
 
 			try {
 				const { text, images } = promptContent(params.prompt);
-				// Only this turn's messages may decide its outcome, and compaction can
-				// rebuild the transcript mid-turn, so record the pre-turn messages
-				// themselves rather than how many there were.
 				const priorMessages = turnBoundary(await connection.getMessages());
 				await connection.promptAndWait(text, images.length > 0 ? { images } : undefined);
-				// Autonomous gates continue inside this same prompt turn: the turn is
-				// only over once the gate loop settles.
 				const status = await connection.waitForHeadlessCompletion();
 				const meta = autonomousMeta(status);
 				if (meta) {
@@ -362,36 +380,19 @@ export async function runAcpModeWithConnection(
 						})
 						.catch(() => undefined);
 				}
-				// A turn that failed (provider error, auth, no usable model) must not be
-				// reported as a clean end_turn. Print mode surfaces
-				// `stopReason: "error"` with its errorMessage; ACP previously dropped
-				// that and answered end_turn with no updates at all, which reads to a
-				// client as a successful but empty turn.
 				const failure = await turnFailure(connection, priorMessages);
-				if (failure && !abort.signal.aborted) {
-					throw new Error(`prime-agent turn failed: ${failure}`);
-				}
+				if (failure && !abort.signal.aborted) throw new Error(`prime-agent turn failed: ${failure}`);
 				return { stopReason: acpStopReason({ cancelled: abort.signal.aborted, autonomous: status }) };
 			} catch (error) {
-				// Cancellation is a normal ACP prompt outcome, not a JSON-RPC error.
 				if (abort.signal.aborted) return { stopReason: "cancelled" satisfies AcpStopReason };
 				throw error;
 			} finally {
-				// Only clear our own controller: a later turn must not be cleared by
-				// an earlier one unwinding.
 				if (entry.abort === abort) entry.abort = undefined;
 			}
 		})
 		.onRequest("session/close", async (ctx: any) => {
-			// Releasing the subscription matters: it is the only thing that stops
-			// forwarding events, and closing frees the connection for a new session.
 			const params = ctx.params as { sessionId: string };
-			if (session?.id !== params.sessionId) {
-				throw new Error(`Unknown ACP session: ${params.sessionId}`);
-			}
-			// Stop real work, not just local bookkeeping: aborting only the local
-			// controller leaves the agent running with nobody listening, so closing
-			// must abort the connection the same way session/cancel does.
+			if (session?.id !== params.sessionId) throw new Error(`Unknown ACP session: ${params.sessionId}`);
 			const closing = session;
 			session = undefined;
 			closing.unsubscribe?.();
@@ -403,25 +404,17 @@ export async function runAcpModeWithConnection(
 		})
 		.onNotification("session/cancel", async (ctx: any) => {
 			const params = ctx.params as { sessionId: string };
-			// Only cancel the addressed session: aborting unconditionally would kill
-			// whichever turn happens to be running, and leave the real turn's
-			// AbortController unmarked so it reports a wrong stop reason.
 			if (session?.id !== params.sessionId || !session.abort) return;
 			session.abort.abort();
 			await connection.abort().catch(() => undefined);
 		})
 		.connect(stream);
 
-	// Exit when the client disconnects (stdin EOF or a closed transport). Blocking
-	// forever would leave an orphaned agent per run, which matters most for a
-	// harness that spawns many short-lived sessions.
 	await handle.closed.catch(() => undefined);
 	session?.abort?.abort();
 	session?.unsubscribe?.();
 	session = undefined;
 	await connection.dispose().catch(() => undefined);
-	// Only the real stdio entrypoint owns the process; a caller-supplied transport
-	// (tests, embedding) must never have its host exited from under it.
 	if (options.stream) return undefined as never;
 	return process.exit(0) as never;
 }
