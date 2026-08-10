@@ -27,7 +27,11 @@ import {
 import { canonicalizePath } from "../../utils/paths.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
-import type { AgentConnectionHeartbeat, AgentConnectionSavedSessionInfo } from "../agent-connection/types.js";
+import type {
+	AgentConnectionHeartbeat,
+	AgentConnectionSavedSessionInfo,
+	AgentConnectionSavedSessionScope,
+} from "../agent-connection/types.js";
 import { DaemonClient, getDaemonSocketCloseReason } from "../daemon/daemon-client.js";
 import {
 	collectDaemonClientEnv,
@@ -165,6 +169,7 @@ export type AgentsViewPersistentState = {
 	query?: string;
 	savedSessions?: AgentConnectionSavedSessionInfo[];
 	lastSuccessfulSavedSessions?: AgentConnectionSavedSessionInfo[];
+	savedScope?: AgentConnectionSavedSessionScope;
 	lastSuccessfulLiveSummaries?: SessionSummary[];
 	savedCatalogGeneration?: number;
 	heartbeats?: AgentConnectionHeartbeat[];
@@ -640,6 +645,7 @@ export class AgentsViewMode implements Component, Focusable {
 	private lastVisibleSummaries: SessionSummary[] = [];
 	private savedSessions: AgentConnectionSavedSessionInfo[] = [];
 	private lastSuccessfulSavedSessions: AgentConnectionSavedSessionInfo[] = [];
+	private savedScope: AgentConnectionSavedSessionScope;
 	private heartbeats: AgentConnectionHeartbeat[] = [];
 	private unifiedRecords: UnifiedSessionRecord[] = [];
 	private unifiedIndex: UnifiedSessionIndex = buildUnifiedSessionIndex([]);
@@ -702,6 +708,7 @@ export class AgentsViewMode implements Component, Focusable {
 		this.lastListedSummaries = persistentState.lastSuccessfulLiveSummaries ?? [];
 		this.savedSessions = persistentState.savedSessions ?? [];
 		this.lastSuccessfulSavedSessions = persistentState.lastSuccessfulSavedSessions ?? this.savedSessions;
+		this.savedScope = persistentState.savedScope ?? "current";
 		this.savedCatalogReady = persistentState.lastSuccessfulSavedSessions !== undefined;
 		this.heartbeats = persistentState.heartbeats ?? [];
 		this.savedCatalogGeneration = persistentState.savedCatalogGeneration ?? 0;
@@ -889,6 +896,10 @@ export class AgentsViewMode implements Component, Focusable {
 				return;
 			}
 			this.handleCtrlC();
+			return;
+		}
+		if (this.editor.getText().length === 0 && this.keybindings.matches(data, "app.agents.toggleScope")) {
+			this.toggleSavedScope();
 			return;
 		}
 		if (this.editor.getText().length === 0 && this.keybindings.matches(data, "app.agents.rename")) {
@@ -2213,6 +2224,21 @@ export class AgentsViewMode implements Component, Focusable {
 		return results.every(Boolean);
 	}
 
+	private toggleSavedScope(): void {
+		this.savedScope = this.savedScope === "all" ? "current" : "all";
+		this.persistentState.savedScope = this.savedScope;
+		// Drop the previous scope's catalog so stale sessions are not rendered while reloading.
+		this.savedSessions = [];
+		this.lastSuccessfulSavedSessions = [];
+		this.persistentState.savedSessions = [];
+		this.persistentState.lastSuccessfulSavedSessions = [];
+		this.setStatusMessage(
+			this.savedScope === "current" ? "Saved sessions: current project" : "Saved sessions: all projects",
+			{ render: false },
+		);
+		void this.refreshSavedSessions();
+	}
+
 	private async refreshSavedSessions(
 		options: { duringReconnect?: boolean; preserveStatusOnError?: boolean } = {},
 	): Promise<boolean> {
@@ -2236,7 +2262,7 @@ export class AgentsViewMode implements Component, Focusable {
 			const sessions = await listDaemonSavedSessions(
 				this.requireClient(),
 				this.getSavedSessionCatalogContext(),
-				"all",
+				this.savedScope,
 				{
 					onSession,
 				},
@@ -2691,6 +2717,7 @@ export class AgentsViewMode implements Component, Focusable {
 				? `${keyText("app.agents.reply")} ${selectedRow?.section === "inactive" ? "resume" : "reply"}`
 				: undefined,
 			`${keyText("app.agents.new")} new`,
+			`${keyText("app.agents.toggleScope")} saved:${this.savedScope === "current" ? "project" : "all"}`,
 			selectedAgent ? `${keyText("app.agents.rename")} rename` : undefined,
 			selectedAgent
 				? `${keyText("app.agents.delete")} ${selectedRow?.section === "inactive" ? "delete" : "stop/deactivate"}`
