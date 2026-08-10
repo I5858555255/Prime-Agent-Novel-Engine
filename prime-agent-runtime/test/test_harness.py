@@ -1,16 +1,28 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 from rlm import harness as package_harness
 from rlm import rlm as callable_rlm
-from rlm.harness import HarnessState, get_harness_state
+from rlm.harness import (
+    HarnessState,
+    _fsync_directory,
+    _get_process_start_id,
+    _read_lock_observation,
+    _remove_observed_lock,
+    get_harness_state,
+)
 
 PYTHON_REFERENCE = {
     "type": "python",
@@ -21,6 +33,370 @@ PYTHON_REFERENCE = {
 
 
 class HarnessStateTest(unittest.TestCase):
+    def test_three_process_stale_reclaim_does_not_delete_successor_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            runtime_src = Path(__file__).resolve().parents[1] / "src"
+            env = {**os.environ, "PYTHONPATH": str(runtime_src), "STATE_PATH": str(state_path)}
+            first_owner = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os\n"
+                        "from pathlib import Path\n"
+                        "from rlm.harness import _state_lock\n"
+                        "with _state_lock(Path(os.environ['STATE_PATH'])):\n"
+                        "    os._exit(0)\n"
+                    ),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(first_owner.returncode, 0, first_owner.stderr)
+            stale_observation = _read_lock_observation(lock_path)
+            self.assertIsNotNone(stale_observation)
+
+            successor_acquired = Path(temp_dir) / "successor-acquired"
+            release_successor = Path(temp_dir) / "release-successor"
+            successor_verified = Path(temp_dir) / "successor-verified"
+            successor = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os, time\n"
+                        "from pathlib import Path\n"
+                        "from rlm.harness import _state_lock\n"
+                        "with _state_lock(Path(os.environ['STATE_PATH'])) as assert_owned:\n"
+                        "    Path(os.environ['ACQUIRED']).write_text('acquired', encoding='utf-8')\n"
+                        "    while not Path(os.environ['RELEASE']).exists(): time.sleep(0.01)\n"
+                        "    assert_owned()\n"
+                        "    Path(os.environ['VERIFIED']).write_text('verified', encoding='utf-8')\n"
+                    ),
+                ],
+                env={
+                    **env,
+                    "ACQUIRED": str(successor_acquired),
+                    "RELEASE": str(release_successor),
+                    "VERIFIED": str(successor_verified),
+                },
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 5
+            while not successor_acquired.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not successor_acquired.exists():
+                successor.terminate()
+                stdout, stderr = successor.communicate(timeout=5)
+                self.fail(f"successor did not acquire lock (exit {successor.returncode}): {stdout}\n{stderr}")
+
+            self.assertFalse(_remove_observed_lock(lock_path, stale_observation))
+            successor_observation = _read_lock_observation(lock_path)
+            self.assertIsNotNone(successor_observation)
+            self.assertNotEqual(successor_observation.fingerprint, stale_observation.fingerprint)
+            release_successor.write_text("release", encoding="utf-8")
+            stdout, stderr = successor.communicate(timeout=5)
+            self.assertEqual(successor.returncode, 0, f"{stdout}\n{stderr}")
+            self.assertTrue(successor_verified.exists())
+
+    def test_mutations_merge_under_the_cross_process_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            first = HarnessState(state_path)
+            second = HarnessState(state_path)
+
+            first.create_memory("First", "written first", id="first")
+            second.create_memory("Second", "written second", id="second")
+
+            document = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(document["revision"], 2)
+            self.assertEqual(set(document["entries"]["memory"]), {"first", "second"})
+
+    def test_stale_direct_save_fails_instead_of_overwriting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            current = HarnessState(state_path)
+            current.create_memory("Initial", "baseline", id="initial")
+            stale = HarnessState(state_path)
+            current.create_memory("Concurrent", "newer", id="concurrent")
+
+            stale.entries["memory"]["stale"] = stale.entries["memory"]["initial"]
+
+            with self.assertRaisesRegex(RuntimeError, "revision conflict"):
+                stale.save()
+            reloaded = HarnessState(state_path)
+            self.assertIsNotNone(reloaded.get("memory", "concurrent"))
+            self.assertIsNone(reloaded.get("memory", "stale"))
+
+    def test_atomic_replace_never_exposes_a_partial_document(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            state = HarnessState(state_path)
+            state.create_memory("Initial", "baseline", id="initial")
+            real_replace = os.replace
+
+            def assert_valid_then_replace(source: str | bytes | Path, target: str | bytes | Path) -> None:
+                json.loads(Path(source).read_text(encoding="utf-8"))
+                json.loads(Path(target).read_text(encoding="utf-8"))
+                real_replace(source, target)
+
+            with mock.patch("rlm.harness.os.replace", side_effect=assert_valid_then_replace):
+                state.create_memory("Next", "replacement", id="next")
+
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["revision"], 2)
+
+    def test_lost_lock_ownership_aborts_before_atomic_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            state = HarnessState(state_path)
+            real_fsync = os.fsync
+            stole_lock = False
+
+            def fsync_then_steal(descriptor: int) -> None:
+                nonlocal stole_lock
+                real_fsync(descriptor)
+                if stole_lock:
+                    return
+                stole_lock = True
+                observation = _read_lock_observation(lock_path)
+                self.assertIsNotNone(observation)
+                self.assertTrue(_remove_observed_lock(lock_path, observation))
+                lock_path.mkdir()
+                (lock_path / "owner.json").write_text(
+                    json.dumps(
+                        {
+                            "pid": os.getpid(),
+                            "hostname": socket.gethostname(),
+                            "token": "successor-owner",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            with mock.patch("rlm.harness.os.fsync", side_effect=fsync_then_steal):
+                with self.assertRaisesRegex(RuntimeError, "Lost harness-state lock ownership"):
+                    state.create_memory("Blocked", "must not commit", id="blocked")
+
+            self.assertFalse(state_path.exists())
+            self.assertEqual(_read_lock_observation(lock_path).owner["token"], "successor-owner")
+
+    def test_live_lock_times_out_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            lock_path.mkdir()
+            (lock_path / "owner.json").write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "hostname": socket.gethostname(),
+                        "token": "live-test-owner",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = HarnessState(state_path, lock_timeout_seconds=0.02, stale_lock_seconds=0)
+
+            os.utime(lock_path, (0, 0))
+
+            with self.assertRaisesRegex(TimeoutError, "Timed out waiting for harness-state lock"):
+                state.create_memory("Blocked", "must time out", id="blocked")
+
+    def test_old_foreign_host_lock_times_out_without_mutating_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            HarnessState(state_path).create_memory("Baseline", "preserve", id="baseline")
+            persisted_before = state_path.read_text(encoding="utf-8")
+            state = HarnessState(state_path, lock_timeout_seconds=0.02, stale_lock_seconds=0)
+            lock_path.mkdir()
+            (lock_path / "owner.json").write_text(
+                json.dumps(
+                    {
+                        "pid": 42,
+                        "hostname": "foreign-host.example.invalid",
+                        "token": "foreign-host-owner",
+                        "created_at": "2000-01-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.utime(lock_path, (0, 0))
+
+            with self.assertRaisesRegex(
+                TimeoutError,
+                r"foreign host foreign-host\.example\.invalid.*same-host only.*remove the lock directory manually",
+            ):
+                state.create_memory("Blocked", "must not persist", id="blocked")
+
+            self.assertNotIn("blocked", state.entries["memory"])
+            self.assertEqual(state_path.read_text(encoding="utf-8"), persisted_before)
+            owner = json.loads((lock_path / "owner.json").read_text(encoding="utf-8"))
+            self.assertEqual(owner["token"], "foreign-host-owner")
+
+    def test_malformed_owner_lock_is_age_reclaimed_with_fingerprint_fencing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            lock_path.mkdir()
+            (lock_path / "owner.json").write_text("not owner json", encoding="utf-8")
+            os.utime(lock_path, (0, 0))
+
+            state = HarnessState(state_path, lock_timeout_seconds=0.1, stale_lock_seconds=0)
+            state.create_memory("Recovered", "malformed owner reclaimed", id="recovered")
+
+            self.assertFalse(lock_path.exists())
+            self.assertEqual(HarnessState(state_path).get("memory", "recovered").content, "malformed owner reclaimed")
+
+    def test_owner_eacces_does_not_reclaim_lock_or_mutate_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir).resolve() / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            owner_path = lock_path / "owner.json"
+            HarnessState(state_path).create_memory("Baseline", "preserve", id="baseline")
+            persisted_before = state_path.read_text(encoding="utf-8")
+            owner_before = json.dumps(
+                {"pid": 42, "hostname": "foreign-host.example.invalid", "token": "unreadable-owner"}
+            )
+            lock_path.mkdir()
+            owner_path.write_text(owner_before, encoding="utf-8")
+            os.utime(lock_path, (0, 0))
+            state = HarnessState(state_path, lock_timeout_seconds=0.02, stale_lock_seconds=0)
+            real_read_text = Path.read_text
+
+            def fail_owner_read(path: Path, *args: Any, **kwargs: Any) -> str:
+                if path == owner_path:
+                    raise PermissionError(errno.EACCES, "simulated owner permission failure")
+                return real_read_text(path, *args, **kwargs)
+
+            with mock.patch("pathlib.Path.read_text", autospec=True, side_effect=fail_owner_read):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    r"Cannot inspect harness-state lock owner.*refusing to reclaim",
+                ):
+                    state.create_memory("Blocked", "must not persist", id="blocked")
+
+            self.assertNotIn("blocked", state.entries["memory"])
+            self.assertEqual(state_path.read_text(encoding="utf-8"), persisted_before)
+            self.assertEqual(owner_path.read_text(encoding="utf-8"), owner_before)
+            self.assertEqual(
+                [path.resolve() for path in Path(temp_dir).glob("harness_state.json.lock*")],
+                [lock_path],
+            )
+
+    def test_owner_eio_after_move_restores_lock_before_propagating(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            owner_path = lock_path / "owner.json"
+            owner_before = json.dumps({"pid": 42, "hostname": socket.gethostname(), "token": "owner"})
+            lock_path.mkdir()
+            owner_path.write_text(owner_before, encoding="utf-8")
+            observation = _read_lock_observation(lock_path)
+            self.assertIsNotNone(observation)
+            real_read_text = Path.read_text
+
+            def fail_moved_owner_read(path: Path, *args: Any, **kwargs: Any) -> str:
+                if ".moved." in str(path):
+                    raise OSError(errno.EIO, "simulated moved-owner I/O failure")
+                return real_read_text(path, *args, **kwargs)
+
+            with mock.patch("pathlib.Path.read_text", autospec=True, side_effect=fail_moved_owner_read):
+                with self.assertRaisesRegex(OSError, r"Cannot inspect harness-state lock owner.*refusing to reclaim"):
+                    _remove_observed_lock(lock_path, observation)
+
+            self.assertTrue(lock_path.exists())
+            self.assertEqual(owner_path.read_text(encoding="utf-8"), owner_before)
+            self.assertEqual(list(Path(temp_dir).glob("harness_state.json.lock*")), [lock_path])
+
+    def test_process_start_identity_reclaims_reused_live_pid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            lock_path = Path(f"{state_path}.lock")
+            lock_path.mkdir()
+            (lock_path / "owner.json").write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "hostname": socket.gethostname(),
+                        "token": "reused-pid-owner",
+                        "process_start_id": "old-process-instance",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = HarnessState(state_path, lock_timeout_seconds=0.1, stale_lock_seconds=60)
+
+            with mock.patch("rlm.harness._get_process_start_id", return_value="current-process-instance"):
+                state.create_memory("Recovered", "PID was reused.", id="recovered")
+
+            self.assertEqual(HarnessState(state_path).get("memory", "recovered").content, "PID was reused.")
+
+    def test_process_start_identity_patterns_are_cross_platform(self) -> None:
+        windows = _get_process_start_id(42, platform="win32", query=lambda command: "638902080000000000")
+        darwin = _get_process_start_id(42, platform="darwin", query=lambda command: "Mon Aug  4 12:34:56 2026")
+        linux_stat = "42 (worker name) " + " ".join(["S", *[str(value) for value in range(4, 23)]])
+        linux = _get_process_start_id(42, platform="linux", read_text=lambda path: linux_stat)
+
+        self.assertEqual(windows, "win:638902080000000000")
+        self.assertEqual(darwin, "ps:Mon Aug  4 12:34:56 2026")
+        self.assertEqual(linux, "proc:22")
+
+    def test_directory_fsync_propagates_eio_and_closes_descriptor(self) -> None:
+        closed: list[int] = []
+
+        def fail_fsync(descriptor: int) -> None:
+            raise OSError(errno.EIO, "simulated I/O failure")
+
+        with self.assertRaisesRegex(OSError, "simulated I/O failure"):
+            _fsync_directory(
+                Path("/unused"),
+                platform="posix",
+                open_fn=lambda path, flags: 17,
+                fsync_fn=fail_fsync,
+                close_fn=closed.append,
+            )
+        self.assertEqual(closed, [17])
+
+    def test_directory_fsync_suppresses_only_known_windows_unsupported_error(self) -> None:
+        closed: list[int] = []
+
+        def unsupported_fsync(descriptor: int) -> None:
+            raise OSError(errno.EINVAL, "directory fsync unsupported")
+
+        _fsync_directory(
+            Path("C:/unused"),
+            platform="nt",
+            open_fn=lambda path, flags: 23,
+            fsync_fn=unsupported_fsync,
+            close_fn=closed.append,
+        )
+        self.assertEqual(closed, [23])
+
+    def test_deleting_state_file_resets_cached_entries_and_refinements(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            state = HarnessState(state_path)
+            state.create_memory("Old", "must not return", id="old")
+            state.record_refinement("old trigger", ["old change"])
+
+            state_path.unlink()
+            state.load()
+
+            self.assertEqual(state.revision, 0)
+            self.assertEqual(state.list(), [])
+            self.assertEqual(state.refinements, [])
+            state.create_memory("New", "only new state", id="new")
+            document = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(set(document["entries"]["memory"]), {"new"})
+            self.assertEqual(document["refinements"], [])
+
     def test_crud_for_all_entry_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
@@ -265,8 +641,8 @@ class HarnessStateTest(unittest.TestCase):
                     arguments={},
                 )
 
-    def test_load_tolerates_corrupt_or_non_object_state(self) -> None:
-        for payload in ("not json at all", "null", "[]", '"a string"', "123"):
+    def test_writes_preserve_syntactically_invalid_non_object_or_invalid_revision_state(self) -> None:
+        for payload in ("not json at all", "null", "[]", '"a string"', "123", '{"revision":"bad"}'):
             with tempfile.TemporaryDirectory() as temp_dir:
                 state_path = Path(temp_dir) / "harness_state.json"
                 state_path.write_text(payload, encoding="utf-8")
@@ -275,9 +651,11 @@ class HarnessStateTest(unittest.TestCase):
 
                 self.assertEqual(state.list(), [])
                 self.assertEqual(state.refinements, [])
-                # The store must remain usable and self-heal on the next write.
-                created = state.create_memory("Recovered", "Works after corruption.", id="recovered")
-                self.assertEqual(HarnessState(state_path).get("memory", "recovered").content, created.content)
+                with self.assertRaisesRegex(RuntimeError, "invalid.*refusing to overwrite"):
+                    state.create_memory("Blocked", "Must preserve invalid data.", id="blocked")
+                with self.assertRaisesRegex(RuntimeError, "invalid.*refusing to overwrite"):
+                    state.save()
+                self.assertEqual(state_path.read_text(encoding="utf-8"), payload)
 
     def test_update_skill_preserves_omitted_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -434,6 +812,23 @@ class HarnessStateTest(unittest.TestCase):
             self.assertIsNotNone(reloaded.get("memory", "kernel"))
             self.assertIsNotNone(reloaded.get("memory", "host"))
             self.assertIsNotNone(reloaded.get("memory", "kernel_2"))
+
+    def test_mutation_reloads_when_external_write_keeps_the_same_mtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "harness_state.json"
+            kernel_state = HarnessState(state_path)
+            kernel_state.create_memory("Kernel note", "Written first.", id="kernel")
+            original_stat = state_path.stat()
+
+            host_state = HarnessState(state_path)
+            host_state.create_memory("Host note", "Written concurrently.", id="host")
+            os.utime(state_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            self.assertEqual(state_path.stat().st_mtime_ns, kernel_state._loaded_mtime)
+
+            kernel_state.create_memory("Second kernel note", "Must merge.", id="kernel_2")
+
+            reloaded = HarnessState(state_path)
+            self.assertEqual(set(reloaded.entries["memory"]), {"kernel", "host", "kernel_2"})
 
     def test_create_detects_externally_written_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

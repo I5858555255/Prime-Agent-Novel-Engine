@@ -1,21 +1,28 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	appendFileSync,
+	closeSync,
 	existsSync,
+	fsyncSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
 	renameSync,
+	rmSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../../config.js";
 import { serializeConversation } from "../compaction/utils.js";
 import { convertToLlm } from "../messages.js";
+import { getProcessStartId } from "../session-lease.js";
 import type { CustomEntry } from "../session-manager.js";
 
 export const REFINEMENT_CUSTOM_TYPE = "prime-agent.refinement";
@@ -26,6 +33,26 @@ const REFINEMENT_HISTORY_FILE_NAME = "refinements.jsonl";
 const DEFAULT_OVERVIEW_ENTRY_LIMIT = 6;
 const DEFAULT_OVERVIEW_REFINEMENT_LIMIT = 5;
 const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
+const DEFAULT_HARNESS_LOCK_TIMEOUT_MS = 10_000;
+const DEFAULT_HARNESS_STALE_LOCK_MS = 60_000;
+const HARNESS_LOCK_POLL_MS = 10;
+const HARNESS_LOCK_OWNER_FILE_NAME = "owner.json";
+
+/**
+ * Cross-language harness-state commit protocol (kept equivalent in rlm/harness.py):
+ * 1. Populate a private candidate lock and atomically rename it to `<state>.lock`.
+ * 2. While holding the lock, compare the persisted monotonic revision with the
+ *    writer's expected revision. A stale TypeScript snapshot fails explicitly;
+ *    Python mutations reload and merge before writing.
+ * 3. Write revision + 1 to a same-directory temporary file, fsync it, atomically
+ *    replace the state file, then fsync the directory where the platform allows.
+ * 4. Fence reads, commits, stale reclamation, and release by the exact observed
+ *    owner fingerprint. A moved successor is restored or quarantined, never deleted.
+ * 5. Treat valid foreign-host owners as live until operator cleanup. This is a
+ *    same-host protocol; it is not a renewable distributed filesystem lease.
+ * 6. Treat only ENOENT as missing owner metadata. Other owner-read failures abort
+ *    without moving the lock or touching state.
+ */
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
@@ -58,8 +85,38 @@ export interface HarnessRefinementEvent {
 
 export interface HarnessState {
 	schema: number;
+	revision?: number;
 	entries: Record<RefinementKind, Record<string, HarnessEntry>>;
 	refinements: HarnessRefinementEvent[];
+}
+
+export interface HarnessStateSaveOptions {
+	lockTimeoutMs?: number;
+	staleLockMs?: number;
+}
+
+interface HarnessStateLockOwner {
+	pid: number;
+	hostname: string;
+	token: string;
+	process_start_id?: string;
+	created_at: string;
+}
+
+interface HarnessLockObservation {
+	owner?: HarnessStateLockOwner;
+	fingerprint: string;
+}
+
+interface HarnessStateLock {
+	assertOwned(): void;
+	release(): void;
+}
+
+export interface HarnessDirectoryFsyncOperations {
+	open(path: string): number;
+	fsync(fileDescriptor: number): void;
+	close(fileDescriptor: number): void;
 }
 
 export interface RefinementEdit {
@@ -211,6 +268,7 @@ function now(): string {
 function emptyHarnessState(): HarnessState {
 	return {
 		schema: 1,
+		revision: 0,
 		entries: {
 			prompt: {},
 			memory: {},
@@ -278,6 +336,10 @@ export function getHarnessStatePath(harnessStateDir: string = getGlobalHarnessSt
 	return join(harnessStateDir, "harness_state.json");
 }
 
+export function getHarnessStateLockPath(harnessStateDir: string = getGlobalHarnessStateDir()): string {
+	return `${getHarnessStatePath(harnessStateDir)}.lock`;
+}
+
 export function loadHarnessState(
 	harnessStateDir: string = getGlobalHarnessStateDir(),
 	scope: HarnessScope = "global",
@@ -290,8 +352,8 @@ export function loadHarnessState(
 	try {
 		const raw = JSON.parse(readFileSync(statePath, "utf8"));
 		// loadHarnessState runs on every system-prompt build and before each /refine, so
-		// a corrupt or unreadable (or non-object) state file must degrade to empty rather
-		// than throw and break the session. The next saveHarnessState rewrites it cleanly.
+		// a corrupt or unreadable (or non-object) state file degrades to an empty read
+		// view. saveHarnessState validates strictly and refuses to overwrite that evidence.
 		if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
 			return emptyHarnessState();
 		}
@@ -301,6 +363,10 @@ export function loadHarnessState(
 	}
 	const state = emptyHarnessState();
 	state.schema = typeof parsed.schema === "number" ? parsed.schema : 1;
+	state.revision =
+		typeof parsed.revision === "number" && Number.isSafeInteger(parsed.revision) && parsed.revision >= 0
+			? parsed.revision
+			: 0;
 	for (const kind of Object.keys(state.entries) as RefinementKind[]) {
 		const records = parsed.entries?.[kind];
 		if (records && typeof records === "object") {
@@ -342,18 +408,320 @@ export function mergeHarnessStates(globalState: HarnessState, localState?: Harne
 	return merged;
 }
 
-export function saveHarnessState(harnessStateDir: string, state: HarnessState): string {
-	const statePath = getHarnessStatePath(harnessStateDir);
-	const tempPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
-	mkdirSync(harnessStateDir, { recursive: true });
+function normalizedRevision(state: HarnessState): number {
+	return typeof state.revision === "number" && Number.isSafeInteger(state.revision) && state.revision >= 0
+		? state.revision
+		: 0;
+}
+
+function processIsAlive(pid: number): boolean {
 	try {
-		const mode = existsSync(statePath) ? statSync(statePath).mode & 0o777 : 0o600;
-		writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode });
-		renameSync(tempPath, statePath);
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+function lockFingerprint(rawOwner: string): string {
+	return createHash("sha256").update(rawOwner).digest("hex");
+}
+
+function readHarnessLockObservation(lockPath: string): HarnessLockObservation | undefined {
+	let rawOwner: string;
+	try {
+		rawOwner = readFileSync(join(lockPath, HARNESS_LOCK_OWNER_FILE_NAME), "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			throw new Error(
+				`Cannot inspect harness-state lock owner at ${lockPath}; refusing to reclaim the lock: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			);
+		}
+		try {
+			const lockStat = statSync(lockPath);
+			return {
+				fingerprint: lockFingerprint(`missing:${lockStat.dev}:${lockStat.ino}:${lockStat.mtimeMs}`),
+			};
+		} catch {
+			return undefined;
+		}
+	}
+	try {
+		const parsed = JSON.parse(rawOwner);
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			typeof parsed.pid === "number" &&
+			Number.isSafeInteger(parsed.pid) &&
+			parsed.pid > 0 &&
+			typeof parsed.hostname === "string" &&
+			typeof parsed.token === "string" &&
+			(parsed.process_start_id === undefined || typeof parsed.process_start_id === "string")
+		) {
+			return {
+				owner: parsed as HarnessStateLockOwner,
+				fingerprint: lockFingerprint(rawOwner),
+			};
+		}
+	} catch {
+		// Malformed legacy owner metadata is still fingerprinted for age-based reclaim.
+	}
+	return { fingerprint: lockFingerprint(rawOwner) };
+}
+
+function isHarnessLockStale(
+	lockPath: string,
+	observation: HarnessLockObservation | undefined,
+	staleLockMs: number,
+): boolean {
+	const owner = observation?.owner;
+	if (owner) {
+		if (owner.hostname !== hostname()) {
+			return false;
+		}
+		if (!processIsAlive(owner.pid)) {
+			return true;
+		}
+		if (owner.process_start_id) {
+			const currentStartId = getProcessStartId(owner.pid);
+			return currentStartId !== undefined && currentStartId !== owner.process_start_id;
+		}
+		return false;
+	}
+	try {
+		return Date.now() - statSync(lockPath).mtimeMs >= staleLockMs;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+}
+
+function harnessLockTimeoutError(lockPath: string, observation: HarnessLockObservation | undefined): Error {
+	const owner = observation?.owner;
+	if (owner && owner.hostname !== hostname()) {
+		return new Error(
+			`Timed out waiting for harness-state lock ${lockPath} owned by foreign host ${owner.hostname}. ` +
+				"Automatic foreign-host reclamation is disabled because harness-state locking is same-host only. " +
+				"Verify the remote owner is inactive, then remove the lock directory manually.",
+		);
+	}
+	return new Error(`Timed out waiting for harness-state lock ${lockPath}`);
+}
+
+function readPersistedHarnessRevision(statePath: string): number {
+	if (!existsSync(statePath)) {
+		return 0;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(statePath, "utf8"));
+	} catch (error) {
+		throw new Error(
+			`Harness state at ${statePath} is invalid; refusing to overwrite it: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error(`Harness state at ${statePath} is invalid; refusing to overwrite it`);
+	}
+	const revision = (parsed as { revision?: unknown }).revision;
+	if (revision === undefined) {
+		return 0;
+	}
+	if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) {
+		throw new Error(`Harness state at ${statePath} has an invalid revision; refusing to overwrite it`);
+	}
+	return revision;
+}
+
+function restoreMovedHarnessLock(movedPath: string, lockPath: string): void {
+	try {
+		renameSync(movedPath, lockPath);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+			throw error;
+		}
+		// Another owner already installed the canonical lock. Keep the moved
+		// successor quarantined so it is never mistaken for the observed stale lock.
+	}
+}
+
+function removeObservedHarnessLock(lockPath: string, observed: HarnessLockObservation): boolean {
+	const movedPath = `${lockPath}.moved.${process.pid}.${randomUUID()}`;
+	try {
+		renameSync(lockPath, movedPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return false;
+		}
+		throw error;
+	}
+	let moved: HarnessLockObservation | undefined;
+	try {
+		moved = readHarnessLockObservation(movedPath);
+	} catch (error) {
+		restoreMovedHarnessLock(movedPath, lockPath);
+		throw error;
+	}
+	if (moved?.fingerprint !== observed.fingerprint) {
+		restoreMovedHarnessLock(movedPath, lockPath);
+		return false;
+	}
+	rmSync(movedPath, { recursive: true, force: true });
+	return true;
+}
+
+function sleepSync(milliseconds: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function acquireHarnessStateLock(harnessStateDir: string, options: HarnessStateSaveOptions): HarnessStateLock {
+	const lockPath = getHarnessStateLockPath(harnessStateDir);
+	const timeoutMs = options.lockTimeoutMs ?? DEFAULT_HARNESS_LOCK_TIMEOUT_MS;
+	const staleLockMs = options.staleLockMs ?? DEFAULT_HARNESS_STALE_LOCK_MS;
+	const deadline = performance.now() + timeoutMs;
+	const owner: HarnessStateLockOwner = {
+		pid: process.pid,
+		hostname: hostname(),
+		token: randomUUID(),
+		process_start_id: getProcessStartId(process.pid),
+		created_at: new Date().toISOString(),
+	};
+	const ownerContents = `${JSON.stringify(owner)}\n`;
+	const ownerFingerprint = lockFingerprint(ownerContents);
+	mkdirSync(harnessStateDir, { recursive: true });
+	for (;;) {
+		const candidatePath = `${lockPath}.candidate.${process.pid}.${randomUUID()}`;
+		try {
+			mkdirSync(candidatePath, { mode: 0o700 });
+			try {
+				writeFileSync(join(candidatePath, HARNESS_LOCK_OWNER_FILE_NAME), ownerContents, {
+					encoding: "utf8",
+					mode: 0o600,
+				});
+				renameSync(candidatePath, lockPath);
+			} catch (error) {
+				rmSync(candidatePath, { recursive: true, force: true });
+				throw error;
+			}
+			const assertOwned = (): void => {
+				if (readHarnessLockObservation(lockPath)?.fingerprint !== ownerFingerprint) {
+					throw new Error(`Lost harness-state lock ownership for ${lockPath}`);
+				}
+			};
+			assertOwned();
+			return {
+				assertOwned,
+				release: () => {
+					const observation = readHarnessLockObservation(lockPath);
+					if (observation?.fingerprint === ownerFingerprint) {
+						removeObservedHarnessLock(lockPath, observation);
+					}
+				},
+			};
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+				throw error;
+			}
+		}
+		const observation = readHarnessLockObservation(lockPath);
+		if (isHarnessLockStale(lockPath, observation, staleLockMs) && observation) {
+			removeObservedHarnessLock(lockPath, observation);
+			continue;
+		}
+		if (performance.now() >= deadline) {
+			throw harnessLockTimeoutError(lockPath, observation);
+		}
+		sleepSync(Math.min(HARNESS_LOCK_POLL_MS, Math.max(1, deadline - performance.now())));
+	}
+}
+
+function isUnsupportedDirectoryFsyncError(error: unknown, platform: NodeJS.Platform): boolean {
+	if (platform !== "win32") {
+		return false;
+	}
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "EACCES" || code === "EBADF" || code === "EINVAL" || code === "EISDIR" || code === "EPERM";
+}
+
+export function fsyncHarnessDirectory(
+	harnessStateDir: string,
+	platform: NodeJS.Platform = process.platform,
+	operations: HarnessDirectoryFsyncOperations = {
+		open: (path) => openSync(path, "r"),
+		fsync: fsyncSync,
+		close: closeSync,
+	},
+): void {
+	let directoryFd: number | undefined;
+	try {
+		directoryFd = operations.open(harnessStateDir);
+		operations.fsync(directoryFd);
+	} catch (error) {
+		if (!isUnsupportedDirectoryFsyncError(error, platform)) {
+			throw error;
+		}
 	} finally {
+		if (directoryFd !== undefined) {
+			operations.close(directoryFd);
+		}
+	}
+}
+
+function writeHarnessStateAtomically(
+	harnessStateDir: string,
+	statePath: string,
+	state: HarnessState,
+	assertLockOwned: () => void,
+): void {
+	const tempPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
+	let tempFd: number | undefined;
+	try {
+		assertLockOwned();
+		const mode = existsSync(statePath) ? statSync(statePath).mode & 0o777 : 0o600;
+		tempFd = openSync(tempPath, "wx", mode);
+		writeFileSync(tempFd, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+		fsyncSync(tempFd);
+		closeSync(tempFd);
+		tempFd = undefined;
+		assertLockOwned();
+		renameSync(tempPath, statePath);
+		fsyncHarnessDirectory(harnessStateDir);
+	} finally {
+		if (tempFd !== undefined) {
+			closeSync(tempFd);
+		}
 		if (existsSync(tempPath)) {
 			unlinkSync(tempPath);
 		}
+	}
+}
+
+export function saveHarnessState(
+	harnessStateDir: string,
+	state: HarnessState,
+	options: HarnessStateSaveOptions = {},
+): string {
+	const statePath = getHarnessStatePath(harnessStateDir);
+	const lock = acquireHarnessStateLock(harnessStateDir, options);
+	try {
+		lock.assertOwned();
+		const expectedRevision = normalizedRevision(state);
+		const currentRevision = readPersistedHarnessRevision(statePath);
+		if (currentRevision !== expectedRevision) {
+			throw new Error(
+				`Harness-state revision conflict at ${statePath}: expected ${expectedRevision}, found ${currentRevision}`,
+			);
+		}
+		const nextRevision = expectedRevision + 1;
+		writeHarnessStateAtomically(harnessStateDir, statePath, { ...state, revision: nextRevision }, lock.assertOwned);
+		state.revision = nextRevision;
+	} finally {
+		lock.release();
 	}
 	return statePath;
 }
