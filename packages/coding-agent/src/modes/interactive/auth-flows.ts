@@ -27,7 +27,7 @@ import {
 	resolvePrimeAgentTracesBaseUrl,
 } from "../../core/prime-inference-auth.js";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.js";
-import { SERPER_CREDENTIAL_ID, SERPER_CREDENTIAL_NAME } from "../../core/websearch-credential.js";
+import { BUNDLED_SKILL_CREDENTIALS, getBundledSkillCredentialName } from "../../core/websearch-credential.js";
 import { showFullPaneOverlay } from "./components/centered-overlay.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
@@ -268,13 +268,15 @@ export class ProviderAuthFlows {
 			});
 		}
 
-		// Serper is a skill credential, not a model provider, so add it manually.
-		options.push({
-			id: SERPER_CREDENTIAL_ID,
-			name: SERPER_CREDENTIAL_NAME,
-			authType: "api_key",
-			category: "service",
-		});
+		// Skill credentials (Serper, Firecrawl) are not model providers, so add them manually.
+		for (const { credentialId, credentialName } of BUNDLED_SKILL_CREDENTIALS) {
+			options.push({
+				id: credentialId,
+				name: credentialName,
+				authType: "api_key",
+				category: "service",
+			});
+		}
 
 		const filteredOptions = authType ? options.filter((option) => option.authType === authType) : options;
 		return filteredOptions.sort(compareAuthSelectorProviders);
@@ -290,18 +292,18 @@ export class ProviderAuthFlows {
 			if (!credential) {
 				continue;
 			}
-			const isSerper = providerId === SERPER_CREDENTIAL_ID;
+			const skillCredentialName = getBundledSkillCredentialName(providerId);
 			const isMcp = providerId.startsWith("mcp:");
-			const name = isSerper
-				? SERPER_CREDENTIAL_NAME
-				: isMcp
+			const name =
+				skillCredentialName ??
+				(isMcp
 					? (oauthProvidersById.get(providerId)?.name ?? providerId.slice("mcp:".length))
-					: this.host.modelRegistry.getProviderDisplayName(providerId);
+					: this.host.modelRegistry.getProviderDisplayName(providerId));
 			options.push({
 				id: providerId,
 				name,
 				authType: credential.type,
-				category: isSerper || isMcp ? "service" : "provider",
+				category: skillCredentialName !== undefined || isMcp ? "service" : "provider",
 			});
 		}
 

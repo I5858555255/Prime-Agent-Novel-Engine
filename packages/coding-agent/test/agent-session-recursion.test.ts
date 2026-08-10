@@ -3207,11 +3207,16 @@ describe("AgentSession RLM session dir", () => {
 		serperKey?: string,
 		loadWebsearchSkill = false,
 		rlmSessionDir?: string,
+		firecrawlKey?: string,
+		loadFirecrawlSkill = false,
 	): AgentSession {
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		if (serperKey !== undefined) {
 			authStorage.set("serper", { type: "api_key", key: serperKey });
+		}
+		if (firecrawlKey !== undefined) {
+			authStorage.set("firecrawl", { type: "api_key", key: firecrawlKey });
 		}
 		const agent = new Agent({
 			convertToLlm,
@@ -3219,19 +3224,19 @@ describe("AgentSession RLM session dir", () => {
 			initialState: { model, systemPrompt: "", tools: [], thinkingLevel: "off" },
 			streamFn: () => streamAnswer("ignored"),
 		});
-		const skills: Skill[] = loadWebsearchSkill
-			? [
-					{
-						kind: "markdown",
-						name: "websearch",
-						description: "",
-						filePath: "/x/websearch/SKILL.md",
-						baseDir: "/x/websearch",
-						sourceInfo: createSyntheticSourceInfo("/x/websearch/SKILL.md", { source: "package" }),
-						disableModelInvocation: false,
-					},
-				]
-			: [];
+		const syntheticSkill = (name: string): Skill => ({
+			kind: "markdown",
+			name,
+			description: "",
+			filePath: `/x/${name}/SKILL.md`,
+			baseDir: `/x/${name}`,
+			sourceInfo: createSyntheticSourceInfo(`/x/${name}/SKILL.md`, { source: "package" }),
+			disableModelInvocation: false,
+		});
+		const skills: Skill[] = [
+			...(loadWebsearchSkill ? [syntheticSkill("websearch")] : []),
+			...(loadFirecrawlSkill ? [syntheticSkill("firecrawl")] : []),
+		];
 		session = new AgentSession({
 			agent,
 			sessionManager,
@@ -3388,6 +3393,76 @@ describe("AgentSession RLM session dir", () => {
 		} finally {
 			if (previous === undefined) delete process.env.SERPER_API_KEY;
 			else process.env.SERPER_API_KEY = previous;
+		}
+	});
+
+	it("injects a stored Firecrawl key when the firecrawl skill is loaded", () => {
+		const previous = process.env.FIRECRAWL_API_KEY;
+		delete process.env.FIRECRAWL_API_KEY;
+		try {
+			const root = createSession(
+				SessionManager.inMemory(tempDir),
+				undefined,
+				undefined,
+				false,
+				undefined,
+				"literal-firecrawl-key",
+				true,
+			);
+			const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+			expect(env.FIRECRAWL_API_KEY).toBe("literal-firecrawl-key");
+		} finally {
+			if (previous === undefined) delete process.env.FIRECRAWL_API_KEY;
+			else process.env.FIRECRAWL_API_KEY = previous;
+		}
+	});
+
+	it("skips the Firecrawl key when no firecrawl skill is loaded", () => {
+		const previous = process.env.FIRECRAWL_API_KEY;
+		delete process.env.FIRECRAWL_API_KEY;
+		try {
+			// A websearch-only session must not leak the Firecrawl key into its kernel.
+			const root = createSession(
+				SessionManager.inMemory(tempDir),
+				undefined,
+				"serper-key",
+				true,
+				undefined,
+				"firecrawl-key",
+				false,
+			);
+			const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+			expect(env.SERPER_API_KEY).toBe("serper-key");
+			expect(env.FIRECRAWL_API_KEY).toBeUndefined();
+		} finally {
+			if (previous === undefined) delete process.env.FIRECRAWL_API_KEY;
+			else process.env.FIRECRAWL_API_KEY = previous;
+		}
+	});
+
+	it("injects every skill credential whose skill is loaded", () => {
+		const previousSerper = process.env.SERPER_API_KEY;
+		const previousFirecrawl = process.env.FIRECRAWL_API_KEY;
+		delete process.env.SERPER_API_KEY;
+		delete process.env.FIRECRAWL_API_KEY;
+		try {
+			const root = createSession(
+				SessionManager.inMemory(tempDir),
+				undefined,
+				"serper-key",
+				true,
+				undefined,
+				"firecrawl-key",
+				true,
+			);
+			const env = (root as unknown as InspectableRlmDirSession)._rlmKernelEnv();
+			expect(env.SERPER_API_KEY).toBe("serper-key");
+			expect(env.FIRECRAWL_API_KEY).toBe("firecrawl-key");
+		} finally {
+			if (previousSerper === undefined) delete process.env.SERPER_API_KEY;
+			else process.env.SERPER_API_KEY = previousSerper;
+			if (previousFirecrawl === undefined) delete process.env.FIRECRAWL_API_KEY;
+			else process.env.FIRECRAWL_API_KEY = previousFirecrawl;
 		}
 	});
 

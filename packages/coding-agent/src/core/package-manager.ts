@@ -2266,8 +2266,9 @@ export class DefaultPackageManager implements PackageManager {
 			}
 			const builtinSkillOverrides = [
 				...userOverrides.skills,
-				// Disable the bundled websearch skill unless explicitly enabled…
+				// Disable bundled API-key skills the user turned off…
 				...(this.settingsManager.getBundledWebsearchEnabled() ? [] : ["-websearch/SKILL.md"]),
+				...(this.settingsManager.getBundledFirecrawlEnabled() ? [] : ["-firecrawl/SKILL.md"]),
 				// …and disable any MCP integration the user hasn't logged into.
 				...this.extraBuiltinSkillOverrides(),
 			];

@@ -478,6 +478,48 @@ Content`,
 			}
 		});
 
+		// `firecrawl` is a common user-level skill name (the Firecrawl CLI installs one
+		// into ~/.agents/skills), and a user skill legitimately overrides the bundled
+		// one — so point HOME at the temp dir to keep these assertions about the
+		// bundled skill rather than whatever the developer has installed.
+		async function loadWithIsolatedHome(settingsManager?: SettingsManager) {
+			const previousHome = process.env.HOME;
+			process.env.HOME = tempDir;
+			try {
+				const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+				await loader.reload();
+				return loader.getSkills();
+			} finally {
+				if (previousHome === undefined) delete process.env.HOME;
+				else process.env.HOME = previousHome;
+			}
+		}
+
+		it("should load the bundled firecrawl skill by default", async () => {
+			const { skills } = await loadWithIsolatedHome();
+
+			const firecrawl = skills.find((s) => s.name === "firecrawl");
+			expect(firecrawl).toBeDefined();
+			expect(firecrawl?.description).toContain("/login");
+			expect(firecrawl?.description).toContain("MCP Connections");
+			expect(firecrawl?.description).toContain("Firecrawl (web search + scrape)");
+			expect(firecrawl?.kind).toBe("python");
+			if (firecrawl?.kind === "python") {
+				expect(firecrawl.python.importName).toBe("firecrawl");
+				expect(firecrawl.python.pyprojectPath.endsWith("pyproject.toml")).toBe(true);
+			}
+		});
+
+		it("should not load the bundled firecrawl skill when disabled in settings", async () => {
+			const { skills } = await loadWithIsolatedHome(
+				SettingsManager.inMemory({ bundledSkills: { firecrawl: false } }),
+			);
+
+			expect(skills.some((s) => s.name === "firecrawl")).toBe(false);
+			// Disabling one bundled skill must not disable the other.
+			expect(skills.some((s) => s.name === "websearch")).toBe(true);
+		});
+
 		it("should not emit a SERPER_API_KEY warning when the key is unset", async () => {
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
