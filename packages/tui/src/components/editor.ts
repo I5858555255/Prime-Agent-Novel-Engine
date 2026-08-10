@@ -6,7 +6,14 @@ import { KillRing } from "../kill-ring.js";
 import { getSlashCommandContext, type SlashCommandContext } from "../slash-command-context.js";
 import { type Component, CURSOR_MARKER, type Focusable, type OverlayHandle, type TUI } from "../tui.js";
 import { UndoStack } from "../undo-stack.js";
-import { getSegmenter, isPunctuationChar, isWhitespaceChar, truncateToWidth, visibleWidth } from "../utils.js";
+import {
+	cjkBreakRegex,
+	getSegmenter,
+	isPunctuationChar,
+	isWhitespaceChar,
+	truncateToWidth,
+	visibleWidth,
+} from "../utils.js";
 import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.js";
 
 const baseSegmenter = getSegmenter();
@@ -194,13 +201,18 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		// Advance.
 		currentWidth += gWidth;
 
-		// Record wrap opportunity: whitespace followed by non-whitespace.
-		// Multiple spaces join (no break between them); the break point is
-		// after the last space before the next word.
+		// Record wrap opportunities after whitespace, or between adjacent CJK graphemes.
 		const next = segments[i + 1];
 		if (isWs && next && (isAtomicMarker(next.segment) || !isWhitespaceChar(next.segment))) {
 			wrapOppIndex = next.index;
 			wrapOppWidth = currentWidth;
+		} else if (!isWs && next && !isWhitespaceChar(next.segment)) {
+			const isCjk = !isAtomicMarker(grapheme) && cjkBreakRegex.test(grapheme);
+			const nextIsCjk = !isAtomicMarker(next.segment) && cjkBreakRegex.test(next.segment);
+			if (isCjk || nextIsCjk) {
+				wrapOppIndex = next.index;
+				wrapOppWidth = currentWidth;
+			}
 		}
 	}
 

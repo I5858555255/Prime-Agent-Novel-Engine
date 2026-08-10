@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed premature line breaks when wrapping mixed CJK and Latin text in the TUI.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
