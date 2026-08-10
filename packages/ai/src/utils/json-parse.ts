@@ -122,3 +122,63 @@ export function parseStreamingJson<T = Record<string, unknown>>(partialJson: str
 		}
 	}
 }
+
+type StreamingJsonParser<T> = (json: string) => T;
+
+/**
+ * Accumulates streamed JSON while limiting tolerant partial parses to
+ * geometrically increasing prefix lengths. Finalization always parses the
+ * authoritative full value once.
+ */
+export class StreamingJsonAccumulator<T = Record<string, unknown>> {
+	private rawJson: string;
+	private nextPartialParseLength = 1;
+	private finalizedJson: string | undefined;
+	private finalizedValue: T | undefined;
+	private hasFinalizedValue = false;
+
+	constructor(
+		initialJson = "",
+		private readonly parser: StreamingJsonParser<T> = (json) => parseStreamingJson<T>(json),
+	) {
+		this.rawJson = initialJson;
+	}
+
+	append(delta: string): T | undefined {
+		if (delta.length === 0) {
+			return undefined;
+		}
+
+		this.rawJson += delta;
+		this.hasFinalizedValue = false;
+		this.finalizedJson = undefined;
+		this.finalizedValue = undefined;
+
+		if (this.rawJson.length < this.nextPartialParseLength) {
+			return undefined;
+		}
+
+		const value = this.parser(this.rawJson);
+		while (this.nextPartialParseLength <= this.rawJson.length) {
+			this.nextPartialParseLength *= 2;
+		}
+		return value;
+	}
+
+	currentJson(): string {
+		return this.rawJson;
+	}
+
+	finish(finalJson = this.rawJson): T {
+		if (this.hasFinalizedValue && finalJson === this.finalizedJson) {
+			return this.finalizedValue as T;
+		}
+
+		this.rawJson = finalJson;
+		const value = this.parser(finalJson);
+		this.finalizedJson = finalJson;
+		this.finalizedValue = value;
+		this.hasFinalizedValue = true;
+		return value;
+	}
+}

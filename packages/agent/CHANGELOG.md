@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed proxy streams repeatedly reparsing the full accumulated tool-argument JSON for every delta ([#942](https://github.com/PrimeIntellect-ai/prime-agent/issues/942)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
