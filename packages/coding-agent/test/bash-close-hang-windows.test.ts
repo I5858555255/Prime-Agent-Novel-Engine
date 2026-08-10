@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +33,7 @@ function cleanupDetachedChild(pidFile: string): void {
 	const pid = Number.parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
 	if (Number.isFinite(pid) && pid > 0) {
 		try {
-			execFileSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore" });
+			spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore" });
 		} catch {
 			// Process may have already exited.
 		}

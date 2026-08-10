@@ -9,7 +9,7 @@ import { performance } from "node:perf_hooks";
 import { withFullscreenImageFallback } from "./components/image.js";
 import { FullscreenViewport, type ScrollInfo, type SelectionScrollDirection } from "./fullscreen.js";
 import { getKeybindings } from "./keybindings.js";
-import { isKeyRelease, matchesKey } from "./keys.js";
+import { isKeyRelease } from "./keys.js";
 import { isMouseSequence, isWheelDown, isWheelUp, MOUSE_BUTTON_LEFT, parseSgrMouseEvent } from "./mouse.js";
 import type { TableCellSelectionRegion } from "./selection-metadata.js";
 import type { Terminal } from "./terminal.js";
@@ -845,7 +845,8 @@ export class TUI extends Container {
 		}
 
 		// Global debug key handler (Shift+Ctrl+D)
-		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
+		const keybindings = getKeybindings();
+		if (keybindings.matches(data, "tui.debug") && this.onDebug) {
 			this.onDebug();
 			return;
 		}

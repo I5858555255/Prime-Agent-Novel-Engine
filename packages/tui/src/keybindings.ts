@@ -44,6 +44,7 @@ export interface Keybindings {
 	"tui.select.pageDown": true;
 	"tui.select.confirm": true;
 	"tui.select.cancel": true;
+	"tui.debug": true;
 }
 
 export type Keybinding = keyof Keybindings;
@@ -152,6 +153,7 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: ["escape", "ctrl+c"],
 		description: "Cancel selection",
 	},
+	"tui.debug": { defaultKeys: "shift+ctrl+d", description: "Trigger debug action" },
 } as const satisfies KeybindingDefinitions;
 
 export interface KeybindingConflict {

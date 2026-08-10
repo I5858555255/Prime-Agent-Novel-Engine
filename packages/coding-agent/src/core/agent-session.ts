@@ -9605,6 +9605,7 @@ export class AgentSession {
 		prompt: string,
 		kwargs: Record<string, unknown> = {},
 		spawnCode?: string,
+		signal?: AbortSignal,
 	): Promise<RlmSpawnHandle> {
 		const { name: rawName, model: rawModel, ...unsupported } = kwargs;
 		const unsupportedKwargs = Object.keys(unsupported);
@@ -9654,13 +9655,39 @@ export class AgentSession {
 			sessionDir: childSessionDir,
 			status: "queued",
 			settled: false,
-			abort: noopRlmChildAbort,
+			abort: () => {}, // Overridden below
 			publication: createAgentMessageDeferred(),
 		};
+
+		run.abort = () => {
+			if (run.status === "cancelled" || run.status === "done" || run.status === "error") return;
+			run.status = "cancelled";
+			run.error = "Agent run was cancelled by host";
+
+			if (run.session) {
+				run.session.abort().catch(() => {});
+			}
+		};
+
+		if (signal) {
+			if (signal.aborted) {
+				run.abort();
+			} else {
+				const abortHandler = () => run.abort();
+				signal.addEventListener("abort", abortHandler, { once: true });
+				// Clean up the event listener when the run settles
+				run.publication.promise
+					.finally(() => {
+						signal.removeEventListener("abort", abortHandler);
+					})
+					.catch(() => {});
+			}
+		}
+
+		this._activeRlmChildRuns.set(run.id, run);
 		const throwIfCancelled = () => {
 			if (run.status === "cancelled") throw new Error(run.error ?? "RLM child cancelled");
 		};
-		this._activeRlmChildRuns.set(run.id, run);
 		const emitChildUpdate = () => {
 			const childModel = childSession?.model ?? modelSelection.model;
 			this._emit({
@@ -9956,8 +9983,9 @@ export class AgentSession {
 		prompt: string,
 		kwargs: Record<string, unknown> = {},
 		spawnCode?: string,
+		signal?: AbortSignal,
 	): Promise<RlmSpawnHandle> {
-		return this._startRlmChildRun(prompt, kwargs, spawnCode);
+		return this._startRlmChildRun(prompt, kwargs, spawnCode, signal);
 	}
 
 	// =========================================================================

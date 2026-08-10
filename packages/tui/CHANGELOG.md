@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added `tui.debug` keybinding for `shift+ctrl+d` and replaced hardcoded string in `tui.ts`.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
