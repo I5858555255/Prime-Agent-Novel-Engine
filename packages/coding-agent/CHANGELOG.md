@@ -9,6 +9,7 @@
 - Added scheduler-owned exclusive resource leases, typed coordination events, blocked-task diagnostics, stale ownership recovery, and automatic ownership context for RLM orchestration ([#1056](https://github.com/PrimeIntellect-ai/prime-agent/issues/1056)).
 - Added bounded conflict-resolution Agents with isolated worktrees, persisted evidence, retry and timeout limits, and mandatory integration-gate revalidation ([#1056](https://github.com/PrimeIntellect-ai/prime-agent/issues/1056)).
 - Added workspace-scoped scheduler authority, host heartbeats, guarded result promotion into the user's worktree, and final quality-gate validation against concurrent parent changes ([#1056](https://github.com/PrimeIntellect-ai/prime-agent/issues/1056)).
+- Added model-facing retained-integration retry and abandonment controls with child-status reconciliation and durable recovery evidence ([#1056](https://github.com/PrimeIntellect-ai/prime-agent/issues/1056)).
 - Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
 - Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
 

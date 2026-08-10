@@ -229,6 +229,101 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         self.assertEqual(result, summary)
         host_request.assert_awaited_once_with("rlm.scheduler_summary")
 
+    def test_retries_retained_integration_through_host(self) -> None:
+        subagent = {
+            "rlm_child_id": "sub-retry",
+            "active_session_id": None,
+            "session_id": "session-retry",
+            "session_name": "retry-worker",
+            "session_dir": "/tmp/parent/sub-retry",
+            "status": "completed",
+        }
+        host_request = AsyncMock(
+            return_value={
+                "subagent": subagent,
+                "outcome": "promoted",
+                "integration": {
+                    "taskId": "sub-retry",
+                    "status": "integrated",
+                    "promotionStatus": "promoted",
+                },
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            result = asyncio.run(rlm_module.rlm.retry_integration(" retry-worker "))
+
+        self.assertEqual(result.outcome, "promoted")
+        self.assertEqual(result.subagent.rlm_child_id, "sub-retry")
+        self.assertEqual(result.integration["promotionStatus"], "promoted")
+        host_request.assert_awaited_once_with(
+            "rlm.retry_integration",
+            {"target": "retry-worker"},
+        )
+
+    def test_abandons_retained_integration_with_reason(self) -> None:
+        subagent = {
+            "rlm_child_id": "sub-abandon",
+            "active_session_id": None,
+            "session_id": "session-abandon",
+            "session_name": "abandon-worker",
+            "session_dir": "/tmp/parent/sub-abandon",
+            "status": "error",
+        }
+        host_request = AsyncMock(
+            return_value={
+                "subagent": subagent,
+                "outcome": "abandoned",
+                "integration": {
+                    "taskId": "sub-abandon",
+                    "status": "failed",
+                    "promotionStatus": "failed",
+                },
+            }
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            result = asyncio.run(
+                rlm_module.rlm.abandon_integration(
+                    "abandon-worker",
+                    reason=" Parent chose another fix ",
+                )
+            )
+
+        self.assertEqual(result.outcome, "abandoned")
+        host_request.assert_awaited_once_with(
+            "rlm.abandon_integration",
+            {"target": "abandon-worker", "reason": "Parent chose another fix"},
+        )
+
+    def test_rejects_invalid_integration_control_input_and_response(self) -> None:
+        with self.assertRaisesRegex(ValueError, "target must not be empty"):
+            asyncio.run(rlm_module.retry_integration("  "))
+        with self.assertRaisesRegex(TypeError, "reason must be str or None"):
+            asyncio.run(rlm_module.abandon_integration("child", reason=123))
+        with self.assertRaisesRegex(ValueError, "reason must not be empty"):
+            asyncio.run(rlm_module.abandon_integration("child", reason="  "))
+        with self.assertRaisesRegex(ValueError, "reason must be at most 1024 characters"):
+            asyncio.run(rlm_module.abandon_integration("child", reason="x" * 1025))
+
+        host_request = AsyncMock(
+            return_value={
+                "subagent": {
+                    "rlm_child_id": "sub-invalid",
+                    "active_session_id": None,
+                    "session_id": None,
+                    "session_name": "invalid-worker",
+                    "session_dir": "/tmp/parent/sub-invalid",
+                    "status": "error",
+                },
+                "outcome": "unexpected",
+                "integration": {"taskId": "sub-invalid"},
+            }
+        )
+        with patch.object(rlm_module, "host_request", host_request):
+            with self.assertRaisesRegex(RuntimeError, "invalid outcome"):
+                asyncio.run(rlm_module.retry_integration("invalid-worker"))
+
     def test_rejects_invalid_delete_response_and_target(self) -> None:
         host_request = AsyncMock(return_value={"subagent": {"status": "completed"}})
 

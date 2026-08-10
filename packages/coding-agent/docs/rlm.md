@@ -118,11 +118,26 @@ Resource scopes are exact, exclusive scheduler identifiers. Admission fails with
 
 When the parent runs inside a supported Git working tree, each write-capable RLM child receives a scheduler-owned branch and worktree. Dirty tracked and non-ignored untracked parent state is captured through a temporary Git index without changing the parent's branch or index. The child task message includes its immutable base, branch, and assigned worktree.
 
-After the child completes, the host commits its work, validates `agent-runtime-result.json`, and places the candidate in a serialized integration queue. A scheduler-owned integration worktree applies a Git three-way merge and configured quality gates without changing the user's working tree. `integrationRecords` reports the candidate and recovery SHAs, changed or conflicted files, gate output, and the final `integrated`, `conflict`, or `failed` status. Candidate branches and worktrees remain intact when integration conflicts or a gate fails.
+After the child completes, the host commits its work, validates `agent-runtime-result.json`, and places the candidate in a serialized integration queue. A scheduler-owned integration worktree applies a Git three-way merge and configured quality gates. The host then promotes only the incremental integration patch into the user's working tree after checking its expected HEAD, index, tracked and untracked state, and after running final gates against the combined parent-plus-candidate result in a temporary worktree. Promotion never moves the user's branch or stages files, and it records a recovery snapshot before applying the patch. A concurrent or incompatible parent change produces a retained, recoverable conflict instead of overwriting user work.
+
+`integrationRecords` reports the candidate, recovery, result, and promotion-recovery SHAs; changed or conflicted files; gate output; `promotionStatus`; and the final `integrated`, `conflict`, or `failed` status. Candidate branches, worktrees, and evidence remain intact when integration or promotion conflicts or a gate fails. The child remains in the error state until promotion succeeds. After reconciling the parent working tree, retry the retained promotion through the host-owned control path:
+
+```python
+result = await rlm.retry_integration("api-reviewer")
+print(result.outcome, result.integration["promotionStatus"])
+```
+
+A failed retry remains `conflict` and keeps its evidence. To stop retrying without deleting that evidence, abandon it explicitly:
+
+```python
+result = await rlm.abandon_integration("api-reviewer", reason="Parent chose another implementation")
+```
+
+A successful retry changes the retained child registry entry from `error` to `completed` and injects a recovery notice into the root orchestrator's next turn. Abandonment keeps the child non-successful, releases retained ownership, and records the supplied reason.
 
 When the root session is available, Git conflicts and quality-gate failures enter a bounded automatic resolution workflow. Each attempt receives its own scheduler-owned resolver branch and worktree, both relevant task contracts, the candidate patch, conflict files, and failed gate output. The resolver never edits a worker branch or the integration worktree. The Merge Manager promotes a resolution only after it contains both candidate histories and every configured integration gate passes again. Attempts default to two with a five-minute timeout each. Exhausted, timed-out, or restart-interrupted attempts retain their context and worktree evidence, appear in `conflictResolutions`, and request user direction.
 
-Scheduler lifecycle, integration, resource, and conflict-resolution events are persisted in sequence order. The root Orchestrator receives a coalesced ownership update as host-provided next-turn context when workers, leases, or resolver attempts change, so correctness does not depend on calling `scheduler_summary()` voluntarily.
+Scheduler lifecycle, integration, promotion, resource, and conflict-resolution events are persisted in sequence order. The root Orchestrator receives a coalesced ownership update as host-provided next-turn context when workers, leases, integration results, or resolver attempts change, so correctness does not depend on calling `scheduler_summary()` voluntarily.
 
 Non-Git working directories keep the existing shared-cwd behavior. Git worktrees isolate ordinary relative-path writes, but they are not an operating-system sandbox and do not prevent writes through unrelated absolute paths.
 

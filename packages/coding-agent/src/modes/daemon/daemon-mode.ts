@@ -2237,6 +2237,24 @@ export class AgentDaemon {
 					createdAt: metadata.createdAt,
 				});
 			},
+			reconcileRlmSubagentRuntime: async (childId) => {
+				const latest = (await this.readLatestRlmSubagentRegistry(parentState, true)).find(
+					(entry) => entry.childId === childId,
+				);
+				if (!latest || latest.status === "deleted") {
+					throw new Error(`Cannot reconcile missing RLM subagent registry entry ${childId}`);
+				}
+				if (latest.status === "completed") return;
+				if (
+					!this.appendRlmSubagentRegistryEntry(parentState, {
+						...latest,
+						status: "completed",
+						updatedAt: new Date().toISOString(),
+					})
+				) {
+					throw new Error(`Failed to persist recovered completion for RLM subagent ${childId}`);
+				}
+			},
 			releaseRlmSubagentRuntime: async (runtime, options, status) => {
 				// Persist the deletion boundary first, but never let a registry failure
 				// strand the cancelled child as a stale resident session.

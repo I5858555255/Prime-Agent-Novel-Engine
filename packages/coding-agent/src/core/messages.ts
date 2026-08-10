@@ -91,6 +91,18 @@ export type RlmChildTerminalNoticeDetails =
 			childId: string;
 			sessionName: string;
 			lastAssistantTextPreview?: string;
+	  }
+	| {
+			kind: "integration_recovered";
+			childId: string;
+			sessionName: string;
+			resultSha?: string;
+	  }
+	| {
+			kind: "integration_abandoned";
+			childId: string;
+			sessionName: string;
+			reason: string;
 	  };
 
 export function createRlmChildFailureMessage(
@@ -111,10 +123,16 @@ export function createRlmChildTerminalNoticeMessage(
 	details: RlmChildTerminalNoticeDetails,
 	timestamp = Date.now(),
 ): CustomMessage<RlmChildTerminalNoticeDetails> {
-	const content =
-		details.kind === "cancelled"
-			? `RLM child ${details.sessionName} (${details.childId}) was cancelled${details.reason ? `: ${details.reason}` : ""}`
-			: `RLM child ${details.sessionName} (${details.childId}) completed without sending a reply${details.lastAssistantTextPreview ? `. Last assistant text: ${details.lastAssistantTextPreview}` : ""}`;
+	let content: string;
+	if (details.kind === "cancelled") {
+		content = `RLM child ${details.sessionName} (${details.childId}) was cancelled${details.reason ? `: ${details.reason}` : ""}`;
+	} else if (details.kind === "completed_without_reply") {
+		content = `RLM child ${details.sessionName} (${details.childId}) completed without sending a reply${details.lastAssistantTextPreview ? `. Last assistant text: ${details.lastAssistantTextPreview}` : ""}`;
+	} else if (details.kind === "integration_recovered") {
+		content = `RLM child ${details.sessionName} (${details.childId}) recovered after its retained integration was promoted${details.resultSha ? ` at ${details.resultSha}` : ""}`;
+	} else {
+		content = `RLM child ${details.sessionName} (${details.childId}) retained integration was abandoned: ${details.reason}`;
+	}
 	return {
 		role: "custom",
 		customType: RLM_CHILD_TERMINAL_NOTICE_CUSTOM_TYPE,

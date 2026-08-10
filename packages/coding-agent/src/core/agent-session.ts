@@ -230,10 +230,12 @@ import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.j
 import {
 	type CreateRlmSubagentRuntimeOptions,
 	createDefaultRlmSubagentSessionName,
+	createRlmAbandonIntegrationHostHandler,
 	createRlmCancelSubagentHostHandler,
 	createRlmDeleteSubagentHostHandler,
 	createRlmFindModelsHostHandler,
 	createRlmListSubagentsHostHandler,
+	createRlmRetryIntegrationHostHandler,
 	createRlmRunHostHandler,
 	createRlmSchedulerSummaryHostHandler,
 	findRlmModelMatches,
@@ -243,6 +245,7 @@ import {
 	type RlmCancelSubagentResult,
 	type RlmDeleteSubagentResult,
 	type RlmFindModelsResult,
+	type RlmIntegrationControlResult,
 	type RlmListSubagentsResult,
 	type RlmSpawnHandle,
 	type RlmSubagentRegistryEntry,
@@ -8807,6 +8810,10 @@ export class AgentSession {
 				this.deleteInactiveRlmSubagentByTarget(target),
 			),
 			"rlm.cancel_subagent": createRlmCancelSubagentHostHandler((target) => this.cancelRlmSubagent(target)),
+			"rlm.retry_integration": createRlmRetryIntegrationHostHandler((target) => this.retryRlmIntegration(target)),
+			"rlm.abandon_integration": createRlmAbandonIntegrationHostHandler((target, reason) =>
+				this.abandonRlmIntegration(target, reason),
+			),
 			"rlm.scheduler_summary": createRlmSchedulerSummaryHostHandler(() => this.getAgentRuntimeSchedulerSummary()),
 			"model.info": async () => ({
 				id: this.model?.id ?? null,
@@ -9586,6 +9593,90 @@ export class AgentSession {
 			throw new Error(`Running RLM subagent "${subagent.session_name}" is not cancellable in this runtime`);
 		}
 		return { subagent, outcome: "cancelled" };
+	}
+
+	/** Retry guarded promotion for one retained direct child and reconcile its public terminal state. */
+	async retryRlmIntegration(target: string): Promise<RlmIntegrationControlResult> {
+		const subagent = await this._resolveDirectRlmSubagent(target);
+		if (subagent.status === "running") {
+			throw new Error(`Cannot retry integration for running RLM subagent "${subagent.session_name}"`);
+		}
+		const integration = await this._agentRuntimeScheduler.retryIntegrationPromotion(subagent.rlm_child_id);
+		if (integration.status !== "integrated" || integration.promotionStatus !== "promoted") {
+			const run = this._activeRlmChildRuns.get(subagent.rlm_child_id);
+			if (run) {
+				run.status = "error";
+				run.error = integration.promotionError ?? integration.error ?? "Integration promotion remains conflicted";
+				run.emitUpdate?.();
+			}
+			return { subagent: { ...subagent, status: "error" }, outcome: "conflict", integration };
+		}
+
+		const run = this._activeRlmChildRuns.get(subagent.rlm_child_id);
+		if (run) {
+			run.status = "done";
+			run.error = undefined;
+			run.emitUpdate?.();
+		}
+		let reconciliationError: unknown;
+		try {
+			await this._subagentRuntimeHost?.reconcileRlmSubagentRuntime?.(subagent.rlm_child_id);
+		} catch (error) {
+			reconciliationError = error;
+		}
+		const notice = createRlmChildTerminalNoticeMessage({
+			kind: "integration_recovered",
+			childId: subagent.rlm_child_id,
+			sessionName: subagent.session_name,
+			resultSha: integration.resultSha,
+		});
+		await this.sendCustomMessage(
+			{
+				customType: notice.customType,
+				content: notice.content,
+				display: notice.display,
+				details: notice.details,
+			},
+			{ deliverAs: "nextTurn" },
+		).catch(() => undefined);
+		if (reconciliationError !== undefined) {
+			const detail =
+				reconciliationError instanceof Error ? reconciliationError.message : String(reconciliationError);
+			throw new Error(`Integration was promoted, but recovered child status could not be persisted: ${detail}`);
+		}
+		return { subagent: { ...subagent, status: "completed" }, outcome: "promoted", integration };
+	}
+
+	/** Abandon one retained direct child's integration without deleting scheduler evidence. */
+	async abandonRlmIntegration(target: string, reason?: string): Promise<RlmIntegrationControlResult> {
+		const subagent = await this._resolveDirectRlmSubagent(target);
+		if (subagent.status === "running") {
+			throw new Error(`Cannot abandon integration for running RLM subagent "${subagent.session_name}"`);
+		}
+		const resolvedReason = reason ?? "Integration abandoned by parent orchestrator";
+		const integration = this._agentRuntimeScheduler.abandonIntegration(subagent.rlm_child_id, resolvedReason);
+		const run = this._activeRlmChildRuns.get(subagent.rlm_child_id);
+		if (run) {
+			run.status = "error";
+			run.error = resolvedReason;
+			run.emitUpdate?.();
+		}
+		const notice = createRlmChildTerminalNoticeMessage({
+			kind: "integration_abandoned",
+			childId: subagent.rlm_child_id,
+			sessionName: subagent.session_name,
+			reason: resolvedReason,
+		});
+		await this.sendCustomMessage(
+			{
+				customType: notice.customType,
+				content: notice.content,
+				display: notice.display,
+				details: notice.details,
+			},
+			{ deliverAs: "nextTurn" },
+		).catch(() => undefined);
+		return { subagent: { ...subagent, status: "error" }, outcome: "abandoned", integration };
 	}
 
 	private async _trackRlmSubagentDeletion(

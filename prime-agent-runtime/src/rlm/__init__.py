@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover - only available in kernels
     get_ipython = None  # type: ignore[assignment]
 
 HOST_COMM_TARGET = "host.request"
+RLM_INTEGRATION_REASON_MAX_LENGTH = 1024
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,13 @@ class RLMCancelResult:
     rlm_child_id: str
     session_name: str
     outcome: str
+
+
+@dataclass(frozen=True)
+class RLMIntegrationControlResult:
+    subagent: RLMSubagent
+    outcome: str
+    integration: dict[str, Any]
 
 
 def _install_control_comm_handlers() -> None:
@@ -257,6 +265,68 @@ async def cancel_subagent(target: str | RLMSubagent) -> RLMCancelResult:
     )
 
 
+def _integration_control_from_payload(
+    payload: Any,
+    operation: str,
+    expected_outcomes: set[str],
+) -> RLMIntegrationControlResult:
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{operation} returned an invalid result")
+    subagent = _subagent_from_payload(payload.get("subagent"), operation)
+    outcome = payload.get("outcome")
+    integration = payload.get("integration")
+    if outcome not in expected_outcomes:
+        raise RuntimeError(f"{operation} returned an invalid outcome")
+    if (
+        not isinstance(integration, dict)
+        or not isinstance(integration.get("taskId"), str)
+        or not integration["taskId"]
+    ):
+        raise RuntimeError(f"{operation} returned an invalid integration record")
+    return RLMIntegrationControlResult(
+        subagent=subagent,
+        outcome=outcome,
+        integration=integration,
+    )
+
+
+async def retry_integration(target: str | RLMSubagent) -> RLMIntegrationControlResult:
+    """Retry guarded promotion for one retained direct child."""
+    selector = _subagent_selector(target)
+    payload = await host_request("rlm.retry_integration", {"target": selector})
+    return _integration_control_from_payload(
+        payload,
+        "rlm.retry_integration",
+        {"promoted", "conflict"},
+    )
+
+
+async def abandon_integration(
+    target: str | RLMSubagent,
+    reason: str | None = None,
+) -> RLMIntegrationControlResult:
+    """Abandon one retained candidate without deleting its evidence."""
+    selector = _subagent_selector(target)
+    payload: dict[str, Any] = {"target": selector}
+    if reason is not None:
+        if not isinstance(reason, str):
+            raise TypeError(f"reason must be str or None, got {type(reason).__name__}")
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise ValueError("reason must not be empty")
+        if len(normalized_reason) > RLM_INTEGRATION_REASON_MAX_LENGTH:
+            raise ValueError(
+                f"reason must be at most {RLM_INTEGRATION_REASON_MAX_LENGTH} characters"
+            )
+        payload["reason"] = normalized_reason
+    result = await host_request("rlm.abandon_integration", payload)
+    return _integration_control_from_payload(
+        result,
+        "rlm.abandon_integration",
+        {"abandoned"},
+    )
+
+
 async def scheduler_summary() -> dict[str, Any]:
     """Return the current host-owned scheduler summary."""
     payload = await host_request("rlm.scheduler_summary")
@@ -335,6 +405,16 @@ class _RLMCallable:
     async def cancel_subagent(self, target: str | RLMSubagent) -> RLMCancelResult:
         return await cancel_subagent(target)
 
+    async def retry_integration(self, target: str | RLMSubagent) -> RLMIntegrationControlResult:
+        return await retry_integration(target)
+
+    async def abandon_integration(
+        self,
+        target: str | RLMSubagent,
+        reason: str | None = None,
+    ) -> RLMIntegrationControlResult:
+        return await abandon_integration(target, reason)
+
     async def scheduler_summary(self) -> dict[str, Any]:
         return await scheduler_summary()
 
@@ -362,10 +442,12 @@ __all__ = [
     "NotEnabled",
     "RLMModel",
     "RLMCancelResult",
+    "RLMIntegrationControlResult",
     "RLMSpawnHandle",
     "RLMSubagent",
     "RefinementEvent",
     "cancel_subagent",
+    "abandon_integration",
     "delete_subagent",
     "find_models",
     "get_harness_state",
@@ -373,6 +455,7 @@ __all__ = [
     "host_request",
     "list_subagents",
     "rlm",
+    "retry_integration",
     "run",
     "scheduler_summary",
 ]

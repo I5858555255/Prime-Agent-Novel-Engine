@@ -289,7 +289,7 @@ describe("issue 1056 agent runtime scheduler phase six", () => {
 			workspacePath: root,
 			runId: "run-host-heartbeat",
 			statePath: join(root, "scheduler", "state.json"),
-			resourceLeaseTtlMs: 40,
+			resourceLeaseTtlMs: 200,
 		});
 		const child = await createHarness();
 		cleanupHarnesses.push(child);
@@ -305,7 +305,7 @@ describe("issue 1056 agent runtime scheduler phase six", () => {
 		cleanupHarnesses.push(parent);
 		child.setResponses([
 			async () => {
-				await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+				await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
 				leaseStayedActive = scheduler.summary().activeResourceLeases.length === 1;
 				return fauxAssistantMessage("Silent task completed.");
 			},

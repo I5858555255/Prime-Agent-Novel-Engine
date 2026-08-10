@@ -65,12 +65,12 @@ sequenceDiagram
 |---|---|
 | `src/core/kernel/index.ts` | ZeroMQ sockets, Jupyter framing, execution, comm dispatch, interrupt, and shutdown. |
 | `src/core/tools/ipython.ts` | Agent tool wrapper, lazy kernel provisioning, namespace bootstrap, and output shaping. |
-| `src/core/agent-runtime-scheduler.ts` | Persisted task DAG, agent registry, heartbeat/recovery state, and orchestrator summaries. |
-| `src/core/agent-git-worktree.ts` | Git capability checks, dirty base snapshots, scheduler-owned worktrees, candidate commits, result manifests, and guarded cleanup. |
+| `src/core/agent-runtime-scheduler.ts` | Workspace-scoped task DAG, agent registry, authority fencing, heartbeat/recovery state, retained-candidate controls, and orchestrator summaries. |
+| `src/core/agent-git-worktree.ts` | Git capability checks, dirty base snapshots, scheduler-owned worktrees, candidate commits, result manifests, guarded promotion, recovery snapshots, and cleanup. |
 | `src/core/agent-conflict-resolver.ts` | Isolated resolver worktrees, bounded model attempts, persisted conflict context, timeout handling, and evidence retention. |
 | `src/core/agent-merge-manager.ts` | Serialized candidate integration, quality gates, recovery rollback, and gate-validated resolution promotion. |
-| `src/core/agent-session.ts` | RLM policy, child creation, registry, usage attribution, cancellation, and goal handlers. |
-| `src/core/rlm-runtime.ts` | Typed request/spawn-handle validation for `rlm.run`, model discovery, list, and delete. |
+| `src/core/agent-session.ts` | RLM policy, child creation, registry, usage attribution, cancellation, retained-candidate reconciliation, and goal handlers. |
+| `src/core/rlm-runtime.ts` | Typed request validation for spawn, discovery, lifecycle, scheduler inspection, and retained-candidate controls. |
 | `prime-agent-runtime/src/rlm/` | Python shim, handle types, callable `rlm`, and session-backed harness state. |
 
 The Python side does not call providers or implement an agent loop.
@@ -137,6 +137,8 @@ find_models(query: str = "", limit: int = 8)
 list_subagents()
 delete_subagent(selector)
 cancel_subagent(selector)
+retry_integration(selector)
+abandon_integration(selector, reason: str | None = None)
 scheduler_summary()
 host_request(request_type: str, payload: dict | None = None)
 RLMSpawnHandle
@@ -174,8 +176,9 @@ Unknown options fail instead of being ignored. Model search is bounded to active
 6. Create the child `SessionManager`, `Agent`, and `AgentSession` with the assigned worktree as `cwd`.
 7. Reuse provider hooks, resource loader, model registry, tools, transport, retry settings, and thinking configuration.
 8. Run the child prompt, commit its candidate result, validate the result manifest, retain its session, and update lifecycle state independently of the admission call.
-9. Serialize candidate integration. When Git or a configured gate rejects the candidate, run a bounded resolver Agent in a separate scheduler-owned worktree and let the Merge Manager promote only a gate-valid result.
-10. Attribute child usage to the parent assistant turn and persist the attribution.
+9. Serialize candidate integration. When Git or a configured gate rejects the candidate, run a bounded resolver Agent in a separate scheduler-owned worktree and let the Merge Manager accept only a gate-valid result.
+10. Preflight the incremental result patch against the exact user-worktree state, run final gates against the combined parent-plus-candidate result, persist a recovery snapshot, and promote without moving HEAD or staging files. Retain conflicts for explicit retry or abandonment.
+11. Attribute child usage to the parent assistant turn and persist the attribution.
 
 Children receive incremented `RLM_DEPTH`, the inherited maximum depth, and their own `RLM_SESSION_DIR`. The default maximum depth is 1, so root sessions may create children and those children may not create grandchildren unless the limit is configured higher.
 
@@ -199,7 +202,9 @@ This registry survives kernel restart, compaction, and parent restore. Successfu
 
 The parent can continue a retained daemon child with `await agent_message.send(..., receiver_role="child", receiver_name=child.session_name)`. `rlm.delete_subagent()` accepts an exact child ID, active-session ID, session ID, or unique name, but refuses queued or running work. Use `rlm.cancel_subagent()` for an explicit cancellation. Deleting an inactive child closes the retained runtime, writes a durable tombstone, and removes it from messaging and observation. It does not erase the transcript, scheduler audit record, or artifacts on disk.
 
-`await rlm.scheduler_summary()` returns the host-owned run ID, workspace ID, task and agent counts, ready and blocked task IDs, active agent records, retained Git workspace assignments, active resource leases, blocked-resource diagnostics, task scopes, and recent typed scheduler events. Completed workspace records expose the immutable base, candidate commit, branch, worktree, task contract, and result manifest paths. Scheduler state is stored independently from model context. Reloading an interrupted run marks admitted or running agents as `recovering` until their next runtime heartbeat, while expired leases are recovered before new ownership is admitted.
+`await rlm.scheduler_summary()` returns the host-owned run ID, workspace ID and authority epoch, quality-gate policy, task and agent counts, ready and blocked task IDs, active agent records, retained Git workspace assignments, integration and promotion evidence, active resource leases, blocked-resource diagnostics, task scopes, and recent typed scheduler events. Completed workspace records expose the immutable base, candidate commit, branch, worktree, task contract, and result manifest paths. Integration records expose result and recovery SHAs, changed files, failed gates, promotion status, and required recovery evidence. Scheduler state is stored independently from model context. Reloading an interrupted run marks admitted or running agents as `recovering` until their next runtime heartbeat, while expired leases are recovered before new ownership is admitted.
+
+`await rlm.retry_integration(selector)` and `await rlm.abandon_integration(selector, reason=...)` resolve only direct children of the current parent. Retry reruns guarded promotion against the current user-worktree fingerprint and final gates. Success reconciles the parent-scoped child registry from `error` to `completed`; another conflict remains non-successful and retryable. Abandonment marks the scheduler task cancelled, releases retained ownership, and preserves candidate, recovery, resolver, and integration evidence.
 
 The root Orchestrator subscribes to Scheduler events in-process. Worker, integration, and ownership changes are coalesced into host-provided next-turn context containing current active workers, lease owners, and blocked tasks. This adds coordination without changing the daemon command or response protocol.
 
@@ -289,6 +294,8 @@ Provider credentials are resolved by the TypeScript host. The bounded model cata
 | Scheduler restarts with stale ownership | Heartbeat-renewed expiry timestamps bound ownership; expired leases are recorded and released during recovery or the next scheduler action. |
 | Git integration conflicts | A bounded resolver Agent receives both task contracts, candidate changes, and conflict files in an isolated resolver worktree; worker branches remain unchanged. |
 | Integration quality gate fails | A resolver may repair the rolled-back attempted commit, but the Merge Manager reruns every configured gate before promotion. |
+| Final user-worktree promotion conflicts or fails a gate | The child remains failed, the user's HEAD/index/files stay unchanged, and `rlm.retry_integration()` can retry after parent changes are reconciled. |
+| Retained candidate is no longer wanted | `rlm.abandon_integration()` records the reason, releases ownership, and keeps forensic evidence without reporting success. |
 | Resolver fails or times out | The attempt, branch, worktree, context file, error, and gate evidence remain persisted; retries are bounded and exhaustion requests user direction. |
 | Scheduler restarts during resolution | The active attempt is escalated without reusing its possibly live workspace; its evidence remains available for user direction. |
 | Worktree cleanup requested before integration/cancellation | The scheduler rejects cleanup; clean candidate branches remain available for later integration. |
