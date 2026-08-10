@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
+import { getAgentDir } from "../../config.js";
 
 const DAEMON_SOCKET_MODE = 0o600;
 const DAEMON_SOCKET_DIR_MODE = 0o700;
@@ -35,9 +37,9 @@ export interface DaemonSocketIdentity {
 
 export function defaultDaemonSocketPath(): string {
 	if (process.platform === "win32") {
-		return "\\\\.\\pipe\\prime-agent-daemon";
+		return `\\\\.\\pipe\\prime-agent-daemon-${agentDirSocketSuffix()}`;
 	}
-	return join(defaultDaemonSocketDir(), "daemon.sock");
+	return join(defaultDaemonSocketDir(), `daemon-${agentDirSocketSuffix()}.sock`);
 }
 
 export async function acquireDaemonSocketPathLease(socketPath: string): Promise<DaemonSocketPathLease | undefined> {
@@ -214,6 +216,21 @@ function assertSocketLease(socketPath: string, lease: DaemonSocketPathLease): vo
 export function defaultDaemonSocketDir(): string {
 	const suffix = typeof process.getuid === "function" ? String(process.getuid()) : "user";
 	return join(tmpdir(), `prime-agent-${suffix}`);
+}
+
+/**
+ * Daemon identity must include the agent state dir: two installs sharing one
+ * uid-keyed socket (e.g. a fork pointed at PRIME_AGENT_CODING_AGENT_DIR and a
+ * vanilla install) would otherwise attach to whichever daemon started first and
+ * silently run sessions under the other install's code and state.
+ *
+ * The suffix goes into the socket FILENAME, not the directory: worker socket
+ * paths in the shared directory already sit at ~103 chars, right at the macOS
+ * sun_path limit (104) — a longer directory name makes bind() silently
+ * truncate the path and every later stat of the full path fail with ENOENT.
+ */
+function agentDirSocketSuffix(): string {
+	return createHash("sha256").update(resolve(getAgentDir())).digest("hex").slice(0, 8);
 }
 
 function ensureDefaultDaemonSocketDir(socketPath: string): void {
