@@ -77,6 +77,7 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 - **Cloudflare Workers AI**
 - **xAI**
 - **OpenRouter**
+- **Venice AI** (OpenAI-compatible API)
 - **Vercel AI Gateway**
 - **MiniMax**
 - **GitHub Copilot** (requires OAuth, see below)
@@ -1061,6 +1062,7 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | xAI | `XAI_API_KEY` |
 | Fireworks | `FIREWORKS_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
+| Venice AI | `VENICE_API_KEY` |
 | Vercel AI Gateway | `AI_GATEWAY_API_KEY` |
 | zAI | `ZAI_API_KEY` |
 | MiniMax | `MINIMAX_API_KEY` |
@@ -1233,6 +1235,20 @@ const response = await complete(model, {
 **OpenAI Codex**: Requires a ChatGPT Plus or Pro subscription. Provides access to GPT-5.x Codex models with extended context windows and reasoning capabilities. The library automatically handles session-based prompt caching when `sessionId` is provided in stream options. You can set `transport` in stream options to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. When using WebSocket with a `sessionId`, connections are reused per session and expire after 5 minutes of inactivity.
 
 **Prime Inference**: Uses the OpenAI-compatible API at `https://api.pinference.ai/api/v1`. Set `PRIME_API_KEY` or pass an API key explicitly.
+
+**Venice AI**: Uses the OpenAI-compatible Chat Completions API at `https://api.venice.ai/api/v1`. Set `VENICE_API_KEY` or pass an API key explicitly. Prime Agent disables Venice's additional system prompt by default so the caller's system instructions remain authoritative. Use `onPayload` to opt back in or set Venice-only options such as web search:
+
+```typescript
+await complete(getModel('venice', 'zai-org-glm-5-2'), context, {
+  onPayload: (payload) => ({
+    ...(payload as Record<string, unknown>),
+    venice_parameters: {
+      include_venice_system_prompt: true,
+      enable_web_search: 'auto'
+    }
+  })
+});
+```
 
 **Azure OpenAI (Responses)**: Uses the Responses API only. Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` supports both `https://<resource>.openai.azure.com` and `https://<resource>.cognitiveservices.azure.com`; root endpoints are normalized to `.../openai/v1` automatically. Use `AZURE_OPENAI_API_VERSION` (defaults to `v1`) to override the API version if needed. Deployment names are treated as model IDs by default, override with `azureDeploymentName` or `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` using comma-separated `model-id=deployment` pairs (for example `gpt-4o-mini=my-deployment,gpt-4o=prod`). Legacy deployment-based URLs are intentionally unsupported.
 

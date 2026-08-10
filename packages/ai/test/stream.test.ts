@@ -811,6 +811,30 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.VENICE_API_KEY)("Venice AI Provider (GLM 4.7 via OpenAI Completions)", () => {
+		const llm = getModel("venice", "zai-org-glm-4.7");
+
+		it("should complete basic text generation", { retry: 3 }, async () => {
+			await basicTextGeneration(llm);
+		});
+
+		it("should handle tool calling", { retry: 3 }, async () => {
+			await handleToolCall(llm);
+		});
+
+		it("should handle streaming", { retry: 3 }, async () => {
+			await handleStreaming(llm);
+		});
+
+		it("should handle thinking mode", { retry: 3 }, async () => {
+			await handleThinking(llm, { reasoningEffort: "medium" });
+		});
+
+		it("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
+			await multiTurn(llm, { reasoningEffort: "medium" });
+		});
+	});
+
 	describe.skipIf(!process.env.AI_GATEWAY_API_KEY)(
 		"Vercel AI Gateway Provider (google/gemini-2.5-flash via Anthropic Messages)",
 		() => {

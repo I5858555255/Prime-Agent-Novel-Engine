@@ -439,6 +439,10 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
 	});
 
+	test("venice default tracks its function-calling default model", () => {
+		expect(defaultModelPerProvider.venice).toBe("zai-org-glm-5-2");
+	});
+
 	test("findInitialModel accepts explicit provider custom model ids", async () => {
 		const registry = {
 			getAll: () => allModels,

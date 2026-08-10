@@ -612,6 +612,13 @@ function buildParams(
 		}
 	}
 
+	if (model.provider === "venice") {
+		const veniceParams = params as typeof params & {
+			venice_parameters?: { include_venice_system_prompt?: boolean };
+		};
+		veniceParams.venice_parameters = { include_venice_system_prompt: false };
+	}
+
 	return params;
 }
 

@@ -119,6 +119,14 @@ describe("Tool Call Without Result Tests", () => {
 		});
 	});
 
+	describe.skipIf(!process.env.VENICE_API_KEY)("Venice AI Provider", () => {
+		const model = getModel("venice", "zai-org-glm-4.7");
+
+		it("should filter out tool calls without corresponding tool results", { retry: 3, timeout: 30000 }, async () => {
+			await testToolCallWithoutResult(model);
+		});
+	});
+
 	describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Responses Provider", () => {
 		const model = getModel("openai", "gpt-5-mini");
 

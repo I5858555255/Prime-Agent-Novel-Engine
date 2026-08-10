@@ -175,6 +175,17 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 	});
 
+	describe.skipIf(!process.env.VENICE_API_KEY)("Venice AI", () => {
+		it("zai-org-glm-4.7 - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("venice", "zai-org-glm-4.7");
+			const result = await testContextOverflow(model, process.env.VENICE_API_KEY!);
+			logResult(result);
+
+			expect(result.stopReason).toBe("error");
+			expect(isContextOverflow(result.response, model.contextWindow)).toBe(true);
+		}, 120000);
+	});
+
 	describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Responses", () => {
 		it("gpt-4o - should detect overflow via isContextOverflow", async () => {
 			const model = getModel("openai", "gpt-4o");

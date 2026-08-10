@@ -75,6 +75,17 @@ const KIMI_STATIC_HEADERS = {
 
 const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
+const VENICE_BASE_URL = "https://api.venice.ai/api/v1";
+const VENICE_INCLUDED_BETA_MODELS = new Set(["zai-org-glm-5-2"]);
+const VENICE_UNSUPPORTED_REASONING_EFFORT_MAP = {
+	off: null,
+	minimal: null,
+	low: null,
+	medium: null,
+	high: null,
+	xhigh: null,
+	max: null,
+} as const;
 const ZAI_TOOL_STREAM_UNSUPPORTED_MODELS = new Set(["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v"]);
 const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 	"github-copilot:claude-haiku-4.5",
@@ -293,33 +304,41 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("gpt-5.6")) {
 		mergeThinkingLevelMap(model, { minimal: null, max: "max" });
 	}
+	const supportsReasoningEffortMetadata =
+		model.api !== "openai-completions" || model.compat?.supportsReasoningEffort !== false;
 	// Per-family effort support per the Anthropic effort docs. Opus 4.6 / Sonnet 4.6
 	// have no xhigh; Fable 5 / Mythos 5 / Mythos Preview think every turn (off: null).
 	if (
-		model.id.includes("opus-4-6") ||
-		model.id.includes("opus-4.6") ||
-		model.id.includes("sonnet-4-6") ||
-		model.id.includes("sonnet-4.6")
+		supportsReasoningEffortMetadata &&
+		(model.id.includes("opus-4-6") ||
+			model.id.includes("opus-4.6") ||
+			model.id.includes("sonnet-4-6") ||
+			model.id.includes("sonnet-4.6"))
 	) {
 		mergeThinkingLevelMap(model, { max: "max" });
 	}
 	if (
-		model.id.includes("opus-4-7") ||
-		model.id.includes("opus-4.7") ||
-		model.id.includes("opus-4-8") ||
-		model.id.includes("opus-4.8") ||
-		model.id.includes("opus-5") ||
-		model.id.includes("sonnet-5")
+		supportsReasoningEffortMetadata &&
+		(model.id.includes("opus-4-7") ||
+			model.id.includes("opus-4.7") ||
+			model.id.includes("opus-4-8") ||
+			model.id.includes("opus-4.8") ||
+			model.id.includes("opus-5") ||
+			model.id.includes("sonnet-5"))
 	) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh", max: "max" });
 	}
-	if (model.id.includes("fable-5") || model.id.includes("mythos-5")) {
+	if (supportsReasoningEffortMetadata && (model.id.includes("fable-5") || model.id.includes("mythos-5"))) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
 	}
-	if (model.id.includes("mythos-preview")) {
+	if (supportsReasoningEffortMetadata && model.id.includes("mythos-preview")) {
 		mergeThinkingLevelMap(model, { off: null, max: "max" });
 	}
-	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
+	if (
+		supportsReasoningEffortMetadata &&
+		model.api === "openai-completions" &&
+		model.id.includes("deepseek-v4")
+	) {
 		mergeThinkingLevelMap(model, DEEPSEEK_V4_THINKING_LEVEL_MAP);
 	}
 	const kimiK3Id = model.id.toLowerCase();
@@ -370,6 +389,125 @@ function getOptionalNumber(value: unknown): number | undefined {
 
 function getOptionalBoolean(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
+}
+
+function getExistingVeniceModels(): Model<"openai-completions">[] {
+	const providers = EXISTING_MODELS as unknown as Record<
+		string,
+		Record<string, Model<"openai-completions">> | undefined
+	>;
+	return Object.values(providers.venice ?? {}).map((model) => ({
+		...model,
+		input: [...model.input],
+		cost: { ...model.cost },
+		...(model.compat ? { compat: { ...model.compat } } : {}),
+		...(model.thinkingLevelMap ? { thinkingLevelMap: { ...model.thinkingLevelMap } } : {}),
+	}));
+}
+
+function getVeniceThinkingLevelMap(
+	options: unknown,
+): NonNullable<Model<"openai-completions">["thinkingLevelMap"]> | undefined {
+	if (!Array.isArray(options)) return undefined;
+	const supported = new Set(options.filter((option): option is string => typeof option === "string"));
+	const map: NonNullable<Model<"openai-completions">["thinkingLevelMap"]> = {
+		off: supported.has("none") ? "none" : null,
+		minimal: supported.has("minimal") ? "minimal" : null,
+		low: supported.has("low") ? "low" : null,
+		medium: supported.has("medium") ? "medium" : null,
+		high: supported.has("high") ? "high" : null,
+		xhigh: supported.has("xhigh") ? "xhigh" : null,
+		max: supported.has("max") ? "max" : null,
+	};
+	return map;
+}
+
+function parseVeniceModels(data: unknown): Model<"openai-completions">[] | undefined {
+	if (!isRecord(data) || !Array.isArray(data.data)) return undefined;
+
+	const models: Model<"openai-completions">[] = [];
+	for (const item of data.data) {
+		if (!isRecord(item) || typeof item.id !== "string" || item.type !== "text") continue;
+		const spec = isRecord(item.model_spec) ? item.model_spec : undefined;
+		if (!spec) continue;
+		const capabilities = isRecord(spec.capabilities) ? spec.capabilities : {};
+		if (
+			spec.offline === true ||
+			((spec.beta === true || spec.betaModel === true) && !VENICE_INCLUDED_BETA_MODELS.has(item.id)) ||
+			isRecord(spec.deprecation) ||
+			capabilities.supportsFunctionCalling !== true
+		) {
+			continue;
+		}
+
+		const pricing = isRecord(spec.pricing) ? spec.pricing : {};
+		const inputPricing = isRecord(pricing.input) ? pricing.input : {};
+		const outputPricing = isRecord(pricing.output) ? pricing.output : {};
+		const cacheInputPricing = isRecord(pricing.cache_input) ? pricing.cache_input : {};
+		const cacheWritePricing = isRecord(pricing.cache_write) ? pricing.cache_write : {};
+		const inputCost = getOptionalNumber(inputPricing.usd);
+		const outputCost = getOptionalNumber(outputPricing.usd);
+		const contextWindow = getOptionalNumber(spec.availableContextTokens) ?? getOptionalNumber(item.context_length);
+		const maxTokens = getOptionalNumber(spec.maxCompletionTokens);
+		if (inputCost === undefined || outputCost === undefined || !contextWindow || !maxTokens) continue;
+
+		const reasoning = capabilities.supportsReasoning === true;
+		const supportsReasoningEffort = reasoning && capabilities.supportsReasoningEffort === true;
+		const thinkingLevelMap = reasoning
+			? supportsReasoningEffort
+				? getVeniceThinkingLevelMap(capabilities.reasoningEffortOptions)
+				: VENICE_UNSUPPORTED_REASONING_EFFORT_MAP
+			: undefined;
+		const traits = Array.isArray(spec.traits) ? spec.traits : [];
+
+		models.push({
+			id: item.id,
+			name: typeof spec.name === "string" ? spec.name : item.id,
+			api: "openai-completions",
+			provider: "venice",
+			baseUrl: VENICE_BASE_URL,
+			reasoning,
+			...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+			input: capabilities.supportsVision === true ? ["text", "image"] : ["text"],
+			cost: {
+				input: inputCost,
+				output: outputCost,
+				cacheRead: getOptionalNumber(cacheInputPricing.usd) ?? 0,
+				cacheWrite: getOptionalNumber(cacheWritePricing.usd) ?? 0,
+			},
+			contextWindow,
+			maxTokens: Math.min(maxTokens, contextWindow),
+			...(traits.includes("default") || traits.includes("function_calling_default") ? { featured: true } : {}),
+			compat: {
+				supportsStore: false,
+				supportsDeveloperRole: false,
+				supportsReasoningEffort,
+				maxTokensField: "max_completion_tokens",
+				supportsStrictMode: false,
+				supportsLongCacheRetention: false,
+			},
+		});
+	}
+	return models;
+}
+
+async function fetchVeniceModels(): Promise<Model<"openai-completions">[]> {
+	try {
+		console.log("Fetching models from Venice AI API...");
+		const response = await fetch(`${VENICE_BASE_URL}/models?type=text`);
+		if (!response.ok) {
+			throw new Error(`Venice models request failed: ${response.status} ${response.statusText}`);
+		}
+		const models = parseVeniceModels(await response.json());
+		if (!models || models.length === 0) {
+			throw new Error("Venice models response contained no usable tool-capable text models");
+		}
+		console.log(`Fetched ${models.length} tool-capable models from Venice AI`);
+		return models;
+	} catch (error) {
+		console.error("Failed to fetch Venice AI models; keeping snapshot models:", error);
+		return getExistingVeniceModels();
+	}
 }
 
 function readPrimeCliConfig(): Record<string, unknown> {
@@ -1550,9 +1688,10 @@ async function generateModels() {
 	const modelsDevModels = await loadModelsDevData();
 	const openRouterModels = await fetchOpenRouterModels();
 	const aiGatewayModels = await fetchAiGatewayModels();
+	const veniceModels = await fetchVeniceModels();
 
 	// Combine models (models.dev has priority)
-	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
+	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels, ...veniceModels].filter(
 		(model) =>
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
 	);
@@ -1890,7 +2029,9 @@ async function generateModels() {
 						}
 					: DEEPSEEK_V4_COMPAT),
 			};
-			mergeThinkingLevelMap(candidate, DEEPSEEK_V4_THINKING_LEVEL_MAP);
+			if (candidate.compat.supportsReasoningEffort !== false) {
+				mergeThinkingLevelMap(candidate, DEEPSEEK_V4_THINKING_LEVEL_MAP);
+			}
 		}
 	}
 

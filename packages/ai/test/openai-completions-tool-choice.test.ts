@@ -70,6 +70,64 @@ describe("openai-completions tool_choice", () => {
 		mockState.chunks = undefined;
 	});
 
+	it("disables the Venice system prompt by default", async () => {
+		const model = getModel("venice", "zai-org-glm-4.7");
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{ apiKey: "test" },
+		).result();
+
+		const params = mockState.lastParams as {
+			venice_parameters?: { include_venice_system_prompt?: boolean };
+		};
+		expect(params.venice_parameters?.include_venice_system_prompt).toBe(false);
+	});
+
+	it("allows onPayload to override Venice parameters", async () => {
+		const model = getModel("venice", "zai-org-glm-4.7");
+
+		await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				onPayload: (payload) => {
+					const params = payload as {
+						venice_parameters?: {
+							include_venice_system_prompt?: boolean;
+							enable_web_search?: "off" | "on" | "auto";
+						};
+					};
+					return {
+						...params,
+						venice_parameters: {
+							...params.venice_parameters,
+							include_venice_system_prompt: true,
+							enable_web_search: "auto" as const,
+						},
+					};
+				},
+			},
+		).result();
+
+		const params = mockState.lastParams as {
+			venice_parameters?: {
+				include_venice_system_prompt?: boolean;
+				enable_web_search?: string;
+			};
+		};
+		expect(params.venice_parameters).toEqual({
+			include_venice_system_prompt: true,
+			enable_web_search: "auto",
+		});
+	});
+
 	it("forwards toolChoice from simple options to payload", async () => {
 		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
 		const model = { ...baseModel, api: "openai-completions" } as const;
