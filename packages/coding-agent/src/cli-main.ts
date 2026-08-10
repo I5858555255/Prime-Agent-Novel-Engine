@@ -6,6 +6,7 @@ import {
 	isOwnedSessionWorkerProcess,
 	maybeRunOwnedSessionWorkerFrontend,
 } from "./cli/owned-session-worker.js";
+import { markCodingAgentProcess } from "./cli/process-marker.js";
 import { APP_NAME } from "./config.js";
 
 export async function runCli(): Promise<void> {
@@ -16,7 +17,7 @@ export async function runCli(): Promise<void> {
 	}
 
 	process.title = APP_NAME;
-	process.env.PI_CODING_AGENT = "true";
+	markCodingAgentProcess();
 	process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 	installOwnedSessionWorkerOwnerWatch();
