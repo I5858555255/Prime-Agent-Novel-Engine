@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed autocomplete recovering after provider or extension completion failures ([#939](https://github.com/PrimeIntellect-ai/prime-agent/issues/939)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
