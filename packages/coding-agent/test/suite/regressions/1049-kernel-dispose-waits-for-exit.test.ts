@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KernelManager } from "../../../src/core/kernel/index.js";
 
 // Regression for #1049. dispose() killed the kernel and removed its temp
@@ -13,6 +13,19 @@ import { KernelManager } from "../../../src/core/kernel/index.js";
 // The defect is not Windows-specific — nothing ever waited for "exit" — so it
 // is asserted here on the process itself rather than on a filesystem error:
 // once dispose() resolves, the kernel pid must be gone.
+
+// The forkserver is default-on for Linux, and these tests pass a stub as
+// `python`. It would be started as the forkserver template rather than a
+// managed kernel, so dispose() would have no kernelPid to kill. Same reason
+// ipython-provisioner.test.ts pins direct-spawn.
+const savedForkFlag = process.env.PRIME_AGENT_KERNEL_FORKSERVER;
+beforeAll(() => {
+	process.env.PRIME_AGENT_KERNEL_FORKSERVER = "0";
+});
+afterAll(() => {
+	if (savedForkFlag === undefined) delete process.env.PRIME_AGENT_KERNEL_FORKSERVER;
+	else process.env.PRIME_AGENT_KERNEL_FORKSERVER = savedForkFlag;
+});
 
 let tempDir = "";
 
