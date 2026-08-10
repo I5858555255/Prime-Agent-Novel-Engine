@@ -35,6 +35,61 @@ except Exception:
     pass
 
 try:
+    import signal as _prime_agent_signal
+    import subprocess as _prime_agent_subprocess
+    import sys as _prime_agent_sys
+    import threading as _prime_agent_threading
+    from IPython.core.magics.script import ScriptMagics as _PrimeAgentScriptMagics
+
+    _prime_agent_tls = _prime_agent_threading.local()
+    _prime_agent_orig_popen = _prime_agent_subprocess.Popen
+
+    def _prime_agent_pgroup_popen(*args, **kwargs):
+        if getattr(_prime_agent_tls, "in_shebang", False):
+            if _prime_agent_sys.platform == "win32":
+                kwargs["creationflags"] = kwargs.get("creationflags", 0) | _prime_agent_subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            proc = _prime_agent_orig_popen(*args, **kwargs)
+            _prime_agent_tls.active_procs.append(proc)
+            return proc
+        return _prime_agent_orig_popen(*args, **kwargs)
+
+    _prime_agent_subprocess.Popen = _prime_agent_pgroup_popen
+    _prime_agent_orig_shebang = _PrimeAgentScriptMagics.shebang
+
+    def _prime_agent_wrapped_shebang(self, line, cell="", posix=None):
+        _prime_agent_tls.in_shebang = True
+        _prime_agent_tls.active_procs = []
+        try:
+            return _prime_agent_orig_shebang(self, line, cell=cell, posix=posix)
+        except KeyboardInterrupt:
+            for proc in getattr(_prime_agent_tls, "active_procs", []):
+                if proc.poll() is None:
+                    if _prime_agent_sys.platform == "win32":
+                        try:
+                            _prime_agent_subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+                        except Exception:
+                            proc.kill()
+                    else:
+                        try:
+                            _prime_agent_os.killpg(_prime_agent_os.getpgid(proc.pid), _prime_agent_signal.SIGINT)
+                            try:
+                                proc.wait(timeout=0.5)
+                            except Exception:
+                                _prime_agent_os.killpg(_prime_agent_os.getpgid(proc.pid), _prime_agent_signal.SIGKILL)
+                        except Exception:
+                            pass
+            raise
+        finally:
+            _prime_agent_tls.in_shebang = False
+            _prime_agent_tls.active_procs = []
+
+    _PrimeAgentScriptMagics.shebang = _prime_agent_wrapped_shebang
+except Exception:
+    pass
+
+try:
     import rlm as _prime_agent_rlm_module
     rlm = _prime_agent_rlm_module.rlm
 except Exception as _prime_agent_rlm_error:

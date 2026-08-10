@@ -905,7 +905,12 @@ export class KernelManager {
 		const onAbort = () => {
 			void this.interrupt().catch(() => undefined);
 			clearAbortTimer();
-			abortTimer = globalThis.setTimeout(forceAbort, KERNEL_ABORT_GRACE_MS);
+			abortTimer = globalThis.setTimeout(() => {
+				if (this.activeExecution === execution) {
+					void this.interrupt().catch(() => undefined);
+				}
+				forceAbort();
+			}, KERNEL_ABORT_GRACE_MS);
 			if (abortTimer && typeof abortTimer === "object" && "unref" in abortTimer) {
 				abortTimer.unref();
 			}
