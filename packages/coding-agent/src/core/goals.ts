@@ -13,12 +13,14 @@ export const MAX_THREAD_GOAL_OBJECTIVE_CHARS = 4000;
  * or new user message before the goal pauses as waiting for user input.
  * Below this the continuation is a legitimate nudge; at this count the model
  * has repeatedly declined to act and re-injecting the same context cannot
- * make progress.
+ * make progress. Deliberately the goal-mode analogue of
+ * `DEFAULT_AUTONOMOUS_LIMITS.maxContinuations`.
  */
 export const MAX_STALLED_GOAL_CONTINUATIONS = 3;
 
 export type GoalStatus = "idle" | "active" | "paused" | "budget_limited" | "complete" | "error";
 export type GoalContextKind = "continuation" | "budget_limit" | "objective_updated";
+export type GoalPausedBy = "user" | "host";
 
 export interface GoalState {
 	active: boolean;
@@ -34,11 +36,11 @@ export interface GoalState {
 	lastReason?: string;
 	lastError?: string;
 	/**
-	 * Set when the host paused the goal because continuations stalled. A goal
-	 * paused this way resumes automatically on the next user prompt, unlike an
-	 * explicit `/goal pause`.
+	 * Why a paused goal is paused. "host" means the stall detector paused it
+	 * waiting for user input, and the next user message resumes it; "user"
+	 * means an explicit `/goal pause`, which only `/goal resume` reactivates.
 	 */
-	waitingForUser?: boolean;
+	pausedBy?: GoalPausedBy;
 }
 
 /** Goal payload returned to the kernel-side goal skill. Keys are Python-conventional snake_case. */
@@ -85,7 +87,7 @@ export function normalizeGoalState(goal: GoalState): GoalState {
 		tokensUsed: Math.max(0, Math.trunc(goal.tokensUsed)),
 		timeUsedSeconds: Math.max(0, Math.trunc(goal.timeUsedSeconds)),
 		continuationsUsed: Math.max(0, Math.trunc(goal.continuationsUsed)),
-		waitingForUser: goal.status === "paused" && goal.waitingForUser === true ? true : undefined,
+		pausedBy: goal.status === "paused" ? goal.pausedBy : undefined,
 	};
 }
 
@@ -199,42 +201,30 @@ export function createGoalContextMessage(
 /**
  * Whether injecting another goal continuation into this run would only repeat
  * the previous one. True when the run's trailing `MAX_STALLED_GOAL_CONTINUATIONS`
- * goal-context windows all ended without a tool call or a user message: the
- * model saw the same context that many times and chose no observable action,
- * so the goal should pause and wait for user input instead of looping.
+ * goal-context windows all ended without progress: the model saw the same
+ * context that many times and chose no observable action, so the goal should
+ * pause and wait for user input instead of looping. A tool call is observable
+ * work and a user message is new information that can unblock the goal, so
+ * either one ends the stall; host-injected custom messages are neither.
  */
 export function goalContinuationIsStalled(runMessages: AgentMessage[]): boolean {
 	let stalledWindows = 0;
-	let windowHasProgress = false;
 	// Walk backward; each goal context closes the window of messages after it.
 	for (let index = runMessages.length - 1; index >= 0; index--) {
 		const message = runMessages[index];
 		if (message.role === "custom" && message.customType === GOAL_CONTEXT_CUSTOM_TYPE) {
-			if (windowHasProgress) {
-				break;
-			}
 			stalledWindows++;
 			if (stalledWindows >= MAX_STALLED_GOAL_CONTINUATIONS) {
 				return true;
 			}
 			continue;
 		}
-		windowHasProgress ||= goalWindowProgressMessage(message);
-	}
-	return false;
-}
-
-/**
- * Whether a message counts as progress inside a goal-context window. Tool
- * calls are observable work; a user message is new information that can
- * unblock the goal. Host-injected custom messages are neither.
- */
-function goalWindowProgressMessage(message: AgentMessage): boolean {
-	if (message.role === "user") {
-		return true;
-	}
-	if (message.role === "assistant") {
-		return message.content.some((block) => block.type === "toolCall");
+		if (message.role === "user") {
+			return false;
+		}
+		if (message.role === "assistant" && message.content.some((block) => block.type === "toolCall")) {
+			return false;
+		}
 	}
 	return false;
 }
