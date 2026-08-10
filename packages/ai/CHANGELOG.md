@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fixed Codex SSE framing and WebSocket cancellation cleanup for split line endings, terminal events, and pre-aborted requests ([#941](https://github.com/PrimeIntellect-ai/prime-agent/issues/941)).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
