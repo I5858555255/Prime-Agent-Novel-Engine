@@ -140,12 +140,13 @@ prime-agent --offline
 | `retry.enabled` | boolean | `true` | Enable automatic agent-level retry on transient errors |
 | `retry.maxRetries` | number | `10` | Maximum agent-level retry attempts |
 | `retry.baseDelayMs` | number | `2000` | Base delay for agent-level exponential backoff with full jitter |
-| `retry.maxBackoffMs` | number | `60000` | Cap on a single agent-level retry delay; `0` disables the cap |
+| `retry.maxBackoffMs` | number | `60000` | Cap on the exponential backoff delay; does not limit `Retry-After`; `0` disables |
+| `retry.maxRetryAfterMs` | number | `300000` | Longest honored server `Retry-After`; longer requests stop the retry loop; `0` disables |
 | `retry.provider.timeoutMs` | number | SDK default | Provider/SDK request timeout in milliseconds |
 | `retry.provider.maxRetries` | number | SDK default | Provider/SDK retry attempts |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s) |
 
-Agent-level retry delays are drawn uniformly from `[0, min(baseDelayMs * 2^(attempt-1), maxBackoffMs)]` (full jitter). When the provider sends a `Retry-After` header, it becomes the delay floor, still capped at `retry.maxBackoffMs`.
+Agent-level retry delays are drawn uniformly from `[0, min(baseDelayMs * 2^(attempt-1), maxBackoffMs)]` (full jitter). `retry.maxBackoffMs` bounds only that exponential guess. A provider `Retry-After` header is the delay floor and is honored past the cap; when it exceeds `retry.maxRetryAfterMs`, the agent stops retrying with an informative error instead of waiting.
 
 When a provider requests a retry delay longer than `retry.provider.maxRetryDelayMs` (e.g., Google's "quota will reset after 5h"), the request fails immediately with an informative error instead of waiting silently. Set to `0` to disable the cap.
 
@@ -156,6 +157,7 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
     "maxRetries": 10,
     "baseDelayMs": 2000,
     "maxBackoffMs": 60000,
+    "maxRetryAfterMs": 300000,
     "provider": {
       "timeoutMs": 3600000,
       "maxRetries": 0,

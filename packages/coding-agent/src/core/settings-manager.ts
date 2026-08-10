@@ -37,7 +37,8 @@ export interface RetrySettings {
 	enabled?: boolean; // default: true
 	maxRetries?: number; // default: 10
 	baseDelayMs?: number; // default: 2000 (exponential backoff with full jitter)
-	maxBackoffMs?: number; // default: 60000 (cap on a single retry delay; 0 disables the cap)
+	maxBackoffMs?: number; // default: 60000 (cap on the exponential backoff delay; 0 disables the cap)
+	maxRetryAfterMs?: number; // default: 300000 (longest honored server Retry-After; longer stops retrying; 0 disables)
 	provider?: ProviderRetrySettings;
 }
 
@@ -922,12 +923,19 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number; maxBackoffMs: number } {
+	getRetrySettings(): {
+		enabled: boolean;
+		maxRetries: number;
+		baseDelayMs: number;
+		maxBackoffMs: number;
+		maxRetryAfterMs: number;
+	} {
 		return {
 			enabled: this.getRetryEnabled(),
 			maxRetries: this.settings.retry?.maxRetries ?? 10,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
 			maxBackoffMs: this.settings.retry?.maxBackoffMs ?? 60000,
+			maxRetryAfterMs: this.settings.retry?.maxRetryAfterMs ?? 300000,
 		};
 	}
 

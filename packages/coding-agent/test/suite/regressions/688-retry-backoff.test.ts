@@ -28,11 +28,12 @@ describe("issue #688 retry backoff cap, jitter, and Retry-After", () => {
 		}
 	});
 
-	it("defaults to 10 attempts with a 60s backoff cap", () => {
+	it("defaults to 10 attempts, a 60s backoff cap, and a 5m Retry-After ceiling", () => {
 		const settings = SettingsManager.inMemory().getRetrySettings();
 		expect(settings.maxRetries).toBe(10);
 		expect(settings.baseDelayMs).toBe(2000);
 		expect(settings.maxBackoffMs).toBe(60_000);
+		expect(settings.maxRetryAfterMs).toBe(300_000);
 	});
 
 	it("caps each backoff delay at maxBackoffMs", async () => {
@@ -81,16 +82,54 @@ describe("issue #688 retry backoff cap, jitter, and Retry-After", () => {
 		expect(delays).toEqual([120]);
 	});
 
-	it("caps the server Retry-After at maxBackoffMs", async () => {
+	it("honors a server Retry-After beyond maxBackoffMs", async () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, maxBackoffMs: 40 } },
 		});
 		harnesses.push(harness);
-		harness.setResponses([overloadedMessage(5_000), fauxAssistantMessage("ok")]);
+		harness.setResponses([overloadedMessage(120), fauxAssistantMessage("ok")]);
 
 		await harness.session.prompt("test");
 
 		const delays = harness.eventsOfType("auto_retry_start").map((event) => event.delayMs);
-		expect(delays).toEqual([40]);
+		expect(delays).toEqual([120]);
+	});
+
+	it("stops retrying when Retry-After exceeds maxRetryAfterMs", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 5, baseDelayMs: 1, maxBackoffMs: 40, maxRetryAfterMs: 200 } },
+		});
+		harnesses.push(harness);
+		harness.setResponses([overloadedMessage(5_000)]);
+
+		await harness.session.prompt("test");
+
+		expect(harness.eventsOfType("auto_retry_start")).toHaveLength(0);
+		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.session.isRetrying).toBe(false);
+
+		const assistantMessages = harness.session.messages.filter(
+			(message): message is AssistantMessage => message.role === "assistant",
+		);
+		const finalAssistant = assistantMessages[assistantMessages.length - 1];
+		expect(finalAssistant?.errorMessage).toContain("retry.maxRetryAfterMs");
+	});
+
+	it("ends an active retry sequence when a later Retry-After exceeds maxRetryAfterMs", async () => {
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 5, baseDelayMs: 1, maxBackoffMs: 40, maxRetryAfterMs: 200 } },
+		});
+		harnesses.push(harness);
+		harness.setResponses([overloadedMessage(), overloadedMessage(5_000)]);
+
+		await harness.session.prompt("test");
+
+		expect(harness.eventsOfType("auto_retry_start").map((event) => event.attempt)).toEqual([1]);
+		const endEvents = harness.eventsOfType("auto_retry_end");
+		expect(endEvents).toHaveLength(1);
+		expect(endEvents[0]?.success).toBe(false);
+		expect(endEvents[0]?.finalError).toContain("retry.maxRetryAfterMs");
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.session.isRetrying).toBe(false);
 	});
 });

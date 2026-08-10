@@ -10027,9 +10027,11 @@ export class AgentSession {
 	}
 
 	/**
-	 * Exponential backoff with full jitter, capped at maxBackoffMs. A server
-	 * Retry-After (surfaced via the provider_stream_failure diagnostic) sets the
-	 * floor so we never retry before the provider asked, but the cap still wins.
+	 * Exponential backoff with full jitter. maxBackoffMs bounds only the
+	 * exponential term (our own guesswork); a server Retry-After (surfaced via
+	 * the provider_stream_failure diagnostic) is the delay floor and is honored
+	 * past that cap. Retry-After values above maxRetryAfterMs never reach this:
+	 * _handleRetryableError stops retrying instead of waiting.
 	 */
 	private _computeRetryDelayMs(
 		settings: { baseDelayMs: number; maxBackoffMs: number },
@@ -10039,10 +10041,7 @@ export class AgentSession {
 		const exponentialMs = Math.min(settings.baseDelayMs * 2 ** (this._retryAttempt - 1), cap);
 		const jitteredMs = Math.round(Math.random() * exponentialMs);
 		const retryAfterMs = this._getProviderStreamFailureRetryAfterMs(message);
-		if (retryAfterMs === undefined) {
-			return jitteredMs;
-		}
-		return Math.round(Math.min(Math.max(retryAfterMs, jitteredMs), cap));
+		return retryAfterMs === undefined ? jitteredMs : Math.max(Math.round(retryAfterMs), jitteredMs);
 	}
 
 	private _getProviderStreamFailureAuthStatus(message: AssistantMessage): number | undefined {
@@ -10185,6 +10184,19 @@ export class AgentSession {
 			this._retryPromise = new Promise((resolve) => {
 				this._retryResolve = resolve;
 			});
+		}
+
+		// A server Retry-After beyond maxRetryAfterMs (e.g. "quota resets in 5h")
+		// means waiting it out is hopeless; stop retrying instead of sleeping.
+		const retryAfterMs = this._getProviderStreamFailureRetryAfterMs(message);
+		if (retryAfterMs !== undefined && settings.maxRetryAfterMs > 0 && retryAfterMs > settings.maxRetryAfterMs) {
+			if (message.errorMessage) {
+				message.errorMessage += ` (provider requested a ${Math.ceil(retryAfterMs / 1000)}s wait, above retry.maxRetryAfterMs; not retrying)`;
+			}
+			this._markProviderAuthStaleForRetryFailure(message, options);
+			this._retryAuthFailureSources = [];
+			this._resolveRetry();
+			return false;
 		}
 
 		this._retryAttempt++;
