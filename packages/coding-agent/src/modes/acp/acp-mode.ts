@@ -101,9 +101,15 @@ function sessionCursorOffset(cursor: unknown): number {
 
 function messageReplayUpdates(message: AgentMessage): Record<string, unknown>[] {
 	const typed = message as AgentMessage & { content?: unknown };
-	const sessionUpdate = message.role === "user" ? "user_message_chunk" : message.role === "assistant" ? "agent_message_chunk" : undefined;
+	const sessionUpdate =
+		message.role === "user" ? "user_message_chunk" : message.role === "assistant" ? "agent_message_chunk" : undefined;
 	if (!sessionUpdate) return [];
-	const blocks = typeof typed.content === "string" ? [{ type: "text", text: typed.content }] : Array.isArray(typed.content) ? typed.content : [];
+	const blocks =
+		typeof typed.content === "string"
+			? [{ type: "text", text: typed.content }]
+			: Array.isArray(typed.content)
+				? typed.content
+				: [];
 	return blocks.flatMap((block) => {
 		if (!block || typeof block !== "object") return [];
 		const item = block as { type?: unknown; text?: unknown };
@@ -183,7 +189,12 @@ function messageKey(message: unknown): string | undefined {
 	if (typeof message !== "object" || message === null) return undefined;
 	const record = message as { role?: unknown; timestamp?: unknown; stopReason?: unknown; errorMessage?: unknown };
 	if (typeof record.timestamp !== "number") return undefined;
-	return JSON.stringify([record.role ?? null, record.timestamp, record.stopReason ?? null, record.errorMessage ?? null]);
+	return JSON.stringify([
+		record.role ?? null,
+		record.timestamp,
+		record.stopReason ?? null,
+		record.errorMessage ?? null,
+	]);
 }
 
 function turnBoundary(messages: readonly AgentMessage[]): TurnBoundary {
@@ -302,7 +313,10 @@ export async function runAcpModeWithConnection(
 			const saved = await connection.listSavedSessions("all");
 			const target = saved.find((item) => item.id === params.sessionId);
 			if (!target) throw new Error(`Unknown saved session: ${params.sessionId}`);
-			const switched = await connection.switchSession(target.path, params.cwd ? { cwdOverride: params.cwd } : undefined);
+			const switched = await connection.switchSession(
+				target.path,
+				params.cwd ? { cwdOverride: params.cwd } : undefined,
+			);
 			if (switched.cancelled) throw new Error(`Loading saved session was cancelled: ${params.sessionId}`);
 
 			const entry = subscribeSession(ctx, params.sessionId);
@@ -318,7 +332,7 @@ export async function runAcpModeWithConnection(
 				session = undefined;
 				throw error;
 			}
-			return { sessionId: params.sessionId };
+			return {};
 		})
 		.onRequest("session/new", async (ctx: any) => {
 			await ensureBound();
