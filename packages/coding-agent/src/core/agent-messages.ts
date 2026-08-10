@@ -45,9 +45,9 @@ export function formatAgentMessageParticipant(
 	const normalizedEndpoint = endpoint ?? {};
 	const nameOrId =
 		normalizedEndpoint.sessionName?.trim() ||
+		normalizedEndpoint.sessionId?.trim() ||
 		normalizedEndpoint.activeSessionId?.trim() ||
 		normalizedEndpoint.clientId?.trim() ||
-		normalizedEndpoint.sessionId?.trim() ||
 		"unknown";
 	const participant = role ? `${role} ${nameOrId}` : nameOrId;
 	return `${direction === "received" ? "from" : "to"} ${participant}`;
