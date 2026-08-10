@@ -33,27 +33,31 @@ function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
 	);
 }
 
-const EMPTY_USAGE = {
-	input: 0,
-	output: 0,
-	cacheRead: 0,
-	cacheWrite: 0,
-	totalTokens: 0,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
+function createEmptyUsage() {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
 
-const DEFAULT_MODEL = {
-	id: "unknown",
-	name: "unknown",
-	api: "unknown",
-	provider: "unknown",
-	baseUrl: "",
-	reasoning: false,
-	input: [],
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 0,
-	maxTokens: 0,
-} satisfies Model<any>;
+function createDefaultModel(): Model<any> {
+	return {
+		id: "unknown",
+		name: "unknown",
+		api: "unknown",
+		provider: "unknown",
+		baseUrl: "",
+		reasoning: false,
+		input: [],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 0,
+		maxTokens: 0,
+	};
+}
 
 type QueueMode = "all" | "one-at-a-time";
 
@@ -72,7 +76,7 @@ function createMutableAgentState(
 
 	return {
 		systemPrompt: initialState?.systemPrompt ?? "",
-		model: initialState?.model ?? DEFAULT_MODEL,
+		model: initialState?.model ?? createDefaultModel(),
 		thinkingLevel: initialState?.thinkingLevel ?? "off",
 		serviceTier: initialState?.serviceTier ?? "default",
 		get tools() {
@@ -322,6 +326,11 @@ export class Agent {
 		return this.activeRun?.abortController.signal;
 	}
 
+	/** Returns true while the agent is actively processing a run. */
+	get isProcessing(): boolean {
+		return this.activeRun !== undefined;
+	}
+
 	/** Abort the current run, if one is active. */
 	abort(): void {
 		this.activeRun?.abortController.abort();
@@ -338,6 +347,10 @@ export class Agent {
 
 	/** Clear transcript state, runtime state, and queued messages. */
 	reset(): void {
+		if (this.activeRun) {
+			throw new Error("Cannot reset while the agent is processing. Abort and wait for idle first.");
+		}
+
 		this._state.messages = [];
 		this._state.isStreaming = false;
 		this._state.streamingMessage = undefined;
@@ -418,7 +431,7 @@ export class Agent {
 		images?: ImageContent[],
 	): AgentMessage[] {
 		if (Array.isArray(input)) {
-			return input;
+			return input.slice();
 		}
 
 		if (typeof input !== "string") {
@@ -533,7 +546,7 @@ export class Agent {
 			api: this._state.model.api,
 			provider: this._state.model.provider,
 			model: this._state.model.id,
-			usage: EMPTY_USAGE,
+			usage: createEmptyUsage(),
 			stopReason: aborted ? "aborted" : "error",
 			errorMessage: error instanceof Error ? error.message : String(error),
 			diagnostics: aborted
@@ -548,11 +561,14 @@ export class Agent {
 	}
 
 	private finishRun(): void {
+		const activeRun = this.activeRun;
+		this.activeRun = undefined;
+
 		this._state.isStreaming = false;
 		this._state.streamingMessage = undefined;
 		this._state.pendingToolCalls = new Set<string>();
-		this.activeRun?.resolve();
-		this.activeRun = undefined;
+
+		activeRun?.resolve();
 	}
 
 	/**
@@ -606,7 +622,10 @@ export class Agent {
 		if (!signal) {
 			throw new Error("Agent listener invoked outside active run");
 		}
-		for (const listener of this.listeners) {
+
+		// Snapshot listeners so subscribe/unsubscribe calls during a callback
+		// affect the next event rather than the current dispatch.
+		for (const listener of [...this.listeners]) {
 			await listener(event, signal);
 		}
 	}
