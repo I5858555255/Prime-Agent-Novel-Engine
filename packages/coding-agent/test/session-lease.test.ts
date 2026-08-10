@@ -116,6 +116,23 @@ describe("session leases", () => {
 		lease?.release();
 	});
 
+	it("does not reclaim a lease whose owner.json is present but unreadable", () => {
+		const agentDir = createTempDir();
+		const sessionPath = canonicalSessionPath(resolve(agentDir, "locked.jsonl"));
+		const key = createHash("sha256").update(sessionPath).digest("hex");
+		const lockDirectory = join(agentDir, "session-leases", `${key}.lock`);
+		mkdirSync(lockDirectory, { recursive: true });
+		// owner.json exists but cannot be read as a file (readFileSync throws EISDIR on every
+		// platform) — a deterministic stand-in for a transiently locked owner.json, which on
+		// Windows is routine (antivirus, search indexer). An unreadable owner must be treated
+		// as a live lease, not reclaimed as stale.
+		mkdirSync(join(lockDirectory, "owner.json"), { recursive: true });
+
+		expect(() => acquireSessionLease(sessionPath, agentDir, enabledEnvironment("intruder"))).toThrow(
+			SessionAlreadyActiveError,
+		);
+	});
+
 	it("reports guard contention as a coordination failure", () => {
 		const agentDir = createTempDir();
 		const sessionPath = canonicalSessionPath(join(agentDir, "session.jsonl"));
