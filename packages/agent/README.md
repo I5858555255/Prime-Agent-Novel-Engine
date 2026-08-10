@@ -119,6 +119,14 @@ Tool execution mode is configurable:
 
 In parallel mode, tool completion events follow tool completion order, but persisted toolResult messages still follow assistant source order.
 
+`tool_execution_update` delivery for a single tool call is serialized and ordered: at most one sink call is in flight at a time, and delivery follows emission order. Updates from different tools running in parallel still interleave.
+
+The pending queue per tool call is bounded at 32 updates. On overflow the oldest queued update is dropped and counted; the newest always survives, so the last-known state always reaches consumers. Consumers must not assume they see every update — this matters for tools that emit incremental deltas rather than cumulative snapshots, since a delta consumer under sustained backpressure can miss chunks.
+
+All of a tool's updates are flushed before its `tool_execution_end`, including when the tool fails without being aborted. A throwing or rejecting update sink fails that tool call: the tool result becomes an error result carrying the sink's message.
+
+On abort, queued updates are discarded and nothing is awaited on them, so abort stays prompt. One already-in-flight sink call cannot be cancelled and may still settle after `tool_execution_end`.
+
 The mode can be set globally via `toolExecution` in the agent config, or per-tool via `executionMode` on `AgentTool`. If any tool call in a batch targets a tool with `executionMode: "sequential"`, the entire batch executes sequentially regardless of the global setting.
 
 The `beforeToolCall` hook runs after `tool_execution_start` and validated argument parsing. It can block execution. The `afterToolCall` hook runs after tool execution finishes and before `tool_execution_end` and final tool result message events are emitted.

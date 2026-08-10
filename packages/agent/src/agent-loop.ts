@@ -12,6 +12,7 @@ import {
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@earendil-works/pi-ai";
+import { ToolUpdateEmitter } from "./tool-update-emitter.js";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -852,51 +853,48 @@ async function executePreparedToolCall(
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 ): Promise<ExecutedToolCallOutcome> {
-	const updateEvents: Promise<void>[] = [];
-	let acceptingUpdates = true;
+	const updates = new ToolUpdateEmitter(emit);
 
 	try {
 		throwIfAborted(signal);
 		const result = await raceWithAbort(
 			prepared.tool.execute(prepared.toolCall.id, prepared.args as never, signal, (partialResult) => {
-				if (!acceptingUpdates || signal?.aborted) {
+				if (signal?.aborted) {
 					return;
 				}
-				updateEvents.push(
-					Promise.resolve(
-						emit({
-							type: "tool_execution_update",
-							toolCallId: prepared.toolCall.id,
-							toolName: prepared.toolCall.name,
-							args: prepared.toolCall.arguments,
-							partialResult,
-						}),
-					),
-				);
+				updates.push({
+					type: "tool_execution_update",
+					toolCallId: prepared.toolCall.id,
+					toolName: prepared.toolCall.name,
+					args: prepared.toolCall.arguments,
+					partialResult,
+				});
 			}),
 			signal,
 		);
-		acceptingUpdates = false;
+		updates.close();
 		try {
-			await raceWithAbort(
-				Promise.all(updateEvents).then(() => undefined),
-				signal,
-			);
+			await raceWithAbort(updates.drain(), signal);
 		} catch (error) {
 			if (!signal?.aborted || !isAbortError(error)) {
 				throw error;
 			}
+			updates.abandon();
 		}
 		return { result, isError: false };
 	} catch (error) {
-		acceptingUpdates = false;
-		await raceWithAbort(
-			Promise.all(updateEvents).then(() => undefined),
-			signal,
-		).catch(() => undefined);
+		const aborted = signal?.aborted === true;
+		if (aborted) {
+			updates.abandon();
+		} else {
+			updates.close();
+			await raceWithAbort(updates.drain(), signal).catch(() => {
+				updates.abandon();
+			});
+		}
 		return {
 			result: createErrorToolResult(
-				signal?.aborted ? "Tool execution aborted" : error instanceof Error ? error.message : String(error),
+				aborted ? "Tool execution aborted" : error instanceof Error ? error.message : String(error),
 			),
 			isError: true,
 		};

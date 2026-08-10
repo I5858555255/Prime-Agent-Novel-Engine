@@ -9,7 +9,14 @@ import {
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { agentLoop, agentLoopContinue, runAgentLoop } from "../src/agent-loop.js";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.js";
+import type {
+	AgentContext,
+	AgentEvent,
+	AgentLoopConfig,
+	AgentMessage,
+	AgentTool,
+	AgentToolResult,
+} from "../src/types.js";
 
 // Mock stream for testing - mimics MockAssistantStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -105,9 +112,73 @@ function createUserMessage(text: string): UserMessage {
 	};
 }
 
+// Returns `toolCallMessage` on the first call, then a plain "stop" message on every call after
+// that. Without this, a mock stream that always replays the same toolUse message drives the
+// agent loop into calling the tool forever (there is nothing else to end the turn).
+function createSingleToolCallStreamFn(toolCallMessage: AssistantMessage): () => MockAssistantStream {
+	let calls = 0;
+	return () => {
+		calls += 1;
+		const isFirstCall = calls === 1;
+		const stream = new MockAssistantStream();
+		queueMicrotask(() => {
+			stream.push({
+				type: "done",
+				reason: isFirstCall ? "toolUse" : "stop",
+				message: isFirstCall ? toolCallMessage : createAssistantMessage([{ type: "text", text: "stop" }], "stop"),
+			});
+		});
+		return stream;
+	};
+}
+
 // Simple identity converter for tests - just passes through standard messages
 function identityConverter(messages: AgentMessage[]): Message[] {
 	return messages.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "toolResult") as Message[];
+}
+
+// A tool that streams `totalUpdates` synchronous onUpdate calls (indices 0..totalUpdates-1)
+// before resolving. Used to probe how tool_execution_update delivery is ordered/serialized.
+function createManyUpdatesTool(totalUpdates: number): AgentTool<ReturnType<typeof Type.Object>, { index: number }> {
+	return {
+		name: "work",
+		label: "Work",
+		description: "Work",
+		parameters: Type.Object({}),
+		execute: async (_toolCallId, _params, _signal, onUpdate) => {
+			for (let i = 0; i < totalUpdates; i++) {
+				onUpdate?.({ content: [], details: { index: i } });
+			}
+			return { content: [{ type: "text", text: "done" }], details: { index: -1 }, terminate: true };
+		},
+	};
+}
+
+// A sink for tool_execution_update events whose per-call delay shrinks as the index grows,
+// so fully-concurrent delivery would necessarily settle out of order. Also tracks how many
+// sink calls are simultaneously in flight.
+function createDescendingDelaySink(totalUpdates: number, onDeliver: (index: number) => void) {
+	let active = 0;
+	let peak = 0;
+	const sink = (event: AgentEvent): Promise<void> | void => {
+		if (event.type !== "tool_execution_update") {
+			return;
+		}
+		const index = (event.partialResult as { details: { index: number } }).details.index;
+		active += 1;
+		peak = Math.max(peak, active);
+		return new Promise<void>((resolve) => {
+			setTimeout(
+				() => {
+					active -= 1;
+					onDeliver(index);
+					resolve();
+				},
+				(totalUpdates - index) * 1,
+			);
+		});
+	};
+	return { sink, getPeak: () => peak };
 }
 
 describe("agentLoop with AgentMessage", () => {
@@ -495,6 +566,451 @@ describe("agentLoop with AgentMessage", () => {
 			expect(toolResult.content).toEqual([{ type: "text", text: "done" }]);
 		}
 		expect(events.some((event) => event.type === "agent_end")).toBe(true);
+	});
+
+	it("should deliver tool_execution_update partialResults in emission order under an async sink", async () => {
+		const totalUpdates = 40;
+		const tool = createManyUpdatesTool(totalUpdates);
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const deliveredOrder: number[] = [];
+		const { sink } = createDescendingDelaySink(totalUpdates, (index) => {
+			deliveredOrder.push(index);
+		});
+
+		await runAgentLoop([createUserMessage("Hello")], context, config, sink, undefined, streamFn);
+
+		expect(deliveredOrder.length).toBeGreaterThan(1);
+		expect(deliveredOrder).toEqual([...deliveredOrder].sort((a, b) => a - b));
+	});
+
+	it("should keep at most one tool_execution_update sink call in flight for a single tool call", async () => {
+		const totalUpdates = 40;
+		const tool = createManyUpdatesTool(totalUpdates);
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const { sink, getPeak } = createDescendingDelaySink(totalUpdates, () => undefined);
+
+		await runAgentLoop([createUserMessage("Hello")], context, config, sink, undefined, streamFn);
+
+		expect(getPeak()).toBe(1);
+	});
+
+	it("should not deliver a tool_execution_update for a toolCallId after that id's tool_execution_end, nor after agent_end", async () => {
+		const controller = new AbortController();
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, { index: number }> = {
+			name: "work",
+			label: "Work",
+			description: "Work",
+			parameters: toolSchema,
+			execute: async (_toolCallId, _params, _signal, onUpdate) => {
+				onUpdate?.({ content: [], details: { index: 0 } });
+				onUpdate?.({ content: [], details: { index: 1 } });
+				onUpdate?.({ content: [], details: { index: 2 } });
+				controller.abort();
+				// Never resolves; raceWithAbort cuts this short once the signal fires above.
+				return new Promise<AgentToolResult<{ index: number }>>(() => undefined);
+			},
+		};
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const events: AgentEvent[] = [];
+		// Tracks every index whose sink call was actually invoked, independent of whether that
+		// call ever pushes into `events` (index 0's never does — see below). Without this, the
+		// test could pass merely because nothing was ever delivered, which proves nothing.
+		const invoked: number[] = [];
+		let resolveFirstUpdateGate: (() => void) | undefined;
+		const firstUpdateGate = new Promise<void>((resolve) => {
+			resolveFirstUpdateGate = resolve;
+		});
+		const sink = (event: AgentEvent): Promise<void> | void => {
+			if (event.type !== "tool_execution_update") {
+				events.push(event);
+				return;
+			}
+			const index = (event.partialResult as { details: { index: number } }).details.index;
+			invoked.push(index);
+			if (index === 0) {
+				// Held open until after the loop finishes: simulates the one sink call the
+				// emitter may still have in flight at abort time. Released below, once
+				// tool_execution_end/agent_end are already recorded, so any event 1/2 delivery
+				// that leaks through afterward is unambiguously late.
+				return firstUpdateGate;
+			}
+			return new Promise<void>((resolve) => {
+				setTimeout(() => {
+					events.push(event);
+					resolve();
+				}, 30);
+			});
+		};
+
+		await runAgentLoop([createUserMessage("Hello")], context, config, sink, controller.signal, streamFn);
+		// Release the gate now, then wait comfortably longer than the two chained 30ms sink
+		// delays (events 1 and 2 are processed serially by the emitter) before asserting. If
+		// abandon() had not cleared the queue, releasing the gate lets the pump drain events 1
+		// and 2 into `events` well after tool_execution_end/agent_end were already recorded.
+		resolveFirstUpdateGate?.();
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		expect(invoked.length).toBeGreaterThan(0);
+		const endIndex = events.findIndex((event) => event.type === "tool_execution_end");
+		const agentEndIndex = events.findIndex((event) => event.type === "agent_end");
+		expect(endIndex).toBeGreaterThanOrEqual(0);
+		expect(agentEndIndex).toBeGreaterThanOrEqual(0);
+		const updateIndices = events.flatMap((event, i) => (event.type === "tool_execution_update" ? [i] : []));
+		expect(updateIndices.every((i) => i < endIndex)).toBe(true);
+		expect(updateIndices.every((i) => i < agentEndIndex)).toBe(true);
+	});
+
+	it("should flush queued updates before tool_execution_end when a tool throws without an abort", async () => {
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, { index: number }> = {
+			name: "work",
+			label: "Work",
+			description: "Work",
+			parameters: toolSchema,
+			execute: async (_toolCallId, _params, _signal, onUpdate) => {
+				onUpdate?.({ content: [], details: { index: 0 } });
+				onUpdate?.({ content: [], details: { index: 1 } });
+				onUpdate?.({ content: [], details: { index: 2 } });
+				throw new Error("tool exploded");
+			},
+		};
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const events: AgentEvent[] = [];
+		const sink = (event: AgentEvent): Promise<void> | void => {
+			if (event.type !== "tool_execution_update") {
+				events.push(event);
+				return;
+			}
+			// Slow enough that, without a flush, the queued-but-not-yet-invoked updates would
+			// have no chance to land before tool_execution_end is emitted.
+			return new Promise<void>((resolve) => {
+				setTimeout(() => {
+					events.push(event);
+					resolve();
+				}, 20);
+			});
+		};
+
+		const messages = await runAgentLoop([createUserMessage("Hello")], context, config, sink, undefined, streamFn);
+
+		const endIndex = events.findIndex((event) => event.type === "tool_execution_end");
+		expect(endIndex).toBeGreaterThanOrEqual(0);
+		const updatePositions = events.flatMap((event, i) => (event.type === "tool_execution_update" ? [i] : []));
+		const deliveredIndices = events.flatMap((event) =>
+			event.type === "tool_execution_update"
+				? [(event.partialResult as { details: { index: number } }).details.index]
+				: [],
+		);
+		expect(deliveredIndices).toEqual([0, 1, 2]);
+		expect(updatePositions.every((i) => i < endIndex)).toBe(true);
+
+		const toolResult = messages.find((message) => message.role === "toolResult");
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") {
+			expect(toolResult.isError).toBe(true);
+			expect(toolResult.content).toEqual([{ type: "text", text: "tool exploded" }]);
+		}
+	});
+
+	it("should keep the tool's own error message and not deliver queued updates after tool_execution_end when abort races the error-path flush", async () => {
+		const controller = new AbortController();
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, { index: number }> = {
+			name: "work",
+			label: "Work",
+			description: "Work",
+			parameters: toolSchema,
+			execute: async (_toolCallId, _params, _signal, onUpdate) => {
+				onUpdate?.({ content: [], details: { index: 0 } });
+				onUpdate?.({ content: [], details: { index: 1 } });
+				onUpdate?.({ content: [], details: { index: 2 } });
+				throw new Error("boom - the real tool failure");
+			},
+		};
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const events: AgentEvent[] = [];
+		// Tracks every index whose sink call was actually invoked, independent of whether that
+		// call ever pushes into `events` (index 0's never does, by construction below).
+		const invoked: number[] = [];
+		let resolveFirstUpdateGate: (() => void) | undefined;
+		const firstUpdateGate = new Promise<void>((resolve) => {
+			resolveFirstUpdateGate = resolve;
+		});
+		const sink = (event: AgentEvent): Promise<void> | void => {
+			if (event.type !== "tool_execution_update") {
+				events.push(event);
+				return;
+			}
+			const index = (event.partialResult as { details: { index: number } }).details.index;
+			invoked.push(index);
+			if (index === 0) {
+				// Held open until after the loop finishes: simulates the one sink call the
+				// emitter may still have in flight when abort races the error-path flush.
+				// Released below, once tool_execution_end/agent_end are already recorded.
+				return firstUpdateGate;
+			}
+			return new Promise<void>((resolve) => {
+				setTimeout(() => {
+					events.push(event);
+					resolve();
+				}, 30);
+			});
+		};
+		// Fires while the flush is waiting on index 0's (held-open) sink call, i.e. while
+		// indices 1 and 2 are still queued and un-invoked.
+		setTimeout(() => controller.abort(), 10);
+
+		const messages = await runAgentLoop(
+			[createUserMessage("Hello")],
+			context,
+			config,
+			sink,
+			controller.signal,
+			streamFn,
+		);
+		// Release the gate, then wait comfortably longer than the two chained 30ms sink delays
+		// before asserting. If the queue had not been cleared, releasing the gate lets the pump
+		// drain events 1 and 2 into `events` well after tool_execution_end/agent_end were
+		// already recorded.
+		resolveFirstUpdateGate?.();
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		expect(invoked.length).toBeGreaterThan(0);
+
+		const toolResult = messages.find((message) => message.role === "toolResult");
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") {
+			expect(toolResult.isError).toBe(true);
+			expect(toolResult.content).toEqual([{ type: "text", text: "boom - the real tool failure" }]);
+		}
+
+		const endIndex = events.findIndex((event) => event.type === "tool_execution_end");
+		const agentEndIndex = events.findIndex((event) => event.type === "agent_end");
+		expect(endIndex).toBeGreaterThanOrEqual(0);
+		expect(agentEndIndex).toBeGreaterThanOrEqual(0);
+		const updatePositions = events.flatMap((event, i) => (event.type === "tool_execution_update" ? [i] : []));
+		expect(updatePositions.every((i) => i < endIndex)).toBe(true);
+		expect(updatePositions.every((i) => i < agentEndIndex)).toBe(true);
+	});
+
+	it("should not produce an unhandled rejection when abort races a rejecting update sink", async () => {
+		const controller = new AbortController();
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, { index: number }> = {
+			name: "work",
+			label: "Work",
+			description: "Work",
+			parameters: toolSchema,
+			execute: async (_toolCallId, _params, _signal, onUpdate) => {
+				onUpdate?.({ content: [], details: { index: 0 } });
+				onUpdate?.({ content: [], details: { index: 1 } });
+				// Never resolves; abort (scheduled below, after the rejections below have already
+				// settled) is what ends this. This mirrors the outer catch branch, where nothing
+				// attaches a handler to the update promises until abort forces the issue.
+				return new Promise<AgentToolResult<{ index: number }>>(() => undefined);
+			},
+		};
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const unhandled: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+
+		try {
+			const sink = (event: AgentEvent): Promise<void> => {
+				if (event.type === "tool_execution_update") {
+					// Rejects promptly, well before abort fires below, so any handler attached
+					// only once abort forces the issue is already too late to avoid the warning.
+					return new Promise<void>((_resolve, reject) => {
+						setTimeout(() => reject(new Error("sink rejected")), 0);
+					});
+				}
+				return Promise.resolve();
+			};
+			setTimeout(() => controller.abort(), 30);
+
+			const run = runAgentLoop([createUserMessage("Hello")], context, config, sink, controller.signal, streamFn);
+			const result = await Promise.race([
+				run.then(() => "done" as const).catch(() => "done" as const),
+				new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+			]);
+			expect(result).toBe("done");
+
+			await new Promise((resolve) => setTimeout(resolve, 150));
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+		}
+
+		expect(unhandled).toEqual([]);
+	});
+
+	it("should keep all tool_execution_updates for a tool ahead of its tool_execution_end with a fast sink", async () => {
+		const tool = createManyUpdatesTool(5);
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const events: AgentEvent[] = [];
+		const sink = (event: AgentEvent) => {
+			events.push(event);
+		};
+
+		await runAgentLoop([createUserMessage("Hello")], context, config, sink, undefined, streamFn);
+
+		const endIndex = events.findIndex((event) => event.type === "tool_execution_end");
+		expect(endIndex).toBeGreaterThanOrEqual(0);
+		const updateIndices = events.flatMap((event, i) => (event.type === "tool_execution_update" ? [i] : []));
+		expect(updateIndices.length).toBe(5);
+		expect(updateIndices.every((i) => i < endIndex)).toBe(true);
+	});
+
+	it("should surface a rejecting update sink as an error tool result when there is no abort", async () => {
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, { index: number }> = {
+			name: "work",
+			label: "Work",
+			description: "Work",
+			parameters: toolSchema,
+			execute: async (_toolCallId, _params, _signal, onUpdate) => {
+				onUpdate?.({ content: [], details: { index: 0 } });
+				return { content: [{ type: "text", text: "done" }], details: { index: -1 } };
+			},
+		};
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [tool],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "sequential",
+		};
+		const assistantMessage = createAssistantMessage(
+			[{ type: "toolCall", id: "tool_1", name: "work", arguments: {} }],
+			"toolUse",
+		);
+		const streamFn = createSingleToolCallStreamFn(assistantMessage);
+
+		const sink = (event: AgentEvent): Promise<void> => {
+			if (event.type === "tool_execution_update") {
+				return Promise.reject(new Error("sink rejected for real"));
+			}
+			return Promise.resolve();
+		};
+
+		const messages = await runAgentLoop([createUserMessage("Hello")], context, config, sink, undefined, streamFn);
+
+		const toolResult = messages.find((message) => message.role === "toolResult");
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") {
+			expect(toolResult.isError).toBe(true);
+			expect(toolResult.content).toEqual([{ type: "text", text: "sink rejected for real" }]);
+		}
 	});
 
 	it("should freeze synthetic aborted messages against later partial mutation", async () => {

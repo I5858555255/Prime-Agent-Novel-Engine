@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Fixed unbounded memory growth from streaming tool updates on long-running tool calls by capping the pending update queue and dropping the oldest queued update on overflow (P3-04).
+- Changed `tool_execution_update` events for a given tool call to always be delivered serially and in order, so a slow consumer under sustained backpressure may miss updates rather than see them out of order (P3-04).
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
