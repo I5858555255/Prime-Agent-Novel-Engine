@@ -44,13 +44,9 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
 	{
 		path: ["send"],
 		usage: "send [--from <agent>] <agent> <message>",
-		summary: "Send a message to an agent",
-		options: [
-			"--from <agent>  Identify the sending agent",
-			"--steer         Deliver as steering when the agent is busy",
-			"--follow-up     Queue the message after the current turn",
-			"--json          Print JSON",
-		],
+		summary: "Send a steering message to an agent",
+		description: "Messages always steer an active turn and are delivered at the next tool boundary.",
+		options: ["--from <agent>  Identify the sending agent", "--json          Print JSON"],
 	},
 	{
 		path: ["schedule"],
