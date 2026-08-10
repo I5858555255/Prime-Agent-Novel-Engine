@@ -126,7 +126,7 @@ import {
 import { createAgentConnectionToolDefinition } from "../agent-connection/tool-definition.js";
 import type { AgentConnectionHeartbeat, AgentConnectionRlmChildAgentSnapshot } from "../agent-connection/types.js";
 import { waitForHeadlessCompletion } from "../headless-completion.js";
-import { attachJsonlLineReader, serializeJsonLine } from "../rpc/jsonl.js";
+import { attachJsonlLineReader, serializeJsonLine, UNTRUSTED_JSONL_MAX_LINE_CHARS } from "../rpc/jsonl.js";
 import { encodePrivateFrame, PrivateFrameDecoder } from "../session-worker/private-framing.js";
 import {
 	type ActiveSessionState,
@@ -3036,9 +3036,17 @@ export class AgentDaemon {
 				socket.off("end", onEnd);
 			};
 		} else {
-			client.detachInput = attachJsonlLineReader(socket, (line) => {
-				void this.handleLine(client, line);
-			});
+			client.detachInput = attachJsonlLineReader(
+				socket,
+				(line) => {
+					void this.handleLine(client, line);
+				},
+				{
+					maxLineLength: UNTRUSTED_JSONL_MAX_LINE_CHARS,
+					onLineOverflow: () =>
+						this.log(`dropping oversized JSONL command line (exceeded ${UNTRUSTED_JSONL_MAX_LINE_CHARS} chars)`),
+				},
+			);
 		}
 
 		let cleanedUp = false;
