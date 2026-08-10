@@ -79,15 +79,19 @@ async def focus_tab(target_id: str) -> dict[str, Any]:
     return await host_request("browser.focus_tab", {"target_id": _require_str(target_id, "target_id")})
 
 
-async def list_tabs(scope: str = "mine", include_active: bool = False) -> dict[str, Any]:
+async def list_tabs(scope: str = "mine", include_active: bool | None = None) -> dict[str, Any]:
     """List tabs. scope="mine": only this agent's tabs. scope="all" (main
-    agent only): also the user's unassigned tabs. With include_active=True,
-    the tab the user is currently looking at is marked `active: true` (this
-    briefly inspects each user tab and may trigger the browser's one-time
-    remote-debugging consent popup — leave it off unless you need it)."""
+    agent only): also the user's unassigned tabs, with the tab the user is
+    currently looking at marked `active: true`. Active detection defaults ON
+    for scope="all" (it briefly inspects each user tab — silent once the
+    browser's remote-debugging consent was granted during connection setup);
+    pass include_active=False to skip it."""
     if scope not in ("mine", "all"):
         raise ValueError(f'scope must be "mine" or "all", got {scope!r}')
-    return await host_request("browser.list_tabs", {"scope": scope, "include_active": include_active})
+    payload: dict[str, Any] = {"scope": scope}
+    if include_active is not None:
+        payload["include_active"] = include_active
+    return await host_request("browser.list_tabs", payload)
 
 
 # ---------------------------------------------------------------------------

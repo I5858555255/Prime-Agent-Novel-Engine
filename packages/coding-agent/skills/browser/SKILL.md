@@ -113,13 +113,11 @@ is the missing step.
   `focused: true`. Focus is never brought to the front — everything runs in
   the background without disturbing the user.
 - `list_tabs()` shows only your tabs. The **main agent** may also
-  `list_tabs(scope="all")` to see the user's open tabs and
+  `list_tabs(scope="all")` to see the user's open tabs — the one the user is
+  currently looking at comes back marked `active: true` — and
   `attach_tab(target_id)` to adopt one — e.g. when the user asks to "summarize
-  the page I have open". Pass `include_active=True` when you need the marker
-  for which tab the user is looking at (it briefly inspects user tabs and may
-  trigger the browser's consent popup — off by default for that reason).
-  Adopted tabs are never closed by the agent lifecycle. Child agents cannot
-  adopt.
+  the page I have open". Adopted tabs are never closed by the agent
+  lifecycle. Child agents cannot adopt.
 - You get at most 5 tabs; `close_tab()` ones you're done with.
 - Errors are structured: `[NOT_OWNER]`, `[TAB_DESTROYED]`, `[QUOTA_EXCEEDED]`,
   `[ADOPT_NOT_ALLOWED]`, `[STALE_INDEX]`, `[NOT_CONNECTED]`. On

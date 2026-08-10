@@ -511,9 +511,13 @@ export function createBrowserHostHandlers(deps: BrowserHostHandlerDeps): HostReq
 		"browser.list_tabs": async (payload) => {
 			try {
 				const scope = optionalString(payload, "scope") === "all" ? "all" : "mine";
-				// Active detection may surface Chrome's attach consent popup on user
-				// tabs, so it only runs when explicitly requested.
-				const detectActive = payload.include_active === true;
+				// Active detection defaults ON for scope="all" — an agent listing
+				// the user's tabs almost always wants the marker, and in attach
+				// mode the debugging consent that makes attaches silent was
+				// already granted during connection setup. Pass
+				// include_active=false to skip the per-tab inspection.
+				const detectActive =
+					payload.include_active === undefined ? scope === "all" : payload.include_active === true;
 				const tabs: BrowserTabInfo[] = await manager.listTabs(agentId, scope, rlmDepth, detectActive);
 				return {
 					tabs: tabs.map((t) => ({
