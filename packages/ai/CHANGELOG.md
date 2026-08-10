@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added **Deep Infra** as an OpenAI-compatible provider (`openai-completions` API), with a generated catalog of its tool-capable models and `DEEPINFRA_API_KEY` credential support.
+
 ## [0.7.1] - 2026-08-07
 
 ## [0.7.0] - 2026-08-05
