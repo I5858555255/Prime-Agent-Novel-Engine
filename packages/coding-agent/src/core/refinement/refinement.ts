@@ -31,10 +31,15 @@ const DEFAULT_OVERVIEW_CONTENT_LIMIT = 180;
 // is an opt-in rail for callers that raise maxEntriesPerKind.
 const DEFAULT_OVERVIEW_DETAIL_BUDGET = Number.POSITIVE_INFINITY;
 const DEFAULT_OVERVIEW_LISTED_LIMIT = 200;
-// Hard clip on an assembled stub line. The stub menu is the one tier that grows with the store, so
-// clipping the whole line bounds `id`, `title`, and `path` together and pins the tier's cost at
-// maxListedEntries * (OVERVIEW_STUB_LINE_LIMIT + 1) characters per kind, whatever the entries hold.
+// One budget for the whole stub menu, not per kind. The stub tier is the only part of the overview
+// that grows with the store, so this is the number that decides whether the prompt still fits a
+// small context window: 8,000 characters is about 2,000 tokens by the repository's chars/4
+// estimator, against models this repo ships with a 16,384-token window and smaller.
+const DEFAULT_OVERVIEW_LISTED_CHAR_BUDGET = 8000;
+// Target length for a stub line. The `[scope:id]` address is exempt - see `overviewStubLine`.
 const OVERVIEW_STUB_LINE_LIMIT = 160;
+// Shortest remainder worth appending after the address: one character plus the "..." marker.
+const OVERVIEW_STUB_MIN_REMAINDER = 4;
 
 export type RefinementKind = "prompt" | "memory" | "skill" | "subagent";
 export type RefinementAction = "create" | "update" | "delete";
@@ -438,43 +443,66 @@ function compactText(text: string, maxLength: number): string {
 /**
  * Numeric limits for the continual harness overview rendered into the system prompt.
  *
- * Values are normalized by the renderer, so a caller-supplied `NaN`, `Infinity`, negative, or
- * fractional limit falls back or clamps instead of reaching the prompt.
+ * Every value is normalized by the renderer: anything that is not a number, is not finite, or is
+ * below the field's minimum falls back to the default documented on that field, so an invalid limit
+ * cannot reach the prompt as a `NaN` slice bound or silently disable a tier.
  */
 export interface HarnessOverviewLimits {
-	/** Entries per kind rendered with their content. Default: 6. */
+	/** Entries per kind rendered with their content. Minimum 1. Default: 6. */
 	maxEntriesPerKind?: number;
-	/** Characters kept per rendered content, `ref=`, and `args=` value. Default: 180. */
+	/** Characters kept per rendered content, `ref=`, and `args=` value. Minimum 1. Default: 180. */
 	maxContentLength?: number;
 	/**
-	 * Characters spent on content-bearing entries per kind. Unset means no character rail:
+	 * Characters spent on content-bearing entries per kind. Minimum 1. Unset means no character rail:
 	 * `maxEntriesPerKind` alone decides how many entries keep their content.
 	 */
 	detailBudget?: number;
-	/** One-line stubs rendered per kind after the content-bearing entries. Default: 200. */
+	/** One-line stubs per kind after the content-bearing entries. Minimum 0. Default: 200. */
 	maxListedEntries?: number;
+	/**
+	 * Characters spent on the stub menu across all kinds, split evenly between the kinds that need
+	 * stubs. Minimum 0, where 0 disables the menu. Default: 8000.
+	 */
+	maxListedChars?: number;
 }
 
 /**
- * Clamp a caller-supplied numeric limit. `formatHarnessStateForPrompt` and `selectOverviewEntries`
- * are exported, so a limit arriving as `NaN` must not flow into a `slice` bound or an overflow
- * count, where it would silently drop entries and suppress the `+N more` line that reports them.
+ * Resolve a caller-supplied numeric limit. `formatHarnessStateForPrompt` and `selectOverviewEntries`
+ * are exported, so a limit arriving as `NaN` must not flow into a slice bound or an overflow count,
+ * where it would silently drop entries and suppress the `+N more` line that reports them.
+ *
+ * Out-of-range values fall back rather than clamping to the minimum: `maxListedEntries: -1` is a
+ * typo, and clamping it to 0 would turn the stub menu off with no diagnostic. An operator who wants
+ * it off writes 0, which is in range.
  */
 function resolveOverviewLimit(value: number | undefined, fallback: number, minimum = 1): number {
 	if (typeof value !== "number" || !Number.isFinite(value)) {
 		return fallback;
 	}
-	return Math.max(minimum, Math.floor(value));
+	const floored = Math.floor(value);
+	return floored >= minimum ? floored : fallback;
 }
 
 function overviewHeadline(entry: HarnessEntry): string {
 	return `- [${entry.scope ?? "global"}:${entry.id}] ${entry.title} (${entry.path}, v${entry.version})`;
 }
 
-// Clipped because the stub menu scales with the store; `overviewDetailLine` deliberately leaves the
-// headline alone so a store that fits in the detail tier renders the same lines it did before.
+/**
+ * A stub the model can act on. The `[scope:id]` address is never truncated, because a clipped id
+ * addresses nothing and an unaddressable stub advertises knowledge that cannot be retrieved - the
+ * defect #819 is about. Only the title/path remainder absorbs the clip, so a long address costs
+ * more of the menu budget and therefore names fewer entries, which is the correct trade.
+ *
+ * `overviewDetailLine` leaves the headline alone entirely, so a store that fits in the detail tier
+ * renders the same lines it did before this ranking landed.
+ */
 function overviewStubLine(entry: HarnessEntry): string {
-	return compactText(overviewHeadline(entry), OVERVIEW_STUB_LINE_LIMIT);
+	const address = `- [${entry.scope ?? "global"}:${entry.id}]`;
+	const room = OVERVIEW_STUB_LINE_LIMIT - address.length - 1;
+	if (room < OVERVIEW_STUB_MIN_REMAINDER) {
+		return address;
+	}
+	return `${address} ${compactText(`${entry.title} (${entry.path}, v${entry.version})`, room)}`;
 }
 
 function overviewDetailLine(entry: HarnessEntry, maxContentLength: number): string {
@@ -489,11 +517,18 @@ function overviewDetailLine(entry: HarnessEntry, maxContentLength: number): stri
 	return `${overviewHeadline(entry)}${referenceText}${argumentsText}: ${compactText(entry.content, maxContentLength)}`;
 }
 
+// An ISO date-time carrying neither an offset nor a trailing "Z". `Date.parse` reads this form in
+// the host timezone, so the same state file would rank differently on two machines.
+const OFFSETLESS_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
 // `loadHarnessState` copies timestamps from disk without validating them, and the TypeScript and
 // Python writers emit different ISO forms ("...Z" vs "...+00:00"), so rank on the parsed epoch
-// rather than the raw string. Missing or unparseable timestamps rank last.
+// rather than the raw string. An offsetless timestamp is read as UTC rather than as local time,
+// because ranking must not depend on the machine. Missing or unparseable timestamps rank last.
 function overviewRecency(entry: HarnessEntry): number {
-	const parsed = Date.parse(entry.updated_at);
+	const raw = entry.updated_at;
+	const normalized = typeof raw === "string" && OFFSETLESS_TIMESTAMP.test(raw) ? `${raw}Z` : raw;
+	const parsed = Date.parse(normalized);
 	return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
@@ -584,8 +619,10 @@ export function formatHarnessStateForPrompt(
 	const maxRefinements = resolveOverviewLimit(options.maxRefinements, DEFAULT_OVERVIEW_REFINEMENT_LIMIT, 0);
 	const maxContentLength = resolveOverviewLimit(options.maxContentLength, DEFAULT_OVERVIEW_CONTENT_LIMIT);
 	const detailBudget = resolveOverviewLimit(options.detailBudget, DEFAULT_OVERVIEW_DETAIL_BUDGET);
-	// 0 is meaningful: it turns the stub menu off and restores the count-only overview.
+	// 0 is meaningful on both stub limits: either one at 0 turns the menu off and restores the
+	// count-only overview.
 	const maxListedEntries = resolveOverviewLimit(options.maxListedEntries, DEFAULT_OVERVIEW_LISTED_LIMIT, 0);
+	const maxListedChars = resolveOverviewLimit(options.maxListedChars, DEFAULT_OVERVIEW_LISTED_CHAR_BUDGET, 0);
 	const includeIpythonExamples = options.includeIpythonExamples ?? true;
 	const includeRefineExamples = options.includeRefineExamples ?? includeIpythonExamples;
 	const lines = [
@@ -608,34 +645,57 @@ export function formatHarnessStateForPrompt(
 		"",
 	];
 
-	let totalEntries = 0;
-	for (const kind of Object.keys(state.entries) as RefinementKind[]) {
+	const selections = (Object.keys(state.entries) as RefinementKind[]).map((kind) => {
 		const kindEntries = Object.values(state.entries[kind]);
-		totalEntries += kindEntries.length;
+		return {
+			kind,
+			count: kindEntries.length,
+			...selectOverviewEntries(kindEntries, {
+				detailBudget,
+				maxContentLength,
+				reservedRecentSlots: maxEntriesPerKind,
+			}),
+		};
+	});
+	const totalEntries = selections.reduce((running, selection) => running + selection.count, 0);
+	// The stub menu gets one budget for the whole overview rather than a per-kind ceiling, so the
+	// worst case is a single number an operator can weigh against a context window. Splitting it
+	// between the kinds that actually need stubs keeps one large kind from starving the others, and
+	// leaves the budget undivided in the common case where only `memory` overflows.
+	const stubbedKinds = selections.filter((selection) => selection.listed.length > 0).length;
+	const stubBudget = stubbedKinds > 0 ? Math.floor(maxListedChars / stubbedKinds) : 0;
+
+	for (const { kind, count, detailed, listed } of selections) {
 		// Render subagent specs as a task-shaped roster the model can match against — the
 		// analogue of Claude Code's agent-type menu — rather than a bare count. In
 		// IPython sessions, include the native `rlm` invocation hint.
-		if (kind === "subagent" && kindEntries.length > 0 && includeIpythonExamples) {
+		if (kind === "subagent" && count > 0 && includeIpythonExamples) {
 			lines.push(
-				`${kind}: ${kindEntries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
+				`${kind}: ${count} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm('<task>')\`; admission returns a child handle, never the answer)`,
 			);
 		} else {
-			lines.push(`${kind}: ${kindEntries.length}`);
+			lines.push(`${kind}: ${count}`);
 		}
-		const { detailed, listed } = selectOverviewEntries(kindEntries, {
-			detailBudget,
-			maxContentLength,
-			reservedRecentSlots: maxEntriesPerKind,
-		});
 		for (const entry of detailed) {
 			lines.push(overviewDetailLine(entry, maxContentLength));
 		}
 		// Everything past maxEntriesPerKind still gets an addressable one-line stub, so the model can
 		// reach it with `rlm.harness.get(kind, "<scope>:<id>")` instead of only being told a count.
-		// Only entries past the stub ceiling collapse back into that count.
-		const stubCount = Math.min(listed.length, maxListedEntries);
-		for (const entry of listed.slice(0, stubCount)) {
-			lines.push(overviewStubLine(entry));
+		// Entries the budget cannot afford are skipped rather than ending the menu, so one entry with a
+		// very long id costs itself and not everything ranked below it, and they land in the count.
+		let spentOnStubs = 0;
+		let stubCount = 0;
+		for (const entry of listed) {
+			if (stubCount >= maxListedEntries || spentOnStubs >= stubBudget) {
+				break;
+			}
+			const line = overviewStubLine(entry);
+			if (spentOnStubs + line.length + 1 > stubBudget) {
+				continue;
+			}
+			lines.push(line);
+			spentOnStubs += line.length + 1;
+			stubCount++;
 		}
 		const overflow = listed.length - stubCount;
 		if (overflow > 0) {

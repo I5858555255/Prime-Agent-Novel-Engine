@@ -46,6 +46,25 @@ function memoryEntry(
 	};
 }
 
+/** A store far past the stub menu's budget, in every kind, with ordinary metadata. */
+function largeState(perKind: number): HarnessState {
+	const state: HarnessState = {
+		schema: 1,
+		entries: { prompt: {}, memory: {}, skill: {}, subagent: {} },
+		refinements: [],
+	};
+	for (const kind of ["prompt", "memory", "skill", "subagent"] as const) {
+		for (let i = 0; i < perKind; i++) {
+			const id = `${kind}-${String(i).padStart(4, "0")}`;
+			state.entries[kind][id] = {
+				...memoryEntry(id, `lesson-${i}`, `${kind}/m/lesson-${i}.md`, `Lesson body ${i}. `.repeat(13), 1, OLDER_AT),
+				kind,
+			};
+		}
+	}
+	return state;
+}
+
 function issue819State(): HarnessState {
 	const memory: Record<string, HarnessEntry> = {};
 	for (let i = 0; i < 48; i++) {
@@ -80,6 +99,11 @@ function harnessOverview(systemPrompt: string): string {
 	const start = systemPrompt.indexOf("# Continual Harness State");
 	expect(start).toBeGreaterThanOrEqual(0);
 	return systemPrompt.slice(start);
+}
+
+/** A stub line: an entry line with no content after the version, so no ": " separator follows it. */
+function isStubLine(line: string): boolean {
+	return /^- \[(local|global):[^\]]+\]/.test(line) && !/, v\d+\)[^:]*: /.test(line);
 }
 
 function renderedIds(overview: string): string[] {
@@ -144,6 +168,33 @@ describe("regression #819: harness overview cap", () => {
 		expect(renderedIds(overview)).toEqual(["mem-new"]);
 		expect(overview).toContain(`${NEWEST_CONTENT.slice(0, 37)}...`);
 		expect(overview).toContain("- +48 more memory entries");
+	});
+
+	// `maxListedChars` is the limit that decides whether the prompt fits a context window, so it has
+	// to reach the session too, not only the renderer.
+	it("applies the stub menu budget from settings", async () => {
+		const overview = await createSession({ maxListedChars: 0 });
+
+		expect(renderedIds(overview)).toHaveLength(6);
+		expect(overview).toContain("- +43 more memory entries");
+	});
+
+	// #819's fix must not trade one unusable prompt for another. `models.generated.ts:1571` ships a
+	// model with a 16,384-token window, and the repository ships smaller ones still, so a store past
+	// the stub budget has to leave room for the conversation.
+	it("keeps the system prompt small enough for a 16k context window on a large store", async () => {
+		saveHarnessState(getGlobalHarnessStateDir(agentDir), largeState(400));
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		// The repository's conservative chars/4 estimator, as `estimateTokens` in compaction.ts uses.
+		const promptTokens = Math.ceil(harness.session.systemPrompt.length / 4);
+		const overview = harnessOverview(harness.session.systemPrompt);
+		const stubChars = overview.split("\n").filter(isStubLine).join("\n").length;
+
+		expect(promptTokens).toBeLessThan(8_000);
+		expect(stubChars).toBeLessThanOrEqual(8_000);
+		expect(overview).toContain("more memory entries");
 	});
 
 	it("renders the same bytes on every session build", async () => {

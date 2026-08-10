@@ -15,6 +15,7 @@ import {
 	getRefinementHistory,
 	getRefinementHistoryPath,
 	type HarnessEntry,
+	type HarnessOverviewLimits,
 	type HarnessState,
 	inferRefinementResultScope,
 	loadGlobalRefinementHistory,
@@ -1673,11 +1674,13 @@ describe("selectOverviewEntries", () => {
 				reservedRecentSlots: invalid,
 			});
 
-			// `reservedRecentSlots` is the one limit where 0 is a real request, so it clamps to 0 rather
-			// than to 1; `formatHarnessStateForPrompt` keeps its own floor of 1 on `maxEntriesPerKind`.
-			expect(detailed).toHaveLength(invalid === -1 ? 0 : 6);
+			// Out of range falls back to the default rather than clamping to the minimum, so a typo
+			// cannot quietly reduce the overview to nothing.
+			expect(detailed).toHaveLength(6);
 			expect(detailed.length + listed.length).toBe(entries.length);
 		}
+
+		expect(selectOverviewEntries(entries, { reservedRecentSlots: 0 }).detailed).toHaveLength(0);
 	});
 
 	it("does not reorder the caller's array", () => {
@@ -1770,27 +1773,60 @@ describe("formatHarnessStateForPrompt overview limits", () => {
 		expect(stubLines(overview)).toHaveLength(0);
 	});
 
-	it("bounds the stub menu in characters, not only in entries", () => {
-		const overview = formatHarnessStateForPrompt(adversarialState(5_000, 1_000));
-		const stubs = stubLines(overview);
+	it("spends at most maxListedChars on the stub menu, across every kind together", () => {
+		// The bound has to hold on entry shapes chosen to break it, not on tidy fixtures: 20,000
+		// entries whose ids, titles, and paths are each 1,000 characters.
+		for (const [perKind, width] of [
+			[5_000, 1_000],
+			[500, 0],
+			[200, 0],
+		] as const) {
+			const state = adversarialState(perKind, width);
+			const overview = formatHarnessStateForPrompt(state);
+			const withoutMenu = formatHarnessStateForPrompt(state, { maxListedChars: 0 });
 
-		expect(stubs).toHaveLength(4 * 200);
-		// The documented per-kind ceiling: maxListedEntries lines of at most 160 characters each.
-		expect(Math.max(...stubs.map((line) => line.length))).toBe(160);
-		expect(stubs.join("\n").length).toBeLessThanOrEqual(4 * 200 * 161);
-		for (const kind of KINDS) {
-			expect(overflowCount(overview, kind)).toBe(5_000 - 6 - 200);
+			expect(overview.length - withoutMenu.length).toBeLessThanOrEqual(8_000);
+			for (const kind of KINDS) {
+				expect(overflowCount(overview, kind)).toBeGreaterThan(0);
+			}
 		}
 	});
 
-	it("does not spend more characters on stubs when entry metadata gets longer", () => {
-		const narrow = stubLines(formatHarnessStateForPrompt(adversarialState(300, 1_000)));
-		const wide = stubLines(formatHarnessStateForPrompt(adversarialState(300, 4_000)));
+	it("keeps the stub menu bounded however long entry metadata gets", () => {
+		const cost = (width: number): number => {
+			const state = adversarialState(300, width);
+			return (
+				formatHarnessStateForPrompt(state).length - formatHarnessStateForPrompt(state, { maxListedChars: 0 }).length
+			);
+		};
 
-		expect(wide.join("\n").length).toBe(narrow.join("\n").length);
+		// Longer addresses buy fewer named entries rather than a longer menu.
+		expect(cost(1_000)).toBeLessThanOrEqual(8_000);
+		expect(cost(4_000)).toBeLessThanOrEqual(8_000);
 	});
 
-	it("keeps the addressable scope:id when it clips a stub line", () => {
+	it("never truncates the address of a stub it renders, however long the id", () => {
+		for (const [perKind, width] of [
+			[9, 200],
+			[9, 1_000],
+			[300, 1_000],
+		] as const) {
+			const state = adversarialState(perKind, width);
+			const overview = formatHarnessStateForPrompt(state);
+			const stubs = stubLines(overview);
+
+			expect(stubs.length).toBeGreaterThan(0);
+			for (const stub of stubs) {
+				const address = /^- \[(local|global):([^\]]+)\]/.exec(stub);
+				expect(address).not.toBeNull();
+				// A clipped id addresses nothing, so the id in the render has to be the id in the store.
+				const renderedId = address?.[2] ?? "";
+				expect(KINDS.some((kind) => Object.hasOwn(state.entries[kind], renderedId))).toBe(true);
+			}
+		}
+	});
+
+	it("clips only the title and path, never the address", () => {
 		const state = memoryState(0);
 		state.entries.memory["mem-long"] = entry("memory", "mem-long", "T".repeat(500), `memory/${"p".repeat(500)}.md`);
 		state.entries.memory["mem-short"] = entry("memory", "mem-short", "short", "memory/short.md");
@@ -1805,7 +1841,13 @@ describe("formatHarnessStateForPrompt overview limits", () => {
 	it("accounts for every entry under invalid numeric limits", () => {
 		const state = memoryState(10);
 		const invalid = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 0, 1.9];
-		const keys = ["maxEntriesPerKind", "maxContentLength", "detailBudget", "maxListedEntries"] as const;
+		const keys = [
+			"maxEntriesPerKind",
+			"maxContentLength",
+			"detailBudget",
+			"maxListedEntries",
+			"maxListedChars",
+		] as const;
 
 		for (const key of keys) {
 			for (const value of invalid) {
@@ -1818,10 +1860,47 @@ describe("formatHarnessStateForPrompt overview limits", () => {
 		}
 	});
 
-	it("still collapses the stub menu into a count when maxListedEntries is 0", () => {
-		const overview = formatHarnessStateForPrompt(memoryState(10), { maxListedEntries: 0 });
+	// docs/settings.md promises that an out-of-range value falls back to the default. These assert the
+	// documented outcome per key so the two cannot drift apart again.
+	it("falls back to the default for an out-of-range limit, and honours 0 where 0 is in range", () => {
+		const state = memoryState(10);
+		const shape = (options: HarnessOverviewLimits) => {
+			const overview = formatHarnessStateForPrompt(state, options);
+			return {
+				detailed: detailLines(overview).length,
+				stubs: stubLines(overview).length,
+				overflow: overflowCount(overview),
+			};
+		};
+		const defaults = shape({});
 
-		expect(stubLines(overview)).toHaveLength(0);
-		expect(overview).toContain("- +4 more memory entries");
+		expect(defaults).toEqual({ detailed: 6, stubs: 4, overflow: 0 });
+		for (const key of ["maxEntriesPerKind", "maxContentLength", "detailBudget", "maxListedEntries"] as const) {
+			expect({ key, ...shape({ [key]: -1 }) }).toEqual({ key, ...defaults });
+		}
+		expect(shape({ maxListedChars: -1 })).toEqual(defaults);
+
+		// 0 is in range for both stub limits, and means the same thing on either: no menu, just a count.
+		expect(shape({ maxListedEntries: 0 })).toEqual({ detailed: 6, stubs: 0, overflow: 4 });
+		expect(shape({ maxListedChars: 0 })).toEqual({ detailed: 6, stubs: 0, overflow: 4 });
+	});
+
+	it("reads an offsetless updated_at as UTC so ranking does not follow the machine timezone", () => {
+		// `Date.parse` reads an ISO date-time with no offset in the host timezone, so without
+		// normalization these two swap between TZ=UTC and TZ=America/Edmonton.
+		const state = memoryState(0);
+		state.entries.memory.offsetless = {
+			...entry("memory", "offsetless", "offsetless", "memory/offsetless.md"),
+			updated_at: "2026-06-01T00:00:00",
+		};
+		state.entries.memory["explicit-utc"] = {
+			...entry("memory", "explicit-utc", "explicit", "memory/explicit.md"),
+			updated_at: "2026-06-01T03:00:00Z",
+		};
+
+		const overview = formatHarnessStateForPrompt(state);
+		const ids = Array.from(overview.matchAll(/^- \[global:([^\]]+)\]/gm), (match) => match[1]);
+
+		expect(ids).toEqual(["explicit-utc", "offsetless"]);
 	});
 });

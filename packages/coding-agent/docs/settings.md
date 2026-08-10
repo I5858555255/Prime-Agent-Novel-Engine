@@ -130,39 +130,67 @@ prime-agent --offline
 
 Controls how much of the continual harness (`/refine` prompt notes, memories, skills, and subagent
 specs) is rendered into the system prompt. Entries are ranked by `updated_at`, then `version`, then
-path, so the most recently refined entry always keeps its content. Every entry past
-`maxEntriesPerKind` is still listed as a one-line stub carrying its `scope:id`, which is the address
-`rlm.harness.get(kind, "global:<id>")` accepts.
+path, so the most recently refined entry always keeps its content. Entries past
+`maxEntriesPerKind` are listed as one-line stubs carrying their `scope:id`, which is the address
+`rlm.harness.get(kind, "global:<id>")` accepts, for as many as the menu budget below affords; the
+rest are reported as a count.
 
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `continualHarness.maxEntriesPerKind` | number | `6` | Entries per kind rendered with their content |
-| `continualHarness.maxContentLength` | number | `180` | Characters kept per rendered content, `ref=`, and `args=` value |
-| `continualHarness.detailBudget` | number | unset | Optional ceiling on the characters spent on content-bearing entries per kind |
-| `continualHarness.maxListedEntries` | number | `200` | One-line stubs rendered per kind after the content-bearing entries |
+| Setting | Type | Default | Minimum | Description |
+|---------|------|---------|---------|-------------|
+| `continualHarness.maxEntriesPerKind` | number | `6` | `1` | Entries per kind rendered with their content |
+| `continualHarness.maxContentLength` | number | `180` | `1` | Characters kept per rendered content, `ref=`, and `args=` value |
+| `continualHarness.detailBudget` | number | unset | `1` | Optional ceiling on the characters spent on content-bearing entries per kind |
+| `continualHarness.maxListedEntries` | number | `200` | `0` | One-line stubs per kind after the content-bearing entries |
+| `continualHarness.maxListedChars` | number | `8000` | `0` | Characters spent on the stub menu across all kinds |
 
 `maxEntriesPerKind` decides how many entries keep their content; a store with that many entries or
 fewer renders every one of them in full. `detailBudget` is unset by default and is an opt-in rail
 for operators who raise `maxEntriesPerKind` a long way: when it is set, entries that do not fit drop
 to a stub instead, except the top-ranked one, which always keeps its content.
 
-Stub lines are clipped to 160 characters each, so the stub menu costs at most
-`maxListedEntries * 161` characters per kind - 32,200 at the default, whatever the stored titles,
-paths, and ids look like. Entries beyond `maxListedEntries` collapse into a `+N more <kind> entries`
-count; setting it to `0` turns the stub list off entirely and restores the count-only overview.
+#### What the stub menu costs
 
-Values that are not finite positive numbers fall back to the defaults above rather than reaching the
-prompt.
+`maxListedChars` is one budget for the whole menu, not per kind. It is split evenly between the
+kinds that actually have entries to list, so one large kind cannot starve the others, and a store
+where only `memory` overflows spends the whole budget there. Stubs are rendered in rank order until
+the budget is spent; everything else collapses into a `+N more <kind> entries` count.
+
+At the default that is **8,000 characters, about 2,000 tokens** by the conservative chars/4
+estimator this repository uses, and it is a hard ceiling: it does not move when a store grows from
+50 entries to 50,000, and it does not move when titles, paths, or ids get longer. Long addresses buy
+fewer named entries instead of a longer menu. This matters because Prime Agent ships models with
+small context windows - `qwen.qwen3-32b-v1:0` has a 16,384-token window, and several others are
+smaller still - so on those models the menu should be lowered or turned off.
+
+Within that budget, each stub line targets 160 characters, and the `[scope:id]` address is never
+truncated: only the title and path absorb the clip. A stub the model cannot address is worse than
+no stub, so an entry whose address alone does not fit the remaining budget is left to the count
+instead of being rendered in a broken form.
+
+Setting either `maxListedChars` or `maxListedEntries` to `0` turns the stub menu off entirely and
+restores the count-only overview.
+
+#### Invalid values
+
+Every key falls back to its default in the table above when the configured value is not a number,
+is not finite, or is below the key's minimum. Fractional values are floored. Nothing is clamped:
+`maxListedEntries: -1` is a typo rather than a request to disable the menu, so it renders the
+default 200 rather than silently turning the feature off. Write `0` to disable it.
 
 ```json
 {
   "continualHarness": {
     "maxEntriesPerKind": 6,
     "maxContentLength": 180,
-    "maxListedEntries": 200
+    "detailBudget": 12000,
+    "maxListedEntries": 200,
+    "maxListedChars": 8000
   }
 }
 ```
+
+Every key is optional. `detailBudget` is shown here for completeness; leaving it out, which is the
+default, means the detail tier is bounded by `maxEntriesPerKind` alone.
 
 ### Branch Summary
 
