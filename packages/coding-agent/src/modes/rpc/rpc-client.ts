@@ -16,7 +16,7 @@ import type {
 	AgentHeartbeatManagementAction,
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
-import type { RefinementResult } from "../../core/refinement/index.js";
+import type { HarnessScope, RefinementResult } from "../../core/refinement/index.js";
 import type { SessionStats } from "../../core/session-stats.js";
 import type { AgentConnectionHeartbeat } from "../agent-connection/types.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
@@ -306,7 +306,7 @@ export class RpcClient {
 	 * Refine editable continual harness state.
 	 */
 	async refine(
-		options: { instructions?: string; rollbackId?: string; global?: boolean } = {},
+		options: { instructions?: string; rollbackId?: string; scope?: HarnessScope } = {},
 	): Promise<RefinementResult> {
 		// Refinement runs an LLM pass that routinely exceeds the default 30s response
 		// timeout, so use the same extended window as the daemon refine path.
@@ -314,10 +314,10 @@ export class RpcClient {
 			type: "refine";
 			instructions?: string;
 			rollbackId?: string;
-			global?: boolean;
+			scope?: HarnessScope;
 		};
-		if (options.global !== undefined) {
-			command.global = options.global;
+		if (options.scope !== undefined) {
+			command.scope = options.scope;
 		}
 		const response = await this.send(command, REFINE_REQUEST_TIMEOUT_MS);
 		return this.getData(response);

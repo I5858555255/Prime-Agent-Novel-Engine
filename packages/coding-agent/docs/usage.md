@@ -52,7 +52,8 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
 | `/compact [prompt]` | Manually compact context, optionally with custom instructions |
-| `/refine [instructions]` | Refine or roll back session-backed harness state |
+| `/refine [--project\|--global] [instructions]` | Refine or roll back session, project, or global harness state |
+| `/harness [list\|enable <entry>\|disable <entry>]` | Open the harness selector or enable/disable an entry without adding the command to the conversation |
 | `/copy` | Copy last assistant message to clipboard |
 | `/btw <question>`, `/side <question>` | Ask an inline side question without adding it to the session; replies continue the side conversation, esc returns |
 | `/export [file]` | Export session to HTML |
@@ -137,16 +138,26 @@ Prime Agent loads `AGENTS.md` or `CLAUDE.md` at startup from:
 - parent directories, walking up from the current working directory
 - the current directory
 
-Use context files for project conventions, commands, safety rules, and preferences. Disable loading with `--no-context-files` or `-nc`.
+Use context files for project conventions, commands, safety rules, and preferences. Disable loading for one run with `--no-context-files` or `-nc`.
+
+To stop global or unrelated instructions from mixing into one repository, set `contextFiles` in
+`<project>/.prime/agent/settings.json` (see [Settings](settings.md#context-files)):
+
+```json
+{ "contextFiles": { "global": false, "ancestors": false } }
+```
 
 ### System Prompt Files
 
 Replace the default system prompt with:
 
-- `.prime/agent/SYSTEM.md` for a project
+- `<project>/.prime/agent/SYSTEM.md` for a project
 - `~/.prime/agent/SYSTEM.md` globally
 
 Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location.
+
+Both files are resolved against the project root (the nearest `.prime/agent` directory or
+enclosing repository root), so they apply from any subdirectory of the repository.
 
 ## Exporting and Sharing Sessions
 

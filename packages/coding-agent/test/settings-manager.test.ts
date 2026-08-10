@@ -16,6 +16,9 @@ describe("SettingsManager", () => {
 		}
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(join(projectDir, ".prime", "agent"), { recursive: true });
+		// Project settings resolve against the nearest repository root, so mark the
+		// temp project as one instead of inheriting this repository's root.
+		mkdirSync(join(projectDir, ".git"), { recursive: true });
 	});
 
 	afterEach(() => {
@@ -576,6 +579,57 @@ describe("SettingsManager", () => {
 			manager.applyOverrides({ telemetry: { enabled: true } });
 
 			expect(manager.getTelemetryEnabled()).toBe(false);
+		});
+	});
+	describe("contextFiles", () => {
+		it("defaults every toggle to enabled", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getContextFiles()).toEqual({ enabled: true, global: true, ancestors: true });
+		});
+
+		it("lets project settings override the global toggle", async () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ contextFiles: { global: true } }));
+			writeFileSync(
+				join(projectDir, ".prime", "agent", "settings.json"),
+				JSON.stringify({ contextFiles: { global: false } }),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getContextFiles()).toEqual({ enabled: true, global: false, ancestors: true });
+			await manager.flush();
+		});
+
+		it("writes one toggle per scope without dropping the others", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setContextFilesOption("global", false);
+			manager.setContextFilesOption("ancestors", false, "project");
+			await manager.flush();
+
+			expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")).contextFiles).toEqual({
+				global: false,
+			});
+			expect(
+				JSON.parse(readFileSync(join(projectDir, ".prime", "agent", "settings.json"), "utf-8")).contextFiles,
+			).toEqual({ ancestors: false });
+			expect(manager.getContextFiles()).toEqual({ enabled: true, global: false, ancestors: false });
+		});
+	});
+
+	describe("rlmMaxDepth", () => {
+		it("reads and writes the global and project defaults independently", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setRlmMaxDepth(2);
+			manager.setRlmMaxDepth(4, "project");
+			await manager.flush();
+
+			expect(manager.getRlmMaxDepth()).toBe(2);
+			expect(manager.getRlmMaxDepth("project")).toBe(4);
+			expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")).rlmMaxDepth).toBe(2);
+			expect(
+				JSON.parse(readFileSync(join(projectDir, ".prime", "agent", "settings.json"), "utf-8")).rlmMaxDepth,
+			).toBe(4);
 		});
 	});
 });

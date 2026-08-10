@@ -289,9 +289,20 @@ async function runRpcModeWithConnectionInternal(
 					await connection.refine({
 						instructions: command.instructions,
 						rollbackId: command.rollbackId,
-						global: command.global,
+						scope: command.scope,
 					}),
 				);
+			case "harness_entries":
+				return success(id, command.type, { entries: await connection.listHarnessEntries() });
+			case "set_harness_entry_enabled":
+				return success(id, command.type, {
+					entry: await connection.setHarnessEntryEnabled(
+						command.kind,
+						command.entryId,
+						command.enabled,
+						command.scope,
+					),
+				});
 			case "set_auto_compaction":
 				await connection.setAutoCompactionEnabled(command.enabled);
 				return success(id, command.type);

@@ -5,10 +5,12 @@ import {
 	builtinSlashCommandTakesArgument,
 	isBuiltinSlashCommandName,
 	isSessionSlashCommandName,
+	parseHarnessCommandOptions,
 	parseRefineCommandOptions,
 	parseSessionSlashCommand,
 	parseSlashCommand,
 	resolveBuiltinSlashCommandName,
+	resolveHarnessEntryReference,
 	resolveSlashCommand,
 	SESSION_SLASH_COMMAND_NAMES,
 } from "../src/core/slash-commands.js";
@@ -217,25 +219,68 @@ describe("session slash commands", () => {
 		}
 	});
 
-	test("parses refine rollback ids and --global placement without consuming instruction text", () => {
-		expect(parseRefineCommandOptions("rollback refine_123")).toEqual({ rollbackId: "refine_123", global: false });
+	test("parses harness command actions and resolves entry references", () => {
+		expect(parseHarnessCommandOptions("")).toEqual({ action: "list" });
+		expect(parseHarnessCommandOptions("list")).toEqual({ action: "list" });
+		expect(parseHarnessCommandOptions("disable api-reviewer")).toEqual({
+			action: "disable",
+			reference: "api-reviewer",
+		});
+		expect(parseHarnessCommandOptions("enable project:subagent:api-reviewer")).toEqual({
+			action: "enable",
+			reference: "project:subagent:api-reviewer",
+		});
+		for (const args of ["disable", "enable", "toggle api-reviewer"]) {
+			expect(() => parseHarnessCommandOptions(args)).toThrow("Usage: /harness");
+		}
+
+		const entries = [
+			{ kind: "subagent", id: "reviewer", scope: "project", enabled: true, title: "Project reviewer" },
+			{ kind: "subagent", id: "reviewer", scope: "global", enabled: true, title: "Global reviewer" },
+			{ kind: "memory", id: "notes", scope: "local", enabled: false, title: "Notes" },
+		];
+
+		expect(resolveHarnessEntryReference(entries, "notes")).toMatchObject({ id: "notes", scope: "local" });
+		expect(resolveHarnessEntryReference(entries, "global:reviewer")).toMatchObject({ scope: "global" });
+		expect(resolveHarnessEntryReference(entries, "project:subagent:reviewer")).toMatchObject({ scope: "project" });
+		expect(() => resolveHarnessEntryReference(entries, "reviewer")).toThrow("matches several harness entries");
+		expect(() => resolveHarnessEntryReference(entries, "missing")).toThrow("No harness entry matches");
+	});
+
+	test("parses refine rollback ids and scope flag placement without consuming instruction text", () => {
+		expect(parseRefineCommandOptions("rollback refine_123")).toEqual({
+			rollbackId: "refine_123",
+			scope: undefined,
+		});
 		expect(parseRefineCommandOptions("rollback refine_456 --global")).toEqual({
 			rollbackId: "refine_456",
-			global: true,
+			scope: "global",
+		});
+		expect(parseRefineCommandOptions("rollback refine_457 --project")).toEqual({
+			rollbackId: "refine_457",
+			scope: "project",
 		});
 		expect(parseRefineCommandOptions("--global rollback refine_789")).toEqual({
 			rollbackId: "refine_789",
-			global: true,
+			scope: "global",
+		});
+		expect(parseRefineCommandOptions("--project rollback refine_790")).toEqual({
+			rollbackId: "refine_790",
+			scope: "project",
 		});
 		expect(parseRefineCommandOptions("--global focus on validation")).toEqual({
 			instructions: "focus on validation",
-			global: true,
+			scope: "global",
+		});
+		expect(parseRefineCommandOptions("--project focus on validation")).toEqual({
+			instructions: "focus on validation",
+			scope: "project",
 		});
 		expect(parseRefineCommandOptions("update docs to explain --global")).toEqual({
 			instructions: "update docs to explain --global",
-			global: false,
+			scope: undefined,
 		});
-		for (const args of ["rollback", "rollback --global"]) {
+		for (const args of ["rollback", "rollback --global", "rollback --project"]) {
 			expect(() => parseRefineCommandOptions(args)).toThrow("Usage: /refine rollback <refinement-id>");
 		}
 	});

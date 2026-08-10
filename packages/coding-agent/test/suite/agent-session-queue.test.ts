@@ -18,10 +18,12 @@ import {
 	getGlobalHarnessStateDir,
 	getHarnessStatePath,
 	getLocalHarnessStateDir,
+	getProjectHarnessStateDir,
 	type HarnessEntry,
-	loadGlobalRefinementHistory,
 	loadHarnessState,
+	loadSharedRefinementHistory,
 	type RefinementResult,
+	type RefineOptions,
 	saveHarnessState,
 } from "../../src/core/refinement/index.js";
 import { parseSessionSlashCommand } from "../../src/core/slash-commands.js";
@@ -135,7 +137,11 @@ describe("AgentSession queue characterization", () => {
 				instructions: "capture the durable lesson",
 			},
 			expectedReviewContext: { reason: "turn_interval", turnsSinceLastReview: 2 },
-			refineFragments: ["capture the durable lesson", "local harness entries", "Do not promote anything global"],
+			refineFragments: [
+				"capture the durable lesson",
+				"local harness entries",
+				"Do not promote anything to the project or global store",
+			],
 			turnsAfter: 0,
 			compactPendingAfter: undefined as boolean | undefined,
 			scheduleCalledWith: undefined as AutoRefineReason | undefined,
@@ -854,7 +860,7 @@ describe("AgentSession queue characterization", () => {
 			seedGlobal: false,
 			seedLocal: true,
 			editId: "global:shared",
-			refineOptions: { instructions: "update local memory" },
+			refineOptions: { instructions: "update local memory" } as RefineOptions,
 			updatedContent: "Updated local content",
 			expectLocalContent: "Updated local content" as string | undefined,
 			expectGlobalContent: undefined as string | undefined,
@@ -864,7 +870,7 @@ describe("AgentSession queue characterization", () => {
 			seedGlobal: true,
 			seedLocal: false,
 			editId: "global:shared",
-			refineOptions: { instructions: "update the global shared memory", global: true },
+			refineOptions: { instructions: "update the global shared memory", scope: "global" } as RefineOptions,
 			updatedContent: "Updated global content",
 			expectLocalContent: undefined as string | undefined,
 			expectGlobalContent: "Updated global content" as string | undefined,
@@ -935,6 +941,104 @@ describe("AgentSession queue characterization", () => {
 			}
 		},
 	);
+
+	it("applies a project refinement to the repository harness store", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = `${harness.tempDir}/agent`;
+		try {
+			const globalDir = getGlobalHarnessStateDir();
+			const projectDir = getProjectHarnessStateDir(harness.tempDir);
+			const localDir = getLocalHarnessStateDir(harness.sessionManager.getSessionArtifactDir())!;
+			harness.setResponses([
+				fauxAssistantMessage(
+					JSON.stringify({
+						summary: "Record the repository test command",
+						rationale: "The command was rediscovered twice.",
+						expectedOutcome: "Future sessions in this repository reuse it.",
+						edits: [
+							{
+								action: "create",
+								kind: "memory",
+								id: "test_command",
+								title: "Test command",
+								content: "npm run check",
+							},
+						],
+					}),
+				),
+			]);
+
+			const result = await harness.session.refine({ scope: "project" });
+
+			expect(result.scope).toBe("project");
+			expect(result.harnessStatePath).toBe(getHarnessStatePath(projectDir));
+			expect(loadHarnessState(projectDir, "project").entries.memory.test_command.scope).toBe("project");
+			expect(loadHarnessState(localDir, "local").entries.memory.test_command).toBeUndefined();
+			expect(loadHarnessState(globalDir, "global").entries.memory.test_command).toBeUndefined();
+			// Project refinements are replayable from a later session in the same repository.
+			expect(loadSharedRefinementHistory(projectDir, "project").map((item) => item.id)).toEqual([result.id]);
+		} finally {
+			if (previousAgentDir === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = previousAgentDir;
+			}
+		}
+	});
+
+	it("disables a stored harness entry without deleting it", async () => {
+		const harness = await createAutoRefineHarness();
+		harnesses.push(harness);
+		const previousAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+		process.env.PRIME_AGENT_CODING_AGENT_DIR = `${harness.tempDir}/agent`;
+		try {
+			const projectDir = getProjectHarnessStateDir(harness.tempDir);
+			const state = loadHarnessState(projectDir, "project");
+			applyRefinementProposal(
+				state,
+				{
+					summary: "seed",
+					rationale: "seed",
+					expectedOutcome: "seeded",
+					edits: [
+						{
+							action: "create",
+							kind: "subagent",
+							id: "api_reviewer",
+							title: "API reviewer",
+							content: "Reviews API diffs.",
+						},
+					],
+				},
+				{ id: "seed_project", scope: "project" },
+			);
+			saveHarnessState(projectDir, state);
+
+			expect(harness.session.listHarnessEntries()).toEqual([
+				expect.objectContaining({ kind: "subagent", id: "api_reviewer", scope: "project", enabled: true }),
+			]);
+
+			const disabled = harness.session.setHarnessEntryEnabled("subagent", "api_reviewer", false, "project");
+
+			expect(disabled).toMatchObject({ id: "api_reviewer", enabled: false });
+			expect(loadHarnessState(projectDir, "project").entries.subagent.api_reviewer.enabled).toBe(false);
+			expect(harness.session.systemPrompt).not.toContain("[project:api_reviewer]");
+			expect(() => harness.session.setHarnessEntryEnabled("subagent", "missing", false, "project")).toThrow(
+				'No project harness subagent entry named "missing"',
+			);
+
+			harness.session.setHarnessEntryEnabled("subagent", "api_reviewer", true, "project");
+			expect(harness.session.systemPrompt).toContain("[project:api_reviewer]");
+		} finally {
+			if (previousAgentDir === undefined) {
+				delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+			} else {
+				process.env.PRIME_AGENT_CODING_AGENT_DIR = previousAgentDir;
+			}
+		}
+	});
 
 	it("rolls back copied local refinement history against the original local harness state", async () => {
 		const original = await createAutoRefineHarness();
@@ -1256,7 +1360,7 @@ describe("AgentSession queue characterization", () => {
 			const stored = JSON.parse(readFileSync(getHarnessStatePath(globalDir), "utf8"));
 			expect(stored.entries.memory.legacy_target).toBeUndefined();
 			expect(stored.entries.memory.keep_me.scope).toBe("global");
-			const rollbackRecord = loadGlobalRefinementHistory(globalDir).find(
+			const rollbackRecord = loadSharedRefinementHistory(globalDir).find(
 				(item) => item.rollbackOf === "refine_legacy",
 			);
 			expect(rollbackRecord).toBeDefined();
@@ -2748,13 +2852,15 @@ describe("AgentSession queue characterization", () => {
 		const refine = vi.spyOn(harness.session, "refine").mockResolvedValue(emptyRefinementResult());
 
 		for (const [command, options] of [
-			["/refine rollback refine_123", { rollbackId: "refine_123", global: false }],
-			["/refine rollback refine_456 --global", { rollbackId: "refine_456", global: true }],
-			["/refine --global rollback refine_789", { rollbackId: "refine_789", global: true }],
-			["/refine --global focus on validation", { instructions: "focus on validation", global: true }],
+			["/refine rollback refine_123", { rollbackId: "refine_123", scope: undefined }],
+			["/refine rollback refine_456 --global", { rollbackId: "refine_456", scope: "global" }],
+			["/refine --global rollback refine_789", { rollbackId: "refine_789", scope: "global" }],
+			["/refine --project rollback refine_790", { rollbackId: "refine_790", scope: "project" }],
+			["/refine --global focus on validation", { instructions: "focus on validation", scope: "global" }],
+			["/refine --project focus on validation", { instructions: "focus on validation", scope: "project" }],
 			[
 				"/refine update docs to explain --global",
-				{ instructions: "update docs to explain --global", global: false },
+				{ instructions: "update docs to explain --global", scope: undefined },
 			],
 		] as const) {
 			await harness.session.prompt(command);

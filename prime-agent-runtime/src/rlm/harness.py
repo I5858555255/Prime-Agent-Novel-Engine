@@ -16,11 +16,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 HarnessKind = Literal["prompt", "memory", "skill", "subagent"]
-HarnessScope = Literal["local", "global"]
+HarnessScope = Literal["local", "project", "global"]
 
 _DEFAULT_FILE_NAME = "harness_state.json"
 _DEFAULT_HARNESS_DIR_NAME = "harness"
+_CONFIG_DIR_PARTS = (".prime", "agent")
 _KINDS: tuple[HarnessKind, ...] = ("prompt", "memory", "skill", "subagent")
+_SCOPES: tuple[HarnessScope, ...] = ("local", "project", "global")
 _state_cache: dict[tuple[Path, HarnessScope], "HarnessState"] = {}
 
 
@@ -43,28 +45,39 @@ def _agent_dir() -> Path:
     return Path(raw).expanduser().resolve()
 
 
-def _resolve_global_flag(global_: bool = False, extra: dict[str, Any] | None = None) -> bool:
+def _project_dir() -> Path:
+    """Nearest ancestor of the cwd holding a project config dir, else a repo root, else the cwd."""
+    cwd = Path.cwd().resolve()
+    repo_root: Path | None = None
+    for candidate in (cwd, *cwd.parents):
+        if candidate.joinpath(*_CONFIG_DIR_PARTS).is_dir():
+            return candidate
+        if repo_root is None and (candidate / ".git").exists():
+            repo_root = candidate
+    return repo_root or cwd
+
+
+def _normalize_scope(scope: HarnessScope | None, extra: dict[str, Any] | None = None) -> HarnessScope | None:
     extra = dict(extra or {})
-    if "global" in extra:
-        value = extra.pop("global")
-        if not isinstance(value, bool):
-            raise TypeError(f"global must be a bool, got {type(value).__name__}")
-        global_ = value
     if extra:
         unexpected = next(iter(extra))
         raise TypeError(f"unexpected keyword argument {unexpected!r}")
-    return bool(global_)
+    if scope is None:
+        return None
+    if scope not in _SCOPES:
+        raise ValueError(f"scope must be one of {_SCOPES}, got {scope!r}")
+    return scope
 
 
-def _strip_scope_prefix(id: str | None, global_: bool) -> tuple[str | None, bool]:
-    # overview() displays entries as [local:id]/[global:id]; accept those ids
-    # verbatim. A global: prefix routes to the global store unless the caller
-    # already forced a scope via global_.
+def _strip_scope_prefix(id: str | None, scope: HarnessScope | None) -> tuple[str | None, HarnessScope | None]:
+    # overview() displays entries as [local:id]/[project:id]/[global:id]; accept
+    # those ids verbatim. The prefix routes to that store unless the caller
+    # already forced a scope explicitly.
     if isinstance(id, str):
-        scope, sep, rest = id.partition(":")
-        if sep and rest and scope in ("local", "global"):
-            return rest, global_ or scope == "global"
-    return id, global_
+        prefix, sep, rest = id.partition(":")
+        if sep and rest and prefix in _SCOPES:
+            return rest, scope or prefix  # type: ignore[return-value]
+    return id, scope
 
 
 def _env_dir(name: str) -> str | None:
@@ -74,19 +87,26 @@ def _env_dir(name: str) -> str | None:
     return value or None
 
 
-def _state_file(state_dir: str | Path | None = None, *, global_: bool = False) -> Path:
+def _state_file(state_dir: str | Path | None = None, *, scope: HarnessScope = "local") -> Path:
     root: str | Path | None = state_dir
     if root is None:
-        root = _env_dir("RLM_GLOBAL_HARNESS_STATE_DIR") if global_ else _env_dir("RLM_HARNESS_STATE_DIR")
-    if root is None and not global_ and (session_dir := _env_dir("RLM_SESSION_DIR")):
+        if scope == "global":
+            root = _env_dir("RLM_GLOBAL_HARNESS_STATE_DIR")
+        elif scope == "project":
+            root = _env_dir("RLM_PROJECT_HARNESS_STATE_DIR")
+        else:
+            root = _env_dir("RLM_HARNESS_STATE_DIR")
+    if root is None and scope == "local" and (session_dir := _env_dir("RLM_SESSION_DIR")):
         root = Path(session_dir) / _DEFAULT_HARNESS_DIR_NAME
-    if root is None and not global_:
+    if root is None and scope == "local":
         raise RuntimeError(
             "Local harness state requires RLM_HARNESS_STATE_DIR or RLM_SESSION_DIR. "
-            "Use get_harness_state(global_=True) for global state."
+            'Use get_harness_state(scope="project") or get_harness_state(scope="global") instead.'
         )
     if root:
         return Path(root).expanduser().resolve() / _DEFAULT_FILE_NAME
+    if scope == "project":
+        return _project_dir().joinpath(*_CONFIG_DIR_PARTS, _DEFAULT_HARNESS_DIR_NAME, _DEFAULT_FILE_NAME)
     return _agent_dir() / _DEFAULT_HARNESS_DIR_NAME / _DEFAULT_FILE_NAME
 
 
@@ -100,6 +120,9 @@ class HarnessEntry:
     content: str
     path: str = "general"
     scope: HarnessScope = "local"
+    # Disabled entries stay stored but are hidden from the system prompt, so a
+    # disabled subagent spec is never offered for delegation.
+    enabled: bool = True
     reference: dict[str, Any] = field(default_factory=dict)
     arguments: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -155,17 +178,15 @@ class HarnessState:
             self.file_path: Path | None = None
         else:
             self.file_path = (
-                Path(file_path).expanduser().resolve()
-                if file_path
-                else _state_file(global_=(scope == "global"))
+                Path(file_path).expanduser().resolve() if file_path else _state_file(scope=scope)
             )
         self.scope: HarnessScope = scope
         # When set, local mutations raise instead of vanishing into a volatile
-        # store; reads and global_=True delegation keep working.
+        # store; reads and cross-scope delegation keep working.
         self._local_write_error = local_write_error
         self.entries: dict[HarnessKind, dict[str, HarnessEntry]] = {kind: {} for kind in _KINDS}
         self.refinements: list[RefinementEvent] = []
-        self._global_target_state_dir: Path | None = None
+        self._delegate_state_dir: Path | None = None
         # mtime of the file as of the last load/save, used to detect out-of-process
         # writes (e.g. the host `/refine` command) and avoid clobbering them.
         self._loaded_mtime: int | None = None
@@ -230,8 +251,9 @@ class HarnessState:
                             continue
                         if not isinstance(entry_data.get("path"), str):
                             entry_data["path"] = "general"
-                        if entry_data.get("scope") not in ("local", "global"):
+                        if entry_data.get("scope") not in _SCOPES:
                             entry_data["scope"] = self.scope
+                        entry_data["enabled"] = entry_data.get("enabled") is not False
                         if not isinstance(entry_data.get("source"), str):
                             entry_data["source"] = "agent"
                         version = entry_data.get("version", 1)
@@ -273,10 +295,11 @@ class HarnessState:
         self._loaded_mtime = mtime
         return self
 
-    def _global_target(self, global_: bool, extra: dict[str, Any] | None = None) -> "HarnessState | None":
-        if not _resolve_global_flag(global_, extra):
+    def _scope_target(self, scope: HarnessScope | None, extra: dict[str, Any] | None = None) -> "HarnessState | None":
+        scope = _normalize_scope(scope, extra)
+        if scope is None or scope == self.scope:
             return None
-        target = get_harness_state(state_dir=self._global_target_state_dir, global_=True)
+        target = get_harness_state(state_dir=self._delegate_state_dir, scope=scope)
         if self.file_path is not None and target.file_path == self.file_path and target.scope == self.scope:
             return None
         return target
@@ -311,11 +334,11 @@ class HarnessState:
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        id, global_ = _strip_scope_prefix(id, global_)
-        if target := self._global_target(global_, kwargs):
+        id, scope = _strip_scope_prefix(id, scope)
+        if target := self._scope_target(scope, kwargs):
             return target.upsert(
                 kind,
                 title,
@@ -399,18 +422,56 @@ class HarnessState:
         self.save()
         return entry
 
-    def get(self, kind: HarnessKind, id: str, *, global_: bool = False, **kwargs: Any) -> HarnessEntry | None:
-        id, global_ = _strip_scope_prefix(id, global_)
-        if target := self._global_target(global_, kwargs):
+    def set_enabled(
+        self,
+        kind: HarnessKind,
+        id: str,
+        enabled: bool,
+        *,
+        scope: HarnessScope | None = None,
+        **kwargs: Any,
+    ) -> HarnessEntry:
+        """Enable or disable one entry without deleting it.
+
+        A disabled entry stays stored and rollback-able but is hidden from the
+        system prompt, so a disabled subagent spec is no longer available for
+        delegation.
+        """
+        id, scope = _strip_scope_prefix(id, scope)
+        if target := self._scope_target(scope, kwargs):
+            return target.set_enabled(kind, id, enabled)
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be bool, got {type(enabled).__name__}")
+        self._ensure_local_writable()
+        self._sync_from_disk()
+        if kind not in self.entries:
+            raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
+        entry = self.entries[kind].get(id)
+        if entry is None:
+            raise ValueError(f"{kind} entry {id!r} does not exist")
+        entry.enabled = enabled
+        entry.updated_at = _now()
+        self.save()
+        return entry
+
+    def disable(self, kind: HarnessKind, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry:
+        return self.set_enabled(kind, id, False, scope=scope, **kwargs)
+
+    def enable(self, kind: HarnessKind, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry:
+        return self.set_enabled(kind, id, True, scope=scope, **kwargs)
+
+    def get(self, kind: HarnessKind, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry | None:
+        id, scope = _strip_scope_prefix(id, scope)
+        if target := self._scope_target(scope, kwargs):
             return target.get(kind, id)
         self._sync_from_disk()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         return self.entries[kind].get(id)
 
-    def delete(self, kind: HarnessKind, id: str, *, global_: bool = False, **kwargs: Any) -> bool:
-        id, global_ = _strip_scope_prefix(id, global_)
-        if target := self._global_target(global_, kwargs):
+    def delete(self, kind: HarnessKind, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> bool:
+        id, scope = _strip_scope_prefix(id, scope)
+        if target := self._scope_target(scope, kwargs):
             return target.delete(kind, id)
         self._ensure_local_writable()
         self._sync_from_disk()
@@ -422,8 +483,8 @@ class HarnessState:
         self.save()
         return True
 
-    def list(self, kind: HarnessKind | None = None, *, global_: bool = False, **kwargs: Any) -> list[HarnessEntry]:
-        if target := self._global_target(global_, kwargs):
+    def list(self, kind: HarnessKind | None = None, *, scope: HarnessScope | None = None, **kwargs: Any) -> list[HarnessEntry]:
+        if target := self._scope_target(scope, kwargs):
             return target.list(kind)
         self._sync_from_disk()
         kinds = [kind] if kind else list(_KINDS)
@@ -446,11 +507,11 @@ class HarnessState:
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        id, global_ = _strip_scope_prefix(id, global_)
-        if target := self._global_target(global_, kwargs):
+        id, scope = _strip_scope_prefix(id, scope)
+        if target := self._scope_target(scope, kwargs):
             return target.create(
                 kind,
                 title,
@@ -493,11 +554,11 @@ class HarnessState:
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         source: str = "agent",
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        id, global_ = _strip_scope_prefix(id, global_)
-        if target := self._global_target(global_, kwargs):
+        id, scope = _strip_scope_prefix(id, scope)
+        if target := self._scope_target(scope, kwargs):
             return target.update(
                 kind,
                 id,
@@ -535,10 +596,10 @@ class HarnessState:
         id: str | None = None,
         path: str = "general",
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.create("memory", title, content, id=id, path=path, metadata=metadata, global_=global_, **kwargs)
+        return self.create("memory", title, content, id=id, path=path, metadata=metadata, scope=scope, **kwargs)
 
     def update_memory(
         self,
@@ -548,13 +609,13 @@ class HarnessState:
         *,
         path: str | None = None,
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.update("memory", id, title, content, path=path, metadata=metadata, global_=global_, **kwargs)
+        return self.update("memory", id, title, content, path=path, metadata=metadata, scope=scope, **kwargs)
 
-    def delete_memory(self, id: str, *, global_: bool = False, **kwargs: Any) -> bool:
-        return self.delete("memory", id, global_=global_, **kwargs)
+    def delete_memory(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> bool:
+        return self.delete("memory", id, scope=scope, **kwargs)
 
     def create_prompt_note(
         self,
@@ -564,10 +625,10 @@ class HarnessState:
         id: str | None = None,
         path: str = "policy",
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.create("prompt", title, content, id=id, path=path, metadata=metadata, global_=global_, **kwargs)
+        return self.create("prompt", title, content, id=id, path=path, metadata=metadata, scope=scope, **kwargs)
 
     def update_prompt_note(
         self,
@@ -577,13 +638,13 @@ class HarnessState:
         *,
         path: str | None = None,
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.update("prompt", id, title, content, path=path, metadata=metadata, global_=global_, **kwargs)
+        return self.update("prompt", id, title, content, path=path, metadata=metadata, scope=scope, **kwargs)
 
-    def delete_prompt_note(self, id: str, *, global_: bool = False, **kwargs: Any) -> bool:
-        return self.delete("prompt", id, global_=global_, **kwargs)
+    def delete_prompt_note(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> bool:
+        return self.delete("prompt", id, scope=scope, **kwargs)
 
     def create_skill(
         self,
@@ -595,7 +656,7 @@ class HarnessState:
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
         return self.create(
@@ -607,7 +668,7 @@ class HarnessState:
             reference=_validate_python_skill_reference(reference),
             arguments=arguments,
             metadata=metadata,
-            global_=global_,
+            scope=scope,
             **kwargs,
         )
 
@@ -621,7 +682,7 @@ class HarnessState:
         reference: dict[str, Any] | None = None,
         arguments: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
         # Only validate a reference when one is supplied; omitting it preserves the
@@ -637,12 +698,12 @@ class HarnessState:
             reference=validated_reference,
             arguments=arguments,
             metadata=metadata,
-            global_=global_,
+            scope=scope,
             **kwargs,
         )
 
-    def delete_skill(self, id: str, *, global_: bool = False, **kwargs: Any) -> bool:
-        return self.delete("skill", id, global_=global_, **kwargs)
+    def delete_skill(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> bool:
+        return self.delete("skill", id, scope=scope, **kwargs)
 
     def create_subagent(
         self,
@@ -652,10 +713,10 @@ class HarnessState:
         id: str | None = None,
         path: str = "general",
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.create("subagent", title, content, id=id, path=path, metadata=metadata, global_=global_, **kwargs)
+        return self.create("subagent", title, content, id=id, path=path, metadata=metadata, scope=scope, **kwargs)
 
     def update_subagent(
         self,
@@ -665,13 +726,20 @@ class HarnessState:
         *,
         path: str | None = None,
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.update("subagent", id, title, content, path=path, metadata=metadata, global_=global_, **kwargs)
+        return self.update("subagent", id, title, content, path=path, metadata=metadata, scope=scope, **kwargs)
 
-    def delete_subagent(self, id: str, *, global_: bool = False, **kwargs: Any) -> bool:
-        return self.delete("subagent", id, global_=global_, **kwargs)
+    def delete_subagent(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> bool:
+        return self.delete("subagent", id, scope=scope, **kwargs)
+
+    def disable_subagent(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry:
+        """Keep a subagent spec but stop offering it for delegation."""
+        return self.set_enabled("subagent", id, False, scope=scope, **kwargs)
+
+    def enable_subagent(self, id: str, *, scope: HarnessScope | None = None, **kwargs: Any) -> HarnessEntry:
+        return self.set_enabled("subagent", id, True, scope=scope, **kwargs)
 
     def record_refinement(
         self,
@@ -681,10 +749,10 @@ class HarnessState:
         evidence: str = "",
         outcome: str = "",
         id: str | None = None,
-        global_: bool = False,
+        scope: HarnessScope | None = None,
         **kwargs: Any,
     ) -> RefinementEvent:
-        if target := self._global_target(global_, kwargs):
+        if target := self._scope_target(scope, kwargs):
             return target.record_refinement(trigger, changes, evidence=evidence, outcome=outcome, id=id)
         self._ensure_local_writable()
         self._sync_from_disk()
@@ -718,8 +786,8 @@ class HarnessState:
             plan.append(f"Immediate validation step: {next_step}")
         return plan
 
-    def overview(self, *, max_entries_per_kind: int = 20, global_: bool = False, **kwargs: Any) -> str:
-        if target := self._global_target(global_, kwargs):
+    def overview(self, *, max_entries_per_kind: int = 20, scope: HarnessScope | None = None, **kwargs: Any) -> str:
+        if target := self._scope_target(scope, kwargs):
             return target.overview(max_entries_per_kind=max_entries_per_kind)
         self._sync_from_disk()
         lines = [
@@ -752,8 +820,9 @@ class HarnessState:
                     if len(reference_text) > 120:
                         reference_text = f"{reference_text[:117]}..."
                     reference_summary = f" ref={reference_text}"
+                disabled_marker = "" if entry.enabled else " [disabled]"
                 lines.append(
-                    f"  - [{entry.scope}:{entry.id}] {entry.title} ({entry.path}, v{entry.version})"
+                    f"  - [{entry.scope}:{entry.id}]{disabled_marker} {entry.title} ({entry.path}, v{entry.version})"
                     f"{reference_summary}{argument_summary}: {summary}"
                 )
             overflow = len(self.entries[kind]) - len(records)
@@ -767,8 +836,8 @@ class HarnessState:
             lines.append("refinements: 0")
         return "\n".join(lines)
 
-    def snapshot(self, *, global_: bool = False, **kwargs: Any) -> dict[str, Any]:
-        if target := self._global_target(global_, kwargs):
+    def snapshot(self, *, scope: HarnessScope | None = None, **kwargs: Any) -> dict[str, Any]:
+        if target := self._scope_target(scope, kwargs):
             return target.snapshot()
         self._sync_from_disk()
         return {
@@ -783,28 +852,27 @@ class HarnessState:
 
 
 def get_harness_state(
-    state_dir: str | Path | None = None, *, global_: bool = False, **kwargs: Any
+    state_dir: str | Path | None = None, *, scope: HarnessScope | None = None, **kwargs: Any
 ) -> HarnessState:
-    """Return the cached local harness state, or global when requested."""
-    global_ = _resolve_global_flag(global_, kwargs)
-    file_path = _state_file(state_dir, global_=global_)
-    scope: HarnessScope = "global" if global_ else "local"
-    cache_key = (file_path, scope)
+    """Return the cached harness state for a scope (local by default)."""
+    resolved_scope: HarnessScope = _normalize_scope(scope, kwargs) or "local"
+    file_path = _state_file(state_dir, scope=resolved_scope)
+    cache_key = (file_path, resolved_scope)
     state = _state_cache.get(cache_key)
     if state is None:
-        state = HarnessState(file_path, scope=scope)
+        state = HarnessState(file_path, scope=resolved_scope)
         # Recorded at construction only: an instance created from env defaults must
-        # keep targeting RLM_GLOBAL_HARNESS_STATE_DIR even when a later explicit
+        # keep targeting the env-resolved stores even when a later explicit
         # state_dir call aliases the same local file. An explicit dir that merely
-        # aliases the env resolution must not sandbox later global_=True writes
+        # aliases the env resolution must not sandbox later cross-scope writes
         # either, so pin only when the explicit dir actually diverges.
         if state_dir is not None:
             try:
-                env_file: Path | None = _state_file(global_=global_)
+                env_file: Path | None = _state_file(scope=resolved_scope)
             except RuntimeError:
                 env_file = None
             if file_path != env_file:
-                state._global_target_state_dir = Path(state_dir).expanduser().resolve()
+                state._delegate_state_dir = Path(state_dir).expanduser().resolve()
         _state_cache[cache_key] = state
     return state
 

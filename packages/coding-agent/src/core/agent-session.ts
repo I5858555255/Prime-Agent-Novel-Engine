@@ -194,23 +194,32 @@ import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js
 import {
 	type AutoRefineReason,
 	type AutoRefineReview,
-	appendGlobalRefinement,
+	appendSharedRefinement,
 	applyRefinementProposal,
 	getGlobalHarnessStateDir,
 	getLocalHarnessStateDir,
+	getProjectHarnessStateDir,
 	getRefinementHistory,
+	HARNESS_SCOPES,
+	type HarnessEntrySummary,
+	type HarnessScope,
 	type HarnessState,
 	inferRefinementResultScope,
-	loadGlobalRefinementHistory,
+	listHarnessEntrySummaries,
 	loadHarnessState,
+	loadSharedRefinementHistory,
 	mergeHarnessStates,
 	mergeRefinementHistory,
 	planRefinement,
 	REFINE_SKILL_NAME,
+	type RefinementKind,
 	type RefinementPlan,
 	type RefinementResult,
+	type RefineOptions,
 	reviewAutoRefine,
+	type ScopedHarnessStates,
 	saveHarnessState,
+	setHarnessEntryEnabled as setHarnessEntryEnabledInState,
 } from "./refinement/index.js";
 import { resolveConfigValue } from "./resolve-config-value.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
@@ -254,7 +263,7 @@ import {
 	SessionManager,
 } from "./session-manager.js";
 import type { SessionStats } from "./session-stats.js";
-import type { SettingsManager } from "./settings-manager.js";
+import type { SettingsManager, SettingsScope } from "./settings-manager.js";
 import { getPythonSkillRuntimeInfo, type Skill } from "./skills.js";
 import {
 	parseRefineCommandOptions,
@@ -520,7 +529,7 @@ export type SerializedBackgroundPlanResult =
 	| {
 			status: "plan";
 			plan: RefinementPlan;
-			options: { instructions?: string; rollbackId?: string; global?: boolean };
+			options: RefineOptions;
 			abort: AbortController;
 			branchVersion: number;
 	  }
@@ -531,7 +540,7 @@ export type SerializedBackgroundPlanResult =
 			/** True when the background plan was for an explicit refine.run (skipReview). */
 			explicit: boolean;
 			/** Original options for the failed plan, to allow re-queue on explicit failure. */
-			options: { instructions?: string; rollbackId?: string; global?: boolean };
+			options: RefineOptions;
 			branchVersion: number;
 	  };
 
@@ -968,12 +977,24 @@ const RLM_MAX_DEPTH_STATE_CUSTOM_TYPE = "rlm_max_depth_state";
 function noopRlmChildAbort(): void {}
 function noopRlmChildEventUnsubscribe(): void {}
 
+/** Drop the display-only `<scope>:` prefix the harness overview renders for entry ids. */
+function stripHarnessScopePrefix(id: string | undefined): string | undefined {
+	if (!id) return id;
+	for (const scope of HARNESS_SCOPES) {
+		const prefix = `${scope}:`;
+		if (id.startsWith(prefix)) {
+			return id.slice(prefix.length);
+		}
+	}
+	return id;
+}
+
 function autoRefineInstructions(reason: AutoRefineReason, review: AutoRefineReview): string {
 	const detail = review.instructions
 		? `
 Reviewer instructions: ${review.instructions}`
 		: "";
-	return `Automatic refine review triggered by ${reason}. Only create/update/delete local harness entries if there is clear evidence that should help this session continue. Prefer an empty edits array over speculative or one-off memories. Do not promote anything global unless explicitly requested. Reviewer rationale: ${review.rationale}${detail}`;
+	return `Automatic refine review triggered by ${reason}. Only create/update/delete local harness entries if there is clear evidence that should help this session continue. Prefer an empty edits array over speculative or one-off memories. Do not promote anything to the project or global store unless explicitly requested. Reviewer rationale: ${review.rationale}${detail}`;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -1136,7 +1157,7 @@ export class AgentSession {
 	private _overflowRecovery: "idle" | "attempted" | "reported" = "idle";
 	private _continueAfterThresholdCompaction = false;
 	private _pendingRequestedCompaction: { customInstructions?: string } | undefined;
-	private _pendingRequestedRefine: { instructions?: string; global?: boolean } | undefined;
+	private _pendingRequestedRefine: { instructions?: string; scope?: HarnessScope } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -1279,7 +1300,7 @@ export class AgentSession {
 	private _serializedPlanClaim?: Promise<void>;
 	private _serializedExplicitRefineOptions?: {
 		instructions?: string;
-		global?: boolean;
+		scope?: HarnessScope;
 	};
 
 	constructor(config: AgentSessionConfig) {
@@ -1581,7 +1602,11 @@ export class AgentSession {
 		if (this._configuredRlmMaxDepth !== undefined) {
 			return { maxDepth: this._configuredRlmMaxDepth, source: "inherited" };
 		}
-		const global = this.settingsManager.getRlmMaxDepth();
+		const project = this.settingsManager.getRlmMaxDepth("project");
+		if (project !== undefined && isNonNegativeInteger(project)) {
+			return { maxDepth: project, source: "project" };
+		}
+		const global = this.settingsManager.getRlmMaxDepth("global");
 		if (global !== undefined && isNonNegativeInteger(global)) {
 			return { maxDepth: global, source: "global" };
 		}
@@ -2536,7 +2561,7 @@ export class AgentSession {
 	 * plan ("plan") and apply that exact plan without re-planning.
 	 */
 	private async _runBackgroundPlan(
-		options: { instructions?: string; rollbackId?: string; global?: boolean },
+		options: RefineOptions,
 		refineAbort: AbortController,
 		branchVersion: number,
 		skipReview = false,
@@ -2600,11 +2625,7 @@ export class AgentSession {
 	 * so the agent is between turns and _applyRefine's disconnect/reconnect
 	 * is safe.
 	 */
-	private async _runSerializedRefine(options: {
-		instructions?: string;
-		rollbackId?: string;
-		global?: boolean;
-	}): Promise<void> {
+	private async _runSerializedRefine(options: RefineOptions): Promise<void> {
 		if (this._disposed || this._disposing) {
 			return;
 		}
@@ -2915,9 +2936,9 @@ export class AgentSession {
 				if (instructions !== undefined && typeof instructions !== "string") {
 					throw new Error("refine.run instructions must be a string when provided");
 				}
-				const globalFlag = payload.global;
-				if (globalFlag !== undefined && typeof globalFlag !== "boolean") {
-					throw new Error("refine.run global must be a boolean when provided");
+				const scope = payload.scope;
+				if (scope !== undefined && !HARNESS_SCOPES.includes(scope as HarnessScope)) {
+					throw new Error(`refine.run scope must be one of ${HARNESS_SCOPES.join(", ")} when provided`);
 				}
 				if (!this.isStreaming) {
 					return {
@@ -2928,7 +2949,7 @@ export class AgentSession {
 				const previous = this._pendingRequestedRefine ?? this._serializedExplicitRefineOptions;
 				this._pendingRequestedRefine = {
 					instructions: instructions ?? previous?.instructions,
-					global: globalFlag ?? previous?.global,
+					scope: (scope as HarnessScope | undefined) ?? previous?.scope,
 				};
 				// In serialized mode, kick off background planning immediately
 				// (the primary response ended at message_end, tools are active).
@@ -7189,6 +7210,23 @@ export class AgentSession {
 		);
 	}
 
+	/** Per-repository harness store for the session's working directory. */
+	private _projectHarnessStateDir(): string {
+		return getProjectHarnessStateDir(this._cwd);
+	}
+
+	/** Directory backing a scope, or undefined when the scope has no store in this session. */
+	private _harnessStateDirForScope(scope: HarnessScope): string | undefined {
+		switch (scope) {
+			case "global":
+				return getGlobalHarnessStateDir();
+			case "project":
+				return this._projectHarnessStateDir();
+			default:
+				return this._localHarnessStateDir();
+		}
+	}
+
 	private _autoRefineAllowedForSession(): boolean {
 		return this._rlmDepth === 0 && this._localHarnessStateDir() !== undefined;
 	}
@@ -7564,18 +7602,73 @@ export class AgentSession {
 		);
 	}
 
-	/** Global harness state overlaid with this session's local state, when persisted. */
-	private _loadMergedHarnessState(): HarnessState {
+	private _loadScopedHarnessStates(): ScopedHarnessStates {
 		const localHarnessStateDir = this._localHarnessStateDir();
-		return mergeHarnessStates(
-			loadHarnessState(getGlobalHarnessStateDir(), "global"),
-			localHarnessStateDir ? loadHarnessState(localHarnessStateDir, "local") : undefined,
-		);
+		return {
+			global: loadHarnessState(getGlobalHarnessStateDir(), "global"),
+			project: loadHarnessState(this._projectHarnessStateDir(), "project"),
+			local: localHarnessStateDir ? loadHarnessState(localHarnessStateDir, "local") : undefined,
+		};
+	}
+
+	/** Classify a harness directory recorded by an earlier refinement result. */
+	private _scopeForHarnessStateDir(harnessStateDir: string): HarnessScope {
+		const resolvedDir = resolve(harnessStateDir);
+		if (resolvedDir === resolve(getGlobalHarnessStateDir())) {
+			return "global";
+		}
+		if (resolvedDir === resolve(this._projectHarnessStateDir())) {
+			return "project";
+		}
+		return "local";
+	}
+
+	/** Global harness state overlaid with the project store and this session's local state. */
+	private _loadMergedHarnessState(): HarnessState {
+		return mergeHarnessStates(this._loadScopedHarnessStates());
+	}
+
+	/** Every stored harness entry across the three scopes, for `/harness`. */
+	listHarnessEntries(): HarnessEntrySummary[] {
+		const states = this._loadScopedHarnessStates();
+		return HARNESS_SCOPES.flatMap((scope) => {
+			const state = states[scope];
+			return state ? listHarnessEntrySummaries(state, scope) : [];
+		});
+	}
+
+	/**
+	 * Enable or disable one stored harness entry. A disabled entry stays on disk and
+	 * stays rollback-able, but is kept out of the system prompt, so a disabled
+	 * subagent spec is no longer offered for delegation.
+	 */
+	setHarnessEntryEnabled(
+		kind: RefinementKind,
+		id: string,
+		enabled: boolean,
+		scope: HarnessScope,
+	): HarnessEntrySummary {
+		const harnessStateDir = this._harnessStateDirForScope(scope);
+		if (!harnessStateDir) {
+			throw new Error("This session has no local harness store; use the project or global scope instead.");
+		}
+		const state = loadHarnessState(harnessStateDir, scope);
+		const summary = setHarnessEntryEnabledInState(state, kind, id, enabled, scope);
+		if (!summary) {
+			throw new Error(`No ${scope} harness ${kind} entry named "${id}".`);
+		}
+		saveHarnessState(harnessStateDir, state);
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._baseSystemPrompt;
+		return summary;
 	}
 
 	private _loadRefinementHistory(): RefinementResult[] {
 		return mergeRefinementHistory(
-			loadGlobalRefinementHistory(getGlobalHarnessStateDir()),
+			[
+				...loadSharedRefinementHistory(getGlobalHarnessStateDir(), "global"),
+				...loadSharedRefinementHistory(this._projectHarnessStateDir(), "project"),
+			],
 			getRefinementHistory(this.sessionManager.getEntries().filter((entry) => entry.type === "custom")),
 		);
 	}
@@ -7588,14 +7681,7 @@ export class AgentSession {
 	 * (`_waitForRefineIdle` only waits for `_refineInFlight`). Only the fast
 	 * application phase (disk I/O + in-memory mutation) blocks turn entry points.
 	 */
-	async refine(
-		options: {
-			instructions?: string;
-			rollbackId?: string;
-			global?: boolean;
-		} = {},
-		internal: { skipAbort?: boolean } = {},
-	): Promise<RefinementResult> {
+	async refine(options: RefineOptions = {}, internal: { skipAbort?: boolean } = {}): Promise<RefinementResult> {
 		// Queued /refine executes from the session-input pump between turns;
 		// refine never aborts the agent (planning is backgrounded and the apply
 		// phase waits for quiescence), so skipAbort only asserts the pump's
@@ -7718,10 +7804,7 @@ export class AgentSession {
 	 * Does not disconnect from or abort the agent. Returns the plan without
 	 * applying anything.
 	 */
-	private async _planRefine(
-		options: { instructions?: string; rollbackId?: string; global?: boolean },
-		signal: AbortSignal,
-	): Promise<RefinementPlan> {
+	private async _planRefine(options: RefineOptions, signal: AbortSignal): Promise<RefinementPlan> {
 		if (this._disposed) {
 			throw new Error("Cannot refine a disposed session.");
 		}
@@ -7732,36 +7815,34 @@ export class AgentSession {
 
 		const model = this.model;
 		const { apiKey, headers } = await this._getRequiredRequestAuth(model);
-		const globalHarnessStateDir = getGlobalHarnessStateDir();
 		const localHarnessStateDir = this._localHarnessStateDir();
-		const requestedScope = options.global ? "global" : "local";
+		const requestedScope: HarnessScope = options.scope ?? "local";
 		if (!options.rollbackId && requestedScope === "local" && !localHarnessStateDir) {
-			throw new Error("Local harness refinement requires a persisted session; use global refinement instead.");
+			throw new Error(
+				"Local harness refinement requires a persisted session; use project or global refinement instead.",
+			);
 		}
-		const globalPlanningState = loadHarnessState(globalHarnessStateDir, "global");
-		const localPlanningState = localHarnessStateDir ? loadHarnessState(localHarnessStateDir, "local") : undefined;
+		const scopedPlanningStates = this._loadScopedHarnessStates();
 		const planningState =
-			requestedScope === "global"
-				? globalPlanningState
-				: mergeHarnessStates(globalPlanningState, localPlanningState);
+			requestedScope === "local" ? mergeHarnessStates(scopedPlanningStates) : scopedPlanningStates[requestedScope]!;
 		const history = this._loadRefinementHistory();
 		const rollbackTarget = options.rollbackId ? history.find((item) => item.id === options.rollbackId) : undefined;
 		let baselineScope = rollbackTarget
 			? (inferRefinementResultScope(rollbackTarget) ?? requestedScope)
 			: requestedScope;
-		let baselineHarnessStateDir = baselineScope === "global" ? globalHarnessStateDir : localHarnessStateDir;
+		let baselineHarnessStateDir = this._harnessStateDirForScope(baselineScope);
 		if (rollbackTarget?.harnessStatePath) {
 			baselineHarnessStateDir = dirname(rollbackTarget.harnessStatePath);
-			baselineScope = resolve(baselineHarnessStateDir) === resolve(globalHarnessStateDir) ? "global" : "local";
+			baselineScope = this._scopeForHarnessStateDir(baselineHarnessStateDir);
 		}
 		if (!baselineHarnessStateDir) {
-			throw new Error("Local harness refinement requires a persisted session; use global refinement instead.");
+			throw new Error(
+				"Local harness refinement requires a persisted session; use project or global refinement instead.",
+			);
 		}
 		const baselineState = rollbackTarget
 			? loadHarnessState(baselineHarnessStateDir, baselineScope)
-			: baselineScope === "global"
-				? globalPlanningState
-				: localPlanningState!;
+			: scopedPlanningStates[baselineScope]!;
 		const plan = await planRefinement(
 			this.agent.state.messages,
 			planningState,
@@ -7786,7 +7867,7 @@ export class AgentSession {
 	 */
 	private async _applyRefine(
 		plan: RefinementPlan,
-		options: { instructions?: string; rollbackId?: string; global?: boolean },
+		options: RefineOptions,
 		refineAbort: AbortController,
 	): Promise<RefinementResult> {
 		if (this._disposed) {
@@ -7797,13 +7878,11 @@ export class AgentSession {
 		this._disconnectFromAgent();
 
 		try {
-			const globalHarnessStateDir = getGlobalHarnessStateDir();
-			const localHarnessStateDir = this._localHarnessStateDir();
-			const requestedScope = options.global ? "global" : "local";
+			const requestedScope: HarnessScope = options.scope ?? "local";
 			const history = this._loadRefinementHistory();
 			const rollbackTarget = options.rollbackId ? history.find((item) => item.id === options.rollbackId) : undefined;
 			let targetScope = plan.rollbackScope ?? requestedScope;
-			let targetHarnessStateDir = targetScope === "global" ? globalHarnessStateDir : localHarnessStateDir;
+			let targetHarnessStateDir = this._harnessStateDirForScope(targetScope);
 			if (targetScope === "local" && rollbackTarget?.harnessStatePath) {
 				if (!existsSync(rollbackTarget.harnessStatePath)) {
 					throw new Error(
@@ -7812,31 +7891,23 @@ export class AgentSession {
 				}
 				targetHarnessStateDir = dirname(rollbackTarget.harnessStatePath);
 				// Legacy records predate scope fields and default to "local" but may point
-				// at the global store; honor the recorded path so its entries stay global.
-				if (resolve(targetHarnessStateDir) === resolve(globalHarnessStateDir)) {
-					targetScope = "global";
-				}
+				// at a persisted store; honor the recorded path so its entries keep their scope.
+				targetScope = this._scopeForHarnessStateDir(targetHarnessStateDir);
 			}
 			if (!targetHarnessStateDir) {
-				throw new Error("Local harness refinement requires a persisted session; use global refinement instead.");
+				throw new Error(
+					"Local harness refinement requires a persisted session; use project or global refinement instead.",
+				);
 			}
 			// Re-read the target state immediately before applying so concurrent kernel
 			// (`rlm.harness`) writes during the LLM pass are not clobbered.
 			const state = loadHarnessState(targetHarnessStateDir, targetScope);
 			const proposal = {
 				...plan.proposal,
-				edits: plan.proposal.edits.map((edit) => {
-					const localPrefix = "local:";
-					const globalPrefix = "global:";
-					return {
-						...edit,
-						id: edit.id?.startsWith(localPrefix)
-							? edit.id.slice(localPrefix.length)
-							: edit.id?.startsWith(globalPrefix)
-								? edit.id.slice(globalPrefix.length)
-								: edit.id,
-					};
-				}),
+				edits: plan.proposal.edits.map((edit) => ({
+					...edit,
+					id: stripHarnessScopePrefix(edit.id),
+				})),
 			};
 			if (this._disposed || refineAbort.signal.aborted) {
 				throw new Error("Refinement cancelled because the session was disposed.");
@@ -7848,8 +7919,8 @@ export class AgentSession {
 				baselineState: plan.baselineState,
 			});
 			result.harnessStatePath = saveHarnessState(targetHarnessStateDir, state);
-			if (targetScope === "global") {
-				appendGlobalRefinement(globalHarnessStateDir, result);
+			if (targetScope !== "local") {
+				appendSharedRefinement(targetHarnessStateDir, result);
 			}
 			this.sessionManager.appendCustomEntry("prime-agent.refinement", result);
 			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
@@ -8823,6 +8894,7 @@ export class AgentSession {
 			RLM_DEPTH: String(this._rlmDepth),
 			RLM_MAX_DEPTH: String(this._rlmMaxDepth),
 			RLM_GLOBAL_HARNESS_STATE_DIR: getGlobalHarnessStateDir(),
+			RLM_PROJECT_HARNESS_STATE_DIR: this._projectHarnessStateDir(),
 		};
 		const rlmSessionDir = this._ensureRlmSessionDir();
 		if (rlmSessionDir) {
@@ -10557,7 +10629,7 @@ export class AgentSession {
 	}
 
 	/** Persist and immediately apply a per-chat RLM max-depth override. */
-	async setRlmMaxDepth(maxDepth: number, options: { global?: boolean } = {}): Promise<SetRlmMaxDepthResult> {
+	async setRlmMaxDepth(maxDepth: number, options: { scope?: SettingsScope } = {}): Promise<SetRlmMaxDepthResult> {
 		if (!isNonNegativeInteger(maxDepth)) {
 			throw new Error("RLM max depth must be a non-negative integer.");
 		}
@@ -10569,23 +10641,28 @@ export class AgentSession {
 		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 		this.agent.state.systemPrompt = this._refreshExtensionSystemPrompt(this.agent.state.systemPrompt, oldBase);
 
-		let globalError: string | undefined;
-		if (options.global) {
+		const scope = options.scope;
+		let saveError: string | undefined;
+		if (scope) {
 			await this.settingsManager.flush();
-			const staleErrors = this.settingsManager.drainErrors("global");
+			const staleErrors = this.settingsManager.drainErrors(scope);
 			for (const { error } of staleErrors) {
-				console.warn(`Warning: Earlier global settings write failed: ${error.message}`);
+				console.warn(`Warning: Earlier ${scope} settings write failed: ${error.message}`);
 			}
-			this.settingsManager.setRlmMaxDepth(maxDepth);
+			this.settingsManager.setRlmMaxDepth(maxDepth, scope);
 			await this.settingsManager.flush();
-			const errors = this.settingsManager.drainErrors("global");
-			globalError = errors.map(({ error }) => error.message).join("; ") || undefined;
+			const errors = this.settingsManager.drainErrors(scope);
+			saveError = errors.map(({ error }) => error.message).join("; ") || undefined;
 		}
 
+		const saved = scope !== undefined && saveError === undefined;
 		return {
 			...this.getRlmMaxDepthStatus(),
-			globalSaved: options.global === true && globalError === undefined,
-			...(globalError ? { globalError } : {}),
+			...(scope ? { savedScope: scope } : {}),
+			globalSaved: scope === "global" && saved,
+			...(scope === "global" && saveError ? { globalError: saveError } : {}),
+			...(scope === "project" ? { projectSaved: saved } : {}),
+			...(scope === "project" && saveError ? { projectError: saveError } : {}),
 		};
 	}
 

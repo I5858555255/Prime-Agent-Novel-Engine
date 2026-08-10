@@ -460,6 +460,74 @@ Content`,
 		});
 	});
 
+	describe("context files", () => {
+		function seedContextFiles(): void {
+			mkdirSync(cwd, { recursive: true });
+			mkdirSync(join(cwd, ".git"), { recursive: true });
+			writeFileSync(join(agentDir, "AGENTS.md"), "Global instructions");
+			writeFileSync(join(tempDir, "AGENTS.md"), "Ancestor instructions");
+			writeFileSync(join(cwd, "AGENTS.md"), "Project instructions");
+		}
+
+		function settingsWith(contextFiles: Record<string, boolean>): SettingsManager {
+			return SettingsManager.inMemory({ contextFiles });
+		}
+
+		it("loads global, ancestor, and project context files by default", async () => {
+			seedContextFiles();
+			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			await loader.reload();
+
+			expect(loader.getAgentsFiles().agentsFiles.map((file) => file.content)).toEqual([
+				"Global instructions",
+				"Ancestor instructions",
+				"Project instructions",
+			]);
+		});
+
+		it("drops the global context file when contextFiles.global is false", async () => {
+			seedContextFiles();
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: settingsWith({ global: false }),
+			});
+			await loader.reload();
+
+			expect(loader.getAgentsFiles().agentsFiles.map((file) => file.content)).toEqual([
+				"Ancestor instructions",
+				"Project instructions",
+			]);
+		});
+
+		it("stops at the project root when contextFiles.ancestors is false", async () => {
+			seedContextFiles();
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: settingsWith({ ancestors: false }),
+			});
+			await loader.reload();
+
+			expect(loader.getAgentsFiles().agentsFiles.map((file) => file.content)).toEqual([
+				"Global instructions",
+				"Project instructions",
+			]);
+		});
+
+		it("loads nothing when contextFiles.enabled is false", async () => {
+			seedContextFiles();
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: settingsWith({ enabled: false }),
+			});
+			await loader.reload();
+
+			expect(loader.getAgentsFiles().agentsFiles).toEqual([]);
+		});
+	});
+
 	describe("bundled skills", () => {
 		it("should load the bundled websearch skill by default", async () => {
 			const loader = new DefaultResourceLoader({ cwd, agentDir });

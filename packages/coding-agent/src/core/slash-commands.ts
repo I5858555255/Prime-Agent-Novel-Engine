@@ -1,4 +1,5 @@
 import { APP_NAME } from "../config.js";
+import type { HarnessScope } from "./refinement/index.js";
 import type { SourceInfo } from "./source-info.js";
 
 export type SlashCommandSource = "extension" | "prompt" | "skill";
@@ -29,15 +30,24 @@ export interface SessionSlashCommand {
 export interface RefineCommandOptions {
 	instructions?: string;
 	rollbackId?: string;
-	global?: boolean;
+	scope?: HarnessScope;
 }
+
+const REFINE_SCOPE_FLAGS: ReadonlyArray<{ flag: string; scope: HarnessScope }> = [
+	{ flag: "--global", scope: "global" },
+	{ flag: "--project", scope: "project" },
+];
 
 export function parseRefineCommandOptions(args: string): RefineCommandOptions {
 	let rest = args.trim();
-	let global = false;
-	if (/^--global(?=\s|$)/.test(rest)) {
-		global = true;
-		rest = rest.replace(/^--global(?=\s|$)/, "").trim();
+	let scope: HarnessScope | undefined;
+	for (const { flag, scope: flagScope } of REFINE_SCOPE_FLAGS) {
+		const leading = new RegExp(`^${flag}(?=\\s|$)`);
+		if (leading.test(rest)) {
+			scope = flagScope;
+			rest = rest.replace(leading, "").trim();
+			break;
+		}
 	}
 	if (rest === "rollback") throw new Error("Usage: /refine rollback <refinement-id>");
 	// Slash-command args keep their original separators (tabs, Unicode spaces);
@@ -45,17 +55,75 @@ export function parseRefineCommandOptions(args: string): RefineCommandOptions {
 	const rollbackMatch = /^rollback[\t\p{Zs}]/u.exec(rest);
 	if (rollbackMatch) {
 		let rollbackId = rest.slice(rollbackMatch[0].length).trim();
-		if (rollbackId === "--global") {
-			throw new Error("Usage: /refine rollback <refinement-id>");
-		}
-		if (/\s--global$/.test(rollbackId)) {
-			global = true;
-			rollbackId = rollbackId.replace(/\s--global$/, "").trim();
+		for (const { flag, scope: flagScope } of REFINE_SCOPE_FLAGS) {
+			if (rollbackId === flag) {
+				throw new Error("Usage: /refine rollback <refinement-id>");
+			}
+			const trailing = new RegExp(`\\s${flag}$`);
+			if (trailing.test(rollbackId)) {
+				scope = flagScope;
+				rollbackId = rollbackId.replace(trailing, "").trim();
+				break;
+			}
 		}
 		if (!rollbackId) throw new Error("Usage: /refine rollback <refinement-id>");
-		return { rollbackId, global };
+		return { rollbackId, scope };
 	}
-	return { instructions: rest || undefined, global };
+	return { instructions: rest || undefined, scope };
+}
+
+export type HarnessCommandAction = "list" | "enable" | "disable";
+
+export interface HarnessCommandOptions {
+	action: HarnessCommandAction;
+	/** Entry reference as typed by the user, e.g. "id", "subagent:id", or "project:subagent:id". */
+	reference?: string;
+}
+
+const HARNESS_COMMAND_USAGE = "Usage: /harness [list | enable <entry> | disable <entry>]";
+
+export function parseHarnessCommandOptions(args: string): HarnessCommandOptions {
+	const rest = args.trim();
+	if (!rest || rest === "list") {
+		return { action: "list" };
+	}
+	const match = /^(enable|disable)(?:[\t\p{Zs}]+(.*))?$/u.exec(rest);
+	if (!match) {
+		throw new Error(HARNESS_COMMAND_USAGE);
+	}
+	const reference = match[2]?.trim();
+	if (!reference) {
+		throw new Error(HARNESS_COMMAND_USAGE);
+	}
+	return { action: match[1] as HarnessCommandAction, reference };
+}
+
+/**
+ * Resolve a user-typed entry reference against the listed entries. Accepts a bare
+ * id and any combination of `<scope>:` and `<kind>:` qualifiers, and reports the
+ * candidates when a bare id is ambiguous.
+ */
+export function resolveHarnessEntryReference<
+	T extends { kind: string; id: string; scope: string; enabled: boolean; title: string },
+>(entries: readonly T[], reference: string): T {
+	const parts = reference.split(":").filter((part) => part.length > 0);
+	const id = parts.at(-1);
+	if (!id) {
+		throw new Error(HARNESS_COMMAND_USAGE);
+	}
+	const qualifiers = parts.slice(0, -1);
+	const matches = entries.filter(
+		(entry) =>
+			entry.id === id && qualifiers.every((qualifier) => entry.scope === qualifier || entry.kind === qualifier),
+	);
+	if (matches.length === 1) {
+		return matches[0];
+	}
+	if (matches.length === 0) {
+		throw new Error(`No harness entry matches "${reference}". Run /harness to list entries.`);
+	}
+	const candidates = matches.map((entry) => `${entry.scope}:${entry.kind}:${entry.id}`).join(", ");
+	throw new Error(`"${reference}" matches several harness entries: ${candidates}`);
 }
 
 export interface BuiltinSlashCommand {
@@ -158,6 +226,13 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "refine",
 		description: "Refine continual harness prompt notes, skills, subagents, and memory",
+		argumentHint: "[--project|--global] [instructions]",
+	},
+	{
+		name: "harness",
+		description: "List continual harness entries and enable or disable them",
+		argumentHint: "[list|enable <entry>|disable <entry>]",
+		takesArgument: true,
 	},
 	{
 		name: "goal",

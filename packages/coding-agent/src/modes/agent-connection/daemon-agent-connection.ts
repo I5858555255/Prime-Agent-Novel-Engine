@@ -14,10 +14,17 @@ import type {
 	AgentHeartbeatManagementAction,
 	AgentHeartbeatUpdateAction,
 } from "../../core/cron-jobs.js";
-import type { RefinementResult } from "../../core/refinement/index.js";
+import type {
+	HarnessEntrySummary,
+	HarnessScope,
+	RefinementKind,
+	RefinementResult,
+} from "../../core/refinement/index.js";
+import type { RlmMaxDepthStatus, SetRlmMaxDepthResult } from "../../core/rlm-max-depth.js";
 import type { DeleteSessionFileResult } from "../../core/session-file-actions.js";
 import { SessionAlreadyActiveError } from "../../core/session-lease.js";
 import type { SessionStats } from "../../core/session-stats.js";
+import type { SettingsScope } from "../../core/settings-manager.js";
 import {
 	DaemonCapabilityUnavailableError,
 	type DaemonClient,
@@ -1035,24 +1042,72 @@ export class DaemonAgentConnection implements AgentConnection {
 	}
 
 	async refine(
-		options: { instructions?: string; rollbackId?: string; global?: boolean } = {},
+		options: { instructions?: string; rollbackId?: string; scope?: HarnessScope } = {},
 	): Promise<RefinementResult> {
+		const supportsScopes = this.client.supportsServerCapability("config_scopes");
+		if (options.scope === "project" && !supportsScopes) {
+			// An older daemon would silently refine the session-local store instead
+			// of the repository store; fail loudly instead.
+			throw new Error(
+				"the daemon is running an older build without project harness scope; restart the daemon and try again",
+			);
+		}
 		const command: {
 			type: "refine";
 			activeSessionId: string;
 			instructions?: string;
 			rollbackId?: string;
 			global?: boolean;
+			scope?: HarnessScope;
 		} = {
 			type: "refine",
 			activeSessionId: this.activeSessionId,
 			instructions: options.instructions,
 			rollbackId: options.rollbackId,
 		};
-		if (options.global !== undefined) {
-			command.global = options.global;
+		if (options.scope !== undefined) {
+			command.scope = options.scope;
+			// Older daemons only understand the boolean flag.
+			if (!supportsScopes) {
+				command.global = options.scope === "global";
+			}
 		}
 		return this.requestData<RefinementResult>(command, DAEMON_REFINE_REQUEST_TIMEOUT_MS);
+	}
+
+	private assertHarnessEntrySupport(): void {
+		if (!this.client.supportsServerCapability("harness_entries")) {
+			throw new Error(
+				"the daemon is running an older build without harness entry management; restart the daemon and try again",
+			);
+		}
+	}
+
+	async listHarnessEntries(): Promise<HarnessEntrySummary[]> {
+		this.assertHarnessEntrySupport();
+		const { entries } = await this.requestData<{ entries: HarnessEntrySummary[] }>({
+			type: "harness_entries",
+			activeSessionId: this.activeSessionId,
+		});
+		return entries;
+	}
+
+	async setHarnessEntryEnabled(
+		kind: RefinementKind,
+		entryId: string,
+		enabled: boolean,
+		scope: HarnessScope,
+	): Promise<HarnessEntrySummary> {
+		this.assertHarnessEntrySupport();
+		const { entry } = await this.requestData<{ entry: HarnessEntrySummary }>({
+			type: "set_harness_entry_enabled",
+			activeSessionId: this.activeSessionId,
+			kind,
+			entryId,
+			enabled,
+			scope,
+		});
+		return entry;
 	}
 
 	async abortCompaction(): Promise<void> {
@@ -1241,24 +1296,29 @@ export class DaemonAgentConnection implements AgentConnection {
 		await this.requestOk({ type: "set_session_name", activeSessionId: this.activeSessionId, name });
 	}
 
-	async getRlmMaxDepthStatus() {
-		return this.requestData<{ maxDepth: number; source: "default" | "env" | "global" | "inherited" | "chat" }>({
+	async getRlmMaxDepthStatus(): Promise<RlmMaxDepthStatus> {
+		return this.requestData<RlmMaxDepthStatus>({
 			type: "get_rlm_max_depth_status",
 			activeSessionId: this.activeSessionId,
 		});
 	}
 
-	async setRlmMaxDepth(maxDepth: number, options?: { global?: boolean }) {
-		return this.requestData<{
-			maxDepth: number;
-			source: "default" | "env" | "global" | "inherited" | "chat";
-			globalSaved: boolean;
-			globalError?: string;
-		}>({
+	async setRlmMaxDepth(maxDepth: number, options?: { scope?: SettingsScope }): Promise<SetRlmMaxDepthResult> {
+		const scope = options?.scope;
+		if (scope === "project" && !this.client.supportsServerCapability("config_scopes")) {
+			// An older daemon would write the global settings file instead of the
+			// repository one; fail loudly instead.
+			throw new Error(
+				"the daemon is running an older build without project config scope; restart the daemon and try again",
+			);
+		}
+		return this.requestData<SetRlmMaxDepthResult>({
 			type: "set_rlm_max_depth",
 			activeSessionId: this.activeSessionId,
 			maxDepth,
-			global: options?.global,
+			scope,
+			// Older daemons only understand the boolean flag.
+			global: scope === "global" ? true : undefined,
 		});
 	}
 

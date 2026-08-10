@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import chalk from "chalk";
-import { CONFIG_DIR_NAME, getBundledSkillsDir } from "../config.js";
+import { CONFIG_DIR_NAME, getBundledSkillsDir, getProjectConfigDir, getProjectDir } from "../config.js";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
 
@@ -15,7 +15,7 @@ import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResul
 import { DefaultPackageManager, type PathMetadata } from "./package-manager.js";
 import type { PromptTemplate } from "./prompt-templates.js";
 import { loadPromptTemplates } from "./prompt-templates.js";
-import { SettingsManager } from "./settings-manager.js";
+import { type ContextFilesSettings, SettingsManager } from "./settings-manager.js";
 import type { Skill } from "./skills.js";
 import { loadSkills } from "./skills.js";
 import { createSourceInfo, type SourceInfo } from "./source-info.js";
@@ -76,22 +76,28 @@ function loadContextFileFromDir(dir: string): { path: string; content: string } 
 export function loadProjectContextFiles(options: {
 	cwd: string;
 	agentDir: string;
+	settings?: ContextFilesSettings;
 }): Array<{ path: string; content: string }> {
 	const resolvedCwd = options.cwd;
 	const resolvedAgentDir = options.agentDir;
+	const includeGlobal = options.settings?.global ?? true;
+	const includeAncestors = options.settings?.ancestors ?? true;
+	const projectDir = resolve(getProjectDir(resolvedCwd));
 
 	const contextFiles: Array<{ path: string; content: string }> = [];
 	const seenPaths = new Set<string>();
 
-	const globalContext = loadContextFileFromDir(resolvedAgentDir);
-	if (globalContext) {
-		contextFiles.push(globalContext);
-		seenPaths.add(globalContext.path);
+	if (includeGlobal) {
+		const globalContext = loadContextFileFromDir(resolvedAgentDir);
+		if (globalContext) {
+			contextFiles.push(globalContext);
+			seenPaths.add(globalContext.path);
+		}
 	}
 
 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
 
-	let currentDir = resolvedCwd;
+	let currentDir = resolve(resolvedCwd);
 	const root = resolve("/");
 
 	while (true) {
@@ -101,7 +107,9 @@ export function loadProjectContextFiles(options: {
 			seenPaths.add(contextFile.path);
 		}
 
-		if (currentDir === root) break;
+		// Stopping at the project root keeps unrelated repositories and the home
+		// directory from leaking their instructions into this project.
+		if (currentDir === root || (!includeAncestors && currentDir === projectDir)) break;
 
 		const parentDir = resolve(currentDir, "..");
 		if (parentDir === currentDir) break;
@@ -472,8 +480,16 @@ export class DefaultResourceLoader implements ResourceLoader {
 			}
 		}
 
+		const contextFilesSettings = this.settingsManager.getContextFiles();
+		const contextFilesDisabled = this.noContextFiles || !contextFilesSettings.enabled;
 		const agentsFiles = {
-			agentsFiles: this.noContextFiles ? [] : loadProjectContextFiles({ cwd: this.cwd, agentDir: this.agentDir }),
+			agentsFiles: contextFilesDisabled
+				? []
+				: loadProjectContextFiles({
+						cwd: this.cwd,
+						agentDir: this.agentDir,
+						settings: contextFilesSettings,
+					}),
 		};
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
@@ -861,13 +877,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return { themes: Array.from(seen.values()), diagnostics };
 	}
 
-	private discoverSystemPromptFile(): string | undefined {
-		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
+	/** Project file first, then the global one. Both are resolved for the project root, not the cwd. */
+	private discoverConfigDirFile(fileName: string): string | undefined {
+		const projectPath = join(getProjectConfigDir(this.cwd), fileName);
 		if (existsSync(projectPath)) {
 			return projectPath;
 		}
 
-		const globalPath = join(this.agentDir, "SYSTEM.md");
+		const globalPath = join(this.agentDir, fileName);
 		if (existsSync(globalPath)) {
 			return globalPath;
 		}
@@ -875,18 +892,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return undefined;
 	}
 
+	private discoverSystemPromptFile(): string | undefined {
+		return this.discoverConfigDirFile("SYSTEM.md");
+	}
+
 	private discoverAppendSystemPromptFile(): string | undefined {
-		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md");
-		if (existsSync(projectPath)) {
-			return projectPath;
-		}
-
-		const globalPath = join(this.agentDir, "APPEND_SYSTEM.md");
-		if (existsSync(globalPath)) {
-			return globalPath;
-		}
-
-		return undefined;
+		return this.discoverConfigDirFile("APPEND_SYSTEM.md");
 	}
 
 	private isUnderPath(target: string, root: string): boolean {

@@ -6,6 +6,8 @@ import {
 	detectInstallMethod,
 	ENV_LEGACY_SESSION_DIR,
 	ENV_SESSION_DIR,
+	getProjectConfigDir,
+	getProjectDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	getSessionsDir,
@@ -444,5 +446,49 @@ describe("session paths", () => {
 		const sessionDir = getDefaultSessionDir(cwd, join(tempDir, "agent"));
 
 		expect(sessionDir).toBe(sessionRoot);
+	});
+});
+
+describe("project paths", () => {
+	test("uses the nearest ancestor holding a project config dir", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "pi-project-root-"));
+		const projectDir = join(tempDir, "repo");
+		const nested = join(projectDir, "packages", "app");
+		mkdirSync(join(projectDir, ".prime", "agent"), { recursive: true });
+		mkdirSync(nested, { recursive: true });
+
+		expect(getProjectDir(nested)).toBe(projectDir);
+		expect(getProjectConfigDir(nested)).toBe(join(projectDir, ".prime", "agent"));
+	});
+
+	test("falls back to the enclosing repository root", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "pi-project-root-"));
+		const projectDir = join(tempDir, "repo");
+		const nested = join(projectDir, "src");
+		mkdirSync(join(projectDir, ".git"), { recursive: true });
+		mkdirSync(nested, { recursive: true });
+
+		expect(getProjectDir(nested)).toBe(projectDir);
+	});
+
+	test("prefers the repository root over a config dir outside it", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "pi-project-root-"));
+		const projectDir = join(tempDir, "repo");
+		mkdirSync(join(tempDir, ".prime", "agent"), { recursive: true });
+		mkdirSync(join(projectDir, ".git"), { recursive: true });
+
+		expect(getProjectDir(projectDir)).toBe(projectDir);
+	});
+
+	test("falls back to the working directory outside a repository", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "pi-project-root-"));
+		const workDir = join(tempDir, "loose");
+		mkdirSync(workDir, { recursive: true });
+
+		expect(getProjectDir(workDir)).toBe(workDir);
+	});
+
+	test("never treats the home directory as a project", () => {
+		expect(getProjectDir(homedir())).toBe(homedir());
 	});
 });

@@ -116,13 +116,16 @@ import { resolvePrimeInferencePostLoginModelAction } from "../../core/prime-infe
 import { parseCommandArgs } from "../../core/prompt-templates.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { SessionImportFileNotFoundError } from "../../core/session-import-errors.js";
+import type { SettingsScope } from "../../core/settings-manager.js";
 import { parseSkillBlock } from "../../core/skill-blocks.js";
 import {
 	BUILTIN_SLASH_COMMANDS,
 	builtinSlashCommandTakesArgument,
 	isBuiltinSlashCommandName,
+	parseHarnessCommandOptions,
 	parseSlashCommand,
 	resolveBuiltinSlashCommandName,
+	resolveHarnessEntryReference,
 } from "../../core/slash-commands.js";
 import {
 	captureAgentCommandUsed,
@@ -198,6 +201,7 @@ import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import { FEATURE_HINT_ANIMATION_INTERVAL_MS, FeatureHintComponent } from "./components/feature-hint.js";
 import { FooterComponent } from "./components/footer.js";
+import { HarnessSelectorComponent } from "./components/harness-selector.js";
 import { HeartbeatManagerComponent } from "./components/heartbeat-manager.js";
 import { InjectedPromptMessageComponent, isInjectedPromptMessage } from "./components/injected-prompt-message.js";
 import { formatKeyText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.js";
@@ -4691,6 +4695,11 @@ export class InteractiveMode {
 					await this.handleRlmMaxDepthCommand(commandArgs);
 					return;
 				}
+				if (commandName === "harness") {
+					this.editor.setText("");
+					await this.handleHarnessCommand(commandArgs);
+					return;
+				}
 				if (commandName === "session" && !commandArgs) {
 					this.echoLocalCommand(text);
 					await this.handleSessionCommand();
@@ -7243,6 +7252,8 @@ export class InteractiveMode {
 					blockImages: this.settingsManager.getBlockImages(),
 					enableSkillCommands: this.settingsManager.getEnableSkillCommands(),
 					enableBuiltinSkills: this.settingsManager.getEnableBuiltinSkills(),
+					contextFiles: this.settingsManager.getContextFiles().enabled,
+					globalContextFiles: this.settingsManager.getContextFiles().global,
 					steeringMode: state.steeringMode,
 					followUpMode: state.followUpMode,
 					transport: this.settingsManager.getTransport(),
@@ -7292,6 +7303,14 @@ export class InteractiveMode {
 					},
 					onEnableBuiltinSkillsChange: (enabled) => {
 						this.settingsManager.setEnableBuiltinSkills(enabled);
+						void this.handleReloadCommand();
+					},
+					onContextFilesChange: (enabled) => {
+						this.settingsManager.setContextFilesOption("enabled", enabled);
+						void this.handleReloadCommand();
+					},
+					onGlobalContextFilesChange: (enabled) => {
+						this.settingsManager.setContextFilesOption("global", enabled);
 						void this.handleReloadCommand();
 					},
 					onSteeringModeChange: (mode) => {
@@ -8829,6 +8848,51 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private async handleHarnessCommand(args: string): Promise<void> {
+		try {
+			const options = parseHarnessCommandOptions(args);
+			const entries = await this.agentConnection.listHarnessEntries();
+
+			if (options.action === "list") {
+				this.showSelector((done) => {
+					const selector = new HarnessSelectorComponent(entries, {
+						onToggle: async (entry, enabled) => {
+							const updated = await this.agentConnection.setHarnessEntryEnabled(
+								entry.kind,
+								entry.id,
+								enabled,
+								entry.scope,
+							);
+							this.showStatus(
+								`${updated.enabled ? "Enabled" : "Disabled"} ${updated.scope}:${updated.kind}:${updated.id}`,
+							);
+							return updated;
+						},
+						onCancel: () => {
+							done();
+							this.ui.requestRender();
+						},
+						onRender: () => this.ui.requestRender(),
+					});
+					return { component: selector, focus: selector.getList() };
+				});
+				return;
+			}
+
+			const target = resolveHarnessEntryReference(entries, options.reference!);
+			const enabled = options.action === "enable";
+			const updated = await this.agentConnection.setHarnessEntryEnabled(
+				target.kind,
+				target.id,
+				enabled,
+				target.scope,
+			);
+			this.showStatus(`${updated.enabled ? "Enabled" : "Disabled"} ${updated.scope}:${updated.kind}:${updated.id}`);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
 	private async handleRlmMaxDepthCommand(args: string): Promise<void> {
 		const tokens = args ? args.split(/\s+/) : [];
 		if (tokens.length === 0) {
@@ -8845,9 +8909,11 @@ export class InteractiveMode {
 			return;
 		}
 
-		const global = tokens[1] === "--global";
-		if (tokens.length > (global ? 2 : 1) || !/^\d+$/.test(tokens[0] ?? "")) {
-			this.showWarning("Usage: /rlm-max-depth [<non-negative integer> [--global]]");
+		const scopeFlag = tokens[1];
+		const scope: SettingsScope | undefined =
+			scopeFlag === "--global" ? "global" : scopeFlag === "--project" ? "project" : undefined;
+		if (tokens.length > (scope ? 2 : 1) || !/^\d+$/.test(tokens[0] ?? "")) {
+			this.showWarning("Usage: /rlm-max-depth [<non-negative integer> [--project|--global]]");
 			return;
 		}
 		const maxDepth = Number(tokens[0]);
@@ -8857,22 +8923,22 @@ export class InteractiveMode {
 		}
 
 		try {
-			const result = await this.agentConnection.setRlmMaxDepth(maxDepth, { global });
+			const result = await this.agentConnection.setRlmMaxDepth(maxDepth, { scope });
+			const savedSuffix =
+				result.savedScope === "project" && result.projectSaved
+					? " and saved as project default"
+					: result.globalSaved
+						? " and saved as global default"
+						: "";
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(
-				new Text(
-					theme.fg(
-						"dim",
-						`RLM max depth set: ${result.maxDepth}${result.globalSaved ? " and saved as global default" : ""}`,
-					),
-					1,
-					0,
-				),
+				new Text(theme.fg("dim", `RLM max depth set: ${result.maxDepth}${savedSuffix}`), 1, 0),
 			);
 			this.ui.requestRender();
-			if (result.globalError) {
+			const saveError = result.globalError ?? result.projectError;
+			if (saveError) {
 				this.showError(
-					`RLM max depth set for this chat, but the global default was not saved: ${result.globalError}`,
+					`RLM max depth set for this chat, but the ${result.savedScope} default was not saved: ${saveError}`,
 				);
 			}
 		} catch (error) {
