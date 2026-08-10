@@ -8,7 +8,7 @@ Sessions auto-save to `~/.prime/agent/sessions/`. Each session is a JSONL file w
 
 ```bash
 prime-agent --continue          # Continue the most recent session
-prime-agent --resume [path|id]  # Browse past sessions or resume one directly
+prime-agent --resume <path|id>  # Resume a saved session directly
 prime-agent --no-session        # Ephemeral mode; do not save
 prime-agent --fork <path|id>    # Fork a session file or partial session ID into a new session
 ```
@@ -21,7 +21,6 @@ For the JSONL file format and SessionManager API, see [Session Format](session-f
 
 | Command | Description |
 |---------|-------------|
-| `/resume` | Browse and select previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set the current session display name |
 | `/session` | Show session info |
@@ -35,18 +34,18 @@ For the JSONL file format and SessionManager API, see [Session Format](session-f
 
 ## Resuming and Deleting Sessions
 
-`/resume` opens an interactive session picker for the current project. `prime-agent --resume` opens the same picker at startup, and `prime-agent --resume <path|id>` resumes a specific session.
+`prime-agent --resume <path|id>` resumes a specific saved session. `prime-agent agents` opens the searchable session view, where running, idle, and saved sessions are listed together.
 
-An invalid ID exits with the closest unambiguous session ID when one is available. To open the picker and send an initial prompt after selecting a session, separate the prompt with `--`: `prime-agent --resume -- "continue this work"`.
+In the chat, press `←` to return to the agents view. Select an inactive session and press space to resume it and send a prompt in one motion; `→` opens the selected session.
 
-In the picker you can:
+An invalid ID exits with the closest unambiguous session ID when one is available. To resume a session and send an initial prompt, separate the prompt with `--`: `prime-agent --resume <id> -- "continue this work"`.
+
+In the agents view you can:
 
 - search by typing
-- toggle path display with Ctrl+P
-- toggle sort mode with Ctrl+S
-- filter to named sessions with Ctrl+N
 - rename with Ctrl+R
-- delete with Ctrl+D, then confirm
+- delete with Ctrl+X twice to confirm
+- start a new session with Ctrl+N
 
 When available, Prime Agent uses the `trash` CLI for deletion instead of permanently removing files.
 
@@ -58,7 +57,7 @@ Use `/name <name>` to set a human-readable session name:
 /name Refactor auth module
 ```
 
-Named sessions are easier to find in `/resume` and `prime-agent --resume`.
+Named sessions are easier to find in `prime-agent agents` and `prime-agent --resume`.
 
 ## Branching with `/tree`
 

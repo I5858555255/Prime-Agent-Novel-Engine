@@ -42,7 +42,6 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/effort` | Set the reasoning/thinking level |
 | `/scoped-models` | Enable/disable models for Ctrl+P cycling |
 | `/settings` | Thinking level, theme, message delivery, transport |
-| `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
 | `/session` | Show session file, ID, and message counts |
@@ -216,7 +215,7 @@ Use `prime-agent model list [search]` to list available models.
 | Option | Description |
 |--------|-------------|
 | `-c`, `--continue` | Continue the most recent session |
-| `-r`, `--resume [path\|id]` | Browse and select a session, or resume a specific session file or partial UUID |
+| `-r`, `--resume <path\|id>` | Resume a specific session file or partial UUID |
 | `--fork <path\|id>` | Fork a session file or partial UUID into a new session |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--no-session` | Ephemeral mode; do not save |
