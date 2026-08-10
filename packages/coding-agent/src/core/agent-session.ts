@@ -162,6 +162,7 @@ import {
 	type GoalHostResponse,
 	type GoalState,
 	type GoalStatus,
+	goalContinuationIsStalled,
 	goalHostResponse,
 	goalTokenDeltaForUsage,
 	isPersistedGoalState,
@@ -1804,7 +1805,7 @@ export class AgentSession {
 		this._setGoalState(emptyGoalState());
 	}
 
-	private _pauseGoal(reason = "Paused by user"): void {
+	private _pauseGoal(reason = "Paused by user", options: { waitingForUser?: boolean } = {}): void {
 		this._clearQueuedGoalContexts();
 		if (this._goalState.status !== "active") {
 			this._emitGoalUpdate();
@@ -1815,7 +1816,27 @@ export class AgentSession {
 			...goal,
 			active: false,
 			status: "paused",
+			waitingForUser: options.waitingForUser === true ? true : undefined,
 			lastReason: reason,
+			lastError: undefined,
+		});
+	}
+
+	/**
+	 * Reactivate a goal that auto-paused waiting for user input. The prompt
+	 * being admitted supplies that input; the regular continuation hook takes
+	 * over after the turn, so no goal context is injected here. An explicit
+	 * `/goal pause` does not set `waitingForUser` and is not resumed.
+	 */
+	private _resumeGoalForUserInput(): void {
+		if (this._goalState.status !== "paused" || this._goalState.waitingForUser !== true) {
+			return;
+		}
+		this._setGoalState({
+			...this._goalState,
+			active: true,
+			status: "active",
+			lastReason: undefined,
 			lastError: undefined,
 		});
 	}
@@ -3171,6 +3192,12 @@ export class AgentSession {
 			return [];
 		}
 		try {
+			if (goalContinuationIsStalled(context.newMessages)) {
+				this._pauseGoal("Waiting for user input: goal continuations repeatedly ended without tool calls", {
+					waitingForUser: true,
+				});
+				return [];
+			}
 			this._ensureGoalRuntimeActive(context.context);
 			const nextGoal = {
 				...this._goalState,
@@ -4663,6 +4690,13 @@ export class AgentSession {
 					if (result.disposition === "queued") return;
 					await this.waitForSessionInputIdle();
 					return;
+				}
+
+				// A genuine user prompt supplies the input a stall-paused goal was
+				// waiting for. Host-generated prompts and custom-message deliveries
+				// (heartbeats, agent messages) do not resume it.
+				if (!isInternalPrompt && !options?.customMessage) {
+					this._resumeGoalForUserInput();
 				}
 
 				const queueForStreaming = this.isStreaming;
