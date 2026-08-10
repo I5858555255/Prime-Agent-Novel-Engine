@@ -5963,11 +5963,12 @@ export class InteractiveMode {
 
 	private getTrayLocationLabel(): string | undefined {
 		const modelLabel = this.getModelTrayLabel();
+		const cwdLabel = `cwd ${formatSplashCwd(this.getCurrentCwd())}`;
 		const hasChildren = this.options.sessionHasChildren === true || (this.subagentSnapshots?.size ?? 0) > 0;
 		const depthLabel = formatAgentDepthLabel(this.options.sessionDepth, hasChildren);
 		const shortcutsHint = this.getShortcutsTrayHint();
 		const agentsHint = this.getAgentsViewTrayHint();
-		return [agentsHint, depthLabel, modelLabel, shortcutsHint]
+		return [agentsHint, cwdLabel, depthLabel, modelLabel, shortcutsHint]
 			.filter((label): label is string => label !== undefined)
 			.join("  ");
 	}
