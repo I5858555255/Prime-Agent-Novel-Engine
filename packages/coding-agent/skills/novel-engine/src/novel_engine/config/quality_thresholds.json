@@ -1,0 +1,19 @@
+{
+  "scoring_dimensions": [
+    { "name": "剧情一致性", "weight": 25, "description": "章节是否严格遵循 plot_graph 节点目标与伏笔计划" },
+    { "name": "人物一致性", "weight": 20, "description": "角色行为、语气、境界是否与 world_state 一致" },
+    { "name": "伏笔执行", "weight": 20, "description": "clue_plan 中的写作指令是否在缩写/正文中体现" },
+    { "name": "文风符合度", "weight": 15, "description": "是否符合 style_bible.md 的叙事视角、语言风格、情感基调" },
+    { "name": "节奏控制", "weight": 10, "description": "场景切换、情绪曲线是否符合任务卡设计" },
+    { "name": "创新亮点", "weight": 10, "description": "是否有超出模板的生动细节或意外转折" }
+  ],
+  "grading": {
+    "pass": 85,
+    "fix": 60,
+    "fail": 0
+  },
+  "fix_strategy": {
+    "60_84": "局部修复：仅重新生成被标记的问题段落，保留其余内容",
+    "below_60": "全量回退到导演环节重来，最多3次"
+  }
+}

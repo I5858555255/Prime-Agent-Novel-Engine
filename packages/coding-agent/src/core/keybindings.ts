@@ -19,6 +19,7 @@ export interface AppKeybindings {
 	"app.suspend": true;
 	"app.model.select": true;
 	"app.model.toggleScope": true;
+	"app.configuration.previousTab": true;
 	"app.tools.expand": true;
 	"app.thinking.toggle": true;
 	"app.subagents.focus": true;
@@ -29,6 +30,7 @@ export interface AppKeybindings {
 	"app.message.followUp": true;
 	"app.message.dequeue": true;
 	"app.clipboard.pasteImage": true;
+	"app.clipboard.copyLoginUrl": true;
 	"app.session.new": true;
 	"app.session.tree": true;
 	"app.session.fork": true;
@@ -78,7 +80,8 @@ export const KEYBINDINGS = {
 		description: "Suspend to background",
 	},
 	"app.model.select": { defaultKeys: "ctrl+l", description: "Open model selector" },
-	"app.model.toggleScope": { defaultKeys: "shift+tab", description: "Toggle model selector scope" },
+	"app.model.toggleScope": { defaultKeys: "alt+s", description: "Toggle model selector scope" },
+	"app.configuration.previousTab": { defaultKeys: "shift+tab", description: "Select previous configuration tab" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.thinking.toggle": {
 		defaultKeys: "ctrl+t",
@@ -116,12 +119,16 @@ export const KEYBINDINGS = {
 		defaultKeys: process.platform === "win32" ? "alt+v" : "ctrl+v",
 		description: "Paste image from clipboard",
 	},
+	"app.clipboard.copyLoginUrl": {
+		defaultKeys: ["c", "alt+c"],
+		description: "Copy login URL",
+	},
 	"app.session.new": { defaultKeys: [], description: "Start a new session" },
 	"app.session.tree": { defaultKeys: [], description: "Open session tree" },
 	"app.session.fork": { defaultKeys: [], description: "Fork current session" },
 	"app.session.resume": { defaultKeys: [], description: "Resume a session" },
-	"app.agents.back": { defaultKeys: "left", description: "Return to session view" },
-	"app.agents.open": { defaultKeys: "right", description: "Open chat view for selected agent" },
+	"app.agents.back": { defaultKeys: "left", description: "Return to parent agent scope" },
+	"app.agents.open": { defaultKeys: "right", description: "Drill into selected agent" },
 	"app.modal.back": { defaultKeys: "left", description: "Go back / close the current dialog" },
 	"app.agents.reply": { defaultKeys: "space", description: "Reply to selected agent" },
 	"app.agents.new": { defaultKeys: "ctrl+n", description: "Start a new session from the agents view" },

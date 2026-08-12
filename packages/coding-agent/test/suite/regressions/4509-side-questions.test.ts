@@ -407,6 +407,7 @@ describe("ENG-4509 side questions", () => {
 		const fakeThis = Object.assign(Object.create(InteractiveMode.prototype), {
 			defaultEditor,
 			editor: { getText: () => "", setText: vi.fn(), addToHistory },
+			uiServices: { settingsManager: { getTelemetryEnabled: vi.fn(() => false) } },
 			promptStashState: { stash: undefined },
 			clearShortcutGuide: vi.fn(),
 			sideQuestionComponent: {},
@@ -871,7 +872,7 @@ describe("ENG-4509 side questions", () => {
 			isAgentCompacting: () => false,
 			isBashRunning: () => true,
 			applyConnectionStateSnapshot: vi.fn(),
-			replaceChildAgentInspector: vi.fn(),
+			replaceSubagentSummary: vi.fn(),
 			getSessionContextFromConnectionSnapshot: vi.fn(() => ({
 				messages: [],
 				thinkingLevel: "medium",

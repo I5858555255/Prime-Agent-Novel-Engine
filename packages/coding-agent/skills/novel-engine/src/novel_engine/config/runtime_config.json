@@ -1,0 +1,38 @@
+{
+  "llm": {
+    "provider": "openai",
+    "model": "agnes-2.0-flash",
+    "api_base": "https://apihub.agnes-ai.com",
+    "api_key": "REDACTED",
+    "temperature": 0.85,
+    "max_tokens": 16384,
+    "timeout_seconds": 120,
+    "use_mock": false
+  },
+  "pipeline": {
+    "total_chapters": 3000,
+    "mini_test_chapters": 10,
+    "medium_test_chapters": 70,
+    "sliding_window_size": 50,
+    "recent_memory_window": 80,
+    "max_review_retries": 3,
+    "scene_per_chapter": {
+      "min": 3,
+      "max": 5
+    }
+  },
+  "quality": {
+    "pass_threshold": 85,
+    "fix_threshold": 60,
+    "overuse_window_chapters": 100,
+    "overuse_count_threshold": 4,
+    "well_received_min_confidence": 0.6
+  },
+  "commit": {
+    "hash_algorithm": "sha256",
+    "verify_on_read": true
+  },
+  "recovery": {
+    "default_policy": "pause_and_log"
+  }
+}

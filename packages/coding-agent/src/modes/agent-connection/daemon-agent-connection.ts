@@ -2,11 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, ServiceTier, Transport } from "@earendil-works/pi-ai";
 import { appendRotatingLog, getAgentLogPath, getDaemonLogPath } from "../../config.js";
-import type {
-	AgentSessionMessageDeliveryMode,
-	AgentSessionMessageReceipt,
-	AgentSessionMessageSafetyStatus,
-} from "../../core/agent-messages.js";
+import type { AgentSessionMessageReceipt, AgentSessionMessageSafetyStatus } from "../../core/agent-messages.js";
 import type { AgentSessionEvent } from "../../core/agent-session.js";
 import type { AgentAutonomousStatus } from "../../core/autonomous.js";
 import type { BashResult } from "../../core/bash-executor.js";
@@ -171,6 +167,8 @@ export interface DaemonAgentConnectionOptions {
 	supportsExtensionUi?: boolean;
 	/** Dispose the connection by stopping its hidden worker instead of detaching. */
 	ownedSession?: boolean;
+	/** Require the target worker to have been created with telemetry disabled. */
+	telemetryDisabled?: true;
 }
 
 /**
@@ -311,6 +309,7 @@ export class DaemonAgentConnection implements AgentConnection {
 			],
 			env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
 			launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,
+			telemetryDisabled: this.options.telemetryDisabled,
 			resumeCursor:
 				this.lastEventCursor === undefined
 					? undefined
@@ -644,17 +643,12 @@ export class DaemonAgentConnection implements AgentConnection {
 		return data.heartbeat ?? undefined;
 	}
 
-	async sendAgentMessage(
-		targetActiveSessionId: string,
-		message: string,
-		deliveryMode?: AgentSessionMessageDeliveryMode,
-	): Promise<AgentSessionMessageReceipt> {
+	async sendAgentMessage(targetActiveSessionId: string, message: string): Promise<AgentSessionMessageReceipt> {
 		return this.requestData<AgentSessionMessageReceipt>({
 			type: "send_message",
 			targetActiveSessionId,
 			message,
 			fromActiveSessionId: this.activeSessionId,
-			deliveryMode,
 		});
 	}
 
@@ -1148,6 +1142,7 @@ export class DaemonAgentConnection implements AgentConnection {
 				],
 				env: this.options.sendClientEnv ? collectDaemonClientEnv() : undefined,
 				launchEnv: this.options.ownedSession ? collectDaemonLaunchEnv() : undefined,
+				telemetryDisabled: this.options.telemetryDisabled,
 			});
 			reattached = true;
 			this.activeSessionId = result.activeSessionId;
@@ -1244,6 +1239,27 @@ export class DaemonAgentConnection implements AgentConnection {
 
 	async setSessionName(name: string): Promise<void> {
 		await this.requestOk({ type: "set_session_name", activeSessionId: this.activeSessionId, name });
+	}
+
+	async getRlmMaxDepthStatus() {
+		return this.requestData<{ maxDepth: number; source: "default" | "env" | "global" | "inherited" | "chat" }>({
+			type: "get_rlm_max_depth_status",
+			activeSessionId: this.activeSessionId,
+		});
+	}
+
+	async setRlmMaxDepth(maxDepth: number, options?: { global?: boolean }) {
+		return this.requestData<{
+			maxDepth: number;
+			source: "default" | "env" | "global" | "inherited" | "chat";
+			globalSaved: boolean;
+			globalError?: string;
+		}>({
+			type: "set_rlm_max_depth",
+			activeSessionId: this.activeSessionId,
+			maxDepth,
+			global: options?.global,
+		});
 	}
 
 	async renameSavedSession(sessionPath: string, name: string): Promise<void> {
