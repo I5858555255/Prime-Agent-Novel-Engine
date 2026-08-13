@@ -2,6 +2,85 @@
 
 ## [Unreleased]
 
+- Added a configurable copy action to login dialogs so raw sign-in URLs can be copied without selecting wrapped text ([#643](https://github.com/PrimeIntellect-ai/prime-agent/issues/643)).
+- Added privacy-safe pseudonymous product analytics for onboarding, command use, execution modes, run outcomes, TTFT, latency, usage, tools, retries, and compactions, with disclosure and opt-out controls ([ENG-4682](https://linear.app/primeintellect/issue/ENG-4682/add-privacy-safe-posthog-analytics-to-prime-agent)).
+- Changed sent agent messages in the IPython cell UI to show only the message text with a `╰─` gutter when expanded, matching received messages, and hid the raw `agent_message.send` receipt dictionary.
+- Fixed Homebrew installs attempting to self-update their versioned Cellar keg instead of directing users to `brew upgrade prime-agent` ([#844](https://github.com/PrimeIntellect-ai/prime-agent/issues/844))
+- Fixed the agents view collapsing expanded subagent lists when returning from an opened agent ([ENG-5105](https://linear.app/primeintellect/issue/ENG-5105/keep-the-agents-view-state-persistent)).
+- Kept the subagent summary row visible and selectable while its list is expanded in the agents view, so pressing enter on it collapses the list again ([ENG-5105](https://linear.app/primeintellect/issue/ENG-5105/keep-the-agents-view-state-persistent)).
+
+## [0.7.1] - 2026-08-07
+
+- Fixed the bundled `websearch` skill description and missing-key guidance omitting the `/login` → **MCP Connections** step required to configure Serper.
+- Fixed `retry_worker` cancelling its own recovery when a stopped session worker left a saved stop marker behind, leaving the session stuck at "Session worker is not connected".
+
+## [0.7.0] - 2026-08-05
+
+### Breaking Changes
+
+- Changed agent messages to always use steering delivery and removed delivery-mode options from the Python, CLI, RPC, and connection APIs. Code passing `mode` to `agent_message.send`, or a delivery mode over the CLI/RPC, must drop it.
+
+### Changed
+
+- Changed self-updates to report the previous and new Prime Agent versions.
+
+### Fixed
+
+- Fixed the subagent summary showing retained children as idle while they run follow-up work.
+
+## [0.6.1] - 2026-08-05
+
+- Added reverse tab navigation to the `/login` configuration menu and moved the model scope shortcut to `Alt+S`.
+- Fixed daemon startup crashes hiding their exit status and daemon log until the startup timeout.
+- Documented the global `idleEvictionMinutes` daemon setting, including its default, valid values, and eviction/passivation behavior ([#621](https://github.com/PrimeIntellect-ai/prime-agent/issues/621)).
+- Fixed top-level `--help` omitting `acp` from the supported `--mode` values ([#620](https://github.com/PrimeIntellect-ai/prime-agent/issues/620)).
+- Fixed `stop` and `rename` becoming prompts when `--daemon-socket` precedes the command ([#622](https://github.com/PrimeIntellect-ai/prime-agent/issues/622)).
+- Fixed subagent terminal notices arriving as anonymous follow-up prompts instead of attributed agent messages, so a parent can now tell which child reported completion, failure, or cancellation, and a busy parent is steered at the next turn boundary rather than waiting to go idle ([#617](https://github.com/PrimeIntellect-ai/prime-agent/issues/617)).
+- Fixed ACP mode reporting a failed turn as a clean `end_turn`. A provider error, expired auth, or unusable model left `session/prompt` resolving with no updates at all, which reads to a client as a successful but empty turn; the turn now fails with the underlying error instead.
+- Fixed ACP cwd mismatch metadata treating symlink aliases such as macOS `/var` and `/private/var` as different directories ([#623](https://github.com/PrimeIntellect-ai/prime-agent/issues/623)).
+
+## [0.6.0] - 2026-08-04
+
+### Breaking Changes
+
+- Changed `rlm(...)` to return at task admission instead of waiting for the child to finish. It now yields a spawn handle (`rlm_child_id`, `name`, `session_dir`, `model`); `RLMResult` and its final answer, usage, and model-fallback warning are gone. A child reports back with `agent_message.send(..., receiver_role="parent")`, which arrives as an ordinary prompt and starts a parent turn. Code that read `result.answer`, or treated `asyncio.gather(...)` over `rlm(...)` as fan-in, must be updated.
+- Changed `agent_message.send` to role-addressed delivery: pass `receiver_role` (`"parent"`, `"sibling"`, `"child"`) plus `receiver_name` for siblings and children. The old positional `send(target, message)` form no longer works, and the separate `roster()` call is now `agent_message.list_agents()`.
+- Narrowed agent reach to the nuclear family: an agent may message or observe only its parent, siblings, and direct children. Top-level sessions are siblings of one another, so agent-to-agent between them still works; grandchildren and cousins must be reached by relaying through the intermediate child. Users are unaffected and still see every session.
+- Requesting an unavailable subagent model now fails the spawn instead of silently falling back to the parent's model with a warning.
+- Bumped the daemon schema revision to 13 for the parent-edge, depth, naming, and passivation wire changes; older clients and daemons are rejected cleanly at connect.
+
+### Added
+
+- Added `--mode acp`: Prime Agent now runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over NDJSON on stdio, driving an `AgentConnection` in-process. IPython surfaces as an ACP `execute` tool call carrying its cell source, and capabilities ACP has no native concept for (subagents, autonomous gate state, rich IPython output, compaction, goals, heartbeats, continual-harness refinement) travel in a namespaced `ai.primeintellect.prime-agent` `_meta` envelope that vanilla ACP clients ignore. Documented in `docs/acp.md`.
+- Added `/rlm-max-depth` to view or set the recursion cap for the current chat, with `--global` to change the default for new sessions.
+- Added recursive navigation to the agents view: drill into any session's children and back out again, with each chat showing its own depth.
+- Added a family roster via `agent_message.list_agents()`, listing parent, siblings, and children with name, id, depth, and status, including family members currently on disk.
+- Added sibling-unique agent names, enforced at spawn and rename against loaded and unloaded sessions alike. The same name may be reused at different depths.
+- Added an `idleEvictionMinutes` setting (default 90, `off` to disable) controlling idle eviction and passivation.
+
+### Changed
+
+- Changed finished subagents to stay on disk until something touches them, so memory scales with the active frontier rather than every subagent ever spawned. Lists show them without loading them, and attach, message, or transcript read wakes them on demand.
+- Changed sessions to persist their parent edge and derived RLM depth, so tree position no longer has to be inferred from whatever happens to be in memory.
+- Changed the supervisor to stop worker processes whose whole session tree has been idle past the threshold, and to passivate individually idle children inside still-busy workers.
+- Replaced the child-agent inspector with a single subagent summary line under the prompt that opens the agents view scoped to that session's children.
+
+### Fixed
+
+- Fixed `stop` and `rename` rejecting custom daemon socket options.
+- Fixed SIGINT in print mode leaving the session active until liveness reclaim.
+- Fixed daemon startup failing permanently when an interrupted supervisor owner directory contained only stray files.
+- Fixed agents-view fallback notices and scoped live sessions surviving transient refresh failures across chat returns.
+- Fixed stopping completed subagents deleting their retained sessions.
+- Fixed silent or cancelled RLM children leaving parents without a terminal status notice.
+- Added missing argument hints to `/name`, `/model`, `/export`, and `/import` in autocomplete.
+
+## [0.5.1] - 2026-08-04
+
+### Fixed
+
+- Fixed `/refine` failing with an opaque JSON parse error when the refiner exceeded a fixed 4096-token output cap; output budgets now derive from the selected model, and a truncated reply reports the exhausted budget directly.
+
 ## [0.5.0] - 2026-08-03
 
 ### Breaking Changes

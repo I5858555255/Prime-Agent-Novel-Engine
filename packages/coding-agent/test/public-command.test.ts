@@ -103,6 +103,24 @@ describe("public command routing", () => {
 		expect(mocks.daemonCommands).toEqual([["daemon", "list", "--all", "--json"]]);
 	});
 
+	it("forwards a custom daemon socket when stopping an agent", async () => {
+		await expect(
+			handlePublicCommand(["stop", "worker", "--daemon-socket", "/tmp/custom-daemon.sock"]),
+		).resolves.toMatchObject({ handled: true });
+		expect(mocks.daemonCommands).toEqual([
+			["daemon", "kill", "worker", "--daemon-socket", "/tmp/custom-daemon.sock"],
+		]);
+	});
+
+	it("forwards a custom daemon socket when renaming an agent", async () => {
+		await expect(
+			handlePublicCommand(["rename", "worker", "reviewer", "--daemon-socket", "/tmp/custom-daemon.sock"]),
+		).resolves.toMatchObject({ handled: true });
+		expect(mocks.daemonCommands).toEqual([
+			["daemon", "rename", "worker", "reviewer", "--daemon-socket", "/tmp/custom-daemon.sock"],
+		]);
+	});
+
 	it("separates Prime Agent updates from package updates", async () => {
 		await handlePublicCommand(["update", "--force"]);
 		await handlePublicCommand(["package", "update"]);
@@ -307,6 +325,7 @@ describe("public command routing", () => {
 		const help = formatTopLevelHelp();
 		expect(help).toContain("Options:");
 		expect(help).toContain("Run options:");
+		expect(help).toContain("--mode <text|json|rpc|acp|daemon>");
 		expect(help).toContain("Autonomous options:");
 		for (const option of [
 			"--autonomous",

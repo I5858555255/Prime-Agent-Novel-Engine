@@ -73,7 +73,7 @@ type ResetHarness = PromptStashLiveMarkerHarness & {
 	ipythonToolComponents: Map<string, unknown>;
 	lateIpythonSentAgentMessages: Map<string, unknown>;
 	resetPendingToolState: Mock;
-	resetChildAgentInspector: Mock;
+	resetSubagentSummary: Mock;
 	setGoalAnnouncementBaseline: Mock;
 	getGoalState: Mock<() => unknown>;
 	syncGoalTray: Mock;
@@ -81,6 +81,7 @@ type ResetHarness = PromptStashLiveMarkerHarness & {
 
 type SubmitHarness = PromptStashHarness & {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
+	uiServices: { settingsManager: { getTelemetryEnabled: Mock<() => boolean> } };
 	sideQuestionContainer: { clear: Mock };
 	isAgentCompacting: () => boolean;
 	isAgentStreaming: () => boolean;
@@ -186,6 +187,7 @@ function createSubmitHarness(
 	const mode: SubmitHarness = {
 		...createPromptStashHarness(options),
 		defaultEditor: {},
+		uiServices: { settingsManager: { getTelemetryEnabled: vi.fn(() => false) } },
 		sideQuestionContainer: { clear: vi.fn() },
 		isAgentCompacting: () => false,
 		isAgentStreaming: () => false,
@@ -555,7 +557,7 @@ describe("InteractiveMode prompt stash", () => {
 			ipythonToolComponents: new Map(),
 			lateIpythonSentAgentMessages: new Map(),
 			resetPendingToolState: vi.fn(),
-			resetChildAgentInspector: vi.fn(),
+			resetSubagentSummary: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
 			getGoalState: vi.fn(() => undefined),
 			syncGoalTray: vi.fn(),
@@ -590,7 +592,7 @@ describe("InteractiveMode prompt stash", () => {
 			ipythonToolComponents: new Map(),
 			lateIpythonSentAgentMessages: new Map(),
 			resetPendingToolState: vi.fn(),
-			resetChildAgentInspector: vi.fn(),
+			resetSubagentSummary: vi.fn(),
 			setGoalAnnouncementBaseline: vi.fn(),
 			getGoalState: vi.fn(() => undefined),
 			syncGoalTray: vi.fn(),
