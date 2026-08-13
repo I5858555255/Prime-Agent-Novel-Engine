@@ -10,6 +10,67 @@ from db import StateDB
 from session import SessionTree
 from patcher import IncrementalPatcher
 from subagent import RecursiveSubagent, Subtask
+import json
+
+try:
+    from novel_engine.llm_client import _mock_task_card, _mock_synopsis
+except ImportError:
+    from llm_client import _mock_task_card, _mock_synopsis
+
+
+class MockLLMForFix:
+    def __init__(self):
+        self.call_count = 0
+        self.review_count = 0
+
+    def chat_completion(self, messages, temperature=None, max_tokens=None, retry_on_error=True, max_retries=3):
+        self.call_count += 1
+        combined = "\n".join(m.get("content", "") for m in messages)
+
+        if "审查要求" in combined:
+            self.review_count += 1
+            print(f"CALL {self.call_count}: MATCHED review (attempt {self.review_count})")
+            # On first call, return verdict "fix" with fix_scope "场景1"
+            if self.review_count == 1: # first chapter review
+                return {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "chapter_num": 1,
+                        "scores": {"plot_consistency": 20, "character_consistency": 15, "foreshadow_execution": 18, "style_match": 12, "pacing": 8, "innovation": 7},
+                        "total_score": 80,
+                        "verdict": "fix",
+                        "issues": [{"dimension": "character_consistency", "severity": "medium", "description": "场景1中好感度表现不一致", "suggested_fix": "增加对话说明"}],
+                        "praise": "场景2和场景3很好",
+                        "fix_scope": "场景1"
+                    }, ensure_ascii=False)
+                }
+            else:
+                return {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "chapter_num": 1,
+                        "scores": {"plot_consistency": 25, "character_consistency": 20, "foreshadow_execution": 20, "style_match": 15, "pacing": 10, "innovation": 10},
+                        "total_score": 100,
+                        "verdict": "pass",
+                        "issues": [],
+                        "praise": "完美",
+                        "fix_scope": ""
+                    }, ensure_ascii=False)
+                }
+        elif "场景原内容" in combined:
+            print(f"CALL {self.call_count}: MATCHED patcher")
+            return {"role": "assistant", "content": "【场景1：东荒村落】\n韩玄在东荒村落醒来，抚摸古玉，古玉放出微微玄光。"}
+        elif "网络小说作家" in combined or "润色" in combined:
+            print(f"CALL {self.call_count}: MATCHED writing/polishing")
+            return {"role": "assistant", "content": "【场景1：雾隐村】\n韩玄在雾隐村抚摸旧玉佩。\n\n※\n\n【场景2：藏经阁】\n韩玄在藏经阁翻阅古籍。"}
+        elif "任务卡" in combined or "scene_blueprints" in combined:
+            return {"role": "assistant", "content": _mock_task_card(1)}
+        elif "缩写" in combined or "state_changes" in combined:
+            return {"role": "assistant", "content": _mock_synopsis(1)}
+        elif "正文" in combined or "场景" in combined:
+            return {"role": "assistant", "content": "【场景1：雾隐村】\n韩玄在雾隐村抚摸旧玉佩。\n\n※\n\n【场景2：藏经阁】\n韩玄在藏经阁翻阅古籍。"}
+        else:
+            return {"role": "assistant", "content": "默认回复"}
 
 
 class TestNovelEngine(unittest.TestCase):
@@ -65,6 +126,28 @@ class TestNovelEngine(unittest.TestCase):
         rolled_snapshot = tree.rollback_to_node(root_node.node_id, branch_name="branch_b_fight")
         self.assertEqual(rolled_snapshot["characters"]["C001"]["realm"], "炼气一层")
 
+    def test_session_tree_serialization(self):
+        """测试 SessionTree 序列化与反序列化。"""
+        tree = SessionTree()
+        tree.add_commit(1, "hash_ch_1", {"characters": {"C001": {"realm": "炼气一层"}}}, score=90)
+        tree.fork_branch("main", "test_branch")
+        tree.add_commit(2, "hash_ch_2", {"characters": {"C001": {"realm": "炼气二层"}}}, score=95, branch_name="test_branch")
+
+        # 序列化为字典
+        serialized = tree.to_dict()
+        self.assertIn("nodes", serialized)
+        self.assertIn("branches", serialized)
+        self.assertEqual(serialized["branches"]["test_branch"], tree.branches["test_branch"])
+
+        # 反序列化
+        new_tree = SessionTree.from_dict(serialized)
+        self.assertEqual(new_tree.branches["test_branch"], tree.branches["test_branch"])
+
+        # 验证节点信息
+        history = new_tree.get_branch_history("test_branch")
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[-1].world_state_snapshot["characters"]["C001"]["realm"], "炼气二层")
+
     def test_incremental_patcher(self):
         """测试高阶增量自修复与缝合。"""
         full_text = (
@@ -90,6 +173,58 @@ class TestNovelEngine(unittest.TestCase):
 
         self.assertEqual(len(agent.child_agents), 1)
         self.assertEqual(child_agent.role, "scene_polisher")
+
+    def test_pipeline_incremental_patcher(self):
+        """测试流水线中集成 IncrementalPatcher 的局部热插拔修复逻辑。"""
+        import tempfile
+        import shutil
+        from pathlib import Path
+        import logging
+        logging.basicConfig(level=logging.INFO)
+
+        try:
+            from novel_engine.llm_client import LLMClient
+            from novel_engine.pipeline_orchestrator import PipelineOrchestrator
+        except ImportError:
+            from llm_client import LLMClient
+            from pipeline_orchestrator import PipelineOrchestrator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create dummy folders to mimic "小说工程"
+            root_path = Path(tmpdir)
+            for d in ["config", "simulation", "memory/world_state", "foreshadow", "planning", "bible", "runtime"]:
+                (root_path / d).mkdir(parents=True, exist_ok=True)
+
+            # Copy or write essential files
+            (root_path / "config" / "runtime_config.json").write_text('{"llm": {"use_mock": true}}', encoding="utf-8")
+            (root_path / "simulation" / "rules.json").write_text('{}', encoding="utf-8")
+            (root_path / "simulation" / "constraints.json").write_text('{}', encoding="utf-8")
+            (root_path / "memory/world_state/characters.json").write_text('{"characters": {}}', encoding="utf-8")
+            (root_path / "memory/world_state/factions.json").write_text('{"factions": {}}', encoding="utf-8")
+            (root_path / "memory/world_state/power_system.json").write_text('{"current_power_balance": {}}', encoding="utf-8")
+            (root_path / "foreshadow" / "registry.json").write_text('{"foreshadows": []}', encoding="utf-8")
+            (root_path / "planning" / "volumes.json").write_text('{"volumes": [{"id": "V01", "chapter_range": [1, 100]}]}', encoding="utf-8")
+            (root_path / "planning" / "plot_graph.json").write_text('{"nodes": []}', encoding="utf-8")
+            (root_path / "bible" / "world_bible.md").write_text('', encoding="utf-8")
+            (root_path / "bible" / "character_bible.md").write_text('', encoding="utf-8")
+            (root_path / "bible" / "style_bible.md").write_text('', encoding="utf-8")
+            (root_path / "bible" / "author_intent.md").write_text('', encoding="utf-8")
+            (root_path / "吸氧证道_V2_1_完整大纲.md").write_text('', encoding="utf-8")
+
+            # Setup LLMClient with MockLLMForFix
+            mock_llm_internal = MockLLMForFix()
+            llm_client = LLMClient(use_mock=True)
+            llm_client._mock = mock_llm_internal
+
+            orchestrator = PipelineOrchestrator(project_root=tmpdir, llm_client=llm_client)
+            result = orchestrator.generate_single_chapter(1)
+
+            # 验证流程完成并应用了局部修复
+            self.assertTrue(result["success"])
+            self.assertEqual(result["chapter"], 1)
+            # Verify original scene 2 is intact, but scene 1 has been patched/repaired
+            self.assertIn("藏经阁", orchestrator.current_novel)
+            self.assertIn("古玉放出微微玄光", orchestrator.current_novel)
 
 
 if __name__ == "__main__":
