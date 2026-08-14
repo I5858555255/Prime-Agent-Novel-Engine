@@ -15,6 +15,11 @@ from llm_client import LLMClient, call_llm
 from world_simulator import WorldSimulator
 from memory_manager import MemoryManager
 
+try:
+    from novel_engine.db import StateDB
+except ImportError:
+    from db import StateDB
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +50,11 @@ class ChapterDirector:
         self.llm = llm_client or LLMClient.from_config(self.root / "config" / "runtime_config.json")
         self.simulator = WorldSimulator(self.root)
         self.memory = MemoryManager(self.root)
+
+        # Instantiate StateDB
+        db_dir = self.root / "runtime"
+        db_dir.mkdir(parents=True, exist_ok=True)
+        self.db = StateDB(db_path=str(db_dir / "state.db"), project_root=self.root)
 
         # Parse outlines and author intents by volume
         self._outline_sections = self._parse_outline()
@@ -229,6 +239,9 @@ class ChapterDirector:
         # 质量记忆
         quality_memory = self._load_json(self.root / "memory" / "quality_memory.json")
 
+        # Query active foreshadows from StateDB
+        active_foreshadows = self.db.query_active_foreshadows(chapter_num)
+
         return {
             "chapter_num": chapter_num,
             "bible": bible_files,
@@ -236,6 +249,7 @@ class ChapterDirector:
             "relevant_plot_nodes": relevant_nodes,
             "constraints": constraints_summary,
             "foreshadows": relevant_foreshadows,
+            "active_foreshadows": active_foreshadows,
             "world_state": world_state,
             "quality_memory": quality_memory,
             "recent_summaries": recent_summaries,
@@ -289,6 +303,9 @@ class ChapterDirector:
         # 质量记忆
         quality_memory = self._load_json(self.root / "memory" / "quality_memory.json")
 
+        # Query active foreshadows from StateDB
+        active_foreshadows = self.db.query_active_foreshadows(chapter_num)
+
         context = {
             "chapter_num": chapter_num,
             "bible": {
@@ -301,6 +318,7 @@ class ChapterDirector:
             "relevant_plot_nodes": relevant_nodes,
             "constraints": constraints_summary,
             "foreshadows": relevant_foreshadows,
+            "active_foreshadows": active_foreshadows,
             "world_state": world_state,
             "quality_memory": quality_memory,
             "recent_summaries": recent_summaries,
@@ -318,6 +336,8 @@ class ChapterDirector:
 {context['constraints']}
 - 相关伏笔：
 {json.dumps([{'id': fs['id'], 'clue_plan': fs.get('clue_plan', [])} for fs in context['foreshadows']], ensure_ascii=False, indent=2)}
+- 活跃伏笔线索计划 (来自 StateDB 精确时序过滤)：
+{json.dumps(context['active_foreshadows'], ensure_ascii=False, indent=2)}
 
 ## 世界观摘要
 {context['bible']['world'][:2000]}
@@ -405,6 +425,8 @@ class ChapterDirector:
 {context['constraints']}
 - 相关伏笔：
 {json.dumps([{'id': fs['id'], 'clue_plan': fs.get('clue_plan', [])} for fs in context['foreshadows']], ensure_ascii=False, indent=2)}
+- 活跃伏笔线索计划 (来自 StateDB 精确时序过滤)：
+{json.dumps(context['active_foreshadows'], ensure_ascii=False, indent=2)}
 
 ## 世界观摘要
 {context['bible']['world'][:2000]}

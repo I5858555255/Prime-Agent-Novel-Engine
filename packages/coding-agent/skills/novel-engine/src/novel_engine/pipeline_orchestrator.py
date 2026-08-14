@@ -21,6 +21,21 @@ from reviewer_agent import ReviewerAgent
 from memory_manager import MemoryManager
 from llm_client import LLMClient, call_llm
 
+try:
+    from novel_engine.db import StateDB
+except ImportError:
+    from db import StateDB
+
+try:
+    from novel_engine.session import SessionTree
+except ImportError:
+    from session import SessionTree
+
+try:
+    from novel_engine.patcher import IncrementalPatcher
+except ImportError:
+    from patcher import IncrementalPatcher
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +51,16 @@ class PipelineOrchestrator:
         self.simulator = WorldSimulator(self.root)
         self.director = ChapterDirector(self.root, llm_client=self.llm)
         self.synopsis_agent = SynopsisAgent(llm_client=self.llm)
+
+        # Instantiate StateDB
+        db_dir = self.root / "runtime"
+        db_dir.mkdir(parents=True, exist_ok=True)
+        self.db = StateDB(db_path=str(db_dir / "state.db"), project_root=self.root)
+
+        # Instantiate or load SessionTree
+        self.session_tree_path = self.root / "runtime" / "session_tree.json"
+        self._load_session_tree()
+
         self.writer = WriterAgent(llm_client=self.llm)
         self.reviewer = ReviewerAgent(llm_client=self.llm)
         self.memory = MemoryManager(self.root)
@@ -59,6 +84,46 @@ class PipelineOrchestrator:
         }
         # Pre-compute director's fixed context (bible + volumes + plot_graph) — loaded once at init
         self._director_fixed_context = self._load_director_fixed_context()
+
+    def _load_session_tree(self):
+        if self.session_tree_path.exists():
+            try:
+                data = json.loads(self.session_tree_path.read_text(encoding="utf-8"))
+                self.session_tree = SessionTree.from_dict(data)
+                logger.info("Loaded existing SessionTree from disk.")
+                return
+            except Exception as e:
+                logger.error(f"Failed to load SessionTree: {e}. Starting fresh.")
+        self.session_tree = SessionTree()
+        # Initialize with Chapter 0 root commit representing initial world state
+        try:
+            init_state = {
+                "characters": self.simulator.characters,
+                "factions": self.simulator.factions,
+                "power_system": self.simulator.power_system,
+            }
+            self.session_tree.add_commit(
+                chapter_num=0,
+                content_hash="init",
+                world_state_snapshot=init_state,
+                score=100,
+                branch_name="main"
+            )
+            self._save_session_tree()
+            logger.info("Initialized SessionTree with Chapter 0 root node.")
+        except Exception as e:
+            logger.error(f"Failed to initialize Chapter 0 node: {e}")
+
+    def _save_session_tree(self):
+        try:
+            self.session_tree_path.parent.mkdir(parents=True, exist_ok=True)
+            self.session_tree_path.write_text(
+                json.dumps(self.session_tree.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            logger.info("Saved SessionTree to disk.")
+        except Exception as e:
+            logger.error(f"Failed to save SessionTree: {e}")
 
     def _load_director_fixed_context(self) -> dict:
         """一次性加载固定上下文，避免每章重复 I/O。"""
@@ -94,6 +159,14 @@ class PipelineOrchestrator:
         }
 
         logger.info(f"=== Starting chapter {chapter_num} ===")
+
+        # Keep StateDB instances synchronized
+        self.db.import_from_json()
+        if hasattr(self.simulator, "db"):
+            self.simulator.db.import_from_json()
+        if hasattr(self.director, "db"):
+            self.director.db.import_from_json()
+
         sm = self.state_machine
         sm.current_chapter = chapter_num
         sm.current_phase = ChapterPhase.INIT
@@ -185,18 +258,104 @@ class PipelineOrchestrator:
                 result["success"] = True
                 logger.info(f"Chapter {chapter_num} PASSED (score={score})")
             elif verdict == "fix":
-                # 局部修复：使用审查意见生成针对性修复 prompt
-                fix_prompt = self.reviewer.generate_fix_prompt(review, novel_text)
-                fixed_text = call_llm(
-                    prompt=fix_prompt,
-                    system_prompt=self.writer.SCENE_SYSTEM_PROMPT,
-                    client=self.writer.llm,
-                )
-                self.current_novel = fixed_text
+                # Extract targeted scenes for incremental hot-swap patching
+                import re
+
+                scene_nums = set()
+                scope_str = str(review.get("fix_scope", ""))
+                for m in re.finditer(r"(?:场景|Scene|scene)\s*(\d+)", scope_str):
+                    scene_nums.add(int(m.group(1)))
+
+                for issue in review.get("issues", []):
+                    desc = str(issue.get("description", "")) + " " + str(issue.get("suggested_fix", ""))
+                    for m in re.finditer(r"(?:场景|Scene|scene)\s*(\d+)", desc):
+                        scene_nums.add(int(m.group(1)))
+
+                issue_desc = "\n".join([
+                    f"- [{issue['severity']}] {issue['dimension']}: {issue['description']} (Suggested fix: {issue.get('suggested_fix', '')})"
+                    for issue in review.get("issues", [])
+                ])
+
+                patched_any = False
+                if scene_nums:
+                    logger.info(f"Using IncrementalPatcher to hot-swap scenes: {sorted(list(scene_nums))}")
+                    for s_num in sorted(list(scene_nums)):
+                        scene_text = IncrementalPatcher.extract_scene(novel_text, s_num)
+                        if scene_text:
+                            fix_prompt = f"""请根据以下审查意见对特定场景进行精准修复。
+
+## 场景原内容
+{scene_text}
+
+## 修复意见
+{issue_desc}
+
+## 要求
+1. 仅针对审查意见修复当前场景。
+2. 保持文风、人物名字和上下文剧情连贯。
+3. 只输出修改后的场景内容。"""
+
+                            patched_scene = call_llm(
+                                prompt=fix_prompt,
+                                system_prompt=self.writer.SCENE_SYSTEM_PROMPT,
+                                client=self.writer.llm,
+                            )
+                            novel_text = IncrementalPatcher.apply_scene_patch(novel_text, s_num, patched_scene)
+                            patched_any = True
+
+                if patched_any:
+                    self.current_novel = novel_text
+                    logger.info("Incremental patching completed successfully.")
+                else:
+                    logger.info("No specific scenes identified for patching. Falling back to full chapter rewrite.")
+                    # 局部修复：使用审查意见生成针对性修复 prompt
+                    fix_prompt = self.reviewer.generate_fix_prompt(review, novel_text)
+                    fixed_text = call_llm(
+                        prompt=fix_prompt,
+                        system_prompt=self.writer.SCENE_SYSTEM_PROMPT,
+                        client=self.writer.llm,
+                    )
+                    self.current_novel = fixed_text
+
                 result["errors"].append(f"FIX: score={score}")
             else:
                 # 全量回退
                 result["errors"].append(f"FAIL: score={score}")
+
+                # Perform cascade rollback of world states using SessionTree
+                prev_chapter = chapter_num - 1
+                logger.warning(f"Review failed (Score={score}). Performing SessionTree rollback to Chapter {prev_chapter}.")
+
+                # Find the node for prev_chapter in the branch history
+                history = self.session_tree.get_branch_history("main")
+                target_node = None
+                for node in reversed(history):
+                    if node.chapter_num == prev_chapter:
+                        target_node = node
+                        break
+
+                if target_node:
+                    rolled_snapshot = self.session_tree.rollback_to_node(target_node.node_id, branch_name="main")
+                    self._save_session_tree()
+
+                    # Restore simulator's JSON states on disk from the rolled snapshot
+                    if "characters" in rolled_snapshot:
+                        self.simulator.characters = rolled_snapshot["characters"]
+                        self.simulator._save_characters()
+                    if "factions" in rolled_snapshot:
+                        self.simulator.factions = rolled_snapshot["factions"]
+                        self.simulator._save_factions()
+                    if "power_system" in rolled_snapshot:
+                        self.simulator.power_system = rolled_snapshot["power_system"]
+                        self.simulator._save_power_system()
+
+                    # Sync back to StateDB
+                    self.simulator.db.import_from_json()
+                    self.db.import_from_json()
+                    logger.info("World state successfully rolled back and StateDB synchronized.")
+                else:
+                    logger.warning(f"No SessionNode found for Chapter {prev_chapter} in SessionTree history.")
+
                 if sm.can_retry():
                     sm.increment_retry()
                     logger.warning(f"Retrying chapter {chapter_num} (attempt {sm.retry_count})")
@@ -211,6 +370,7 @@ class PipelineOrchestrator:
 
         # 保存单章审查结果供滑动窗口质量记忆使用
         review_file = self.root / "audit" / "per_chapter_reviews.json"
+        review_file.parent.mkdir(parents=True, exist_ok=True)
         if review_file.exists():
             try:
                 existing = json.loads(review_file.read_text(encoding="utf-8"))
@@ -252,6 +412,28 @@ class PipelineOrchestrator:
                 outline_content=json.dumps(task_card, ensure_ascii=False),
                 world_state_snapshot=world_state,
             )
+
+            # Save commit snapshot in SessionTree
+            try:
+                import hashlib
+                content_bytes = (self.current_novel + json.dumps(synopsis) + json.dumps(task_card)).encode("utf-8")
+                content_hash = hashlib.sha256(content_bytes).hexdigest()[:16]
+                post_world_state = {
+                    "characters": self.simulator.characters,
+                    "factions": self.simulator.factions,
+                    "power_system": self.simulator.power_system,
+                }
+                self.session_tree.add_commit(
+                    chapter_num=chapter_num,
+                    content_hash=content_hash,
+                    world_state_snapshot=post_world_state,
+                    score=score,
+                    branch_name="main"
+                )
+                self._save_session_tree()
+                logger.info(f"Chapter {chapter_num} node committed to SessionTree.")
+            except Exception as e:
+                logger.error(f"Failed to commit chapter to SessionTree: {e}")
 
             result["success"] = True
             logger.info(f"Chapter {chapter_num} COMMITTED")

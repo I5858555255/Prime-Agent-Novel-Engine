@@ -7,6 +7,11 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+try:
+    from novel_engine.db import StateDB
+except ImportError:
+    from db import StateDB
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +25,11 @@ class WorldSimulator:
         self.characters = self._load_json(self.root / "memory" / "world_state" / "characters.json")
         self.factions = self._load_json(self.root / "memory" / "world_state" / "factions.json")
         self.power_system = self._load_json(self.root / "memory" / "world_state" / "power_system.json")
+
+        # Instantiate StateDB
+        db_dir = self.root / "runtime"
+        db_dir.mkdir(parents=True, exist_ok=True)
+        self.db = StateDB(db_path=str(db_dir / "state.db"), project_root=self.root)
 
     def _load_json(self, path: Path) -> dict:
         if path.exists():
@@ -74,8 +84,7 @@ class WorldSimulator:
                 "reason": lock.get("reason", ""),
             }
 
-        char_data = self.characters.get("characters", {}).get(character_id, {})
-        current_realm = char_data.get("realm", "未知")
+        current_realm = self.db.get_character_realm(character_id)
 
         # 简化版：根据角色当前境界和章节位置给出建议
         base_rates = self.rules.get("realm_progression", {}).get("base_rates", {})
@@ -188,6 +197,8 @@ class WorldSimulator:
         if modified:
             self._save_characters()
             self._save_power_system()
+            # Sync back to StateDB
+            self.db.import_from_json()
 
         return modified
 

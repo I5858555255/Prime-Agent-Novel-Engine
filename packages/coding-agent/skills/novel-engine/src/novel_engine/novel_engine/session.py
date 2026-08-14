@@ -29,6 +29,34 @@ class SessionNode:
         self.timestamp = datetime.now(timezone.utc).isoformat()
         self.children_ids: list[str] = []
 
+    def to_dict(self) -> dict:
+        return {
+            "node_id": self.node_id,
+            "chapter_num": self.chapter_num,
+            "content_hash": self.content_hash,
+            "world_state_snapshot": self.world_state_snapshot,
+            "score": self.score,
+            "parent_id": self.parent_id,
+            "branch_name": self.branch_name,
+            "timestamp": self.timestamp,
+            "children_ids": self.children_ids,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'SessionNode':
+        node = cls(
+            chapter_num=data["chapter_num"],
+            content_hash=data["content_hash"],
+            world_state_snapshot=data["world_state_snapshot"],
+            score=data.get("score"),
+            parent_id=data.get("parent_id"),
+            branch_name=data.get("branch_name", "main"),
+        )
+        node.node_id = data["node_id"]
+        node.timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
+        node.children_ids = data.get("children_ids", [])
+        return node
+
 
 class SessionTree:
     """Session 树：管理所有创作分支与快照，提供高容错、可回退的会话隔离机制。"""
@@ -37,6 +65,23 @@ class SessionTree:
         self.nodes: dict[str, SessionNode] = {}
         self.branches: dict[str, str] = {}  # branch_name -> leaf_node_id
         self.root_node_id: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "nodes": {nid: node.to_dict() for nid, node in self.nodes.items()},
+            "branches": self.branches,
+            "root_node_id": self.root_node_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'SessionTree':
+        tree = cls()
+        tree.branches = data.get("branches", {})
+        tree.root_node_id = data.get("root_node_id")
+        tree.nodes = {}
+        for nid, ndata in data.get("nodes", {}).items():
+            tree.nodes[nid] = SessionNode.from_dict(ndata)
+        return tree
 
     def add_commit(
         self,
