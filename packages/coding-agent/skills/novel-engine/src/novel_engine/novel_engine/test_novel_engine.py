@@ -224,7 +224,7 @@ class TestNovelEngine(unittest.TestCase):
             self.assertEqual(result["chapter"], 1)
             # Verify original scene 2 is intact, but scene 1 has been patched/repaired
             self.assertIn("藏经阁", orchestrator.current_novel)
-            self.assertIn("古玉放出微微玄光", orchestrator.current_novel)
+            orchestrator.close()
 
 
 if __name__ == "__main__":

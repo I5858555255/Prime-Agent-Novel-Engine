@@ -728,3 +728,16 @@ class PipelineOrchestrator:
             },
             "per_chapter_token_breakdown": tracker.get("per_chapter_costs", {}),
         }
+
+    def close(self):
+        """Close all StateDB connections and release resources."""
+        for name, get_conn in [
+            ("self.db", lambda: self.db),
+            ("self.simulator.db", lambda: self.simulator.db),
+            ("self.director.db", lambda: self.director.db),
+            ("self.director.simulator.db", lambda: self.director.simulator.db),
+        ]:
+            try:
+                get_conn().close()
+            except Exception as e:
+                logger.warning(f"Error closing {name}: {e}")
