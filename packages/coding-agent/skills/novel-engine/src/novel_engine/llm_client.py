@@ -407,6 +407,17 @@ def call_llm(
     return cleaned
 
 
+
+
+def remove_english_words(text: str) -> str:
+    """Remove English words from text to maintain Chinese novel style."""
+    # Remove standalone English words (3+ chars)
+    text = re.sub(r'\b[a-zA-Z]{3,}\b', '', text)
+    # Remove mixed English-Chinese segments
+    text = re.sub(r'[a-zA-Z]+(?:\s*[a-zA-Z]+)*', '', text)
+    return text.strip()
+
+
 def get_call_log() -> list[dict]:
     """Return the module-level call log for cost analysis."""
     return list(_call_log)

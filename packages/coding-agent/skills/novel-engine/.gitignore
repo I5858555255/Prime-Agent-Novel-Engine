@@ -1,0 +1,6 @@
+# Runtime config (may contain API keys)
+src/novel_engine/config/runtime_config.json
+
+# SQLite state database
+src/novel_engine/runtime/state.db
+runtime/state.db

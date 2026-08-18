@@ -1,7 +1,7 @@
 {
   "llm": {
     "provider": "openai",
-    "model": "agnes-2.0-flash",
+    "model": "agnes-2.5-flash",
     "api_base": "https://apihub.agnes-ai.com",
     "api_key": "REDACTED",
     "temperature": 0.85,

@@ -188,7 +188,36 @@ poetry run python src/novel_engine/medium_test_runner.py
 
 ---
 
+---
+
+## 🖥️ Windows 启动脚本
+
+项目根目录提供以下批处理脚本，方便 Windows 用户使用：
+
+| 脚本 | 功能 |
+|------|------|
+| `generate.bat` | 运行章节生成（Mock 或真实 API） |
+| `start_dashboard.bat` | 启动 Web 可视化控制台 |
+| `status.bat` | 查看当前生成状态和章节列表 |
+| `stop.bat` | 停止运行的服务 |
+
+### 快速使用
+
+```cmd
+:: 双击运行或在命令行中执行
+generate.bat              :: 运行 10 章 Mock 测试
+generate.bat real         :: 运行 10 章真实 API 测试
+generate.bat production   :: 运行全量生产（3000章）
+start_dashboard.bat       :: 启动 Web 控制台
+status.bat                :: 查看当前状态
+status.bat chapters       :: 查看已生成章节
+status.bat clean          :: 清理运行时数据
+```
+
+---
+
 ## 📝 编写与扩展指南
+
 
 当您准备对《吸氧证道：阴阳逆碳，我以人道定仙天》注入新的剧情或定制不同的世界观设定时，请遵照 **`src/novel_engine/编写指南.md`** 的严苛规范编辑：
 1. **世界观增加**：直接更新 `bible/world_bible.md`，并在 2000 字符内保持其高密度大纲。

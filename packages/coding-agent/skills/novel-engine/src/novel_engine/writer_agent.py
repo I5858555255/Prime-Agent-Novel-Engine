@@ -83,6 +83,32 @@ class SynopsisAgent:
             raise
 
 
+
+
+def validate_scene_order(full_text: str, task_card: dict) -> bool:
+    """Validate that scenes appear in the correct order as specified in task card."""
+    import re
+    blueprints = task_card.get("scene_blueprints", [])
+    if not blueprints:
+        return True
+    
+    # Find scene markers in text
+    scene_pattern = r"【场景\d+：[^】]*】"
+    scenes_in_text = re.findall(scene_pattern, full_text)
+    
+    if len(scenes_in_text) < len(blueprints):
+        return False
+    
+    # Check order matches
+    for i, bp in enumerate(blueprints):
+        scene_num = bp.get("scene_num", i + 1)
+        expected_marker = f"【场景{scene_num}："
+        if expected_marker not in scenes_in_text[i]:
+            return False
+    
+    return True
+
+
 class WriterAgent:
     """正文生成 Agent：按场景拆分生成正文。"""
 
@@ -103,7 +129,17 @@ class WriterAgent:
 - 禁止现代词汇
 - 禁止OOC
 - 禁止无意义水字数对话
-- 禁止主角光环过强（每次胜利必须有代价）"""
+- 禁止主角光环过强（每次胜利必须有代价）
+- 严格禁止出现任何英文词汇
+- 必须按照 scene_blueprints 顺序生成，不得打乱
+- 必须完整呈现所有场景，不得截断
+- 严格执行 foreshadow_actions 中的所有伏笔指令
+- 禁止人物台词风格与设定不符
+- 禁止场景内容重复
+- 严格禁止出现任何英文词汇
+- 必须按照 scene_blueprints 顺序生成，不得打乱
+- 必须完整呈现所有场景，不得截断
+- 严格执行 foreshadow_actions 中的所有伏笔指令"""
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm = llm_client or LLMClient()

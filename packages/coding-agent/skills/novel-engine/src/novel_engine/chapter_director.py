@@ -392,7 +392,10 @@ class ChapterDirector:
   ],
   "chapter_hook": "章末钩子描述",
   "forbidden_checks": [
-    "确认未违反 author_intent 中的 forbidden 项"
+    "确认未违反 author_intent 中的 forbidden 项"- 严格遵守 forbidden_checks 中的所有禁令（违反将导致章节被拒绝）
+- 确保所有 foreshadow_actions 都被执行
+- 确保场景顺序与任务卡完全一致
+- 禁止出现英文词汇
   ]
 }}"""
 
@@ -481,7 +484,10 @@ class ChapterDirector:
   ],
   "chapter_hook": "章末钩子描述",
   "forbidden_checks": [
-    "确认未违反 author_intent 中的 forbidden 项"
+    "确认未违反 author_intent 中的 forbidden 项"- 严格遵守 forbidden_checks 中的所有禁令（违反将导致章节被拒绝）
+- 确保所有 foreshadow_actions 都被执行
+- 确保场景顺序与任务卡完全一致
+- 禁止出现英文词汇
   ]
 }}"""
 
