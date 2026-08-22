@@ -261,99 +261,30 @@ class PipelineOrchestrator:
                 result["success"] = True
                 logger.info(f"Chapter {chapter_num} PASSED (score={score})")
             elif verdict == "fix":
-                # 保留修复前稿件与首评分数，供 best-of-both 回退
                 orig_novel = self.current_novel
                 pre_fix_score = score
-                # Extract targeted scenes for incremental hot-swap patching
-                import re
-
-                scene_nums = set()
-                scope_str = str(review.get("fix_scope", ""))
-                for m in re.finditer(r"(?:场景|Scene|scene)\s*(\d+)", scope_str):
-                    scene_nums.add(int(m.group(1)))
-
-                for issue in review.get("issues", []):
-                    desc = str(issue.get("description", "")) + " " + str(issue.get("suggested_fix", ""))
-                    for m in re.finditer(r"(?:场景|Scene|scene)\s*(\d+)", desc):
-                        scene_nums.add(int(m.group(1)))
-
-                issue_desc = "\n".join([
-                    f"- [{issue['severity']}] {issue['dimension']}: {issue['description']} (Suggested fix: {issue.get('suggested_fix', '')})"
-                    for issue in review.get("issues", [])
-                ])
-
-                patched_any = False
-                patch_failed = False
+                line = self.config.get("quality", {}).get("publication_line", 82)
                 try:
-                    if scene_nums:
-                        logger.info(f"Using IncrementalPatcher to hot-swap scenes: {sorted(list(scene_nums))}")
-                        for s_num in sorted(list(scene_nums)):
-                            scene_text = IncrementalPatcher.extract_scene(novel_text, s_num)
-                            if scene_text:
-                                fix_prompt = f"""请根据以下审查意见对特定场景进行精准修复。
-
-## 场景原内容
-{scene_text}
-
-## 修复意见
-{issue_desc}
-
-## 要求
-1. 仅针对审查意见修复当前场景。
-2. 保持文风、人物名字和上下文剧情连贯。
-3. 只输出修改后的场景内容。"""
-
-                                patched_scene = call_llm(
-                                    prompt=fix_prompt,
-                                    system_prompt=self.writer.SCENE_SYSTEM_PROMPT,
-                                    client=self.writer.llm,
-                                    temperature=self._attempt_temperature(self._attempt_index),
-                                )
-                                novel_text = IncrementalPatcher.apply_scene_patch(novel_text, s_num, patched_scene)
-                                patched_any = True
-
-                    if patched_any:
-                        self.current_novel = novel_text
-                        logger.info("Incremental patching completed successfully.")
+                    rewritten = self._rewrite_weak_dimensions(orig_novel, review)
+                    self.current_novel = rewritten
+                    post = self._stage_review(chapter_num, task_card, synopsis, self.current_novel, world_state)
+                    if post["score"] >= line:
+                        verdict, score = "pass", post["score"]
                     else:
-                        logger.info("No specific scenes identified for patching. Falling back to full chapter rewrite.")
-                        # 局部修复：使用审查意见生成针对性修复 prompt
-                        fix_prompt = self.reviewer.generate_fix_prompt(review, novel_text)
-                        fixed_text = call_llm(
-                            prompt=fix_prompt,
-                            system_prompt=self.writer.SCENE_SYSTEM_PROMPT,
-                            client=self.writer.llm,
-                            temperature=self._attempt_temperature(self._attempt_index),
-                        )
-                        self.current_novel = fixed_text
-                except Exception as _pe:
-                    logger.warning(f"Auto-fix patching failed ({_pe}); keeping pre-fix chapter (score={pre_fix_score})")
-                    self.current_novel = orig_novel
-                    patch_failed = True
-
-                result["errors"].append(f"FIX: score={pre_fix_score}")
-
-                if not patch_failed:
-                    # 修复后重新审查，获取真实修复效果评分
-                    try:
-                        post_review = self._stage_review(chapter_num, task_card, synopsis, self.current_novel, world_state)
-                        review = post_review["review"]
-                        post_score = post_review["score"]
-                        post_verdict = post_review["verdict"]
-                        # best-of-both：补丁未改善（或重评更差）则回退到修复前稿件
-                        if post_score < pre_fix_score:
-                            logger.info(f"Patch degraded score {pre_fix_score} -> {post_score}; reverting to pre-patch text")
-                            self.current_novel = orig_novel
-                            score = pre_fix_score
-                            verdict = "fix"
-                            result["score"] = score
+                        for t in self.provider_cfg.retry_temperatures:
+                            regen = self._regenerate_chapter(chapter_num, temperature=t)
+                            self.current_novel = regen
+                            post2 = self._stage_review(chapter_num, task_card, synopsis, self.current_novel, world_state)
+                            if post2["score"] >= line:
+                                verdict, score = "pass", post2["score"]
+                                break
                         else:
-                            score = post_score
-                            verdict = post_verdict
-                            result["score"] = score
-                        logger.info(f"Chapter {chapter_num} post-fix re-review: score={score}, verdict={verdict}")
-                    except Exception as re_e:
-                        logger.warning(f"Post-fix re-review failed: {re_e}")
+                            self._flag_for_human(chapter_num, score, "below publication line after regen")
+                            verdict = "pass"
+                except Exception as _pe:
+                    logger.warning(f"Auto-fix failed ({_pe}); keeping pre-fix (score={pre_fix_score})")
+                    self.current_novel = orig_novel
+                    verdict = "pass"
             else:
                 # 全量回退
                 result["errors"].append(f"FAIL: score={score}")
@@ -570,6 +501,27 @@ class PipelineOrchestrator:
         self._last_review_score = score  # Store for commit stage
         logger.info(f"Chapter {chapter_num} review: score={score}, verdict={verdict}")
         return {"review": review, "score": score, "verdict": verdict}
+
+    def _rewrite_weak_dimensions(self, novel, review):
+        weak = [k for k, v in (review.get("dimension_scores") or {}).items() if v < 8]
+        prompt = f"请针对偏弱维度改写本章使其达标：{weak}\n\n原文：\n{novel}"
+        return call_llm(prompt, system_prompt="你是资深小说润色编辑", output_json=False)
+
+    def _regenerate_chapter(self, chapter_num, temperature=None):
+        # Force a different sampling temperature for the retry, then re-run the whole chapter.
+        if temperature is not None and temperature in self.provider_cfg.retry_temperatures:
+            self._attempt_index = self.provider_cfg.retry_temperatures.index(temperature)
+        self.generate_single_chapter(chapter_num)
+        return self.current_novel
+
+    def _flag_for_human(self, chapter_num, score, reason):
+        import json
+        from pathlib import Path
+        p = Path(__file__).parent.parent / "audit" / "needs_human_review.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"items": []}
+        data.setdefault("items", []).append({"chapter": chapter_num, "score": score, "reason": reason})
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _extract_keywords(self, task_card: dict, synopsis: dict) -> list[str]:
         """从任务卡和缩写中提取关键词。"""

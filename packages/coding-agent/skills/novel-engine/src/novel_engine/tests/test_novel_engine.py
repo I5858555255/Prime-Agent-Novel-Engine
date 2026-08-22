@@ -291,5 +291,17 @@ def test_slo_fail_rate_threshold():
     assert res["meets_stability"] is False
 
 
+def test_grade_review_uses_publication_line():
+    from novel_engine.agents.reviewer_agent import ReviewerAgent
+    import json
+    from pathlib import Path
+    cfg = json.loads(Path("novel_engine/config/runtime_config.json").read_text(encoding="utf-8"))
+    line = cfg["quality"]["publication_line"]
+    a = ReviewerAgent.__new__(ReviewerAgent)
+    assert a.grade_review({"total_score": line}) == "pass"
+    assert a.grade_review({"total_score": line - 1}) == "fix"
+    assert a.grade_review({"total_score": 59}) == "fail"
+
+
 if __name__ == "__main__":
     unittest.main()
