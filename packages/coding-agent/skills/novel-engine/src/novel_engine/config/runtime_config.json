@@ -6,15 +6,15 @@
     "api_key": "REDACTED",
     "temperature": 0.85,
     "max_tokens": 16384,
-    "timeout_seconds": 120,
+    "timeout_seconds": 240,
     "use_mock": false
   },
   "pipeline": {
-    "total_chapters": 3000,
+    "total_chapters": 3800,
     "mini_test_chapters": 10,
     "medium_test_chapters": 70,
     "sliding_window_size": 50,
-    "recent_memory_window": 80,
+    "recent_memory_window": 30,
     "max_review_retries": 3,
     "scene_per_chapter": {
       "min": 3,
@@ -24,9 +24,21 @@
   "quality": {
     "pass_threshold": 85,
     "fix_threshold": 60,
+    "publication_line": 82,
+    "min_chapter_score": 82,
+    "target_avg_score": 88,
     "overuse_window_chapters": 100,
     "overuse_count_threshold": 4,
     "well_received_min_confidence": 0.6
+  },
+  "provider": {
+    "family": "agnes",
+    "api_base": "https://apihub.agnes-ai.com",
+    "model": "agnes-2.5-flash",
+    "reasoning_fallback": true,
+    "thinking_param": "enable_thinking",
+    "cache_bust_suffix": "\n\n[请直接给出最终答案，严格使用合法 JSON，不要使用思考模式，不要输出任何分析或推理过程。]",
+    "retry_temperatures": [0.85, 0.7, 0.95, 1.0]
   },
   "commit": {
     "hash_algorithm": "sha256",
