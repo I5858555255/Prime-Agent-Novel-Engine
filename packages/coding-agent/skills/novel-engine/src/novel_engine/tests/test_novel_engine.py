@@ -268,5 +268,20 @@ def test_provider_config_loads():
     assert cfg["quality"]["min_chapter_score"] == 82
 
 
+def test_chapter_auto_retry_then_pass():
+    class Flaky:
+        def __init__(self): self.n = 0
+        def chat_completion(self, messages, temperature=None, max_tokens=None,
+                            retry_on_error=True, max_retries=3, extra_body=None):
+            self.n += 1
+            if self.n < 3:
+                return {"role": "assistant", "content": "", "reasoning_content": "",
+                        "finish_reason": "stop"}
+            return {"role": "assistant", "content": "正常正文", "finish_reason": "stop"}
+    from novel_engine.core.llm_provider import LLMProvider
+    assert LLMProvider(Flaky()).complete(
+        [{"role": "user", "content": "x"}], output_json=False) == "正常正文"
+
+
 if __name__ == "__main__":
     unittest.main()
