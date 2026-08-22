@@ -318,5 +318,20 @@ def test_enforce_word_count_pads_short():
     assert len(out) >= 100
 
 
+def test_agents_prompt_keywords():
+    from novel_engine.agents.pacing_advisor import PacingAdvisor
+    from novel_engine.agents.innovation_checker import InnovationChecker
+    from novel_engine.agents.style_guard import StyleGuard
+
+    class _Kw:
+        def chat_completion(self, messages, temperature=None, max_tokens=None,
+                            retry_on_error=True, max_retries=3, extra_body=None):
+            return {"role": "assistant", "content": "创新文风内容", "finish_reason": "stop"}
+
+    assert "节奏" in PacingAdvisor().pre_write_constraints("某章大纲")
+    assert "创新" in InnovationChecker().rewrite("正文", {"dimension_scores": {}}, client=_Kw())
+    assert "文风" in StyleGuard().rewrite("正文", client=_Kw())
+
+
 if __name__ == "__main__":
     unittest.main()
