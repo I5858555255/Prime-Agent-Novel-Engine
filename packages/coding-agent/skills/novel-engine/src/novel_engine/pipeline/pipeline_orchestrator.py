@@ -546,8 +546,8 @@ class PipelineOrchestrator:
         from pathlib import Path
         p = Path(__file__).parent.parent / "audit" / "needs_human_review.json"
         p.parent.mkdir(parents=True, exist_ok=True)
-        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"items": []}
-        data.setdefault("items", []).append({"chapter": chapter_num, "score": score, "reason": reason})
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"queue": []}
+        data.setdefault("queue", []).append({"chapter": chapter_num, "score": score, "reason": reason})
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _extract_keywords(self, task_card: dict, synopsis: dict) -> list[str]:

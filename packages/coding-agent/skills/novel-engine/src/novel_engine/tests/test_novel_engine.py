@@ -333,5 +333,13 @@ def test_agents_prompt_keywords():
     assert "文风" in StyleGuard().rewrite("正文", client=_Kw())
 
 
+def test_flag_for_human_appends():
+    from novel_engine.pipeline.pipeline_orchestrator import PipelineOrchestrator
+    PipelineOrchestrator._flag_for_human(object(), 7, 70, "below line")
+    import json
+    data = json.load(open("novel_engine/audit/needs_human_review.json", encoding="utf-8"))
+    assert any(r["chapter"] == 7 for r in data["queue"])
+
+
 if __name__ == "__main__":
     unittest.main()
