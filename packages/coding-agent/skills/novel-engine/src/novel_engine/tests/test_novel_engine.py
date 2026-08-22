@@ -283,5 +283,13 @@ def test_chapter_auto_retry_then_pass():
         [{"role": "user", "content": "x"}], output_json=False) == "正常正文"
 
 
+def test_slo_fail_rate_threshold():
+    from novel_engine.tests.slo_gate import evaluate_slo
+    report = {"passed": 198, "failed": 3, "results": [{"score": 86}] * 201,
+              "quality": {"dimension_averages": {}}}
+    res = evaluate_slo(report, max_fail_rate=0.01)
+    assert res["meets_stability"] is False
+
+
 if __name__ == "__main__":
     unittest.main()
