@@ -224,6 +224,35 @@ class TestNovelEngine(unittest.TestCase):
             orchestrator.close()
 
 
+class _EmptyContentClient:
+    def __init__(self, reasoning="这是正文内容"):
+        self._r = reasoning
+    def chat_completion(self, messages, temperature=None, max_tokens=None,
+                        retry_on_error=True, max_retries=3, extra_body=None):
+        return {"role": "assistant", "content": "", "reasoning_content": self._r,
+                "finish_reason": "stop"}
+
+def test_provider_uses_reasoning_fallback():
+    from novel_engine.core.llm_provider import LLMProvider
+    p = LLMProvider(_EmptyContentClient("兜底正文"))
+    out = p.complete([{"role": "user", "content": "写一章"}], output_json=False)
+    assert out == "兜底正文"
+
+class _BothEmptyClient:
+    def chat_completion(self, messages, temperature=None, max_tokens=None,
+                        retry_on_error=True, max_retries=3, extra_body=None):
+        return {"role": "assistant", "content": "", "reasoning_content": "",
+                "finish_reason": "stop"}
+
+def test_provider_both_empty_raises():
+    from novel_engine.core.llm_provider import LLMProvider, ProviderConfig
+    import pytest
+    cfg = ProviderConfig(retry_temperatures=[0.85, 0.7])
+    with pytest.raises(RuntimeError):
+        LLMProvider(_BothEmptyClient(), cfg).complete(
+            [{"role": "user", "content": "写一章"}], output_json=False)
+
+
 def test_provider_config_loads():
     import json
     from pathlib import Path
