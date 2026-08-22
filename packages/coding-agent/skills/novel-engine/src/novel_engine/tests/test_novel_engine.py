@@ -253,6 +253,12 @@ def test_provider_both_empty_raises():
             [{"role": "user", "content": "写一章"}], output_json=False)
 
 
+def test_call_llm_via_provider():
+    from novel_engine.core.llm_client import call_llm, MockLLMClient
+    out = call_llm("生成任务卡", client=MockLLMClient())
+    assert isinstance(out, str) and len(out) > 0
+
+
 def test_provider_config_loads():
     import json
     from pathlib import Path
