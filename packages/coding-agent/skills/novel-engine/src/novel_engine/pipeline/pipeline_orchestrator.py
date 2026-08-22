@@ -249,6 +249,17 @@ class PipelineOrchestrator:
             sm.handle_failure("writing_error", str(e))
             return result
 
+        # 阶段4.5：字数强制（A4）
+        try:
+            blueprints = (task_card.get("scene_blueprints") or [])
+            total_target = sum(int(bp.get("word_count_target", 0)) for bp in blueprints)
+            if total_target > 0:
+                target_min = int(total_target * 0.85)
+                target_max = int(total_target * 1.15)
+                novel_text = self._enforce_word_count(novel_text, target_min, target_max)
+        except Exception as _we:
+            logger.warning(f"Word-count enforcement skipped: {_we}")
+
         # 阶段5：审查评分
         try:
             stage_review = self._stage_review(chapter_num, task_card, synopsis, novel_text, world_state)
@@ -501,6 +512,22 @@ class PipelineOrchestrator:
         self._last_review_score = score  # Store for commit stage
         logger.info(f"Chapter {chapter_num} review: score={score}, verdict={verdict}")
         return {"review": review, "score": score, "verdict": verdict}
+
+    def _enforce_word_count(self, novel, target_min, target_max):
+        cur = len(novel)
+        if cur < target_min:
+            # 最多补写 3 次，直到达到下限
+            for _ in range(3):
+                add = target_min - len(novel) + 50
+                extra = call_llm(
+                    f"请在不改变剧情前提下，为下文续写约{add}字使其更丰满：\n{novel}",
+                    client=self.llm, output_json=False)
+                novel = novel + "\n" + extra
+                if len(novel) >= target_min:
+                    break
+        elif cur > target_max:
+            novel = novel[:target_max]
+        return novel
 
     def _rewrite_weak_dimensions(self, novel, review):
         weak = [k for k, v in (review.get("dimension_scores") or {}).items() if v < 8]

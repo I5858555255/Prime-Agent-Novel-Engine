@@ -303,5 +303,20 @@ def test_grade_review_uses_publication_line():
     assert a.grade_review({"total_score": 59}) == "fail"
 
 
+def test_enforce_word_count_pads_short():
+    from novel_engine.pipeline.pipeline_orchestrator import PipelineOrchestrator
+
+    class _LongClient:
+        def chat_completion(self, messages, temperature=None, max_tokens=None,
+                            retry_on_error=True, max_retries=3, extra_body=None):
+            return {"role": "assistant", "content": "补充" * 100, "finish_reason": "stop"}
+
+    class _Fake:
+        llm = _LongClient()
+
+    out = PipelineOrchestrator._enforce_word_count(_Fake(), "短", 100, 200)
+    assert len(out) >= 100
+
+
 if __name__ == "__main__":
     unittest.main()
