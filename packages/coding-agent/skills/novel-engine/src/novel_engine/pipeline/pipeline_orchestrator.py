@@ -18,6 +18,7 @@ from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.agents.chapter_director import ChapterDirector
 from novel_engine.agents.writer_agent import SynopsisAgent, WriterAgent
 from novel_engine.agents.reviewer_agent import ReviewerAgent
+from novel_engine.agents.pacing_advisor import PacingAdvisor
 from novel_engine.core.memory_manager import MemoryManager
 from novel_engine.core.llm_client import LLMClient, call_llm, get_call_log, reset_call_log
 from novel_engine.engine.db import StateDB
@@ -274,28 +275,35 @@ class PipelineOrchestrator:
             elif verdict == "fix":
                 orig_novel = self.current_novel
                 pre_fix_score = score
-                line = self.config.get("quality", {}).get("publication_line", 82)
+                line = self.config.get("quality", {}).get("target_avg_score", 88)
+                min_ch = self.config.get("quality", {}).get("min_chapter_score", 82)
+                max_fix = int(self.config.get("pipeline", {}).get("max_review_retries", 3)) + 1
+                current = orig_novel
+                best = (pre_fix_score, current)
                 try:
-                    rewritten = self._rewrite_weak_dimensions(orig_novel, review)
-                    self.current_novel = rewritten
-                    post = self._stage_review(chapter_num, task_card, synopsis, self.current_novel, world_state)
-                    if post["score"] >= line:
-                        verdict, score = "pass", post["score"]
+                    for _ in range(max_fix):
+                        staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
+                        s = staged["score"]
+                        if s >= line:
+                            current = self.current_novel
+                            best = (s, current)
+                            break
+                        if s > best[0]:
+                            best = (s, current)
+                        current = self._rewrite_weak_dimensions(current, staged["review"])
+                        self.current_novel = current
+                    best_score, best_novel = best
+                    self.current_novel = best_novel
+                    if best_score >= min_ch:
+                        verdict, score = "pass", best_score
                     else:
-                        for t in self.provider_cfg.retry_temperatures:
-                            regen = self._regenerate_chapter(chapter_num, temperature=t)
-                            self.current_novel = regen
-                            post2 = self._stage_review(chapter_num, task_card, synopsis, self.current_novel, world_state)
-                            if post2["score"] >= line:
-                                verdict, score = "pass", post2["score"]
-                                break
-                        else:
-                            self._flag_for_human(chapter_num, score, "below publication line after regen")
-                            verdict = "pass"
+                        self._flag_for_human(chapter_num, best_score, "below min chapter score after fix")
+                        verdict, score = "pass", best_score
                 except Exception as _pe:
                     logger.warning(f"Auto-fix failed ({_pe}); keeping pre-fix (score={pre_fix_score})")
                     self.current_novel = orig_novel
                     verdict = "pass"
+                result["score"] = score
             else:
                 # 全量回退
                 result["errors"].append(f"FAIL: score={score}")
@@ -489,7 +497,9 @@ class PipelineOrchestrator:
     def _stage_write(self, task_card: dict, synopsis: dict) -> str:
         """阶段4：正文生成 + 润色。"""
         self.state_machine.transition(ChapterPhase.WRITE_SCENE)
-        novel_text = self.writer.generate_full_chapter(task_card, synopsis)
+        synopsis_text = synopsis.get("synopsis", "")
+        pacing_constraints = PacingAdvisor().pre_write_constraints(synopsis_text)
+        novel_text = self.writer.generate_full_chapter(task_card, synopsis, pacing_constraints)
         self.state_machine.transition(ChapterPhase.POLISH)
         novel_text = self.writer.polish_chapter(novel_text, task_card)
         self.current_novel = novel_text
@@ -530,9 +540,24 @@ class PipelineOrchestrator:
         return novel
 
     def _rewrite_weak_dimensions(self, novel, review):
-        weak = [k for k, v in (review.get("dimension_scores") or {}).items() if v < 8]
-        prompt = f"请针对偏弱维度改写本章使其达标：{weak}\n\n原文：\n{novel}"
-        return call_llm(prompt, system_prompt="你是资深小说润色编辑", output_json=False)
+        scores = review.get("scores") or {}
+        maxes = {"plot_consistency": 25, "character_consistency": 20,
+                 "foreshadow_execution": 20, "style_match": 15,
+                 "pacing": 10, "innovation": 10}
+        weak = [k for k, v in scores.items() if (v / maxes.get(k, 10)) < 0.85]
+        issues = review.get("issues") or []
+        issue_text = "\n".join(
+            f"- [{i.get('dimension')}/{i.get('severity')}] {i.get('description')} → 修复建议: {i.get('suggested_fix')}"
+            for i in issues
+        ) or "（无具体意见）"
+        prompt = (
+            "你是一位资深小说润色编辑。请基于审查意见改写以下章节，"
+            "重点修复偏弱维度，保持其余情节、人物与伏笔不变。\n\n"
+            f"偏弱维度（需重点提升）: {weak}\n\n"
+            f"审查意见:\n{issue_text}\n\n"
+            f"原文章节:\n{novel}"
+        )
+        return call_llm(prompt, system_prompt="你是资深小说润色编辑，擅长根据审查意见精准改写章节", output_json=False)
 
     def _regenerate_chapter(self, chapter_num, temperature=None):
         # Force a different sampling temperature for the retry, then re-run the whole chapter.

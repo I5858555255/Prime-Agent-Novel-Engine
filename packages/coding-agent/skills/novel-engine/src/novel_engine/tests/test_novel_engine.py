@@ -264,7 +264,7 @@ def test_provider_config_loads():
     from pathlib import Path
     cfg = json.loads(Path("novel_engine/config/runtime_config.json").read_text(encoding="utf-8"))
     assert cfg["provider"]["family"] == "agnes"
-    assert cfg["quality"]["publication_line"] == 82
+    assert cfg["quality"]["publication_line"] == 88
     assert cfg["quality"]["min_chapter_score"] == 82
 
 

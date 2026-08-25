@@ -24,8 +24,10 @@
   "quality": {
     "pass_threshold": 85,
     "fix_threshold": 60,
-    "publication_line": 82,
+    "publication_line": 88,
     "min_chapter_score": 82,
+  "min_pacing": 7.5,
+  "min_innovation": 7.0,
     "target_avg_score": 88,
     "overuse_window_chapters": 100,
     "overuse_count_threshold": 4,
