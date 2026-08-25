@@ -8,9 +8,9 @@ from novel_engine.core.llm_client import _repair_json
 
 @dataclass
 class ProviderConfig:
-    family: str = "agnes"
-    api_base: str = "https://apihub.agnes-ai.com"
-    model: str = "agnes-2.5-flash"
+    family: str = "qwen"
+    api_base: str = "https://api.siliconflow.cn"
+    model: str = "Qwen/Qwen3.5-4B"
     reasoning_fallback: bool = True
     thinking_param: Optional[str] = "enable_thinking"
     cache_bust_suffix: str = (

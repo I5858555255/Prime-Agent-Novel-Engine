@@ -1,8 +1,8 @@
 {
   "llm": {
     "provider": "openai",
-    "model": "agnes-2.5-flash",
-    "api_base": "https://apihub.agnes-ai.com",
+    "model": "Qwen/Qwen3.5-4B",
+    "api_base": "https://api.siliconflow.cn",
     "api_key": "REDACTED",
     "temperature": 0.85,
     "max_tokens": 16384,
@@ -34,9 +34,9 @@
     "well_received_min_confidence": 0.6
   },
   "provider": {
-    "family": "agnes",
-    "api_base": "https://apihub.agnes-ai.com",
-    "model": "agnes-2.5-flash",
+    "family": "qwen",
+    "api_base": "https://api.siliconflow.cn",
+    "model": "Qwen/Qwen3.5-4B",
     "reasoning_fallback": true,
     "thinking_param": "enable_thinking",
     "cache_bust_suffix": "\n\n[请直接给出最终答案，严格使用合法 JSON，不要使用思考模式，不要输出任何分析或推理过程。]",

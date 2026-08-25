@@ -1,5 +1,5 @@
 """
-LLM 客户端：封装 Agnes 2.0 Flash API 调用。
+LLM 客户端：封装 OpenAI 兼容接口的大模型调用（默认 SiliconFlow / Qwen）。
 支持真实 API 和离线 Mock 两种模式。
 """
 import json
@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 _call_log: list[dict] = []
 _CALL_LOG_LOCK = threading.Lock()
 
-DEFAULT_API_BASE = "https://apihub.agnes-ai.com"
-DEFAULT_MODEL = "agnes-2.5-flash"
+DEFAULT_API_BASE = "https://api.siliconflow.cn"
+DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
 
 
 class MockLLMClient:
@@ -262,6 +262,28 @@ class LLMClient:
             use_mock=llm_cfg.get("use_mock", False),
         )
 
+    @classmethod
+    def from_config_dict(cls, cfg: dict) -> "LLMClient":
+        llm_cfg = cfg.get("llm", {})
+        import os
+        api_key = os.environ.get("ZLEAP_MODEL_API_KEY") or os.environ.get("ZLEAP_API_KEY") or llm_cfg.get("api_key") or ""
+        if not api_key or "redacted" in str(api_key).lower():
+            _env_path = Path(__file__).parent.parent.parent / ".env"
+            if _env_path.exists():
+                for _line in _env_path.read_text(encoding="utf-8").splitlines():
+                    if _line.startswith("ZLEAP_MODEL_API_KEY="):
+                        api_key = _line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+        return cls(
+            api_base=llm_cfg.get("api_base", DEFAULT_API_BASE),
+            model=llm_cfg.get("model", DEFAULT_MODEL),
+            api_key=api_key,
+            temperature=llm_cfg.get("temperature", 0.85),
+            max_tokens=llm_cfg.get("max_tokens", 4096),
+            timeout=llm_cfg.get("timeout_seconds", 120),
+            use_mock=llm_cfg.get("use_mock", False),
+        )
+
     def _get_client(self) -> httpx.Client:
         client = getattr(self._local, "client", None)
         if client is None:
@@ -312,11 +334,11 @@ class LLMClient:
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
                 total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
-                # Also capture reasoning tokens if present (Agnes thinking tokens)
+                # Also capture reasoning tokens if present (reasoning/thinking tokens)
                 reasoning_tokens = usage.get("reasoning_tokens", 0)
 
                 choice = data["choices"][0]
-                # Capture reasoning_content (Agnes/DeepSeek-style thinking) if present
+                # Capture reasoning_content (model thinking) if present
                 reasoning_content = choice.get("message", {}).get("reasoning_content", "")
                 # Log token usage for cost tracking (thread-safe).
                 # Callers may read it via get_call_log().
@@ -374,9 +396,9 @@ class LLMClient:
 
 
 def _repair_json(cleaned: str) -> Optional[dict]:
-    """多级修复 Agnes 返回的 JSON，成功返回 dict，失败返回 None。"""
+    """多级修复模型返回的 JSON，成功返回 dict，失败返回 None。"""
     import re
-    # Handle double-brace JSON (Agnes echoes Python f-string escapes like {{...}})
+    # Handle double-brace JSON (model may echo Python f-string escapes like {{...}})
     cleaned = cleaned.replace('{{', '{').replace('}}', '}')
     try:
         return json.loads(cleaned)
@@ -420,6 +442,17 @@ def _repair_json(cleaned: str) -> Optional[dict]:
     return None
 
 
+def _load_runtime_config() -> dict:
+    """读取 runtime_config.json 一次，供 client 与 provider 复用，避免重复 IO。"""
+    try:
+        import json
+        from pathlib import Path
+        return json.loads((Path(__file__).parent.parent / "config" /
+                           "runtime_config.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def call_llm(
     prompt: str,
     system_prompt: str = "",
@@ -431,11 +464,12 @@ def call_llm(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
+    cfg = None
     if client is None:
-        client = LLMClient.from_config(
-            Path(__file__).parent.parent / "config" / "runtime_config.json")
+        cfg = _load_runtime_config()
+        client = LLMClient.from_config_dict(cfg)
     from novel_engine.core.llm_provider import LLMProvider, ProviderConfig
-    provider = LLMProvider(client, _provider_config_from_runtime())
+    provider = LLMProvider(client, _provider_config_from_runtime(cfg))
     return provider.complete(
         messages, output_json=output_json,
         temperature=kwargs.get("temperature"),
@@ -444,18 +478,19 @@ def call_llm(
     )
 
 
-def _provider_config_from_runtime():
+def _provider_config_from_runtime(cfg: Optional[dict] = None):
     try:
-        import json
-        from pathlib import Path
         from novel_engine.core.llm_provider import ProviderConfig
-        cfg = json.loads((Path(__file__).parent.parent / "config" /
-                          "runtime_config.json").read_text(encoding="utf-8"))
+        if cfg is None:
+            import json
+            from pathlib import Path
+            cfg = json.loads((Path(__file__).parent.parent / "config" /
+                              "runtime_config.json").read_text(encoding="utf-8"))
         p = cfg.get("provider", {})
         return ProviderConfig(
-            family=p.get("family", "agnes"),
-            api_base=p.get("api_base", "https://apihub.agnes-ai.com"),
-            model=p.get("model", "agnes-2.5-flash"),
+            family=p.get("family", "qwen"),
+            api_base=p.get("api_base", "https://api.siliconflow.cn"),
+            model=p.get("model", "Qwen/Qwen3.5-4B"),
             reasoning_fallback=p.get("reasoning_fallback", True),
             thinking_param=p.get("thinking_param", "enable_thinking"),
             cache_bust_suffix=p.get("cache_bust_suffix", ""),
@@ -463,17 +498,6 @@ def _provider_config_from_runtime():
         )
     except Exception:
         return ProviderConfig()
-
-
-
-
-def remove_english_words(text: str) -> str:
-    """Remove English words from text to maintain Chinese novel style."""
-    # Remove standalone English words (3+ chars)
-    text = re.sub(r'\b[a-zA-Z]{3,}\b', '', text)
-    # Remove mixed English-Chinese segments
-    text = re.sub(r'[a-zA-Z]+(?:\s*[a-zA-Z]+)*', '', text)
-    return text.strip()
 
 
 def get_call_log(client: Optional["LLMClient"] = None) -> list[dict]:

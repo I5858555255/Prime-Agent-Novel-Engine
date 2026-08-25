@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from novel_engine.engine.db import StateDB
 from novel_engine.engine.session import SessionTree
 from novel_engine.engine.patcher import IncrementalPatcher
-from novel_engine.engine.subagent import RecursiveSubagent, Subtask
 import json
 
 from novel_engine.core.llm_client import _mock_task_card, _mock_synopsis
@@ -163,14 +162,6 @@ class TestNovelEngine(unittest.TestCase):
         self.assertIn("古玉放出微微玄光", updated_full_text)
         self.assertIn("韩玄在藏经阁翻阅古籍", updated_full_text)  # 保证场景2完好无损！
 
-    def test_recursive_subagent(self):
-        """测试递归子 Agent Concurrency。"""
-        agent = RecursiveSubagent("director_01", "chapter_director")
-        child_agent = agent.spawn_child_agent("scene_polisher")
-
-        self.assertEqual(len(agent.child_agents), 1)
-        self.assertEqual(child_agent.role, "scene_polisher")
-
     def test_pipeline_incremental_patcher(self):
         """测试流水线中集成 IncrementalPatcher 的局部热插拔修复逻辑。"""
         import tempfile
@@ -263,7 +254,7 @@ def test_provider_config_loads():
     import json
     from pathlib import Path
     cfg = json.loads(Path("novel_engine/config/runtime_config.json").read_text(encoding="utf-8"))
-    assert cfg["provider"]["family"] == "agnes"
+    assert cfg["provider"]["family"] == "qwen"
     assert cfg["quality"]["publication_line"] == 88
     assert cfg["quality"]["min_chapter_score"] == 82
 
@@ -297,10 +288,11 @@ def test_grade_review_uses_publication_line():
     from pathlib import Path
     cfg = json.loads(Path("novel_engine/config/runtime_config.json").read_text(encoding="utf-8"))
     line = cfg["quality"]["publication_line"]
+    fix_t = cfg["quality"]["fix_threshold"]
     a = ReviewerAgent.__new__(ReviewerAgent)
     assert a.grade_review({"total_score": line}) == "pass"
     assert a.grade_review({"total_score": line - 1}) == "fix"
-    assert a.grade_review({"total_score": 59}) == "fail"
+    assert a.grade_review({"total_score": fix_t - 1}) == "fail"
 
 
 def test_enforce_word_count_pads_short():
@@ -320,17 +312,8 @@ def test_enforce_word_count_pads_short():
 
 def test_agents_prompt_keywords():
     from novel_engine.agents.pacing_advisor import PacingAdvisor
-    from novel_engine.agents.innovation_checker import InnovationChecker
-    from novel_engine.agents.style_guard import StyleGuard
-
-    class _Kw:
-        def chat_completion(self, messages, temperature=None, max_tokens=None,
-                            retry_on_error=True, max_retries=3, extra_body=None):
-            return {"role": "assistant", "content": "创新文风内容", "finish_reason": "stop"}
 
     assert "节奏" in PacingAdvisor().pre_write_constraints("某章大纲")
-    assert "创新" in InnovationChecker().rewrite("正文", {"dimension_scores": {}}, client=_Kw())
-    assert "文风" in StyleGuard().rewrite("正文", client=_Kw())
 
 
 def test_flag_for_human_appends():

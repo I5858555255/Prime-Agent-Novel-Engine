@@ -23,40 +23,75 @@ Novel-Engine is an AI-powered pipeline and state machine designed for writing, r
 ```
 packages/coding-agent/skills/novel-engine/
 ├── SKILL.md
+├── README.md
 ├── pyproject.toml
+├── .gitignore
+├── docs/                      # 说明文档
+│   ├── 使用说明指南.md
+│   ├── 编写指南.md
+│   ├── 效率优化方案.md
+│   └── DEVELOPMENT_PLAN.md
+├── scripts/                   # 启动脚本（Windows .bat / Unix start.sh）
+│   ├── generate.bat
+│   ├── start_dashboard.bat
+│   ├── status.bat
+│   ├── stop.bat
+│   └── start.sh
 └── src/
-    └── novel_engine/
-        ├── bible/                  # Style, world, and character bible documents
-        ├── config/                 # Quality thresholds & runtime cost config
-        ├── foreshadow/             # Foreshadowing trackers & registries
-        ├── novel_engine/           # Core database, session, and patcher library
-        │   ├── __init__.py
-        │   ├── db.py
-        │   ├── patcher.py
-        │   ├── session.py
-        │   ├── subagent.py
-        │   └── test_novel_engine.py
-        ├── planning/               # Volume/Plot graphs & outline planners
-        ├── simulation/             # Simulation constraints & laws
-        ├── chapter_director.py     # Task card dispatcher agent
-        ├── checkpoint.py           # Verification and disk backup system
-        ├── llm_client.py           # Configurable connection client supporting Mock/HTTPX
-        ├── mini_test_runner.py     # 10-chapter mock compiler test suite
-        ├── pipeline_orchestrator.py# Main workflow compiler & assembler
-        ├── reviewer_agent.py       # Multi-dimension evaluation & score audit agent
-        ├── state_machine.py        # Assembly line transition model
-        ├── world_simulator.py      # Pre-chapter environment simulation model
-        └── writer_agent.py         # Multi-scene content generator
+    └── novel_engine/          # 包根 = 数据根
+        ├── __init__.py
+        ├── agents/            # 智能体层
+        │   ├── chapter_director.py    # Task card dispatcher agent
+        │   ├── world_simulator.py     # Pre-chapter environment simulation
+        │   ├── writer_agent.py        # Multi-scene content generator
+        │   └── reviewer_agent.py      # Multi-dimension score audit agent
+        ├── core/              # 核心支撑层
+        │   ├── llm_client.py          # Mock/HTTPX LLM connection client
+        │   ├── memory_manager.py      # 记忆与质量记忆管理
+        │   ├── state_machine.py       # Assembly line transition model
+        │   └── checkpoint.py          # Verification and disk backup system
+        ├── engine/            # 底层库
+        │   ├── db.py                  # StateDB (SQLite 精确状态检索)
+        │   ├── session.py             # Durable Session Tree
+        │   ├── patcher.py             # Incremental Patcher
+        │   └── subagent.py            # 递归子智能体派生接口
+        ├── pipeline/          # 流水线编排与入口
+        │   ├── pipeline_orchestrator.py  # Main workflow compiler & assembler
+        │   ├── production_runner.py     # 全量生产运行器
+        │   ├── web_dashboard.py        # Web 可视化控制台
+        │   ├── gui_console.py          # 控制台 UI
+        │   └── init_state.py           # 世界状态初始化脚本
+        ├── tests/             # 单元测试与测试运行器
+        │   ├── test_novel_engine.py    # 核心库单元测试
+        │   ├── mini_test_runner.py     # 10-chapter mock compiler test suite
+        │   └── medium_test_runner.py   # 70-chapter sliding-window test suite
+        ├── bible/             # Style, world, and character bible documents
+        ├── config/            # Quality thresholds & runtime cost config
+        ├── foreshadow/        # Foreshadowing trackers & registries
+        ├── planning/          # Volume/Plot graphs & full outline
+        ├── simulation/        # Simulation constraints & laws
+        ├── memory/            # Generated memory & dynamic world state
+        ├── audit/             # Generated audit reports
+        ├── chapters/          # Generated chapter outputs
+        └── runtime/           # State machine persistence & logs
 ```
 
 ## Running Tests
 
-To run the unit tests for the core library:
+From the package root (`src/`), run the unit tests for the core library:
 ```bash
-pytest packages/coding-agent/skills/novel-engine/src/novel_engine/novel_engine/test_novel_engine.py
+cd src
+poetry run python -m unittest novel_engine.tests.test_novel_engine -v
 ```
 
-To run the 10-chapter compilation workflow under simulation:
+To run the 10-chapter compilation workflow under simulation (Mock):
 ```bash
-cd packages/coding-agent/skills/novel-engine/src/novel_engine/ && python3 mini_test_runner.py
+cd src
+poetry run python -m novel_engine.tests.mini_test_runner
+```
+
+To run against the real API (SiliconFlow / Qwen), add `--real`:
+```bash
+cd src
+poetry run python -m novel_engine.tests.mini_test_runner --real
 ```

@@ -6,18 +6,18 @@
 
 ## 1. 启动约束（Global Constraints）
 
-引擎通过 **Agnes API** 调用大模型，必须遵守以下约束：
+引擎通过 **SiliconFlow API**（模型 `Qwen/Qwen3.5-4B`）调用大模型，必须遵守以下约束：
 
-- **API 基地址（base）**：`https://apihub.agnes-ai.com`
-- **模型（model）**：`agnes-2.5-flash`
+- **API 基地址（base）**：`https://api.siliconflow.cn`
+- **模型（model）**：`Qwen/Qwen3.5-4B`
 - 调用路径统一经 `runtime_config.json` 中的 `provider` 字段配置，禁止在代码中硬编码其他 provider。
 
 ### `runtime_config.json` 关键字段
 
 | 字段 | 说明 / 取值 |
 |------|-------------|
-| `provider` | 模型供应商标识，指向 Agnes API（`https://apihub.agnes-ai.com`，模型 `agnes-2.5-flash`） |
-| `quality.publication_line` | 发布线阈值，**固定为 `82`**（低于该分的章视为不达标） |
+| `provider` | 模型供应商标识，指向 SiliconFlow API（`https://api.siliconflow.cn`，模型 `Qwen/Qwen3.5-4B`） |
+| `quality.publication_line` | 发布线阈值，**固定为 `88`**（低于该分的章视为不达标） |
 | `quality.target_avg_score` | 目标平均质量分，**固定为 `88`** |
 | `pipeline.max_review_retries` | 单章最大评审/重试次数，决定自动修复的轮询上限 |
 | `quality.fix_threshold` | 触发自动重写的质量下限，**固定为 `60`**（低于该分强制重生成） |
@@ -34,7 +34,7 @@
 python -m novel_engine.tests.mini_test_runner 20 --real
 ```
 
-> 参数 `20` 表示本轮生成 20 章；`--real` 表示走真实 Agnes API（请确认网络与配额可用）。
+> 参数 `20` 表示本轮生成 20 章；`--real` 表示走真实 API（SiliconFlow / Qwen，请确认网络与配额可用）。
 > 也可使用项目既有的启动模板/入口脚本，只要产出 `novel_engine/audit/mini_test_report.json` 即可。
 
 每轮结束后，立即观察双 SLO 判定：

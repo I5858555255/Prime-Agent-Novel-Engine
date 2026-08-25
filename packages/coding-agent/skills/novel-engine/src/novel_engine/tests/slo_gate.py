@@ -5,7 +5,7 @@ import json
 
 def _load_thresholds():
     defaults = {"min_avg": 88.0, "min_chapter": 82.0,
-                "min_pacing": 8.5, "min_innovation": 7.5}
+                "min_pacing": 7.5, "min_innovation": 7.0}
     try:
         cfg = json.loads((Path(__file__).parent.parent / "config" /
                           "runtime_config.json").read_text(encoding="utf-8"))

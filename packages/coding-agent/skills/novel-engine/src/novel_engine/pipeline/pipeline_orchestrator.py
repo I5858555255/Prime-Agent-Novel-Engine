@@ -275,8 +275,8 @@ class PipelineOrchestrator:
             elif verdict == "fix":
                 orig_novel = self.current_novel
                 pre_fix_score = score
-                line = self.config.get("quality", {}).get("target_avg_score", 88)
-                min_ch = self.config.get("quality", {}).get("min_chapter_score", 82)
+                min_ch = self.config.get("quality", {}).get("min_chapter_score", 70)
+                fix_ok = self.config.get("quality", {}).get("fix_threshold", 55)
                 max_fix = int(self.config.get("pipeline", {}).get("max_review_retries", 3)) + 1
                 current = orig_novel
                 best = (pre_fix_score, current)
@@ -284,35 +284,43 @@ class PipelineOrchestrator:
                     for _ in range(max_fix):
                         staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
                         s = staged["score"]
-                        if s >= line:
-                            current = self.current_novel
-                            best = (s, current)
-                            break
+                        prev_best = best[0]
                         if s > best[0]:
                             best = (s, current)
-                        current = self._rewrite_weak_dimensions(current, staged["review"])
+                        if s >= min_ch:
+                            break
+                        # 改写若无法超越历史最佳，立即停止，避免越改越差
+                        if _ > 0 and s <= prev_best:
+                            break
+                        rewritten = self._rewrite_weak_dimensions(current, staged["review"])
+                        if not rewritten or len(rewritten) < len(current) // 2:
+                            break
+                        current = rewritten
                         self.current_novel = current
                     best_score, best_novel = best
                     self.current_novel = best_novel
-                    if best_score >= min_ch:
-                        verdict, score = "pass", best_score
+                    result["score"] = best_score
+                    if best_score >= fix_ok:
+                        result["success"] = True
+                        if best_score < min_ch:
+                            self._flag_for_human(chapter_num, best_score, "below min chapter score after fix")
                     else:
-                        self._flag_for_human(chapter_num, best_score, "below min chapter score after fix")
-                        verdict, score = "pass", best_score
+                        result["success"] = False
+                        result["errors"].append(f"FIX: best score={best_score} < fix_threshold {fix_ok}")
                 except Exception as _pe:
                     logger.warning(f"Auto-fix failed ({_pe}); keeping pre-fix (score={pre_fix_score})")
                     self.current_novel = orig_novel
-                    verdict = "pass"
-                result["score"] = score
+                    result["score"] = pre_fix_score
+                    result["success"] = pre_fix_score >= fix_ok
             else:
-                # 全量回退
+                # 全量回退：回滚世界状态，避免污染后续章节。
+                # 不在章节内递归重试 —— 递归会和外层 _run_with_retry 的整章重试叠加，
+                # 造成无限自旋并大量浪费 API。交由 _run_with_retry 以不同温度重试整章。
                 result["errors"].append(f"FAIL: score={score}")
 
-                # Perform cascade rollback of world states using SessionTree
                 prev_chapter = chapter_num - 1
-                logger.warning(f"Review failed (Score={score}). Performing SessionTree rollback to Chapter {prev_chapter}.")
+                logger.warning(f"Review failed (Score={score}). Rolling back world state to Chapter {prev_chapter}.")
 
-                # Find the node for prev_chapter in the branch history
                 history = self.session_tree.get_branch_history("main")
                 target_node = None
                 for node in reversed(history):
@@ -321,34 +329,29 @@ class PipelineOrchestrator:
                         break
 
                 if target_node:
-                    rolled_snapshot = self.session_tree.rollback_to_node(target_node.node_id, branch_name="main")
-                    self._save_session_tree()
-
-                    # Restore simulator's JSON states on disk from the rolled snapshot
-                    if "characters" in rolled_snapshot:
-                        self.simulator.characters = rolled_snapshot["characters"]
-                        self.simulator._save_characters()
-                    if "factions" in rolled_snapshot:
-                        self.simulator.factions = rolled_snapshot["factions"]
-                        self.simulator._save_factions()
-                    if "power_system" in rolled_snapshot:
-                        self.simulator.power_system = rolled_snapshot["power_system"]
-                        self.simulator._save_power_system()
-
-                    # Sync back to StateDB
-                    self.simulator.db.import_from_json()
-                    self.db.import_from_json()
-                    logger.info("World state successfully rolled back and StateDB synchronized.")
+                    try:
+                        rolled_snapshot = self.session_tree.rollback_to_node(target_node.node_id, branch_name="main")
+                        self._save_session_tree()
+                        if "characters" in rolled_snapshot:
+                            self.simulator.characters = rolled_snapshot["characters"]
+                            self.simulator._save_characters()
+                        if "factions" in rolled_snapshot:
+                            self.simulator.factions = rolled_snapshot["factions"]
+                            self.simulator._save_factions()
+                        if "power_system" in rolled_snapshot:
+                            self.simulator.power_system = rolled_snapshot["power_system"]
+                            self.simulator._save_power_system()
+                        self.simulator.db.import_from_json()
+                        self.db.import_from_json()
+                        logger.info("World state successfully rolled back and StateDB synchronized.")
+                    except Exception as _rb:
+                        logger.error(f"Rollback failed: {_rb}")
                 else:
                     logger.warning(f"No SessionNode found for Chapter {prev_chapter} in SessionTree history.")
 
-                if sm.can_retry():
-                    sm.increment_retry()
-                    logger.warning(f"Retrying chapter {chapter_num} (attempt {sm.retry_count})")
-                    return self.generate_single_chapter(chapter_num)
-                else:
-                    sm.handle_failure("review_exhausted", f"Score={score}")
-                    return result
+                sm.handle_failure("review_exhausted", f"Score={score}")
+                result["success"] = False
+                return result
         except Exception as e:
             result["errors"].append(f"REVIEW: {e}")
             sm.handle_failure("review_error", str(e))
@@ -509,7 +512,9 @@ class PipelineOrchestrator:
     def _stage_review(self, chapter_num: int, task_card: dict, synopsis: dict,
                       novel_text: str, world_state: dict) -> dict:
         """阶段5：审查评分。"""
-        self.state_machine.transition(ChapterPhase.REVIEW)
+        # 修复流中会以 REVIEW 状态再次调用本方法，避免无效的 REVIEW->REVIEW 转换报错
+        if self.state_machine.current_phase != ChapterPhase.REVIEW:
+            self.state_machine.transition(ChapterPhase.REVIEW)
         review = self.reviewer.review_chapter(
             chapter_num=chapter_num,
             task_card=task_card,

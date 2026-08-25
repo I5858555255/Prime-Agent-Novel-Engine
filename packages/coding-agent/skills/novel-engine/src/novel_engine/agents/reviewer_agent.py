@@ -12,6 +12,35 @@ from novel_engine.core.llm_client import LLMClient, call_llm
 
 logger = logging.getLogger(__name__)
 
+# 各评分维度满分（与 SYSTEM_PROMPT / _rewrite_weak_dimensions 保持一致，总计 100）
+DIM_MAX = {
+    "plot_consistency": 25,
+    "character_consistency": 20,
+    "foreshadow_execution": 20,
+    "style_match": 15,
+    "pacing": 10,
+    "innovation": 10,
+}
+
+
+def _to_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_review(review: dict) -> dict:
+    """强制总分落在 0-100 刻度：将各维度夹取到定义上限后重新求和，
+    避免模型返回越界分数（如 total_score=110）导致刻度失真。"""
+    raw = review.get("scores") or {}
+    norm = {name: max(0.0, min(mx, _to_float(raw.get(name))))
+            for name, mx in DIM_MAX.items()}
+    total = sum(norm.values())
+    review["scores"] = norm
+    review["total_score"] = int(round(total))
+    return review
+
 
 class ReviewerAgent:
     """章节审查 Agent。"""
@@ -103,6 +132,7 @@ class ReviewerAgent:
                 client=self.llm,
                 output_json=True,
             )
+            review = _normalize_review(review)
             logger.info(f"Review completed for chapter {chapter_num}: score={review.get('total_score')}")
             return review
         except Exception as e:

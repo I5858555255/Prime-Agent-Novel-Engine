@@ -10,7 +10,6 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from novel_engine.core.llm_client import LLMClient, call_llm
-from novel_engine.agents.pacing_advisor import PacingAdvisor
 
 logger = logging.getLogger(__name__)
 def _get_root():

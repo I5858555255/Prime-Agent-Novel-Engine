@@ -44,59 +44,78 @@ packages/coding-agent/skills/novel-engine/
 ├── SKILL.md                         # 技能描述规范
 ├── pyproject.toml                   # Poetry 依赖管理
 ├── README.md                        # 本文档（专业、易懂的全面手册）
+├── docs/                            # 说明文档
+│   ├── 使用说明指南.md              # 完整使用手册
+│   ├── 编写指南.md                  # 人工输入文件编写规范
+│   ├── 效率优化方案.md              # 架构优化方案
+│   └── DEVELOPMENT_PLAN.md          # 开发任务计划（T1-T10）
+├── scripts/                         # 启动脚本
+│   ├── generate.bat                 # 生成章节（Mock/真实/生产）
+│   ├── start_dashboard.bat          # 启动 Web 控制台
+│   ├── status.bat                   # 查看状态 / 章节列表 / 清理
+│   ├── stop.bat                     # 停止服务
+│   └── start.sh                     # Unix 一键启动脚本
 └── src/
-    └── novel_engine/
-        ├── bible/                  # 创作圣经（持久恒定的终极设定）
-        │   ├── world_bible.md      # 世界地理、势力分布与力量体系
-        │   ├── character_bible.md  # 核心角色人设、关系矩阵、成长弧光与禁忌
-        │   ├── style_bible.md      # 叙事视角、文风偏好与章节结构铁律
-        │   ├── author_intent.md    # 分阶段主题、情绪曲线与各阶段严苛禁令
-        │   └── ending_bible.md     # 命运锚点、终局设定与关键伏笔回收计划
-        ├── planning/               # 长线剧情规划（随进度动态更新）
-        │   ├── volumes.json        # 卷纲定义（起始章、主题、高潮设定）
-        │   └── plot_graph.json     # 剧情 DAG 依赖图（节点、前置依赖、角色、伏笔）
-        ├── simulation/             # 仿真世界运行规则（常态配置，非必改）
-        │   ├── rules.json          # 修炼速度、突破章节跨度、战力平衡量化规则
-        │   └── constraints.json    # 角色境界锁定、剧情锁定
-        ├── foreshadow/             # 伏笔管理系统
-        │   └── registry.json       # 伏笔注册表（埋设点、多阶段暗示提示、回收点）
-        ├── config/                 # 运行参数与预算控制
+    └── novel_engine/                # 包根 = 数据根
+        ├── __init__.py
+        ├── agents/                  # 智能体层
+        │   ├── chapter_director.py  # 任务卡派发器
+        │   ├── world_simulator.py   # 物理规则仿真环境
+        │   ├── writer_agent.py      # 正文与提纲编写器
+        │   └── reviewer_agent.py    # 智能体评分审计官
+        ├── core/                    # 核心支撑层
+        │   ├── llm_client.py        # LLM 通信层（Mock/HTTPX）
+        │   ├── memory_manager.py    # 记忆与质量记忆管理
+        │   ├── state_machine.py     # 状态切换总线
+        │   └── checkpoint.py        # 版本备份系统
+        ├── engine/                  # 底层库
+        │   ├── db.py                # StateDB 查询机制
+        │   ├── session.py           # 分支树会话管理器
+        │   ├── patcher.py           # 场景增量缝合补丁逻辑
+        │   └── subagent.py          # 递归子智能体派生接口
+        ├── pipeline/                # 流水线编排与入口
+        │   ├── pipeline_orchestrator.py # 流水线总体调度与滑动窗口协调
+        │   ├── production_runner.py # 全量生产运行器
+        │   ├── web_dashboard.py     # Web 可视化控制台
+        │   ├── gui_console.py       # 控制台 UI
+        │   └── init_state.py        # 世界状态初始化脚本
+        ├── tests/                   # 测试
+        │   ├── test_novel_engine.py # 核心库单元测试集
+        │   ├── mini_test_runner.py  # 10章迷你编译器测试集
+        │   └── medium_test_runner.py# 70章带滑动窗口的长线测试集
+        ├── bible/                   # 创作圣经（持久恒定的终极设定）
+        │   ├── world_bible.md       # 世界地理、势力分布与力量体系
+        │   ├── character_bible.md   # 核心角色人设、关系矩阵、成长弧光与禁忌
+        │   ├── style_bible.md       # 叙事视角、文风偏好与章节结构铁律
+        │   ├── author_intent.md     # 分阶段主题、情绪曲线与各阶段严苛禁令
+        │   └── ending_bible.md      # 命运锚点、终局设定与关键伏笔回收计划
+        ├── planning/                # 长线剧情规划
+        │   ├── volumes.json         # 卷纲定义（起始章、主题、高潮设定）
+        │   ├── plot_graph.json      # 剧情 DAG 依赖图
+        │   └── 吸氧证道_V2_1_完整大纲.md # 完整大纲（按卷解析）
+        ├── simulation/              # 仿真世界运行规则（常态配置，非必改）
+        │   ├── rules.json           # 修炼速度、突破跨度、战力平衡量化规则
+        │   └── constraints.json     # 角色境界锁定、剧情锁定
+        ├── foreshadow/              # 伏笔管理系统
+        │   └── registry.json        # 伏笔注册表（埋设点、暗示点、回收点）
+        ├── config/                  # 运行参数与预算控制
         │   ├── quality_thresholds.json # 多维度评分通过线与修复行为判定阈值
-        │   ├── runtime_config.json # LLM API 密钥与并发参数
-        │   └── cost_sandbox.json   # 模拟预算与 Token 转换对照表
-        ├── memory/                 # 记忆数据与动态世界状态（自动维护，请勿手动编辑）
-        │   ├── world_state/        # 角色实时世界状态属性
-        │   ├── short_term/         # 局部滑动窗口上下文摘要
-        │   ├── long_term/          # 章节长线历史索引
-        │   └── quality_memory.json # 滑动窗口审查反馈（套路重复、节奏失衡问题记忆）
-        ├── audit/                  # 产出与审计报告目录（自动生成）
-        │   ├── mini_test_report.json # 编译测试报告
-        │   └── production_report.json # 完整生产报告
-        ├── chapters/               # 最终生成产物
-        │   ├── novel/              # 章节正文文本 (.txt)
-        │   ├── synopsis/           # 章节剧情大纲 (.txt)
-        │   └── outline/            # 章节任务卡详情 (.json)
-        ├── runtime/                # 状态机持久化和备份
-        │   ├── checkpoint.json     # 安全版本快照（防数据损坏与崩溃）
-        │   ├── state_machine.json  # 运行时状态控制
-        │   └── recovery_policy.json# 全自动故障恢复策略
-        ├── novel_engine/           # 核心依赖代码包
-        │   ├── __init__.py
-        │   ├── db.py               # StateDB 查询机制
-        │   ├── patcher.py          # 场景增量缝合补丁逻辑
-        │   ├── session.py          # 分支树会话管理器
-        │   ├── subagent.py         # 递归子智能体派生接口
-        │   └── test_novel_engine.py# 单元测试集
-        ├── chapter_director.py     # 任务卡派发器
-        ├── world_simulator.py      # 物理规则仿真环境
-        ├── writer_agent.py         # 正文与提纲编写器
-        ├── reviewer_agent.py       # 智能体评分审计官
-        ├── state_machine.py        # 状态切换总线
-        ├── checkpoint.py           # 版本备份系统
-        ├── pipeline_orchestrator.py# 流水线总体调度与滑动窗口协调
-        ├── llm_client.py           # LLM 通信层（包含 MockLLMClient 用于快速测试）
-        ├── mini_test_runner.py     # 10章迷你编译器测试集
-        └── medium_test_runner.py   # 70章带滑动窗口的长线编译器测试集
+        │   ├── runtime_config.json  # LLM API 密钥与并发参数
+        │   └── cost_sandbox.json    # 模拟预算与 Token 转换对照表
+        ├── memory/                  # 记忆数据与动态世界状态（自动维护，请勿手动编辑）
+        │   ├── world_state/         # 角色实时世界状态属性
+        │   ├── short_term/          # 局部滑动窗口上下文摘要
+        │   ├── long_term/           # 章节长线历史索引
+        │   └── quality_memory.json  # 滑动窗口审查反馈
+        ├── audit/                   # 产出与审计报告目录（自动生成）
+        ├── chapters/                # 最终生成产物
+        │   ├── novel/               # 章节正文文本 (.txt)
+        │   ├── synopsis/            # 章节剧情大纲 (.txt)
+        │   └── outline/             # 章节任务卡详情 (.json)
+        └── runtime/                 # 状态机持久化和日志
+            ├── checkpoint.json      # 安全版本快照
+            ├── state_machine.json   # 运行时状态控制
+            └── recovery_policy.json # 全自动故障恢复策略
 ```
 
 ---
@@ -151,28 +170,32 @@ poetry install
 
 对核心依赖（StateDB、会话管理、智能体生成和增量补丁）运行单元测试：
 ```bash
-poetry run pytest src/novel_engine/novel_engine/test_novel_engine.py
+cd src
+poetry run python -m unittest novel_engine.tests.test_novel_engine -v
 ```
 
 ### 3. 运行 10 章节编译测试 (Mini Test)
 
-`mini_test_runner.py` 是引擎自带的端到端编译和拼装管道校验器，支持在模拟（Mock）或真实 API 条件下运行 10 章节流水线生成，以检验系统的自洽性、状态维护和异常处理能力。
+`tests/mini_test_runner.py` 是引擎自带的端到端编译和拼装管道校验器，支持在模拟（Mock）或真实 API 条件下运行 10 章节流水线生成，以检验系统的自洽性、状态维护和异常处理能力。
 
 **Mock 模式快速运行（不消耗 API Key、无网络调用、1秒内跑完）**：
 ```bash
-poetry run python src/novel_engine/mini_test_runner.py
+cd src
+poetry run python -m novel_engine.tests.mini_test_runner
 ```
 
 **实机测试模式（连接真实 LLM 服务，进行实境创作）**：
 ```bash
-poetry run python src/novel_engine/mini_test_runner.py --real
+cd src
+poetry run python -m novel_engine.tests.mini_test_runner --real
 ```
 
 ### 4. 运行 70 章节长线多窗测试 (Medium Test)
 
-`medium_test_runner.py` 主要用来对长篇创作中容易发生的“套路重复”、“节奏平淡”、“伏笔搁置”等长线结构问题进行**滑动窗口式交叉审查（Sliding Window Review）**，每 50 章节自动汇总一次问题，并产生动态优化建议。
+`tests/medium_test_runner.py` 主要用来对长篇创作中容易发生的“套路重复”、“节奏平淡”、“伏笔搁置”等长线结构问题进行**滑动窗口式交叉审查（Sliding Window Review）**，每 50 章节自动汇总一次问题，并产生动态优化建议。
 ```bash
-poetry run python src/novel_engine/medium_test_runner.py
+cd src
+poetry run python -m novel_engine.tests.medium_test_runner
 ```
 
 ---
@@ -192,26 +215,26 @@ poetry run python src/novel_engine/medium_test_runner.py
 
 ## 🖥️ Windows 启动脚本
 
-项目根目录提供以下批处理脚本，方便 Windows 用户使用：
+项目 `scripts/` 目录提供以下批处理脚本，方便 Windows 用户使用：
 
 | 脚本 | 功能 |
 |------|------|
-| `generate.bat` | 运行章节生成（Mock 或真实 API） |
-| `start_dashboard.bat` | 启动 Web 可视化控制台 |
-| `status.bat` | 查看当前生成状态和章节列表 |
-| `stop.bat` | 停止运行的服务 |
+| `scripts/generate.bat` | 运行章节生成（Mock 或真实 API） |
+| `scripts/start_dashboard.bat` | 启动 Web 可视化控制台 |
+| `scripts/status.bat` | 查看当前生成状态和章节列表 |
+| `scripts/stop.bat` | 停止运行的服务 |
 
 ### 快速使用
 
 ```cmd
 :: 双击运行或在命令行中执行
-generate.bat              :: 运行 10 章 Mock 测试
-generate.bat real         :: 运行 10 章真实 API 测试
-generate.bat production   :: 运行全量生产（3000章）
-start_dashboard.bat       :: 启动 Web 控制台
-status.bat                :: 查看当前状态
-status.bat chapters       :: 查看已生成章节
-status.bat clean          :: 清理运行时数据
+scripts\generate.bat              :: 运行 10 章 Mock 测试
+scripts\generate.bat real         :: 运行 10 章真实 API 测试
+scripts\generate.bat production   :: 运行全量生产（3800章）
+scripts\start_dashboard.bat       :: 启动 Web 控制台
+scripts\status.bat                :: 查看当前状态
+scripts\status.bat chapters       :: 查看已生成章节
+scripts\status.bat clean          :: 清理运行时数据
 ```
 
 ---
@@ -219,7 +242,7 @@ status.bat clean          :: 清理运行时数据
 ## 📝 编写与扩展指南
 
 
-当您准备对《吸氧证道：阴阳逆碳，我以人道定仙天》注入新的剧情或定制不同的世界观设定时，请遵照 **`src/novel_engine/编写指南.md`** 的严苛规范编辑：
+当您准备对《吸氧证道：阴阳逆碳，我以人道定仙天》注入新的剧情或定制不同的世界观设定时，请遵照 **`docs/编写指南.md`** 的严苛规范编辑：
 1. **世界观增加**：直接更新 `bible/world_bible.md`，并在 2000 字符内保持其高密度大纲。
 2. **新增大纲线索**：按 DAG 依赖顺序，向 `planning/plot_graph.json` 追加无环单向图节点。
 3. **新增伏笔**：在 `foreshadow/registry.json` 中配置伏笔，定义好暗示点（`clue_plan`）以及回收点（`resolve_chapter`），流式系统在运行到对应区间时会自动将其捞起，并强制要求 Writer Agent 埋设或收回。
