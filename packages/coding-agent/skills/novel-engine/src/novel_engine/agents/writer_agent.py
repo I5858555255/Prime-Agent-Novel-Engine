@@ -139,7 +139,7 @@ class WriterAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm = llm_client or LLMClient()
 
-    def generate_scene(self, task_card: dict, scene_blueprint: dict, chapter_synopsis: str, previous_context: str = "", pacing_constraints: str = "") -> str:
+    def generate_scene(self, task_card: dict, scene_blueprint: dict, chapter_synopsis: str, previous_context: str = "", pacing_constraints: str = "", temperature_override: Optional[float] = None) -> str:
         """生成单个场景的正文。"""
         chapter_num = task_card.get("chapter_num", 0)
         scene_num = scene_blueprint.get("scene_num", 0)
@@ -178,6 +178,7 @@ class WriterAgent:
                 prompt=prompt,
                 system_prompt=self.SCENE_SYSTEM_PROMPT,
                 client=self.llm,
+                temperature=temperature_override,
             )
             logger.info(f"Scene {scene_num} generated for chapter {chapter_num}")
             return content
@@ -223,19 +224,20 @@ class WriterAgent:
 
         return groups
 
-    def _generate_group(self, task_card: dict, group: list[dict], synopsis_text: str, pacing_constraints: str = "") -> list[tuple[dict, str]]:
+    def _generate_group(self, task_card: dict, group: list[dict], synopsis_text: str, pacing_constraints: str = "", temperature_override: Optional[float] = None) -> list[tuple[dict, str]]:
         """顺序生成一个场景组（组内场景共享人物，存在上下文依赖）。"""
         group_contents = []
         previous_context = ""
         for bp in group:
-            content = self.generate_scene(task_card, bp, synopsis_text, previous_context, pacing_constraints)
+            content = self.generate_scene(task_card, bp, synopsis_text, previous_context, pacing_constraints, temperature_override)
             group_contents.append((bp, content))
             previous_context = "\n\n※\n\n".join(
                 c for _, c in group_contents[-3:]
             ) if len(group_contents) >= 3 else "\n\n".join(c for _, c in group_contents)
         return group_contents
 
-    def generate_full_chapter(self, task_card: dict, synopsis: dict, pacing_constraints: str = "") -> str:
+    def generate_full_chapter(self, task_card: dict, synopsis: dict, pacing_constraints: str = "",
+                              temperature_override: Optional[float] = None) -> str:
         """
         生成完整章节正文。
         独立场景组并行生成，组内依赖场景顺序生成，最终按 scene_num 排序保证顺序。
@@ -255,12 +257,12 @@ class WriterAgent:
         if len(groups) <= 1:
             # 只有一组：无并行价值，直接顺序生成
             for group in groups:
-                all_scene_contents.extend(self._generate_group(task_card, group, synopsis_text, pacing_constraints))
+                all_scene_contents.extend(self._generate_group(task_card, group, synopsis_text, pacing_constraints, temperature_override))
         else:
             max_workers = min(len(groups), 4)
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scene") as executor:
                 future_to_group = {
-                    executor.submit(self._generate_group, task_card, group, synopsis_text, pacing_constraints): group
+                    executor.submit(self._generate_group, task_card, group, synopsis_text, pacing_constraints, temperature_override): group
                     for group in groups
                 }
                 for future in as_completed(future_to_group):

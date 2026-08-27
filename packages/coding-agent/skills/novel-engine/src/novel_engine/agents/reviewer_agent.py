@@ -92,8 +92,9 @@ class ReviewerAgent:
   "fix_scope": "若 verdict=fix，说明需要重新生成的段落范围"
 }}"""
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
+    def __init__(self, llm_client: Optional[LLMClient] = None, provider_config=None):
         self.llm = llm_client or LLMClient()
+        self.provider_config = provider_config
 
     def review_chapter(
         self,
@@ -131,6 +132,7 @@ class ReviewerAgent:
                 system_prompt=self.SYSTEM_PROMPT,
                 client=self.llm,
                 output_json=True,
+                provider_config=self.provider_config,
             )
             review = _normalize_review(review)
             logger.info(f"Review completed for chapter {chapter_num}: score={review.get('total_score')}")

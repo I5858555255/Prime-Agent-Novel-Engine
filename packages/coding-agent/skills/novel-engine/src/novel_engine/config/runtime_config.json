@@ -1,7 +1,7 @@
 {
   "llm": {
     "provider": "openai",
-    "model": "Qwen/Qwen3.5-4B",
+    "model": "deepseek-ai/DeepSeek-V3.2",
     "api_base": "https://api.siliconflow.cn",
     "api_key": "REDACTED",
     "temperature": 0.85,
@@ -36,11 +36,47 @@
   "provider": {
     "family": "qwen",
     "api_base": "https://api.siliconflow.cn",
-    "model": "Qwen/Qwen3.5-4B",
+    "model": "deepseek-ai/DeepSeek-V3.2",
     "reasoning_fallback": true,
-    "thinking_param": "enable_thinking",
+    "thinking_param": null,
     "cache_bust_suffix": "\n\n[请直接给出最终答案，严格使用合法 JSON，不要使用思考模式，不要输出任何分析或推理过程。]",
     "retry_temperatures": [0.85, 0.7, 0.95, 1.0]
+  },
+  "review_llm": {
+    "api_base": "https://apihub.agnes-ai.com",
+    "model": "agnes-2.5-flash",
+    "api_key_env": "AGNES_API_KEY",
+    "temperature": 0.3,
+    "max_tokens": 4096,
+    "timeout_seconds": 120,
+    "use_mock": false
+  },
+  "review_provider": {
+    "family": "agnes",
+    "reasoning_fallback": false,
+    "thinking_param": null,
+    "retry_temperatures": [0.3, 0.4, 0.2, 0.5]
+  },
+  "fallback_llm": {
+    "api_base": "https://api.siliconflow.cn",
+    "model": "deepseek-ai/DeepSeek-V3.2",
+    "api_key_env": "ZLEAP_MODEL_API_KEY",
+    "temperature": 0.3,
+    "max_tokens": 4096,
+    "timeout_seconds": 120,
+    "use_mock": false
+  },
+  "autonomy": {
+    "audit_interval_chapters": 50,
+    "chapter_regen_max_retries": 2,
+    "remediation_rounds": 1,
+    "remediation_max_retries": 2,
+    "failover_trigger_consecutive_errors": 3,
+    "max_backoff_seconds": 1800,
+    "resume_state_file": "runtime/last_success_chapter.txt"
+  },
+  "forbidden": {
+    "rules_file": "config/forbidden.json"
   },
   "commit": {
     "hash_algorithm": "sha256",

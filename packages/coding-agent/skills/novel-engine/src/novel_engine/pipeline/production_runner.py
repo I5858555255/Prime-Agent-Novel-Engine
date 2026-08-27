@@ -20,7 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from novel_engine.core.llm_client import LLMClient, reset_call_log
+from novel_engine.core.llm_client import reset_call_log
+from novel_engine.core.llm_failover import FailoverLLMClient
 from novel_engine.pipeline.pipeline_orchestrator import PipelineOrchestrator
 from novel_engine.pipeline.reset_state import (
     reset_runtime_state,
@@ -86,9 +87,13 @@ def run_production(num_chapters: int = 0, use_real: bool = True,
         logger.info(f"Resuming from chapter {resume_checkpoint}, skipping runtime reset")
 
     if use_real:
-        client = LLMClient.from_config(config_path=str(project_root / "config" / "runtime_config.json"))
+        cfg = json.loads((project_root / "config" / "runtime_config.json").read_text(encoding="utf-8"))
+        client = FailoverLLMClient.from_config_dict(
+            cfg, primary_section="llm", fallback_section="fallback_llm",
+            primary_key_env="ZLEAP_MODEL_API_KEY", fallback_key_env="ZLEAP_MODEL_API_KEY",
+            log_prefix="[gen]")
         reset_call_log()  # Clear any stale call log
-        logger.info("OK Using real API (SiliconFlow / Qwen)")
+        logger.info("OK Using real API with generation failover (llm -> fallback_llm)")
     else:
         from novel_engine.core.llm_client import MockLLMClient
         client = MockLLMClient()

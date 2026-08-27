@@ -21,6 +21,10 @@ from novel_engine.agents.reviewer_agent import ReviewerAgent
 from novel_engine.agents.pacing_advisor import PacingAdvisor
 from novel_engine.core.memory_manager import MemoryManager
 from novel_engine.core.llm_client import LLMClient, call_llm, get_call_log, reset_call_log
+from novel_engine.core.llm_failover import FailoverLLMClient
+from novel_engine.quality.defects_store import DefectsStore
+from novel_engine.quality.forbidden_scanner import ForbiddenScanner
+from novel_engine.quality.continuity_auditor import ContinuityAuditor
 from novel_engine.engine.db import StateDB
 from novel_engine.engine.session import SessionTree
 from novel_engine.engine.patcher import IncrementalPatcher
@@ -33,7 +37,24 @@ class PipelineOrchestrator:
 
     def __init__(self, project_root: str | Path = None, llm_client: Optional[LLMClient] = None):
         self.root = Path(project_root or Path(__file__).parent.parent)
-        self.llm = llm_client or LLMClient.from_config(self.root / "config" / "runtime_config.json")
+        # Ensure runtime dir exists (StateMachine/StateDB write into it during init)
+        (self.root / "runtime").mkdir(parents=True, exist_ok=True)
+
+        # Load runtime config first so failover bounds can be read before building clients
+        try:
+            self.config = json.loads((self.root / "config" / "runtime_config.json").read_text(encoding="utf-8"))
+        except Exception:
+            self.config = {}
+
+        fb_trigger = self.config.get("autonomy", {}).get("failover_trigger_consecutive_errors", 3)
+        fb_backoff = self.config.get("autonomy", {}).get("max_backoff_seconds", 1800)
+        if llm_client is not None:
+            self.llm = llm_client
+        else:
+            self.llm = FailoverLLMClient.from_config_dict(
+                self.config, primary_section="llm", fallback_section="fallback_llm",
+                primary_key_env="ZLEAP_MODEL_API_KEY", fallback_key_env="ZLEAP_MODEL_API_KEY",
+                trigger=fb_trigger, max_backoff=fb_backoff, log_prefix="[gen]")
 
         self.state_machine = StateMachine(self.root)
         self.checkpoint_mgr = CheckpointManager(self.root)
@@ -51,7 +72,6 @@ class PipelineOrchestrator:
         self._load_session_tree()
 
         self.writer = WriterAgent(llm_client=self.llm)
-        self.reviewer = ReviewerAgent(llm_client=self.llm)
         self.memory = MemoryManager(self.root)
 
         # 存储当前章节的产出，供 commit 使用
@@ -74,13 +94,41 @@ class PipelineOrchestrator:
         self._director_fixed_context = self._load_director_fixed_context()
 
         # Runtime config + provider config for chapter-level retry logic
-        try:
-            import json
-            self.config = json.loads((self.root / "config" / "runtime_config.json").read_text(encoding="utf-8"))
-        except Exception:
-            self.config = {}
         from novel_engine.core.llm_client import _provider_config_from_runtime
         self.provider_cfg = _provider_config_from_runtime()
+
+        # Defect store for recording unrecovered gaps (below-min-ch chapters)
+        self.defects = DefectsStore(str(self.root / "audit" / "defects.json"))
+
+        # Task 7/8: continuity auditor + audit cadence
+        self.audit_interval = self.config.get("autonomy", {}).get("audit_interval_chapters", 50)
+        self.auditor = ContinuityAuditor(llm_client=self.llm)
+        self._last_audit_snapshot = None
+
+        # Task 9: forbidden gate before commit
+        try:
+            self.forbidden = ForbiddenScanner(rules_path=str(self.root / "config" / "forbidden.json"))
+        except Exception as e:
+            logger.warning(f"ForbiddenScanner init failed (using empty rules): {e}")
+            self.forbidden = ForbiddenScanner.__new__(ForbiddenScanner)
+            self.forbidden.rules = []
+
+        # 独立质检 LLM（评审打分），与生成 LLM 隔离，避免“自评”虚高导致弱章放行。
+        # 仅在 runtime_config 显式配置了 review_llm 时才分离；否则复用生成 LLM（保持旧行为 / 测试 mock 生效）。
+        review_cfg = self.config.get("review_llm") or {}
+        if review_cfg and not review_cfg.get("use_mock"):
+            self.review_llm = FailoverLLMClient.from_config_dict(
+                self.config, primary_section="review_llm", fallback_section="fallback_llm",
+                primary_key_env="AGNES_API_KEY", fallback_key_env="ZLEAP_MODEL_API_KEY",
+                trigger=fb_trigger, max_backoff=fb_backoff, log_prefix="[review]")
+            self.review_provider_cfg = _provider_config_from_runtime(
+                self.config, section="review_provider")
+        else:
+            self.review_llm = self.llm
+            self.review_provider_cfg = self.provider_cfg
+        self.reviewer = ReviewerAgent(
+            llm_client=self.review_llm, provider_config=self.review_provider_cfg)
+
         self._attempt_index = 0
 
     def _load_session_tree(self):
@@ -245,6 +293,8 @@ class PipelineOrchestrator:
         # 阶段4：正文生成（场景级）+ 润色
         try:
             novel_text = self._stage_write(task_card, synopsis)
+            novel_text = self._ensure_chinese(novel_text)
+            self.current_novel = novel_text
         except Exception as e:
             result["errors"].append(f"WRITE: {e}")
             sm.handle_failure("writing_error", str(e))
@@ -263,11 +313,12 @@ class PipelineOrchestrator:
 
         # 阶段5：审查评分
         try:
-            stage_review = self._stage_review(chapter_num, task_card, synopsis, novel_text, world_state)
+            stage_review = self._stage_review(chapter_num, task_card, synopsis, self._novel_string(), world_state)
             review = stage_review["review"]
             score = stage_review["score"]
             verdict = stage_review["verdict"]
             result["score"] = score
+            apply_world_state = True
 
             if verdict == "pass":
                 result["success"] = True
@@ -300,18 +351,32 @@ class PipelineOrchestrator:
                     best_score, best_novel = best
                     self.current_novel = best_novel
                     result["score"] = best_score
-                    if best_score >= fix_ok:
+                    if best_score >= min_ch:
                         result["success"] = True
-                        if best_score < min_ch:
-                            self._flag_for_human(chapter_num, best_score, "below min chapter score after fix")
+                        apply_world_state = True
                     else:
-                        result["success"] = False
-                        result["errors"].append(f"FIX: best score={best_score} < fix_threshold {fix_ok}")
+                        # Q3=A: rollback world-state, regenerate full chapter at higher temp (bounded), record gap if still failing
+                        apply_world_state = False
+                        regen_ok = self._recover_chapter(
+                            chapter_num, task_card, synopsis, world_state, min_ch)
+                        if regen_ok:
+                            result["success"] = True
+                            apply_world_state = True
+                            result["score"] = getattr(self, "_recovered_score", best_score)
+                        else:
+                            result["success"] = False
+                            self._flag_for_human(chapter_num, best_score, "below min_ch after recovery")
                 except Exception as _pe:
                     logger.warning(f"Auto-fix failed ({_pe}); keeping pre-fix (score={pre_fix_score})")
                     self.current_novel = orig_novel
                     result["score"] = pre_fix_score
-                    result["success"] = pre_fix_score >= fix_ok
+                    if pre_fix_score >= min_ch:
+                        result["success"] = True
+                        apply_world_state = True
+                    else:
+                        result["success"] = False
+                        apply_world_state = False
+                        self._flag_for_human(chapter_num, pre_fix_score, "auto-fix failed; below min_ch")
             else:
                 # 全量回退：回滚世界状态，避免污染后续章节。
                 # 不在章节内递归重试 —— 递归会和外层 _run_with_retry 的整章重试叠加，
@@ -357,6 +422,27 @@ class PipelineOrchestrator:
             sm.handle_failure("review_error", str(e))
             return result
 
+        # Task 9: forbidden gate — never silently publish a forbidden violation.
+        # Only BLOCK on severity "block"/"high"; record everything as a defect
+        # (medium/low are stylistic and would otherwise abort an autonomous run).
+        if apply_world_state:
+            violations = self._forbidden_violations(self.current_novel, review)
+            if violations:
+                for v in violations:
+                    self.defects.add(chapter_num, "forbidden_violation",
+                                     f"{v.get('name')}:{v.get('match')}")
+                blocking = [v for v in violations
+                            if v.get("severity") in ("block", "high")]
+                if blocking:
+                    logger.error(f"Chapter {chapter_num} FAILED forbidden gate (blocking): {blocking}")
+                    apply_world_state = False
+                    result["success"] = False
+                    result["forbidden_violations"] = violations
+                    self._flag_for_human(chapter_num, result.get("score", 0), "forbidden violation")
+                else:
+                    logger.warning(
+                        f"Chapter {chapter_num} non-blocking forbidden hits recorded: {violations}")
+
         # 保存单章审查结果供滑动窗口质量记忆使用
         review_file = self.root / "audit" / "per_chapter_reviews.json"
         review_file.parent.mkdir(parents=True, exist_ok=True)
@@ -386,18 +472,25 @@ class PipelineOrchestrator:
             self.memory.add_recent_chapter(chapter_num, {
                 "goal": task_card.get("core_goal", ""),
                 "summary": synopsis.get("synopsis", ""),
-                "word_count": len(self.current_novel),
+                "word_count": len(self._novel_string()),
             })
 
-            # 正式提交状态变更
+            # 正式提交状态变更（质检未达 min_ch 时暂缓落地世界状态，避免污染后续章节）
             pending_changes = synopsis.get("state_changes", [])
             if pending_changes:
-                self.simulator.apply_pending_changes(pending_changes)
-                self.memory.commit_pending_changes(pending_changes)
+                if apply_world_state:
+                    self.simulator.apply_pending_changes(pending_changes)
+                    self.memory.commit_pending_changes(pending_changes)
+                else:
+                    logger.warning(
+                        f"Chapter {chapter_num} 世界状态变更已暂缓"
+                        f"(score={result.get('score')} < min_ch)，未应用到世界模拟器，留待人工复核/返工。"
+                    )
+                    self._flag_for_human(chapter_num, result.get("score", 0), "world-state deferred: below min_ch")
 
             checkpoint = sm.commit_chapter(
                 chapter_num=chapter_num,
-                novel_content=self.current_novel,
+                novel_content=self._novel_string(),
                 synopsis_content=json.dumps(synopsis, ensure_ascii=False),
                 outline_content=json.dumps(task_card, ensure_ascii=False),
                 world_state_snapshot=world_state,
@@ -406,7 +499,7 @@ class PipelineOrchestrator:
             # Save commit snapshot in SessionTree
             try:
                 import hashlib
-                content_bytes = (self.current_novel + json.dumps(synopsis) + json.dumps(task_card)).encode("utf-8")
+                content_bytes = (self._novel_string() + json.dumps(synopsis) + json.dumps(task_card)).encode("utf-8")
                 content_hash = hashlib.sha256(content_bytes).hexdigest()[:16]
                 post_world_state = {
                     "characters": self.simulator.characters,
@@ -417,7 +510,7 @@ class PipelineOrchestrator:
                     chapter_num=chapter_num,
                     content_hash=content_hash,
                     world_state_snapshot=post_world_state,
-                    score=score,
+                    score=result.get("score", score),
                     branch_name="main"
                 )
                 self._save_session_tree()
@@ -425,8 +518,8 @@ class PipelineOrchestrator:
             except Exception as e:
                 logger.error(f"Failed to commit chapter to SessionTree: {e}")
 
-            result["success"] = True
-            logger.info(f"Chapter {chapter_num} COMMITTED")
+            # success 标记已在质检阶段如实写入，此处不再覆盖，避免掩盖弱章
+            logger.info(f"Chapter {chapter_num} COMMITTED (success={result.get('success')})")
         except Exception as e:
             result["errors"].append(f"COMMIT: {e}")
             sm.handle_failure("commit_error", str(e))
@@ -564,6 +657,53 @@ class PipelineOrchestrator:
         )
         return call_llm(prompt, system_prompt="你是资深小说润色编辑，擅长根据审查意见精准改写章节", output_json=False)
 
+    def _rollback_world_to(self, prev_chapter: int):
+        history = self.session_tree.get_branch_history("main")
+        target_node = None
+        for node in reversed(history):
+            if node.chapter_num == prev_chapter:
+                target_node = node
+                break
+        if not target_node:
+            return
+        try:
+            rolled = self.session_tree.rollback_to_node(target_node.node_id, branch_name="main")
+            self._save_session_tree()
+            if "characters" in rolled:
+                self.simulator.characters = rolled["characters"]
+                self.simulator._save_characters()
+            if "factions" in rolled:
+                self.simulator.factions = rolled["factions"]
+                self.simulator._save_factions()
+            if "power_system" in rolled:
+                self.simulator.power_system = rolled["power_system"]
+                self.simulator._save_power_system()
+            self.simulator.db.import_from_json()
+            self.db.import_from_json()
+        except Exception as e:
+            logger.error(f"Rollback failed: {e}")
+
+    def _recover_chapter(self, chapter_num, task_card, synopsis, world_state, min_ch) -> bool:
+        max_retries = self.config.get("autonomy", {}).get("chapter_regen_max_retries", 2)
+        temps = [0.9, 1.0]
+        for i in range(max_retries):
+            try:
+                self._rollback_world_to(chapter_num - 1)
+                novel = self.writer.generate_full_chapter(
+                    task_card, synopsis, None, temperature_override=temps[i % len(temps)])
+                novel = self.writer.polish_chapter(novel, task_card)
+                novel = self._ensure_chinese(novel)
+                review = self._stage_review(chapter_num, task_card, synopsis, novel, world_state)
+                if review["score"] >= min_ch:
+                    self.current_novel = novel
+                    self._recovered_score = review["score"]
+                    return True
+            except Exception as e:
+                logger.warning(f"Recovery attempt {i+1} failed: {e}")
+        self.defects.add(chapter_num, "below_min_ch",
+                        f"regen failed after {max_retries} retries (target min_ch={min_ch})")
+        return False
+
     def _regenerate_chapter(self, chapter_num, temperature=None):
         # Force a different sampling temperature for the retry, then re-run the whole chapter.
         if temperature is not None and temperature in self.provider_cfg.retry_temperatures:
@@ -579,6 +719,71 @@ class PipelineOrchestrator:
         data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"queue": []}
         data.setdefault("queue", []).append({"chapter": chapter_num, "score": score, "reason": reason})
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _run_continuity_audit(self, chapter_num):
+        try:
+            import copy, json
+            cur = copy.deepcopy(getattr(self, "current_world_state", None) or {})
+            if self._last_audit_snapshot is None:
+                self._last_audit_snapshot = cur
+                return
+            merged = {**cur, "_baseline": self._last_audit_snapshot}
+            report = self.auditor.audit_full(merged)
+            self._last_audit_snapshot = cur
+            path = self.root / "audit" / "continuity_report.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"chapter": chapter_num, **report}, ensure_ascii=False) + "\n")
+            if not report["passed"]:
+                logger.warning(f"[audit] continuity issues at ch{chapter_num}: {report['realms']}")
+        except Exception as e:
+            logger.error(f"[audit] failed: {e}")
+
+    def _novel_string(self, novel=None):
+        """Return the plain-text content of a chapter, whether it is stored as a
+        str or as a lightweight novel object exposing a `.content` attribute."""
+        n = self.current_novel if novel is None else novel
+        if n is None:
+            return ""
+        if hasattr(n, "content"):
+            return n.content
+        return n if isinstance(n, str) else str(n)
+
+    def _ensure_chinese(self, novel):
+        """Deterministic safety net: the small writer model occasionally leaks English
+        (e.g. 'Scene') despite the prompt. If Latin script fragments remain, rewrite
+        them into fluent Chinese via the generation LLM before review/commit."""
+        import re
+        text = self._novel_string(novel)
+        if not re.search(r"[A-Za-z]{4,}", text or ""):
+            return novel
+        prompt = ("以下中文网络小说正文里混入了英文/拉丁字母片段（如 Scene、Chapter、steady 等）。"
+                  "请将它们全部改写为通顺、符合语境的中文（Scene→场景，Chapter→章），"
+                  "保持剧情、人物与文风不变。只输出修正后的完整正文，不要任何解释或注释：\n\n" + text)
+        try:
+            resp = self.llm.chat_completion(
+                [{"role": "system",
+                  "content": "你是将中英混杂的小说文本纯中文化的资深编辑，只输出修正后的全文。"},
+                 {"role": "user", "content": prompt}],
+                max_tokens=min(len(text) + 1000, 16000))
+            new_text = (resp.get("content") or text).strip()
+            if hasattr(novel, "content"):
+                novel.content = new_text
+                return novel
+            return new_text
+        except Exception as e:
+            logger.warning(f"de-anglicize failed: {e}")
+            return novel
+
+    def _forbidden_violations(self, novel, review_text=""):
+        text = getattr(novel, "content", None)
+        if text is None:
+            text = novel if isinstance(novel, str) else str(novel)
+        out = []
+        out.extend(self.forbidden.scan(text))
+        if review_text:
+            out.extend(self.forbidden.scan_review(review_text))
+        return out
 
     def _extract_keywords(self, task_card: dict, synopsis: dict) -> list[str]:
         """从任务卡和缩写中提取关键词。"""
@@ -637,11 +842,123 @@ class PipelineOrchestrator:
             result = self._run_with_retry(i)
             results.append(result)
 
+            # Task 8: continuity audit cadence (non-blocking, autonomous)
+            if i % self.audit_interval == 0:
+                self._run_continuity_audit(i)
+
             if not result["success"]:
                 logger.error(f"Mini test FAILED at chapter {i}")
                 break
 
         return results
+
+    # ====== Task 10: remediation loop + terminal termination + production report ======
+
+    def run_remediation_and_finalize(self, task_card, synopsis, world_state, total_chapters=None):
+        import json
+        max_rounds = self.config.get("autonomy", {}).get("remediation_max_rounds", 1)
+        per_ch_max = self.config.get("autonomy", {}).get("remediation_per_chapter_retries", 2)
+        pub_line = self.config.get("quality", {}).get("publication_line", 88)
+        # Q6=A: exactly one bounded remediation round
+        for _ in range(max_rounds):
+            pending = [d for d in self.defects.pending()]
+            if not pending:
+                break
+            for d in pending:
+                ch = d["chapter"]
+                for _i in range(per_ch_max):
+                    res = self.generate_single_chapter(ch)
+                    if res.get("success"):
+                        self.defects.mark_known(ch)
+                        self._mark_chapter_done(ch)
+                        break
+        pending = self.defects.pending()
+        final_ok = (len(pending) == 0)
+        report = {
+            "status": "published" if final_ok else "needs_human",
+            "total_chapters": total_chapters,
+            "pending_defects": len(pending),
+            "known_defects": len(self.defects.all()),
+            "defects": pending,
+        }
+        try:
+            if final_ok and getattr(self, "current_novel", None) is not None:
+                fin = self.reviewer.review_chapter(
+                    0, task_card, synopsis, self._novel_string(), world_state or {})
+                fs = fin.get("score") or fin.get("total_score")
+                report["final_score"] = fs
+                if fs is not None and fs < pub_line:
+                    report["status"] = "needs_human"
+                    report["reason"] = f"final score {fs} < publication_line {pub_line}"
+        except Exception as e:
+            report["final_review_error"] = str(e)
+        path = self.root / "audit" / "production_report.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return report
+
+    def run_full_unattended(self, total_chapters, task_card=None, synopsis=None,
+                            world_state=None, start_chapter=1):
+        tc = task_card if task_card is not None else self._load_task_card_file()
+        sy = synopsis if synopsis is not None else self._load_synopsis_file()
+        ws = world_state if world_state is not None else self._load_world_state_file()
+        for ch in range(start_chapter, total_chapters + 1):
+            res = self.generate_single_chapter(ch)
+            if res.get("success"):
+                self._mark_chapter_done(ch)
+        return self.run_remediation_and_finalize(tc, sy, ws, total_chapters)
+
+    def _load_task_card_file(self):
+        p = self.root / "task_card.md"
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+
+    def _load_synopsis_file(self):
+        p = self.root / "synopsis.md"
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+
+    def _load_world_state_file(self):
+        import json
+        p = self.root / "world_state.json"
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    # ====== Task 11: resume from checkpoint ======
+
+    def _resume_state_path(self):
+        return self.root / self.config.get("autonomy", {}).get(
+            "resume_state_file", "audit/resume_state.json")
+
+    def _mark_chapter_done(self, chapter_num):
+        import json
+        p = self._resume_state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        done = []
+        if p.exists():
+            try:
+                done = json.loads(p.read_text(encoding="utf-8")).get("done", [])
+            except Exception:
+                done = []
+        if chapter_num not in done:
+            done.append(chapter_num)
+        p.write_text(json.dumps({"done": done}, ensure_ascii=False), encoding="utf-8")
+
+    def resume_from_chapter(self, total_chapters, task_card=None, synopsis=None,
+                            world_state=None):
+        p = self._resume_state_path()
+        done = []
+        if p.exists():
+            try:
+                done = json.loads(p.read_text(encoding="utf-8")).get("done", [])
+            except Exception:
+                done = []
+        start = (max(done) + 1) if done else 1
+        return self.run_full_unattended(total_chapters, task_card=task_card,
+                                        synopsis=synopsis, world_state=world_state,
+                                        start_chapter=start)
 
     def run_medium_test(self, num_chapters: int = 70) -> list[dict]:
         """运行中等规模测试：生成 N 章（含滑动窗口审查）。"""
@@ -650,6 +967,10 @@ class PipelineOrchestrator:
         for i in range(1, num_chapters + 1):
             result = self._run_with_retry(i)
             results.append(result)
+
+            # Task 8: continuity audit cadence (non-blocking, autonomous)
+            if i % self.audit_interval == 0:
+                self._run_continuity_audit(i)
 
             # 每50章触发滑动窗口审查
             if self.memory.should_trigger_sliding_window(i, window_size=50):

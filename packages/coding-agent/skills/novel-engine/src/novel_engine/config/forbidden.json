@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"name": "english_word", "pattern": "\\b(steady|crossed|arms|however|therefore|meanwhile|suddenly|whispered|nodded|silence|realized|finally|actually|literally|okay|hello|yes|no)\\b", "severity": "high", "description": "英文词汇出现在中文正文"},
+    {"name": "latin_script_fragment", "pattern": "[A-Za-z]{4,}", "severity": "medium", "description": "正文中出现连续拉丁字母（允许数字与已批准专名）"}
+  ]
+}

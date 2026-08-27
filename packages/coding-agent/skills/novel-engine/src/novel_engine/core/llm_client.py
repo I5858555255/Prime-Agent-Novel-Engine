@@ -233,25 +233,33 @@ class LLMClient:
         self._local = threading.local()
         self._mock = MockLLMClient() if use_mock else None
 
+    @staticmethod
+    def _resolve_api_key(api_key_env: str, section_cfg: dict) -> str:
+        import os
+        from pathlib import Path
+        key = (os.environ.get(api_key_env)
+               or os.environ.get("ZLEAP_API_KEY")
+               or section_cfg.get("api_key") or "")
+        if not key or "redacted" in str(key).lower():
+            _env_path = Path(__file__).parent.parent.parent / ".env"
+            if _env_path.exists():
+                for _line in _env_path.read_text(encoding="utf-8").splitlines():
+                    if _line.startswith(api_key_env + "="):
+                        key = _line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+        return key
+
     @classmethod
-    def from_config(cls, config_path: str | Path) -> "LLMClient":
+    def from_config(cls, config_path: str | Path, section: str = "llm",
+                    api_key_env: str = "ZLEAP_MODEL_API_KEY") -> "LLMClient":
         path = Path(config_path)
         if not path.exists():
             logger.warning(f"配置文件不存在：{path}，使用默认配置")
             return cls()
         with open(path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-        llm_cfg = cfg.get("llm", {})
-        # Fallback: check environment variable first, then fallback to config
-        import os
-        api_key = os.environ.get("ZLEAP_MODEL_API_KEY") or os.environ.get("ZLEAP_API_KEY") or llm_cfg.get("api_key") or ""
-        if not api_key or "redacted" in str(api_key).lower():
-            _env_path = Path(__file__).parent.parent.parent / ".env"
-            if _env_path.exists():
-                for _line in _env_path.read_text(encoding="utf-8").splitlines():
-                    if _line.startswith("ZLEAP_MODEL_API_KEY="):
-                        api_key = _line.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
+        llm_cfg = cfg.get(section, {})
+        api_key = cls._resolve_api_key(api_key_env, llm_cfg)
         return cls(
             api_base=llm_cfg.get("api_base", DEFAULT_API_BASE),
             model=llm_cfg.get("model", DEFAULT_MODEL),
@@ -263,17 +271,10 @@ class LLMClient:
         )
 
     @classmethod
-    def from_config_dict(cls, cfg: dict) -> "LLMClient":
-        llm_cfg = cfg.get("llm", {})
-        import os
-        api_key = os.environ.get("ZLEAP_MODEL_API_KEY") or os.environ.get("ZLEAP_API_KEY") or llm_cfg.get("api_key") or ""
-        if not api_key or "redacted" in str(api_key).lower():
-            _env_path = Path(__file__).parent.parent.parent / ".env"
-            if _env_path.exists():
-                for _line in _env_path.read_text(encoding="utf-8").splitlines():
-                    if _line.startswith("ZLEAP_MODEL_API_KEY="):
-                        api_key = _line.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
+    def from_config_dict(cls, cfg: dict, section: str = "llm",
+                        api_key_env: str = "ZLEAP_MODEL_API_KEY") -> "LLMClient":
+        llm_cfg = cfg.get(section, {})
+        api_key = cls._resolve_api_key(api_key_env, llm_cfg)
         return cls(
             api_base=llm_cfg.get("api_base", DEFAULT_API_BASE),
             model=llm_cfg.get("model", DEFAULT_MODEL),
@@ -458,6 +459,7 @@ def call_llm(
     system_prompt: str = "",
     client: Optional[LLMClient] = None,
     output_json: bool = False,
+    provider_config: Optional["ProviderConfig"] = None,
     **kwargs,
 ) -> str | dict:
     messages = []
@@ -469,7 +471,10 @@ def call_llm(
         cfg = _load_runtime_config()
         client = LLMClient.from_config_dict(cfg)
     from novel_engine.core.llm_provider import LLMProvider, ProviderConfig
-    provider = LLMProvider(client, _provider_config_from_runtime(cfg))
+    if provider_config is None:
+        provider_config = (_provider_config_from_runtime(cfg)
+                           if cfg is not None else _provider_config_from_runtime())
+    provider = LLMProvider(client, provider_config)
     return provider.complete(
         messages, output_json=output_json,
         temperature=kwargs.get("temperature"),
@@ -478,7 +483,7 @@ def call_llm(
     )
 
 
-def _provider_config_from_runtime(cfg: Optional[dict] = None):
+def _provider_config_from_runtime(cfg: Optional[dict] = None, section: str = "provider"):
     try:
         from novel_engine.core.llm_provider import ProviderConfig
         if cfg is None:
@@ -486,7 +491,7 @@ def _provider_config_from_runtime(cfg: Optional[dict] = None):
             from pathlib import Path
             cfg = json.loads((Path(__file__).parent.parent / "config" /
                               "runtime_config.json").read_text(encoding="utf-8"))
-        p = cfg.get("provider", {})
+        p = cfg.get(section, {})
         return ProviderConfig(
             family=p.get("family", "qwen"),
             api_base=p.get("api_base", "https://api.siliconflow.cn"),
