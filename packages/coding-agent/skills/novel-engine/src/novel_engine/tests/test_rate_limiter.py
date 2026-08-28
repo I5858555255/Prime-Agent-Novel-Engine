@@ -13,3 +13,29 @@ def test_report_429_shrinks_tpm():
     lim = ModelRateLimiter(rpm=1000, tpm=100000)
     lim.report_429()
     assert lim.tpm == 75000
+
+
+def test_llm_client_raises_rate_limit():
+    import httpx
+    from core.llm_client import LLMClient, RateLimitError
+
+    class _FakeResp:
+        status_code = 429
+        text = "rate limited"
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("rate", request=None, response=self)
+        def json(self):
+            return {}
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResp()
+
+    c = LLMClient()
+    c._local.client = _FakeClient()
+    raised = False
+    try:
+        c.chat_completion([{"role": "user", "content": "x"}])
+    except RateLimitError:
+        raised = True
+    assert raised, "expected RateLimitError"

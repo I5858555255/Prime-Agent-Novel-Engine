@@ -11,6 +11,8 @@ from typing import Optional
 
 import httpx
 
+from core.rate_limiter import RateLimitError
+
 logger = logging.getLogger(__name__)
 
 # Module-level call log for cost tracking (single source of truth).
@@ -364,6 +366,8 @@ class LLMClient:
                 }
             except httpx.HTTPStatusError as e:
                 last_error = e
+                if getattr(e.response, "status_code", None) == 429:
+                    raise RateLimitError(f"429 from {self.model}") from e
                 logger.error(f"HTTP错误 (尝试 {attempt+1}/{max_retries}): {e.response.status_code} {e.response.text[:200]}")
                 if not retry_on_error or attempt == max_retries - 1:
                     raise
@@ -376,6 +380,9 @@ class LLMClient:
                 time.sleep(30)
             except Exception as e:
                 last_error = e
+                status = getattr(e, "status_code", None)
+                if status == 429 or "429" in str(e) or "429" in str(getattr(e, "response", "")):
+                    raise RateLimitError(f"429 from {self.model}") from e
                 logger.error(f"未知错误 (尝试 {attempt+1}/{max_retries}): {e}")
                 if not retry_on_error or attempt == max_retries - 1:
                     raise
