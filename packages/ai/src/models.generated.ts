@@ -7589,6 +7589,23 @@ export const MODELS = {
 		} satisfies Model<"openai-completions">,
 	},
 	"openai": {
+		"agnes-2.5-flash": {
+			id: "agnes-2.5-flash",
+			name: "Agnes 2.5 Flash",
+			api: "openai-completions",
+			provider: "openai",
+			baseUrl: "https://apihub.agnes-ai.com/v1",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 512000,
+			maxTokens: 65536,
+		} satisfies Model<"openai-completions">,
 		"gpt-4": {
 			id: "gpt-4",
 			name: "GPT-4",

@@ -8,6 +8,7 @@ readme = "SKILL.md"
 [tool.poetry.dependencies]
 python = "^3.12"
 httpx = "^0.28.1"
+json-repair = "^0.63.1"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

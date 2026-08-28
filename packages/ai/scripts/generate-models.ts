@@ -1878,6 +1878,23 @@ async function generateModels() {
 	];
 	allModels.push(...deepseekV4Models);
 
+	// Agnes 2.5 Flash — OpenAI-compatible endpoint. Reused as the "openai" provider
+	// with a custom baseUrl so the orchestrator / rlm() can target Agnes directly.
+	if (!allModels.some((m) => m.provider === "openai" && m.id === "agnes-2.5-flash")) {
+		allModels.push({
+			id: "agnes-2.5-flash",
+			name: "Agnes 2.5 Flash",
+			api: "openai-completions",
+			provider: "openai",
+			baseUrl: "https://apihub.agnes-ai.com/v1",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 512000,
+			maxTokens: 65536,
+		});
+	}
+
 	for (const candidate of allModels) {
 		if (candidate.api === "openai-completions" && candidate.id.includes("deepseek-v4")) {
 			candidate.compat = {

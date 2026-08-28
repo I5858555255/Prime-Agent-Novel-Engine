@@ -1,20 +1,20 @@
 {
   "llm": {
     "provider": "openai",
-    "model": "agnes-2.0-flash",
-    "api_base": "https://apihub.agnes-ai.com",
+    "model": "deepseek-ai/DeepSeek-V3.2",
+    "api_base": "https://api.siliconflow.cn",
     "api_key": "REDACTED",
     "temperature": 0.85,
     "max_tokens": 16384,
-    "timeout_seconds": 120,
+    "timeout_seconds": 240,
     "use_mock": false
   },
   "pipeline": {
-    "total_chapters": 3000,
+    "total_chapters": 3800,
     "mini_test_chapters": 10,
     "medium_test_chapters": 70,
     "sliding_window_size": 50,
-    "recent_memory_window": 80,
+    "recent_memory_window": 30,
     "max_review_retries": 3,
     "scene_per_chapter": {
       "min": 3,
@@ -24,9 +24,59 @@
   "quality": {
     "pass_threshold": 85,
     "fix_threshold": 60,
+    "publication_line": 88,
+    "min_chapter_score": 60,
+  "min_pacing": 7.5,
+  "min_innovation": 7.0,
+    "target_avg_score": 88,
     "overuse_window_chapters": 100,
     "overuse_count_threshold": 4,
     "well_received_min_confidence": 0.6
+  },
+  "provider": {
+    "family": "qwen",
+    "api_base": "https://api.siliconflow.cn",
+    "model": "deepseek-ai/DeepSeek-V3.2",
+    "reasoning_fallback": true,
+    "thinking_param": null,
+    "cache_bust_suffix": "\n\n[请直接给出最终答案，严格使用合法 JSON，不要使用思考模式，不要输出任何分析或推理过程。]",
+    "retry_temperatures": [0.85, 0.7, 0.95, 1.0]
+  },
+  "review_llm": {
+    "api_base": "https://apihub.agnes-ai.com",
+    "model": "agnes-2.5-flash",
+    "api_key_env": "AGNES_API_KEY",
+    "temperature": 0.3,
+    "max_tokens": 4096,
+    "timeout_seconds": 120,
+    "use_mock": false
+  },
+  "review_provider": {
+    "family": "agnes",
+    "reasoning_fallback": false,
+    "thinking_param": null,
+    "retry_temperatures": [0.3, 0.4, 0.2, 0.5]
+  },
+  "fallback_llm": {
+    "api_base": "https://api.siliconflow.cn",
+    "model": "deepseek-ai/DeepSeek-V3.2",
+    "api_key_env": "ZLEAP_MODEL_API_KEY",
+    "temperature": 0.3,
+    "max_tokens": 4096,
+    "timeout_seconds": 120,
+    "use_mock": false
+  },
+  "autonomy": {
+    "audit_interval_chapters": 50,
+    "chapter_regen_max_retries": 2,
+    "remediation_rounds": 1,
+    "remediation_max_retries": 2,
+    "failover_trigger_consecutive_errors": 3,
+    "max_backoff_seconds": 1800,
+    "resume_state_file": "runtime/last_success_chapter.txt"
+  },
+  "forbidden": {
+    "rules_file": "config/forbidden.json"
   },
   "commit": {
     "hash_algorithm": "sha256",

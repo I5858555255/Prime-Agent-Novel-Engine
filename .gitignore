@@ -50,3 +50,9 @@ packages/coding-agent/skills/novel-engine/src/novel_engine/memory/
 packages/coding-agent/skills/novel-engine/src/novel_engine/audit/
 packages/coding-agent/skills/novel-engine/src/novel_engine/runtime/
 packages/coding-agent/skills/novel-engine/src/novel_engine/test_out.txt
+
+# Local launch script with secrets (contains API keys) — never commit
+launch_prod.bat
+
+# Local superpowers tooling data
+.superpowers/
