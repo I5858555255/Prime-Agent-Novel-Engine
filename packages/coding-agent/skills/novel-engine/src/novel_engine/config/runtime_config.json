@@ -3,10 +3,10 @@
     "provider": "openai",
     "model": "deepseek-ai/DeepSeek-V3.2",
     "api_base": "https://api.siliconflow.cn",
-    "api_key": "REDACTED",
+    "api_key_env": "ZLEAP_MODEL_API_KEY",
     "temperature": 0.85,
-    "max_tokens": 16384,
-    "timeout_seconds": 240,
+    "max_tokens": 12000,
+    "timeout_seconds": 120,
     "use_mock": false
   },
   "pipeline": {
@@ -40,7 +40,7 @@
     "reasoning_fallback": true,
     "thinking_param": null,
     "cache_bust_suffix": "\n\n[请直接给出最终答案，严格使用合法 JSON，不要使用思考模式，不要输出任何分析或推理过程。]",
-    "retry_temperatures": [0.85, 0.7, 0.95, 1.0]
+    "retry_temperatures": [0.85, 0.7]
   },
   "review_llm": {
     "api_base": "https://apihub.agnes-ai.com",
@@ -48,7 +48,7 @@
     "api_key_env": "AGNES_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
-    "timeout_seconds": 120,
+    "timeout_seconds": 60,
     "use_mock": false
   },
   "review_provider": {
@@ -84,5 +84,30 @@
   },
   "recovery": {
     "default_policy": "pause_and_log"
+  },
+  "model_router": {
+    "phases": {
+      "scenes": [
+        "Qwen/Qwen3.5-9B",
+        "inclusionAI/Ling-mini-2.0",
+        "Qwen/Qwen3.5-27B",
+        "deepseek-ai/DeepSeek-V3.2"
+      ],
+      "polish": ["deepseek-ai/DeepSeek-V3.2"],
+      "planning": ["deepseek-ai/DeepSeek-V3.1-Terminus", "deepseek-ai/DeepSeek-V3"],
+      "synopsis": ["deepseek-ai/DeepSeek-V3.1-Terminus", "Qwen/Qwen3.5-9B"],
+      "review": ["agnes-2.5-flash"]
+    },
+    "limits": {
+      "deepseek-ai/DeepSeek-V3.2":  {"rpm": 1000, "tpm": 100000},
+      "deepseek-ai/DeepSeek-V3.1-Terminus": {"rpm": 1000, "tpm": 100000},
+      "deepseek-ai/DeepSeek-V3":    {"rpm": 1000, "tpm": 100000},
+      "Qwen/Qwen3.5-9B":            {"rpm": 1000, "tpm": 50000},
+      "Qwen/Qwen3.5-27B":           {"rpm": 1000, "tpm": 100000},
+      "inclusionAI/Ling-mini-2.0":  {"rpm": 1000, "tpm": 50000},
+      "agnes-2.5-flash":            {"rpm": 20,   "tpm": 200000}
+    },
+    "probe_on_startup": false,
+    "max_parallel_chapters": 1
   }
 }
