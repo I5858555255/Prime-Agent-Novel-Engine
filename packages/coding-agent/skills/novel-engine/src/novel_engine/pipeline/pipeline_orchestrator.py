@@ -598,11 +598,9 @@ class PipelineOrchestrator:
         synopsis_text = synopsis.get("synopsis", "")
         pacing_constraints = PacingAdvisor().pre_write_constraints(synopsis_text)
         # Generation uses the scenes phase pool; polish uses the polish phase pool.
-        self.writer.llm = self.scene_router
         novel_text = self.writer.generate_full_chapter(task_card, synopsis, pacing_constraints)
         self.state_machine.transition(ChapterPhase.POLISH)
-        self.writer.llm = self.polish_router
-        novel_text = self.writer.polish_chapter(novel_text, task_card)
+        novel_text = self.writer.polish_chapter(novel_text, task_card, llm_client=self.polish_router)
         self.current_novel = novel_text
         logger.info(f"Novel text generated ({len(novel_text)} chars)")
         return novel_text
@@ -694,11 +692,9 @@ class PipelineOrchestrator:
         for i in range(max_retries):
             try:
                 self._rollback_world_to(chapter_num - 1)
-                self.writer.llm = self.scene_router
                 novel = self.writer.generate_full_chapter(
                     task_card, synopsis, None, temperature_override=temps[i % len(temps)])
-                self.writer.llm = self.polish_router
-                novel = self.writer.polish_chapter(novel, task_card)
+                novel = self.writer.polish_chapter(novel, task_card, llm_client=self.polish_router)
                 novel = self._ensure_chinese(novel)
                 review = self._stage_review(chapter_num, task_card, synopsis, novel, world_state)
                 if review["score"] >= min_ch:

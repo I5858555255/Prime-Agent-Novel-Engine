@@ -291,28 +291,18 @@ class WriterAgent:
         return full_chapter
 
 
-    def polish_chapter(self, chapter_text: str, task_card: dict) -> str:
+    def polish_chapter(self, chapter_text: str, task_card: dict, llm_client=None) -> str:
         """章节润色：统一过渡与语气。"""
-        prompt = f"""请对以下章节文本进行润色，确保：
-1. 场景之间过渡自然
-2. 语气统一
-3. 符合 style_bible.md 的要求
-4. 检查是否有 OOC 或现代词汇
-
-任务卡核心目标：{task_card.get('core_goal', '')}
-
-## 待润色文本
-{chapter_text[:8000]}"""
-
-        system_prompt = """你是一位严谨的小说润色编辑。只输出润色后的文本，不要添加解释。"""
-
-        try:
-            polished = call_llm(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                client=self.llm,
-            )
-            return polished
-        except Exception as e:
-            logger.error(f"Polish failed: {e}")
-            return chapter_text  # 润色失败则返回原文
+        client = llm_client or self.llm
+        # embed the FULL chapter (fix: old code used chapter_text[:8000])
+        max_tokens = min(12000, max(4096, int(len(chapter_text) / 2 * 1.2)))
+        prompt = (
+            "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
+            f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
+        )
+        resp = client.chat_completion(
+            [{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=max_tokens,
+        )
+        return resp.strip() if isinstance(resp, str) else resp
