@@ -33,3 +33,20 @@ def test_router_falls_to_next_on_429():
     }
     r = ModelRouter("scenes", cfg, {"M1": C429(), "M2": Cok()})
     assert r.chat_completion([{"role": "user", "content": "x"}]) == "ok"
+
+
+def test_orchestrator_builds_routers(tmp_path, monkeypatch):
+    import os
+    import json
+    import pipeline.pipeline_orchestrator as po_mod
+    monkeypatch.setenv("ZLEAP_MODEL_API_KEY", "sk-test")
+    monkeypatch.setenv("AGNES_API_KEY", "sk-test")
+    # Resolve the package root the same way the orchestrator expects to locate
+    # config/runtime_config.json (its parent dir).
+    root = os.path.dirname(os.path.dirname(po_mod.__file__))
+    cfg = json.load(open(os.path.join(root, "config", "runtime_config.json"), encoding="utf-8"))
+    from pipeline.pipeline_orchestrator import PipelineOrchestrator
+    orch = PipelineOrchestrator(project_root=root, llm_client=None)
+    assert orch.writer is not None
+    assert hasattr(orch, "polish_router")
+    assert hasattr(orch, "review_router")

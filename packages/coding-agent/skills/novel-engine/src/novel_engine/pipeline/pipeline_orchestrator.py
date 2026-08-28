@@ -22,6 +22,7 @@ from novel_engine.agents.pacing_advisor import PacingAdvisor
 from novel_engine.core.memory_manager import MemoryManager
 from novel_engine.core.llm_client import LLMClient, call_llm, get_call_log, reset_call_log
 from novel_engine.core.llm_failover import FailoverLLMClient
+from novel_engine.core.model_router import ModelRouter
 from novel_engine.quality.defects_store import DefectsStore
 from novel_engine.quality.forbidden_scanner import ForbiddenScanner
 from novel_engine.quality.continuity_auditor import ContinuityAuditor
@@ -47,13 +48,17 @@ class PipelineOrchestrator:
 
         fb_trigger = self.config.get("autonomy", {}).get("failover_trigger_consecutive_errors", 3)
         fb_backoff = self.config.get("autonomy", {}).get("max_backoff_seconds", 1800)
+        # Task 5: per-phase model routers (duck-typed chat_completion).
+        # These replace the single FailoverLLMClient with phase-specific pools.
+        self.scene_router = ModelRouter("scenes", self.config)
+        self.polish_router = ModelRouter("polish", self.config)
+        self.plan_router = ModelRouter("planning", self.config)
+        self.review_router = ModelRouter("review", self.config)
+
         if llm_client is not None:
             self.llm = llm_client
         else:
-            self.llm = FailoverLLMClient.from_config_dict(
-                self.config, primary_section="llm", fallback_section="fallback_llm",
-                primary_key_env="ZLEAP_MODEL_API_KEY", fallback_key_env="ZLEAP_MODEL_API_KEY",
-                trigger=fb_trigger, max_backoff=fb_backoff, log_prefix="[gen]")
+            self.llm = self.plan_router          # default for director/synopsis
 
         self.state_machine = StateMachine(self.root)
         self.checkpoint_mgr = CheckpointManager(self.root)
@@ -70,7 +75,7 @@ class PipelineOrchestrator:
         self.session_tree_path = self.root / "runtime" / "session_tree.json"
         self._load_session_tree()
 
-        self.writer = WriterAgent(llm_client=self.llm)
+        self.writer = WriterAgent(llm_client=self.scene_router)
         self.memory = MemoryManager(self.root)
 
         # 存储当前章节的产出，供 commit 使用
@@ -113,20 +118,18 @@ class PipelineOrchestrator:
             self.forbidden.rules = []
 
         # 独立质检 LLM（评审打分），与生成 LLM 隔离，避免“自评”虚高导致弱章放行。
-        # 仅在 runtime_config 显式配置了 review_llm 时才分离；否则复用生成 LLM（保持旧行为 / 测试 mock 生效）。
+        # Task 5: routed through the review phase pool (review_router) so review
+        # models are isolated from generation models per the model_router config.
         review_cfg = self.config.get("review_llm") or {}
         if review_cfg and not review_cfg.get("use_mock"):
-            self.review_llm = FailoverLLMClient.from_config_dict(
-                self.config, primary_section="review_llm", fallback_section="fallback_llm",
-                primary_key_env="AGNES_API_KEY", fallback_key_env="ZLEAP_MODEL_API_KEY",
-                trigger=fb_trigger, max_backoff=fb_backoff, log_prefix="[review]")
+            self.review_llm = self.review_router
             self.review_provider_cfg = _provider_config_from_runtime(
                 self.config, section="review_provider")
         else:
-            self.review_llm = self.llm
+            self.review_llm = self.review_router
             self.review_provider_cfg = self.provider_cfg
         self.reviewer = ReviewerAgent(
-            llm_client=self.review_llm, provider_config=self.review_provider_cfg)
+            llm_client=self.review_router, provider_config=self.review_provider_cfg)
 
         self._attempt_index = 0
 
@@ -594,8 +597,11 @@ class PipelineOrchestrator:
         self.state_machine.transition(ChapterPhase.WRITE_SCENE)
         synopsis_text = synopsis.get("synopsis", "")
         pacing_constraints = PacingAdvisor().pre_write_constraints(synopsis_text)
+        # Generation uses the scenes phase pool; polish uses the polish phase pool.
+        self.writer.llm = self.scene_router
         novel_text = self.writer.generate_full_chapter(task_card, synopsis, pacing_constraints)
         self.state_machine.transition(ChapterPhase.POLISH)
+        self.writer.llm = self.polish_router
         novel_text = self.writer.polish_chapter(novel_text, task_card)
         self.current_novel = novel_text
         logger.info(f"Novel text generated ({len(novel_text)} chars)")
@@ -688,8 +694,10 @@ class PipelineOrchestrator:
         for i in range(max_retries):
             try:
                 self._rollback_world_to(chapter_num - 1)
+                self.writer.llm = self.scene_router
                 novel = self.writer.generate_full_chapter(
                     task_card, synopsis, None, temperature_override=temps[i % len(temps)])
+                self.writer.llm = self.polish_router
                 novel = self.writer.polish_chapter(novel, task_card)
                 novel = self._ensure_chinese(novel)
                 review = self._stage_review(chapter_num, task_card, synopsis, novel, world_state)
@@ -831,25 +839,63 @@ class PipelineOrchestrator:
         data.setdefault("failures", []).append({"chapter": chapter_num, "reason": reason})
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _run_chapters_gated(self, start_chapter, total_chapters, chapter_fn, on_done=None):
+        """Run chapter generation with optional pipeline overlap.
+
+        By default (model_router.max_parallel_chapters <= 1) chapters run strictly
+        sequentially. When max_parallel_chapters > 1, chapter N+1 is submitted while
+        chapter N's review/commit is still being finalized, gated to a single
+        in-flight overlap (max_workers=2). on_done(chapter_num, result) is invoked in
+        chapter order for side-effects (audit cadence, break-on-failure) and may return
+        False to stop the run. Returns results in chapter order.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        para = int(self.config.get("model_router", {}).get("max_parallel_chapters", 1))
+        results = []
+        if para <= 1:
+            for ch in range(start_chapter, total_chapters + 1):
+                res = chapter_fn(ch)
+                results.append(res)
+                if on_done is not None and on_done(ch, res) is False:
+                    break
+            return results
+
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            prev_fut, prev_ch = None, None
+            for ch in range(start_chapter, total_chapters + 1):
+                cur = ex.submit(chapter_fn, ch)
+                if prev_fut is not None:
+                    res = prev_fut.result()
+                    results.append(res)
+                    if on_done is not None and on_done(prev_ch, res) is False:
+                        cur.result()
+                        break
+                prev_fut, prev_ch = cur, ch
+            if prev_fut is not None:
+                res = prev_fut.result()
+                results.append(res)
+                if on_done is not None:
+                    on_done(prev_ch, res)
+        return results
+
     def run_mini_test(self, num_chapters: int = 10) -> list[dict]:
         """运行 Mini 测试：生成 N 章。"""
-        results = []
         self.state_machine.current_chapter = 0
 
-        for i in range(1, num_chapters + 1):
+        def _chapter(i):
             self.state_machine.current_chapter = i
-            result = self._run_with_retry(i)
-            results.append(result)
+            return self._run_with_retry(i)
 
+        def _done(i, result):
             # Task 8: continuity audit cadence (non-blocking, autonomous)
             if i % self.audit_interval == 0:
                 self._run_continuity_audit(i)
-
             if not result["success"]:
                 logger.error(f"Mini test FAILED at chapter {i}")
-                break
+                return False
+            return True
 
-        return results
+        return self._run_chapters_gated(1, num_chapters, _chapter, _done)
 
     # ====== Task 10: remediation loop + terminal termination + production report ======
 
@@ -901,10 +947,14 @@ class PipelineOrchestrator:
         tc = task_card if task_card is not None else self._load_task_card_file()
         sy = synopsis if synopsis is not None else self._load_synopsis_file()
         ws = world_state if world_state is not None else self._load_world_state_file()
-        for ch in range(start_chapter, total_chapters + 1):
-            res = self.generate_single_chapter(ch)
+
+        def _done(ch, res):
             if res.get("success"):
                 self._mark_chapter_done(ch)
+            return True
+
+        self._run_chapters_gated(start_chapter, total_chapters,
+                                 self.generate_single_chapter, _done)
         return self.run_remediation_and_finalize(tc, sy, ws, total_chapters)
 
     def _load_task_card_file(self):
@@ -961,12 +1011,8 @@ class PipelineOrchestrator:
 
     def run_medium_test(self, num_chapters: int = 70) -> list[dict]:
         """运行中等规模测试：生成 N 章（含滑动窗口审查）。"""
-        results = []
 
-        for i in range(1, num_chapters + 1):
-            result = self._run_with_retry(i)
-            results.append(result)
-
+        def _done(i, result):
             # Task 8: continuity audit cadence (non-blocking, autonomous)
             if i % self.audit_interval == 0:
                 self._run_continuity_audit(i)
@@ -976,7 +1022,12 @@ class PipelineOrchestrator:
                 logger.info(f"Triggering sliding window review at chapter {i}")
                 self._run_sliding_window_review(i)
 
-        return results
+            if not result["success"]:
+                logger.error(f"Medium test FAILED at chapter {i}")
+                return False
+            return True
+
+        return self._run_chapters_gated(1, num_chapters, self._run_with_retry, _done)
 
     def _run_sliding_window_review(self, current_chapter: int):
         """执行滑动窗口审查。"""
