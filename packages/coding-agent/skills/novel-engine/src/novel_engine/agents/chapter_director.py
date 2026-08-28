@@ -197,8 +197,8 @@ class ChapterDirector:
         }
 
         # 加载规划数据
-        volumes = self._load_json(self.root / "planning" / "volumes.json")
-        plot_graph = self._load_json(self.root / "planning" / "plot_graph.json")
+        volumes = self._load_json(self.root / "config" / "planning" / "volumes.json")
+        plot_graph = self._load_json(self.root / "config" / "planning" / "plot_graph.json")
 
         vid = self._get_volume_id(chapter_num, volumes)
         volume_outline = self._outline_sections.get(vid, "")
@@ -217,7 +217,7 @@ class ChapterDirector:
         constraints_summary = self.simulator.get_constraints_summary(chapter_num)
 
         # 加载伏笔
-        foreshadow_registry = self._load_json(self.root / "foreshadow" / "registry.json")
+        foreshadow_registry = self._load_json(self.root / "config" / "foreshadow" / "registry.json")
         relevant_foreshadows = []
         for fs in foreshadow_registry.get("foreshadows", []):
             plant_ch = fs.get("plant_chapter", 0)

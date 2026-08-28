@@ -17,8 +17,8 @@ class WorldSimulator:
 
     def __init__(self, project_root: str | Path = None):
         self.root = Path(project_root or Path(__file__).parent.parent)
-        self.rules = self._load_json(self.root / "simulation" / "rules.json")
-        self.constraints = self._load_json(self.root / "simulation" / "constraints.json")
+        self.rules = self._load_json(self.root / "config" / "simulation" / "rules.json")
+        self.constraints = self._load_json(self.root / "config" / "simulation" / "constraints.json")
         self.characters = self._load_json(self.root / "memory" / "world_state" / "characters.json")
         self.factions = self._load_json(self.root / "memory" / "world_state" / "factions.json")
         self.power_system = self._load_json(self.root / "memory" / "world_state" / "power_system.json")

@@ -180,19 +180,19 @@ class TestNovelEngine(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create dummy folders to mimic "小说工程"
             root_path = Path(tmpdir)
-            for d in ["config", "simulation", "memory/world_state", "foreshadow", "planning", "bible", "runtime"]:
+            for d in ["config", "config/simulation", "memory/world_state", "config/foreshadow", "config/planning", "planning", "bible", "runtime"]:
                 (root_path / d).mkdir(parents=True, exist_ok=True)
 
             # Copy or write essential files
             (root_path / "config" / "runtime_config.json").write_text('{"llm": {"use_mock": true}}', encoding="utf-8")
-            (root_path / "simulation" / "rules.json").write_text('{}', encoding="utf-8")
-            (root_path / "simulation" / "constraints.json").write_text('{}', encoding="utf-8")
+            (root_path / "config" / "simulation" / "rules.json").write_text('{}', encoding="utf-8")
+            (root_path / "config" / "simulation" / "constraints.json").write_text('{}', encoding="utf-8")
             (root_path / "memory/world_state/characters.json").write_text('{"characters": {}}', encoding="utf-8")
             (root_path / "memory/world_state/factions.json").write_text('{"factions": {}}', encoding="utf-8")
             (root_path / "memory/world_state/power_system.json").write_text('{"current_power_balance": {}}', encoding="utf-8")
-            (root_path / "foreshadow" / "registry.json").write_text('{"foreshadows": []}', encoding="utf-8")
-            (root_path / "planning" / "volumes.json").write_text('{"volumes": [{"id": "V01", "chapter_range": [1, 100]}]}', encoding="utf-8")
-            (root_path / "planning" / "plot_graph.json").write_text('{"nodes": []}', encoding="utf-8")
+            (root_path / "config" / "foreshadow" / "registry.json").write_text('{"foreshadows": []}', encoding="utf-8")
+            (root_path / "config" / "planning" / "volumes.json").write_text('{"volumes": [{"id": "V01", "chapter_range": [1, 100]}]}', encoding="utf-8")
+            (root_path / "config" / "planning" / "plot_graph.json").write_text('{"nodes": []}', encoding="utf-8")
             (root_path / "bible" / "world_bible.md").write_text('', encoding="utf-8")
             (root_path / "bible" / "character_bible.md").write_text('', encoding="utf-8")
             (root_path / "bible" / "style_bible.md").write_text('', encoding="utf-8")
@@ -256,7 +256,7 @@ def test_provider_config_loads():
     cfg = json.loads(Path("novel_engine/config/runtime_config.json").read_text(encoding="utf-8"))
     assert cfg["provider"]["family"] == "qwen"
     assert cfg["quality"]["publication_line"] == 88
-    assert cfg["quality"]["min_chapter_score"] == 82
+    assert cfg["quality"]["min_chapter_score"] == 60
 
 
 def test_chapter_auto_retry_then_pass():

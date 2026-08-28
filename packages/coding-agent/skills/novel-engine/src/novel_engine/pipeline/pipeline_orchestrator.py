@@ -27,7 +27,6 @@ from novel_engine.quality.forbidden_scanner import ForbiddenScanner
 from novel_engine.quality.continuity_auditor import ContinuityAuditor
 from novel_engine.engine.db import StateDB
 from novel_engine.engine.session import SessionTree
-from novel_engine.engine.patcher import IncrementalPatcher
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +189,9 @@ class PipelineOrchestrator:
                 return path.read_text(encoding="utf-8")
             return ""
 
-        volumes = _load_json(self.root / "planning" / "volumes.json")
-        plot_graph = _load_json(self.root / "planning" / "plot_graph.json")
-        foreshadow_registry = _load_json(self.root / "foreshadow" / "registry.json")
+        volumes = _load_json(self.root / "config" / "planning" / "volumes.json")
+        plot_graph = _load_json(self.root / "config" / "planning" / "plot_graph.json")
+        foreshadow_registry = _load_json(self.root / "config" / "foreshadow" / "registry.json")
 
         # Load bible files once — these are static and reused every chapter
         bible_cache = {

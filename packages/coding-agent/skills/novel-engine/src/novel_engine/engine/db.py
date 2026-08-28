@@ -127,7 +127,7 @@ class StateDB:
                 logger.error(f"Import factions failed: {e}")
 
         # 导入伏笔与 Clue Plans
-        foreshadow_path = self.root / "foreshadow" / "registry.json"
+        foreshadow_path = self.root / "config" / "foreshadow" / "registry.json"
         if foreshadow_path.exists():
             try:
                 data = json.loads(foreshadow_path.read_text(encoding="utf-8"))
