@@ -243,31 +243,33 @@ class WriterAgent:
         独立场景组并行生成，组内依赖场景顺序生成，最终按 scene_num 排序保证顺序。
         """
         chapter_num = task_card.get("chapter_num", 0)
-        scenes = task_card.get("scene_blueprints", [])
+        scenes = task_card.get("scene_blueprints", []) or task_card.get("scenes", [])
         synopsis_text = synopsis.get("synopsis", "")
 
         if not scenes:
             return ""
 
-        # 分组：组间无人物重叠（可并行），组内共享人物（顺序执行）
-        groups = self._group_independent_scenes(scenes)
+        # 所有场景并发生成（通过 self.llm 场景路由器，自带限流），最后按 scene_num 排序组装。
+        max_workers = max(1, min(len(scenes), 5))
+        results: list = [None] * len(scenes)
+
+        def _do(idx_sc):
+            idx, sc = idx_sc
+            return idx, self._generate_group(task_card, [sc], synopsis_text, pacing_constraints, temperature_override)
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scene") as executor:
+            future_to_idx = {
+                executor.submit(_do, (i, s)): i
+                for i, s in enumerate(scenes)
+            }
+            for future in as_completed(future_to_idx):
+                idx, group_contents = future.result()
+                results[idx] = group_contents
 
         all_scene_contents: list[tuple[dict, str]] = []
-
-        if len(groups) <= 1:
-            # 只有一组：无并行价值，直接顺序生成
-            for group in groups:
-                all_scene_contents.extend(self._generate_group(task_card, group, synopsis_text, pacing_constraints, temperature_override))
-        else:
-            max_workers = min(len(groups), 4)
-            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scene") as executor:
-                future_to_group = {
-                    executor.submit(self._generate_group, task_card, group, synopsis_text, pacing_constraints, temperature_override): group
-                    for group in groups
-                }
-                for future in as_completed(future_to_group):
-                    group_contents = future.result()
-                    all_scene_contents.extend(group_contents)
+        for grp in results:
+            if grp:
+                all_scene_contents.extend(grp)
 
         # 按 scene_num 排序确保顺序正确
         all_scene_contents.sort(key=lambda x: x[0].get("scene_num", 0))
