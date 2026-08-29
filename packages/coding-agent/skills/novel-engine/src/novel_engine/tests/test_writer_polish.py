@@ -23,3 +23,13 @@ def test_polish_falls_back_on_degenerate_output():
     long_text = "正文" * 6000
     out = w.polish_chapter(long_text, {"title": "t"}, llm_client=ShortRec())
     assert out == long_text             # 回退到原始正文，避免残缺章节
+
+def test_polish_falls_back_on_timeout():
+    class ErrRec:
+        def chat_completion(self, messages, **k):
+            raise RuntimeError("read operation timed out")
+    w = WriterAgent(llm_client=ErrRec())
+    long_text = "正文" * 6000
+    out = w.polish_chapter(long_text, {"title": "t"}, llm_client=ErrRec())
+    assert out == long_text             # 超时立即回退，避免长时挂起
+

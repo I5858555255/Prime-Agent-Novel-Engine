@@ -6,7 +6,7 @@
     "api_key_env": "ZLEAP_MODEL_API_KEY",
     "temperature": 0.85,
     "max_tokens": 12000,
-    "timeout_seconds": 300,
+    "timeout_seconds": 600,
     "use_mock": false
   },
   "pipeline": {
@@ -63,7 +63,7 @@
     "api_key_env": "ZLEAP_MODEL_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
-    "timeout_seconds": 300,
+    "timeout_seconds": 600,
     "use_mock": false
   },
   "autonomy": {

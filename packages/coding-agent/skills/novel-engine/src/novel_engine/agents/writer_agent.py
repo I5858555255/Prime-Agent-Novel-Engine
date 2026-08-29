@@ -300,8 +300,8 @@ class WriterAgent:
         全部失败后回退到原始正文，避免生成残缺章节。
         """
         client = llm_client or self.llm
-        # 估算输出 token：中文约 1.5 字符/token，留余量；下限 4096，上限 16000
-        max_tokens = min(16000, max(4096, int(len(chapter_text) * 1.2)))
+        # 估算输出 token：中文约 1.5 字符/token，留少量余量避免截断，也避免过大导致超时
+        max_tokens = min(16000, max(4096, int(len(chapter_text) / 1.5)))
         prompt = (
             "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
             f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
@@ -316,8 +316,9 @@ class WriterAgent:
                     max_tokens=max_tokens,
                 )
             except Exception as exc:
-                logger.warning(f"polish_chapter attempt {attempt + 1} call failed: {exc}")
-                resp = None
+                # 超时/错误重试无意义，直接回退原始正文，避免长时挂起
+                logger.warning(f"polish_chapter call failed ({exc}); falling back to original text")
+                return chapter_text
             if isinstance(resp, str) and len(resp.strip()) >= min_ok:
                 return resp.strip()
             logger.warning(
