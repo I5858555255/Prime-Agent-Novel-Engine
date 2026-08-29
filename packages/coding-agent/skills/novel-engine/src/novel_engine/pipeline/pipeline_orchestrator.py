@@ -604,7 +604,8 @@ class PipelineOrchestrator:
         self.current_synopsis = synopsis
         for change in synopsis.get("state_changes", []):
             self.memory.add_pending_change(change)
-        logger.info(f"Synopsis generated for chapter {task_card.get('chapter_num', 0)}")
+        source = "task_card" if (merge and isinstance(raw, str) and len(raw.strip()) >= 50) else ("deterministic_fallback" if merge else "agent")
+        logger.info(f"Synopsis ready for chapter {task_card.get('chapter_num', 0)} (source={source})")
         return synopsis
 
     def _stage_write(self, task_card: dict, synopsis: dict) -> str:
