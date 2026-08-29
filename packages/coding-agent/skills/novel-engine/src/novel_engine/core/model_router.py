@@ -1,6 +1,6 @@
 import threading
-from core.llm_client import LLMClient
-from core.rate_limiter import ModelRateLimiter, RateLimitError
+from .llm_client import LLMClient
+from .rate_limiter import ModelRateLimiter, RateLimitError
 
 class ModelRouter:
     def __init__(self, phase: str, cfg: dict, providers: dict = None):

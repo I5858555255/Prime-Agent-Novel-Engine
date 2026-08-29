@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from novel_engine.core.llm_client import _repair_json
-from core.rate_limiter import RateLimitError
+from .rate_limiter import RateLimitError
 
 logger = logging.getLogger(__name__)
 

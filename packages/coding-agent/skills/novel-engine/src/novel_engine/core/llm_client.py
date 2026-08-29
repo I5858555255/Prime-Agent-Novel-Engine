@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-from core.rate_limiter import RateLimitError
+from .rate_limiter import RateLimitError
 
 logger = logging.getLogger(__name__)
 

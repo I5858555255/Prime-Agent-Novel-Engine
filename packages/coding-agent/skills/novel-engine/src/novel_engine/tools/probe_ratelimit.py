@@ -3,7 +3,7 @@ import json, time, os, sys
 # make novel_engine importable when run as a script
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.model_router import ModelRouter
+from novel_engine.core.model_router import ModelRouter
 
 def main():
     import argparse
