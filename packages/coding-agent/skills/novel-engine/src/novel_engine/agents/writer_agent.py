@@ -310,7 +310,7 @@ class WriterAgent:
         temps = [0.7, 0.85, 0.95]
         for attempt in range(len(temps)):
             try:
-                resp = client.chat_completion(
+                raw = client.chat_completion(
                     [{"role": "user", "content": prompt}],
                     temperature=temps[attempt],
                     max_tokens=max_tokens,
@@ -319,11 +319,15 @@ class WriterAgent:
                 # 超时/错误重试无意义，直接回退原始正文，避免长时挂起
                 logger.warning(f"polish_chapter call failed ({exc}); falling back to original text")
                 return chapter_text
-            if isinstance(resp, str) and len(resp.strip()) >= min_ok:
+            # ModelRouter/LLMClient 返回 dict（含 content 字段）；统一提取为字符串
+            if isinstance(raw, dict):
+                raw = raw.get("content") or raw.get("reasoning_content") or ""
+            resp = raw if isinstance(raw, str) else ""
+            if len(resp.strip()) >= min_ok:
                 return resp.strip()
             logger.warning(
                 f"polish_chapter attempt {attempt + 1} returned degenerate output "
-                f"(len={len(resp) if isinstance(resp, str) else 'n/a'}), retrying"
+                f"(len={len(resp)}), retrying"
             )
         # 所有重试均失败：回退到未润色原始正文，保证章节完整不残缺
         logger.warning("polish_chapter: all attempts degenerate, falling back to original text")
