@@ -294,17 +294,36 @@ class WriterAgent:
 
 
     def polish_chapter(self, chapter_text: str, task_card: dict, llm_client=None) -> str:
-        """章节润色：统一过渡与语气。"""
+        """章节润色：统一过渡与语气。
+
+        校验润色结果长度：过短（退化/空输出，如 5 字符）时提高温度重试；
+        全部失败后回退到原始正文，避免生成残缺章节。
+        """
         client = llm_client or self.llm
-        # embed the FULL chapter (fix: old code used chapter_text[:8000])
-        max_tokens = min(12000, max(4096, int(len(chapter_text) / 2 * 1.2)))
+        # 估算输出 token：中文约 1.5 字符/token，留余量；下限 4096，上限 16000
+        max_tokens = min(16000, max(4096, int(len(chapter_text) * 1.2)))
         prompt = (
             "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
             f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
         )
-        resp = client.chat_completion(
-            [{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=max_tokens,
-        )
-        return resp.strip() if isinstance(resp, str) else resp
+        min_ok = max(200, int(len(chapter_text) * 0.5))
+        temps = [0.7, 0.85, 0.95]
+        for attempt in range(len(temps)):
+            try:
+                resp = client.chat_completion(
+                    [{"role": "user", "content": prompt}],
+                    temperature=temps[attempt],
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:
+                logger.warning(f"polish_chapter attempt {attempt + 1} call failed: {exc}")
+                resp = None
+            if isinstance(resp, str) and len(resp.strip()) >= min_ok:
+                return resp.strip()
+            logger.warning(
+                f"polish_chapter attempt {attempt + 1} returned degenerate output "
+                f"(len={len(resp) if isinstance(resp, str) else 'n/a'}), retrying"
+            )
+        # 所有重试均失败：回退到未润色原始正文，保证章节完整不残缺
+        logger.warning("polish_chapter: all attempts degenerate, falling back to original text")
+        return chapter_text
