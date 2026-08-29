@@ -467,7 +467,7 @@ class ChapterDirector:
 {context.get('dynamic_constraints', '无')}
 
 ## 输出格式
-请严格输出以下 JSON 结构：
+请严格输出以下 JSON 结构（可同时附带 synopsis / state_changes / foreshadow_execution 字段，与缩写生成器格式一致，用于跳过独立的缩写生成步骤）：
 {{
   "chapter_num": {chapter_num},
   "core_goal": "本章必须完成的核心目标",
@@ -500,13 +500,20 @@ class ChapterDirector:
     }}
   ],
   "chapter_hook": "章末钩子描述",
-  "forbidden_checks": [
-    "确认未违反 author_intent 中的 forbidden 项",
-    "严格遵守 forbidden_checks 中的所有禁令（违反将导致章节被拒绝）",
-    "确保所有 foreshadow_actions 都被执行",
-    "确保场景顺序与任务卡完全一致",
-    "禁止出现英文词汇"
-  ]
+   "forbidden_checks": [
+     "确认未违反 author_intent 中的 forbidden 项",
+     "严格遵守 forbidden_checks 中的所有禁令（违反将导致章节被拒绝）",
+     "确保所有 foreshadow_actions 都被执行",
+     "确保场景顺序与任务卡完全一致",
+     "禁止出现英文词汇"
+   ],
+   "synopsis": "450-550字剧情缩写，严格按 scene_blueprints 顺序概括每场景 goal 与关键转折",
+   "state_changes": [
+     {"type": "character_realm|character_location|relationship_update|timeline_event", "target": "目标ID", "new_value": "新值", "chapter": {chapter_num}}
+   ],
+   "foreshadow_execution": [
+     {"foreshadow_id": "F001", "executed": true, "note": "如何执行"}
+   ]
 }}"""
 
         try:
@@ -560,7 +567,7 @@ class ChapterDirector:
 {json.dumps(context['quality_memory'], ensure_ascii=False, indent=2)}
 
 ## 输出格式
-请严格输出以下 JSON 结构：
+请严格输出以下 JSON 结构（可同时附带 synopsis / state_changes / foreshadow_execution 字段，与缩写生成器格式一致，用于跳过独立的缩写生成步骤）：
 {{
   "chapter_num": {chapter_num},
   "core_goal": "本章必须完成的核心目标",
@@ -593,13 +600,20 @@ class ChapterDirector:
     }}
   ],
   "chapter_hook": "章末钩子描述",
-  "forbidden_checks": [
-    "确认未违反 author_intent 中的 forbidden 项",
-    "严格遵守 forbidden_checks 中的所有禁令（违反将导致章节被拒绝）",
-    "确保所有 foreshadow_actions 都被执行",
-    "确保场景顺序与任务卡完全一致",
-    "禁止出现英文词汇"
-  ]
+   "forbidden_checks": [
+     "确认未违反 author_intent 中的 forbidden 项",
+     "严格遵守 forbidden_checks 中的所有禁令（违反将导致章节被拒绝）",
+     "确保所有 foreshadow_actions 都被执行",
+     "确保场景顺序与任务卡完全一致",
+     "禁止出现英文词汇"
+   ],
+   "synopsis": "450-550字剧情缩写，严格按 scene_blueprints 顺序概括每场景 goal 与关键转折",
+   "state_changes": [
+     {"type": "character_realm|character_location|relationship_update|timeline_event", "target": "目标ID", "new_value": "新值", "chapter": {chapter_num}}
+   ],
+   "foreshadow_execution": [
+     {"foreshadow_id": "F001", "executed": true, "note": "如何执行"}
+   ]
 }}"""
 
         try:

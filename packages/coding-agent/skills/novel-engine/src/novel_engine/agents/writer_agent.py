@@ -83,6 +83,24 @@ class SynopsisAgent:
             logger.error(f"Failed to generate synopsis for chapter {chapter_num}: {e}")
             raise
 
+    def build_synopsis_from_task_card(self, task_card: dict) -> dict:
+        """无 LLM 的兜底：从任务卡确定性构造缩写（用于合并模式下模型未输出 synopsis 时）。"""
+        chapter_num = task_card.get("chapter_num", 0)
+        parts = [task_card.get("core_goal", "")]
+        for bp in task_card.get("scene_blueprints", []):
+            goal = bp.get("goal", "")
+            if goal:
+                parts.append(f"场景{bp.get('scene_num', '?')}：{goal}")
+        synopsis_text = "。".join(p for p in parts if p).strip()
+        if synopsis_text and not synopsis_text.endswith("。"):
+            synopsis_text += "。"
+        return {
+            "chapter_num": chapter_num,
+            "synopsis": synopsis_text,
+            "state_changes": task_card.get("state_changes", []) or [],
+            "foreshadow_execution": task_card.get("foreshadow_execution", []) or [],
+        }
+
 
 
 def validate_scene_order(full_text: str, task_card: dict) -> bool:

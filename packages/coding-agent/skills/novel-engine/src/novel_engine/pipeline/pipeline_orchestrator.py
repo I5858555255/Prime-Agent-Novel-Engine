@@ -583,9 +583,24 @@ class PipelineOrchestrator:
         raise ValueError(f"Task card validation failed: {last_errors}")
 
     def _stage_synopsis(self, task_card: dict) -> dict:
-        """阶段3：缩写生成。"""
+        """阶段3：缩写生成。合并模式下直接复用导演任务卡中的 synopsis，跳过独立 LLM 调用。"""
         self.state_machine.transition(ChapterPhase.SYNOPSIS)
-        synopsis = self.synopsis_agent.generate_synopsis(task_card)
+        merge = self.config.get("pipeline", {}).get("merge_synopsis_into_directing", False)
+        if merge:
+            raw = task_card.get("synopsis")
+            if isinstance(raw, str) and len(raw.strip()) >= 50:
+                synopsis = {
+                    "chapter_num": task_card.get("chapter_num", 0),
+                    "synopsis": raw.strip(),
+                    "state_changes": task_card.get("state_changes", []) or [],
+                    "foreshadow_execution": task_card.get("foreshadow_execution", []) or [],
+                }
+                logger.info(f"Synopsis (merged from task card) for chapter {task_card.get('chapter_num', 0)}")
+            else:
+                synopsis = self.synopsis_agent.build_synopsis_from_task_card(task_card)
+                logger.info(f"Synopsis (deterministic fallback) for chapter {task_card.get('chapter_num', 0)}")
+        else:
+            synopsis = self.synopsis_agent.generate_synopsis(task_card)
         self.current_synopsis = synopsis
         for change in synopsis.get("state_changes", []):
             self.memory.add_pending_change(change)
@@ -838,17 +853,17 @@ class PipelineOrchestrator:
     def _run_chapters_gated(self, start_chapter, total_chapters, chapter_fn, on_done=None):
         """Run chapter generation with optional pipeline overlap.
 
-        By default (model_router.max_parallel_chapters <= 1) chapters run strictly
-        sequentially. When max_parallel_chapters > 1, chapter N+1 is submitted while
-        chapter N's review/commit is still being finalized, gated to a single
-        in-flight overlap (max_workers=2). on_done(chapter_num, result) is invoked in
-        chapter order for side-effects (audit cadence, break-on-failure) and may return
-        False to stop the run. Returns results in chapter order.
+        When model_router.max_parallel_chapters <= 1 chapters run strictly
+        sequentially. Otherwise up to max_parallel_chapters chapters run concurrently
+        (gated by the executor); on_done(chapter_num, result) is invoked as each chapter
+        completes and may return False to stop the run. Results are returned in chapter
+        order. NOTE: the orchestrator shares per-chapter mutable state, so raise
+        max_parallel_chapters only if you accept the (guarded) concurrency trade-off.
         """
-        from concurrent.futures import ThreadPoolExecutor
-        para = int(self.config.get("model_router", {}).get("max_parallel_chapters", 1))
-        results = []
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        para = max(1, int(self.config.get("model_router", {}).get("max_parallel_chapters", 1)))
         if para <= 1:
+            results = []
             for ch in range(start_chapter, total_chapters + 1):
                 res = chapter_fn(ch)
                 results.append(res)
@@ -856,23 +871,16 @@ class PipelineOrchestrator:
                     break
             return results
 
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            prev_fut, prev_ch = None, None
-            for ch in range(start_chapter, total_chapters + 1):
-                cur = ex.submit(chapter_fn, ch)
-                if prev_fut is not None:
-                    res = prev_fut.result()
-                    results.append(res)
-                    if on_done is not None and on_done(prev_ch, res) is False:
-                        cur.result()
-                        break
-                prev_fut, prev_ch = cur, ch
-            if prev_fut is not None:
-                res = prev_fut.result()
-                results.append(res)
-                if on_done is not None:
-                    on_done(prev_ch, res)
-        return results
+        with ThreadPoolExecutor(max_workers=para) as ex:
+            futures = {ex.submit(chapter_fn, ch): ch for ch in range(start_chapter, total_chapters + 1)}
+            results_map = {}
+            for fut in as_completed(futures):
+                ch = futures[fut]
+                res = fut.result()
+                results_map[ch] = res
+                if on_done is not None and on_done(ch, res) is False:
+                    break
+        return [results_map[c] for c in range(start_chapter, total_chapters + 1) if c in results_map]
 
     def run_mini_test(self, num_chapters: int = 10) -> list[dict]:
         """运行 Mini 测试：生成 N 章。"""

@@ -19,7 +19,8 @@
     "scene_per_chapter": {
       "min": 3,
       "max": 5
-    }
+    },
+    "merge_synopsis_into_directing": true
   },
   "quality": {
     "pass_threshold": 85,

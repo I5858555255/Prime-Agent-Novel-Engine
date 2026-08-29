@@ -25,6 +25,22 @@ def test_polish_extracts_content_from_dict():
     out = w.polish_chapter(long, {"title": "t"}, llm_client=DictRec())
     assert out == long                # 从 dict 中正确提取 content
 
+def test_build_synopsis_from_task_card():
+    from agents.writer_agent import SynopsisAgent
+    tc = {
+        "chapter_num": 3,
+        "core_goal": "推进主线",
+        "scene_blueprints": [
+            {"scene_num": 1, "goal": "登场"},
+            {"scene_num": 2, "goal": "冲突"},
+        ],
+    }
+    s = SynopsisAgent().build_synopsis_from_task_card(tc)
+    assert s["chapter_num"] == 3
+    assert "推进主线" in s["synopsis"]
+    assert "场景1" in s["synopsis"] and "场景2" in s["synopsis"]
+    assert s["state_changes"] == []
+
 def test_polish_falls_back_on_degenerate_output():
     class ShortRec:
         def chat_completion(self, messages, **k):
