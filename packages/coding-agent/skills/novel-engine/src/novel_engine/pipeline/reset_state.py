@@ -23,6 +23,7 @@ def reset_runtime_state(root: Path):
         "runtime/session_tree.json",
         "audit/per_chapter_reviews.json",
         "audit/sliding_window_reviews.json",
+        "audit/resume_state.json",
         "memory/quality_memory.json",
     ):
         p = root / sub
@@ -31,6 +32,14 @@ def reset_runtime_state(root: Path):
                 p.unlink()
             except (PermissionError, OSError):
                 pass
+
+    # StateDB 持久化进度（state.db / *.db）：必须一并清空，否则残留的
+    # “已完成”检查点会让全新运行跳过大量章节、造成小说缺章。
+    for db_file in root.glob("runtime/*.db"):
+        try:
+            db_file.unlink()
+        except (PermissionError, OSError):
+            pass
 
     # 需清空（删除后重建）的目录
     for sub in (

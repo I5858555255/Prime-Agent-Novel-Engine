@@ -507,14 +507,14 @@ class ChapterDirector:
      "确保场景顺序与任务卡完全一致",
      "禁止出现英文词汇"
    ],
-   "synopsis": "450-550字剧情缩写，严格按 scene_blueprints 顺序概括每场景 goal 与关键转折",
-   "state_changes": [
-     {"type": "character_realm|character_location|relationship_update|timeline_event", "target": "目标ID", "new_value": "新值", "chapter": {chapter_num}}
-   ],
-   "foreshadow_execution": [
-     {"foreshadow_id": "F001", "executed": true, "note": "如何执行"}
-   ]
-}}"""
+    "synopsis": "450-550字剧情缩写，严格按 scene_blueprints 顺序概括每场景 goal 与关键转折",
+    "state_changes": [
+      {{"type": "character_realm|character_location|relationship_update|timeline_event", "target": "目标ID", "new_value": "新值", "chapter": {chapter_num}}}
+    ],
+    "foreshadow_execution": [
+      {{"foreshadow_id": "F001", "executed": true, "note": "如何执行"}}
+    ]
+ }}"""
 
         try:
             task_card = call_llm(
@@ -607,14 +607,14 @@ class ChapterDirector:
      "确保场景顺序与任务卡完全一致",
      "禁止出现英文词汇"
    ],
-   "synopsis": "450-550字剧情缩写，严格按 scene_blueprints 顺序概括每场景 goal 与关键转折",
-   "state_changes": [
-     {"type": "character_realm|character_location|relationship_update|timeline_event", "target": "目标ID", "new_value": "新值", "chapter": {chapter_num}}
-   ],
-   "foreshadow_execution": [
-     {"foreshadow_id": "F001", "executed": true, "note": "如何执行"}
-   ]
-}}"""
+    "synopsis": "450-550字剧情缩写，严格按 scene_blueprints 顺序概括每场景 goal 与关键转折",
+    "state_changes": [
+      {{"type": "character_realm|character_location|relationship_update|timeline_event", "target": "目标ID", "new_value": "新值", "chapter": {chapter_num}}}
+    ],
+    "foreshadow_execution": [
+      {{"foreshadow_id": "F001", "executed": true, "note": "如何执行"}}
+    ]
+ }}"""
 
         try:
             task_card = call_llm(
