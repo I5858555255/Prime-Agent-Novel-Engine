@@ -6,7 +6,7 @@
     "api_key_env": "ZLEAP_MODEL_API_KEY",
     "temperature": 0.85,
     "max_tokens": 12000,
-    "timeout_seconds": 120,
+    "timeout_seconds": 300,
     "use_mock": false
   },
   "pipeline": {
@@ -63,7 +63,7 @@
     "api_key_env": "ZLEAP_MODEL_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
-    "timeout_seconds": 120,
+    "timeout_seconds": 300,
     "use_mock": false
   },
   "autonomy": {
@@ -90,7 +90,6 @@
       "scenes": [
         "Qwen/Qwen3.5-9B",
         "inclusionAI/Ling-mini-2.0",
-        "Qwen/Qwen3.5-27B",
         "deepseek-ai/DeepSeek-V3.2"
       ],
       "polish": ["deepseek-ai/DeepSeek-V3.2"],
@@ -108,6 +107,6 @@
       "agnes-2.5-flash":            {"rpm": 20,   "tpm": 200000}
     },
     "probe_on_startup": false,
-    "max_parallel_chapters": 1
+    "max_parallel_chapters": 2
   }
 }
