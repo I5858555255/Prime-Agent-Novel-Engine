@@ -82,7 +82,7 @@ class MemoryManager:
         self._save_json(index_file, data)
 
     def retrieve_by_keywords(self, keywords: list[str], limit: int = 10) -> list[dict]:
-        """基于关键词检索历史章节。"""
+        """基于关键词检索历史章节（精确交集）。"""
         index_file = self.root / "memory" / "long_term" / "chapter_index.json"
         data = self._load_json(index_file)
         entries = data.get("entries", {})
@@ -96,6 +96,28 @@ class MemoryManager:
 
         scored.sort(key=lambda x: (-x[0], -x[1]))
         return [entry for _, _, entry in scored[:limit]]
+
+    def hybrid_retrieve(self, query: str, keywords: list[str] | None = None, limit: int = 8) -> list[dict]:
+        """混合召回：关键词精确 + 轻量语义（子串/BM25），用于隐含关系/伏笔的补充召回。"""
+        kw_hits = self.retrieve_by_keywords(keywords or [query], limit=limit)
+        seen = {str(h.get("chapter")) for h in kw_hits}
+        # 语义补充：遍历 synopsis 文本的子串匹配
+        index_file = self.root / "memory" / "long_term" / "chapter_index.json"
+        data = self._load_json(index_file)
+        entries = data.get("entries", {})
+        q = query.strip()
+        tokens = [t for t in q.replace("，", " ").replace("。", " ").split() if len(t) >= 2] or [q[:4]]
+        semantic: list[tuple[int, dict]] = []
+        for ch_str, entry in entries.items():
+            if ch_str in seen:
+                continue
+            text = " ".join(entry.get("keywords", []))
+            score = sum(1 for t in tokens if t in text) + (1 if q in text else 0)
+            if score > 0:
+                semantic.append((score, entry))
+        semantic.sort(key=lambda x: -x[0])
+        extra = [e for _, e in semantic[: max(0, limit - len(kw_hits))]]
+        return kw_hits + extra
 
     # ====== World State ======
 

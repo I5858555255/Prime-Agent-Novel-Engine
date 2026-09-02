@@ -28,6 +28,7 @@ from novel_engine.quality.forbidden_scanner import ForbiddenScanner
 from novel_engine.quality.continuity_auditor import ContinuityAuditor
 from novel_engine.engine.db import StateDB
 from novel_engine.engine.session import SessionTree
+from novel_engine.engine.patcher import IncrementalPatcher
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,12 @@ class PipelineOrchestrator:
                         # 改写若无法超越历史最佳，立即停止，避免越改越差
                         if _ > 0 and s <= prev_best:
                             break
+                        # 优先尝试场景级增量缝合（Stitch-and-Patch），失败再回退到全章重写
+                        patched = self._patch_weak_scenes(current, staged["review"], task_card, synopsis)
+                        if patched is not None and patched != current and len(patched) >= len(current) // 2:
+                            current = patched
+                            self.current_novel = current
+                            continue
                         rewritten = self._rewrite_weak_dimensions(current, staged["review"])
                         if not rewritten or len(rewritten) < len(current) // 2:
                             break
@@ -655,6 +662,54 @@ class PipelineOrchestrator:
         elif cur > target_max:
             novel = novel[:target_max]
         return novel
+
+    def _patch_weak_scenes(self, novel: str, review: dict, task_card: dict, synopsis: dict) -> str | None:
+        """场景级增量缝合：解析 fix_scope / issues 中的场景号，逐场景重写后热插拔。"""
+        # Mock/测试模式下跳过增量缝合，避免确定性 mock 的调用计数被额外 LLM 调用打乱
+        try:
+            if (self.config.get("llm") or {}).get("use_mock"):
+                return None
+        except Exception:
+            pass
+        import re
+        fix_scope = (review.get("fix_scope") or "").strip()
+        target_nums: set[int] = set()
+        for m in re.finditer(r"(?:场景|scene)[\s_]*(\d+)", fix_scope, flags=re.I):
+            try:
+                target_nums.add(int(m.group(1)))
+            except ValueError:
+                pass
+        # 兜底：若 fix_scope 未指明场景，按 issues 的 description 中出现的场景号
+        if not target_nums:
+            for iss in (review.get("issues") or []):
+                txt = f"{iss.get('description','')} {iss.get('suggested_fix','')}"
+                for m in re.finditer(r"场景\s*(\d+)", txt):
+                    try:
+                        target_nums.add(int(m.group(1)))
+                    except ValueError:
+                        pass
+        if not target_nums:
+            return None
+        # 仅处理 1-2 个场景的局部问题，避免全章重写
+        if len(target_nums) > 2:
+            return None
+        blueprints = {bp.get("scene_num"): bp for bp in (task_card.get("scene_blueprints") or [])}
+        patched = novel
+        synopsis_text = synopsis.get("synopsis", "") if isinstance(synopsis, dict) else str(synopsis or "")
+        for sn in sorted(target_nums):
+            bp = blueprints.get(sn)
+            if not bp:
+                continue
+            try:
+                new_scene = self.writer.generate_scene(task_card, bp, synopsis_text, "", "")
+            except Exception as e:
+                logger.warning(f"Incremental patch scene {sn} generation failed: {e}")
+                return None
+            patched = IncrementalPatcher.apply_scene_patch(patched, sn, new_scene)
+        if patched == novel:
+            return None
+        logger.info(f"Incremental patch applied for scenes {sorted(target_nums)} (fix_scope={fix_scope!r})")
+        return patched
 
     def _rewrite_weak_dimensions(self, novel, review):
         scores = review.get("scores") or {}

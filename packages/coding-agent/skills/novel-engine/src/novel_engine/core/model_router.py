@@ -19,8 +19,23 @@ class ModelRouter:
     def _build_providers(cfg: dict) -> dict:
         import os
         out = {}
-        base = cfg["llm"]["api_base"]
-        key = os.environ.get(cfg["llm"].get("api_key_env", "ZLEAP_MODEL_API_KEY"), "")
+        # Graceful fallback for minimal mock configs (e.g., tests with {"llm":{"use_mock":true}})
+        llm_cfg = cfg.get("llm") or {}
+        if llm_cfg.get("use_mock"):
+            mock = LLMClient(use_mock=True)
+            phases = cfg.get("model_router", {}).get("phases", {}) or {}
+            if not phases:
+                phases = {"scenes": ["mock"], "polish": ["mock"], "planning": ["mock"], "review": ["mock"]}
+            for phase, models in phases.items():
+                for m in models:
+                    out[m] = mock
+            out.setdefault("mock", mock)
+            out.setdefault("agnes-2.5-flash", mock)
+            return out
+        base = llm_cfg.get("api_base")
+        if not base:
+            return out
+        key = os.environ.get(llm_cfg.get("api_key_env", "ZLEAP_MODEL_API_KEY"), "")
         def sf_model(model):
             c = LLMClient()
             c.model = model

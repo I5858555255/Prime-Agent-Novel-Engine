@@ -154,8 +154,34 @@ class WriterAgent:
 - 禁止人物台词风格与设定不符
 - 禁止场景内容重复"""
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
+    def __init__(self, llm_client: Optional[LLMClient] = None, project_root: str | Path = None):
         self.llm = llm_client or LLMClient()
+        self.root = Path(project_root or Path(__file__).parent.parent)
+        self._bible_cache: dict[str, str] = {}
+        self._load_bible_cache()
+
+    def _load_bible_cache(self):
+        for key, rel in {
+            "world": "bible/world_bible.md",
+            "character": "bible/character_bible.md",
+            "style": "bible/style_bible.md",
+        }.items():
+            p = self.root / rel
+            try:
+                self._bible_cache[key] = p.read_text(encoding="utf-8") if p.exists() else ""
+            except OSError:
+                self._bible_cache[key] = ""
+
+    def _bible_snippet(self, max_chars: int = 1200) -> str:
+        world = (self._bible_cache.get("world", "") or "")[:600]
+        char = (self._bible_cache.get("character", "") or "")[:600]
+        parts = []
+        if world.strip():
+            parts.append(f"【世界观】{world.strip()}")
+        if char.strip():
+            parts.append(f"【人物卡】{char.strip()}")
+        text = "\n\n".join(parts)
+        return text[:max_chars]
 
     def generate_scene(self, task_card: dict, scene_blueprint: dict, chapter_synopsis: str, previous_context: str = "", pacing_constraints: str = "", temperature_override: Optional[float] = None) -> str:
         """生成单个场景的正文。"""
@@ -168,12 +194,15 @@ class WriterAgent:
 
         pacing_block = f"\n## 节奏硬性约束\n{pacing_constraints}\n" if pacing_constraints else ""
 
+        bible_block = self._bible_snippet()
+        bible_section = f"\n\n## 人物/世界观显式设定（逐章注入，防 OOC/漂移）\n{bible_block}\n" if bible_block else ""
+
         prompt = f"""请生成第 {chapter_num} 章第 {scene_num} 场景的正文。
 
 ## 章节缩写
 {chapter_synopsis}
 {context_section}
-
+{bible_section}
 ## 本场景蓝图
 {json.dumps(scene_blueprint, ensure_ascii=False, indent=2)}
 

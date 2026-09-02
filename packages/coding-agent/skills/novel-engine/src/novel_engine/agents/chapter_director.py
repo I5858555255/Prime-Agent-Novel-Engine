@@ -227,17 +227,37 @@ class ChapterDirector:
         # 世界状态
         world_state = self.simulator.build_world_state_for_chapter(chapter_num)
 
-        # RAG 历史检索：基于当前剧情关键词从短期记忆检索相关章节
+        # RAG 历史检索：精确 + 混合语义补充（防隐含关系/动机漏检）
         recent_summaries = self.memory.get_recent_summaries(chapter_num, count=5)
         keyword_history = self.memory.retrieve_by_keywords(
             [f"chapter_{chapter_num}"], limit=5,
         )
+        # 混合召回补充：若精确命中不足，尝试语义子串召回
+        if len(keyword_history) < 3:
+            try:
+                extra = self.memory.hybrid_retrieve(f"chapter_{chapter_num}", limit=5)
+                seen = {str(h.get("chapter")) for h in keyword_history}
+                for h in extra:
+                    if str(h.get("chapter")) not in seen:
+                        keyword_history.append(h)
+                    if len(keyword_history) >= 5:
+                        break
+            except Exception:
+                pass
 
         # 质量记忆
         quality_memory = self._load_json(self.root / "memory" / "quality_memory.json")
 
-        # Query active foreshadows from StateDB
+        # Query active foreshadows from StateDB + 混合语义补充
         active_foreshadows = self.db.query_active_foreshadows(chapter_num)
+        try:
+            # 补充：对人物/关系做一次轻量语义检索，丰富上下文（不改变原有时序过滤）
+            hybrid_hits = self.db.hybrid_search(f"chapter {chapter_num}", limit=4)
+            if hybrid_hits:
+                # 仅作为调试信息，不直接合并到 active_foreshadows，避免时序污染
+                logger.debug(f"Hybrid search hits for ch{chapter_num}: {len(hybrid_hits)}")
+        except Exception:
+            pass
 
         return {
             "chapter_num": chapter_num,
