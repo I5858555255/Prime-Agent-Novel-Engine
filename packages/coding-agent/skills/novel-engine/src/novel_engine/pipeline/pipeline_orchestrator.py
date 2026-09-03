@@ -364,15 +364,14 @@ class PipelineOrchestrator:
                 logger.info(f"Chapter {chapter_num} PASSED (score={score})")
             elif verdict == "fix":
                 orig_novel = self.current_novel
+                orig_draft = getattr(self, "_draft_novel", orig_novel)
                 pre_fix_score = score
-                # P0-A2/D2: 统一到 publication_line (88) 作为唯一可发布阈值，消除多源阈值矛盾
                 publication_line = int(self.config.get("quality", {}).get("publication_line", 88))
                 min_ch = publication_line
-                fix_ok = self.config.get("quality", {}).get("fix_threshold", 55)
                 max_fix = int(self.config.get("pipeline", {}).get("max_review_retries", 3)) + 1
                 current = orig_novel
-                best = (pre_fix_score, current)
-                # 确定性硬校验也视为 high 级问题，强制进入修复
+                current_draft = orig_draft
+                best = (pre_fix_score, current, current_draft)
                 det_issues_pre = getattr(self, "_last_deterministic_issues", [])
                 if det_issues_pre:
                     logger.warning(f"Deterministic gate has issues pre-fix: {det_issues_pre} → force patch/rewrite")
@@ -380,35 +379,76 @@ class PipelineOrchestrator:
                     for _ in range(max_fix):
                         staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
                         s = staged["score"]
+                        # 同步更新 result["score"] 避免陈旧分数
+                        result["score"] = s
                         prev_best = best[0]
                         if s > best[0]:
-                            best = (s, current)
+                            best = (s, current, current_draft)
                         if s >= min_ch:
-                            # 仍需检查确定性门控与 high 级 issue，否则即使分数达标也不放行
                             has_high = any((iss.get("severity") in ("high", "block")) for iss in (staged["review"].get("issues") or []))
-                            high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:50]}" for iss in (staged["review"].get("issues") or []) if iss.get("severity") in ("high","block")]
+                            high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:60]}" for iss in (staged["review"].get("issues") or []) if iss.get("severity") in ("high","block")]
                             det = self._deterministic_quality_gate(current, task_card)
+                            soft = det.get("soft_issues", [])
                             if not has_high and det["passed"]:
+                                if soft:
+                                    logger.info(f"Score {s} ≥ {min_ch} soft issues (不阻断): {soft}")
                                 break
                             else:
-                                logger.warning(f"Score {s} ≥ {min_ch} but blocked → high={high_list} det={det['issues']} → continue fix")
-                        # 改写若无法超越历史最佳，立即停止，避免越改越差
+                                logger.warning(f"Score {s} ≥ {min_ch} but blocked → high={high_list} det_hard={det['issues']} det_soft={soft} → continue fix")
                         if _ > 0 and s <= prev_best:
                             break
-                        # 改写若无法超越历史最佳，立即停止，避免越改越差
-                        if _ > 0 and s <= prev_best:
-                            break
-                        # 优先尝试场景级增量缝合（Stitch-and-Patch），失败再回退到全章重写
-                        patched = self._patch_weak_scenes(current, staged["review"], task_card, synopsis)
-                        if patched is not None and patched != current and len(patched) >= len(current) // 2:
-                            current = patched
+                        # 优先场景级增量缝合（基于 draft 带标记文本，避免 purified 找不到 marker）
+                        patched_draft = self._patch_weak_scenes(current_draft, staged["review"], task_card, synopsis)
+                        if patched_draft is not None and patched_draft != current_draft and len(patched_draft) >= len(current_draft) // 2:
+                            # 缝合后需重新净化并强制字数
+                            patched_purified = purify_novel_for_publish(patched_draft)
+                            # 强制字数（用冻结目标）
+                            frozen = self._frozen_task_cards.get(chapter_num, task_card)
+                            total = sum(int(bp.get("word_count_target", 0)) for bp in (frozen.get("scene_blueprints") or []))
+                            if total > 0:
+                                patched_purified = self._enforce_word_count(patched_purified, int(total*0.65), int(total*1.35))
+                            current = patched_purified
+                            current_draft = patched_draft
                             self.current_novel = current
+                            self._draft_novel = current_draft
+                            # 更新 gate
+                            gate_after = self._deterministic_quality_gate(current, frozen)
+                            self._last_deterministic_issues = gate_after["issues"]
                             continue
                         rewritten = self._rewrite_weak_dimensions(current, staged["review"])
                         if not rewritten or len(rewritten) < len(current) // 2:
                             break
-                        current = rewritten
+                        # 重写后同样需净化+强制
+                        rewritten_purified = purify_novel_for_publish(rewritten) if "【场景" in rewritten or "※" in rewritten else rewritten
+                        frozen = self._frozen_task_cards.get(chapter_num, task_card)
+                        total = sum(int(bp.get("word_count_target", 0)) for bp in (frozen.get("scene_blueprints") or []))
+                        if total > 0:
+                            rewritten_purified = self._enforce_word_count(rewritten_purified, int(total*0.65), int(total*1.35))
+                        else:
+                            rewritten_purified = rewritten
+                        current = rewritten_purified
+                        current_draft = rewritten  # 重写结果视为新 draft
                         self.current_novel = current
+                        self._draft_novel = current_draft
+                        gate_after = self._deterministic_quality_gate(current, frozen)
+                        self._last_deterministic_issues = gate_after["issues"]
+                    best_score, best_novel, best_draft = best
+                    self.current_novel = best_novel
+                    self._draft_novel = best_draft
+                    result["score"] = best_score
+                    if best_score >= min_ch:
+                        # 最终仍需校验硬门控
+                        final_det = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card))
+                        final_high = any((iss.get("severity") in ("high", "block")) for iss in (staged["review"].get("issues") or []))
+                        if final_high or not final_det["passed"]:
+                            logger.warning(f"Best score {best_score} ≥ {min_ch} but hard gate still blocked: high={final_high} det={final_det['issues']}")
+                            result["success"] = False
+                            apply_world_state = False
+                            self._flag_for_human(chapter_num, best_score, f"hard gate blocked after fix: det={final_det['issues']}")
+                        else:
+                            result["success"] = True
+                            apply_world_state = True
+                    else:
                     best_score, best_novel = best
                     self.current_novel = best_novel
                     result["score"] = best_score
@@ -525,34 +565,44 @@ class PipelineOrchestrator:
         })
         review_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 high/block 且确定性门控通过才写最终目录）
+        # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 high/block 且确定性硬门控通过才写最终目录）
         publication_line = int(self.config.get("quality", {}).get("publication_line", 88))
+        cur_score = int(result.get("score", score or 0) or 0)
         has_high_issue = any((iss.get("severity") in ("high", "block")) for iss in (review.get("issues") or []))
+        high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:50]}" for iss in (review.get("issues") or []) if iss.get("severity") in ("high","block")]
+        # _last_deterministic_issues 仅含 hard，soft 另取
         det_issues = getattr(self, "_last_deterministic_issues", [])
-        can_publish = bool(result.get("success")) and (score is not None and score >= publication_line) and not has_high_issue and not det_issues and not violations
-        # 任一 high 级 issue 强制不可发布（即使总分达标）
+        det_soft = getattr(self, "_last_deterministic_soft", [])
+        # 重新校验当前 purified 文本的硬门控（以防 fix 循环后未更新）
+        final_det = self._deterministic_quality_gate(self._novel_string(), task_card)
+        det_issues = final_det["issues"]
+        det_soft = final_det.get("soft_issues", [])
+        self._last_deterministic_issues = det_issues
+        can_publish = bool(result.get("success")) and (cur_score >= publication_line) and not has_high_issue and not det_issues and not any(v.get("severity") in ("block","high") for v in (violations or []))
         if has_high_issue:
-            logger.warning(f"Chapter {chapter_num} has high/block issue → force non-publish (score={score})")
+            logger.warning(f"Chapter {chapter_num} has high/block issue → force non-publish (score={cur_score} high={high_list})")
             can_publish = False
         if det_issues:
-            logger.warning(f"Chapter {chapter_num} deterministic gate failed → force non-publish: {det_issues}")
+            logger.warning(f"Chapter {chapter_num} deterministic hard gate failed → force non-publish (score={cur_score} det_hard={det_issues} det_soft={det_soft})")
             can_publish = False
+        elif det_soft:
+            logger.info(f"Chapter {chapter_num} deterministic soft issues (不阻断): {det_soft}")
         if violations and any(v.get("severity") in ("block", "high") for v in violations):
+            logger.warning(f"Chapter {chapter_num} forbidden block/high → force non-publish: {violations}")
             can_publish = False
 
         if not can_publish:
-            # 写入草稿区，不污染最终 novel 目录
             try:
                 draft_path = self.root / "chapters" / "draft" / f"chapter_{chapter_num}.txt"
                 draft_path.parent.mkdir(parents=True, exist_ok=True)
                 draft_path.write_text(self._novel_string(), encoding="utf-8")
-                logger.warning(f"Chapter {chapter_num} NOT published (score={score} < {publication_line} or has high/block/deterministic issues); saved to draft/{draft_path.name}")
+                logger.warning(f"Chapter {chapter_num} NOT published (score={cur_score} < {publication_line} or has high/block/det_hard); saved to draft/{draft_path.name} high={high_list} det_hard={det_issues} soft={det_soft}")
             except Exception as e:
                 logger.error(f"Failed to save draft for chapter {chapter_num}: {e}")
             result["success"] = False
             result["published"] = False
-            self._flag_for_human(chapter_num, score or 0, f"below publication_line or high/deterministic issues: det={det_issues} violations={violations}")
-            # 仍记录索引但不落库世界状态
+            result["score"] = cur_score
+            self._flag_for_human(chapter_num, cur_score, f"below publication_line or high/det_hard: high={high_list} det_hard={det_issues} soft={det_soft} violations={violations}")
             return result
 
         try:

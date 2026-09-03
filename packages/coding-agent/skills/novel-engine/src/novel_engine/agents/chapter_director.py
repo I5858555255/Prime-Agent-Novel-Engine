@@ -337,7 +337,7 @@ class ChapterDirector:
                 "goal": node.get("description", ""),
                 "conflict": node.get("description", ""),
                 "emotion": node.get("emotional_tone", ""),
-                "word_count_target": 3000,
+                "word_count_target": 2000,
             }],
             "foreshadow_actions": [
                 {
@@ -509,7 +509,7 @@ class ChapterDirector:
       "goal": "本场景目标",
       "conflict": "本场景冲突",
       "emotion": "本场景情绪",
-      "word_count_target": 1000
+      "word_count_target": 1800
     }}
   ],
   "foreshadow_actions": [
@@ -609,7 +609,7 @@ class ChapterDirector:
       "goal": "本场景目标",
       "conflict": "本场景冲突",
       "emotion": "本场景情绪",
-      "word_count_target": 1000
+      "word_count_target": 1800
     }}
   ],
   "foreshadow_actions": [
