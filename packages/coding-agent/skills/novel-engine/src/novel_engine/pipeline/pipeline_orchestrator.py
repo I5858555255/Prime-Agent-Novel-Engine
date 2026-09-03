@@ -290,6 +290,11 @@ class PipelineOrchestrator:
         try:
             if chapter_num in self._frozen_task_cards:
                 task_card = self._frozen_task_cards[chapter_num]
+                # 仍需推进状态机，避免 WORLD_SIM→WRITE_SCENE 非法跳转
+                try:
+                    sm.transition(ChapterPhase.DIRECTING)
+                except Exception:
+                    pass
                 logger.info(f"Using frozen task_card for chapter {chapter_num}")
             else:
                 task_card = self._stage_directing(chapter_num, world_state)
@@ -303,6 +308,10 @@ class PipelineOrchestrator:
         try:
             if chapter_num in self._frozen_synopsis:
                 synopsis = self._frozen_synopsis[chapter_num]
+                try:
+                    sm.transition(ChapterPhase.SYNOPSIS)
+                except Exception:
+                    pass
                 logger.info(f"Using frozen synopsis for chapter {chapter_num}")
             else:
                 synopsis = self._stage_synopsis(task_card)
