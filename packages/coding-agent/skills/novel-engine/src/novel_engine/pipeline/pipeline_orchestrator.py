@@ -449,13 +449,6 @@ class PipelineOrchestrator:
                             result["success"] = True
                             apply_world_state = True
                     else:
-                    best_score, best_novel = best
-                    self.current_novel = best_novel
-                    result["score"] = best_score
-                    if best_score >= min_ch:
-                        result["success"] = True
-                        apply_world_state = True
-                    else:
                         # Q3=A: rollback world-state, regenerate full chapter at higher temp (bounded), record gap if still failing
                         apply_world_state = False
                         regen_ok = self._recover_chapter(
