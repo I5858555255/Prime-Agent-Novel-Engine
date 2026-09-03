@@ -129,11 +129,11 @@ def validate_scene_order(full_text: str, task_card: dict) -> bool:
 class WriterAgent:
     """正文生成 Agent：按场景拆分生成正文。"""
 
-    SCENE_SYSTEM_PROMPT = """你是一位专业的网络小说作家。你的任务是根据场景蓝图生成高质量的正文段落。
+    SCENE_SYSTEM_PROMPT = """你是一位专业的网络小说作家（凡人流写实，参考《凡人修仙传》《仙逆》笔法）。你的任务是根据场景蓝图生成高质量的正文段落。
 
 写作要求：
-1. 第三人称有限视角（以**陆烬**为主视角）
-2. 半文半白，通俗易懂但有古风韵味
+1. 第三人称有限视角（以**陆烬**为主视角），视角深度随年龄动态变化（婴儿期仅感官，无推理）
+2. 半文半白，通俗易懂但有古风韵味；每段最多一个比喻，比喻必须服务信息
 3. 对话符合角色身份
 4. 战斗描写简洁有力，重意境轻招式罗列
 5. 心理描写克制内敛，通过动作和环境折射
@@ -141,9 +141,10 @@ class WriterAgent:
 7. 每场景目标3000-5000字（整个章节）
 8. 遵守 scene_blueprints 中的 goal/conflict/emotion
 9. 若任务卡中有 foreshadow_actions，必须在本场景中执行
+10. 严禁套话堆砌（“死水石子/古井/未出鞘/达摩克利斯/如野草疯长”等出现即扣分）
 
 禁忌：
-- 禁止现代词汇
+- 禁止现代词汇、西典词汇
 - 禁止OOC
 - 禁止无意义水字数对话
 - 禁止主角光环过强（每次胜利必须有代价）
@@ -152,7 +153,8 @@ class WriterAgent:
 - 必须完整呈现所有场景，不得截断
 - 严格执行 foreshadow_actions 中的所有伏笔指令
 - 禁止人物台词风格与设定不符
-- 禁止场景内容重复"""
+- 禁止场景内容重复
+- 严禁超龄认知（婴儿期出现“棋局/十年后”等未来知识直接判失败）"""
 
     def __init__(self, llm_client: Optional[LLMClient] = None, project_root: str | Path = None):
         self.llm = llm_client or LLMClient()
@@ -196,13 +198,21 @@ class WriterAgent:
 
         bible_block = self._bible_snippet()
         bible_section = f"\n\n## 人物/世界观显式设定（逐章注入，防 OOC/漂移）\n{bible_block}\n" if bible_block else ""
+        # P1-C3 视角与时间线绑定：婴儿期禁用成人独白
+        perspective_block = ""
+        if chapter_num <= 5:
+            perspective_block = "\n\n## 视角与时间线锚点\n- 当前时间：第 {} 章（主角为新生儿/婴儿期，年龄≈0岁）\n- 严禁任何成人式全知内心独白、未来知识（“棋局”“十年后”等）与超龄推理；仅保留感官、本能与外部观察\n- 内心独白强度：0（无）\n".format(chapter_num)
+        elif chapter_num <= 20:
+            perspective_block = f"\n\n## 视角与时间线锚点\n- 当前时间：第 {chapter_num} 章（幼年期）\n- 心理描写需符合年龄，避免超龄谋略独白\n"
+        else:
+            perspective_block = f"\n\n## 视角与时间线锚点\n- 当前时间：第 {chapter_num} 章\n- 按当前年龄与状态描写心理，禁止时间线穿帮\n"
 
         prompt = f"""请生成第 {chapter_num} 章第 {scene_num} 场景的正文。
 
 ## 章节缩写
 {chapter_synopsis}
 {context_section}
-{bible_section}
+{bible_section}{perspective_block}
 ## 本场景蓝图
 {json.dumps(scene_blueprint, ensure_ascii=False, indent=2)}
 
@@ -287,7 +297,7 @@ class WriterAgent:
                               temperature_override: Optional[float] = None) -> str:
         """
         生成完整章节正文。
-        独立场景组并行生成，组内依赖场景顺序生成，最终按 scene_num 排序保证顺序。
+        P1-C1 修复：改为顺序执行并向前透传前序摘要，避免并行零上下文导致的重复叙事。
         """
         chapter_num = task_card.get("chapter_num", 0)
         scenes = task_card.get("scene_blueprints", []) or task_card.get("scenes", [])
@@ -296,30 +306,26 @@ class WriterAgent:
         if not scenes:
             return ""
 
-        # 所有场景并发生成（通过 self.llm 场景路由器，自带限流），最后按 scene_num 排序组装。
-        max_workers = max(1, min(len(scenes), 5))
-        results: list = [None] * len(scenes)
-
-        def _do(idx_sc):
-            idx, sc = idx_sc
-            return idx, self._generate_group(task_card, [sc], synopsis_text, pacing_constraints, temperature_override)
-
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scene") as executor:
-            future_to_idx = {
-                executor.submit(_do, (i, s)): i
-                for i, s in enumerate(scenes)
-            }
-            for future in as_completed(future_to_idx):
-                idx, group_contents = future.result()
-                results[idx] = group_contents
-
+        # 顺序生成：每场景携带前序场景摘要与基调，避免重复 beats
         all_scene_contents: list[tuple[dict, str]] = []
-        for grp in results:
-            if grp:
-                all_scene_contents.extend(grp)
-
-        # 按 scene_num 排序确保顺序正确
-        all_scene_contents.sort(key=lambda x: x[0].get("scene_num", 0))
+        previous_context = ""
+        # 记录已覆盖的情节指纹，用于去重提示
+        covered_beats: list[str] = []
+        for bp in sorted(scenes, key=lambda x: x.get("scene_num", 0)):
+            # 将已覆盖的 beats 注入 pacing 约束，提示模型避免重复
+            beat_hint = ""
+            if covered_beats:
+                beat_hint = f"\n已覆盖情节（避免重复）：{'; '.join(covered_beats[-5:])}\n"
+            combined_pacing = (pacing_constraints or "") + beat_hint
+            content = self.generate_scene(task_card, bp, synopsis_text, previous_context, combined_pacing, temperature_override)
+            all_scene_contents.append((bp, content))
+            # 更新前序摘要（取前 300 字 + 场景目标，避免无限膨胀）
+            snippet = content[:300].replace("\n", " ")
+            covered_beats.append(f"场景{bp.get('scene_num')}({bp.get('location','')}:{bp.get('goal','')[:20]})")
+            # 透传前序摘要：最多保留最近 2 场景的 600 字摘要
+            previous_context = "\n\n".join(c for _, c in all_scene_contents[-2:])
+            if len(previous_context) > 800:
+                previous_context = previous_context[-800:]
 
         full_chapter_parts = []
         for bp, content in all_scene_contents:

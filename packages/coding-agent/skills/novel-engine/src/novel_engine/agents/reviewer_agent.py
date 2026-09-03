@@ -105,6 +105,18 @@ class ReviewerAgent:
         world_state: dict,
     ) -> dict:
         """审查单章。"""
+        # P2-B2: 采样覆盖全文（头/中/尾各 2500 字，避免 6000 截断毁结构）
+        def _sample(text: str, head: int = 2500, mid: int = 2500, tail: int = 2500) -> str:
+            if len(text) <= head + mid + tail:
+                return text
+            h = text[:head]
+            m_start = max(0, len(text)//2 - mid//2)
+            m = text[m_start:m_start+mid]
+            t = text[-tail:]
+            return f"{h}\n\n...[中部省略 {len(text)-head-mid-tail} 字]...\n\n{m}\n\n...[中部省略]...\n\n{t}"
+
+        sampled = _sample(novel_text)
+
         prompt = f"""请审查第 {chapter_num} 章。
 
 ## 任务卡
@@ -113,8 +125,8 @@ class ReviewerAgent:
 ## 缩写
 {synopsis.get('synopsis', '')}
 
-## 正文（节选）
-{novel_text[:6000]}
+## 正文（采样覆盖全文 头/中/尾）
+{sampled}
 
 ## 世界状态
 {json.dumps(world_state, ensure_ascii=False, indent=2)[:2000]}

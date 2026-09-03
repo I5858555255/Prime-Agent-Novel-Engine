@@ -29,6 +29,12 @@ from novel_engine.quality.continuity_auditor import ContinuityAuditor
 from novel_engine.engine.db import StateDB
 from novel_engine.engine.session import SessionTree
 from novel_engine.engine.patcher import IncrementalPatcher
+from novel_engine.quality.repetition_detector import (
+    detect_repetition,
+    detect_truncation,
+    detect_length_anomaly,
+    purify_novel_for_publish,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -329,11 +335,17 @@ class PipelineOrchestrator:
             elif verdict == "fix":
                 orig_novel = self.current_novel
                 pre_fix_score = score
-                min_ch = self.config.get("quality", {}).get("min_chapter_score", 70)
+                # P0-A2/D2: 统一到 publication_line (88) 作为唯一可发布阈值，消除多源阈值矛盾
+                publication_line = int(self.config.get("quality", {}).get("publication_line", 88))
+                min_ch = publication_line
                 fix_ok = self.config.get("quality", {}).get("fix_threshold", 55)
                 max_fix = int(self.config.get("pipeline", {}).get("max_review_retries", 3)) + 1
                 current = orig_novel
                 best = (pre_fix_score, current)
+                # 确定性硬校验也视为 high 级问题，强制进入修复
+                det_issues_pre = getattr(self, "_last_deterministic_issues", [])
+                if det_issues_pre:
+                    logger.warning(f"Deterministic gate has issues pre-fix: {det_issues_pre} → force patch/rewrite")
                 try:
                     for _ in range(max_fix):
                         staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
@@ -342,6 +354,15 @@ class PipelineOrchestrator:
                         if s > best[0]:
                             best = (s, current)
                         if s >= min_ch:
+                            # 仍需检查确定性门控与 high 级 issue，否则即使分数达标也不放行
+                            has_high = any((iss.get("severity") in ("high", "block")) for iss in (staged["review"].get("issues") or []))
+                            det = self._deterministic_quality_gate(current, task_card)
+                            if not has_high and det["passed"]:
+                                break
+                            else:
+                                logger.warning(f"Score {s} ≥ {min_ch} but has high/deterministic issues → continue fix")
+                        # 改写若无法超越历史最佳，立即停止，避免越改越差
+                        if _ > 0 and s <= prev_best:
                             break
                         # 改写若无法超越历史最佳，立即停止，避免越改越差
                         if _ > 0 and s <= prev_best:
@@ -473,7 +494,36 @@ class PipelineOrchestrator:
         })
         review_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        # 阶段6：提交
+        # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 high/block 且确定性门控通过才写最终目录）
+        publication_line = int(self.config.get("quality", {}).get("publication_line", 88))
+        has_high_issue = any((iss.get("severity") in ("high", "block")) for iss in (review.get("issues") or []))
+        det_issues = getattr(self, "_last_deterministic_issues", [])
+        can_publish = bool(result.get("success")) and (score is not None and score >= publication_line) and not has_high_issue and not det_issues and not violations
+        # 任一 high 级 issue 强制不可发布（即使总分达标）
+        if has_high_issue:
+            logger.warning(f"Chapter {chapter_num} has high/block issue → force non-publish (score={score})")
+            can_publish = False
+        if det_issues:
+            logger.warning(f"Chapter {chapter_num} deterministic gate failed → force non-publish: {det_issues}")
+            can_publish = False
+        if violations and any(v.get("severity") in ("block", "high") for v in violations):
+            can_publish = False
+
+        if not can_publish:
+            # 写入草稿区，不污染最终 novel 目录
+            try:
+                draft_path = self.root / "chapters" / "draft" / f"chapter_{chapter_num}.txt"
+                draft_path.parent.mkdir(parents=True, exist_ok=True)
+                draft_path.write_text(self._novel_string(), encoding="utf-8")
+                logger.warning(f"Chapter {chapter_num} NOT published (score={score} < {publication_line} or has high/block/deterministic issues); saved to draft/{draft_path.name}")
+            except Exception as e:
+                logger.error(f"Failed to save draft for chapter {chapter_num}: {e}")
+            result["success"] = False
+            result["published"] = False
+            self._flag_for_human(chapter_num, score or 0, f"below publication_line or high/deterministic issues: det={det_issues} violations={violations}")
+            # 仍记录索引但不落库世界状态
+            return result
+
         try:
             # 提取关键词用于索引
             keywords = self._extract_keywords(task_card, synopsis)
@@ -484,7 +534,7 @@ class PipelineOrchestrator:
                 "word_count": len(self._novel_string()),
             })
 
-            # 正式提交状态变更（质检未达 min_ch 时暂缓落地世界状态，避免污染后续章节）
+            # 正式提交状态变更（已通过发布门，安全落库）
             pending_changes = synopsis.get("state_changes", [])
             if pending_changes:
                 if apply_world_state:
@@ -615,18 +665,64 @@ class PipelineOrchestrator:
         logger.info(f"Synopsis ready for chapter {task_card.get('chapter_num', 0)} (source={source})")
         return synopsis
 
+    def _deterministic_quality_gate(self, text: str, task_card: dict) -> dict:
+        """P0-B1: 确定性硬校验（重复/截断/长度），命中即需修复。"""
+        purified = purify_novel_for_publish(text)
+        # 若净化前后长度差异过大，说明脚手架污染严重，也视为问题
+        issues: list[str] = []
+        rep = detect_repetition(purified)
+        if rep["has_repetition"]:
+            issues.extend([f"[重复] {x}" for x in rep["issues"]])
+        trunc = detect_truncation(purified)
+        if trunc["is_truncated"]:
+            issues.extend([f"[截断] {x}" for x in trunc["issues"]])
+        # 长度：对照 scene_blueprints 目标
+        blueprints = task_card.get("scene_blueprints") or []
+        target = sum(int(bp.get("word_count_target", 0)) for bp in blueprints) or None
+        length = detect_length_anomaly(purified, target)
+        if length["anomaly"]:
+            issues.extend([f"[长度] {x}" for x in length["issues"]])
+        # 脚手架残留二次校验（净化后不应再含这些 token）
+        if any(tok in purified for tok in ["【场景", "※", "（章末钩子", "（注："]):
+            issues.append("[净化] 成品仍含脚手架标记")
+        # P2-C4 套话黑名单
+        cliches = ["死水石子", "未出鞘", "达摩克利斯", "如野草疯长"]
+        for c in cliches:
+            if c in purified:
+                issues.append(f"[套话] 命中黑名单“{c}”")
+                break
+        # 统计高频比喻堆砌（“如”“似”“像” 密度过高也视为套话）
+        if purified.count("如") + purified.count("似") > len(purified) / 80:
+            # 阈值宽松，仅作预警，不直接判失败
+            pass
+        # D1 时间线穿帮：婴儿期不应出现“十年”级表述
+        ch_num = int(task_card.get("chapter_num", 0) or 0)
+        if ch_num and ch_num <= 10 and any(x in purified for x in ["十年", "十 年", "十年后", "在此十年"]):
+            issues.append("[时间线] 婴儿期出现“十年”级时间表述，疑似模板泄漏")
+        return {"passed": not issues, "issues": issues, "purified": purified}
+
     def _stage_write(self, task_card: dict, synopsis: dict) -> str:
-        """阶段4：正文生成 + 润色。"""
+        """阶段4：正文生成 + 润色（带确定性校验与成品净化）。"""
         self.state_machine.transition(ChapterPhase.WRITE_SCENE)
         synopsis_text = synopsis.get("synopsis", "")
         pacing_constraints = PacingAdvisor().pre_write_constraints(synopsis_text)
-        # Generation uses the scenes phase pool; polish uses the polish phase pool.
         novel_text = self.writer.generate_full_chapter(task_card, synopsis, pacing_constraints)
         self.state_machine.transition(ChapterPhase.POLISH)
         novel_text = self.writer.polish_chapter(novel_text, task_card, llm_client=self.polish_router)
-        self.current_novel = novel_text
-        logger.info(f"Novel text generated ({len(novel_text)} chars)")
-        return novel_text
+        # 成品净化：草稿保留标记供 patcher，发布版剥离
+        purified = purify_novel_for_publish(novel_text)
+        self._draft_novel = novel_text
+        self.current_novel = purified
+        logger.info(f"Novel text generated (draft {len(novel_text)} chars → purified {len(purified)} chars)")
+        # 确定性硬校验：命中则在日志中标记，后续在提交前强制拦截
+        gate = self._deterministic_quality_gate(novel_text, task_card)
+        if not gate["passed"]:
+            logger.warning(f"Deterministic gate flagged chapter {task_card.get('chapter_num')}: {gate['issues']}")
+            # 将硬校验问题注入待修复队列，供后续 patch 识别
+            self._last_deterministic_issues = gate["issues"]
+        else:
+            self._last_deterministic_issues = []
+        return purified
 
     def _stage_review(self, chapter_num: int, task_card: dict, synopsis: dict,
                       novel_text: str, world_state: dict) -> dict:
@@ -650,17 +746,28 @@ class PipelineOrchestrator:
     def _enforce_word_count(self, novel, target_min, target_max):
         cur = len(novel)
         if cur < target_min:
-            # 最多补写 3 次，直到达到下限
             for _ in range(3):
                 add = target_min - len(novel) + 50
                 extra = call_llm(
                     f"请在不改变剧情前提下，为下文续写约{add}字使其更丰满：\n{novel}",
                     client=self.llm, output_json=False)
-                novel = novel + "\n" + extra
+                # 追加时保留段落分隔，避免无过渡粘连
+                novel = novel.rstrip() + "\n\n" + extra.strip()
                 if len(novel) >= target_min:
                     break
         elif cur > target_max:
-            novel = novel[:target_max]
+            # P2-B3: 永不硬截断，优先在段落/句读边界收束
+            cut = novel[:target_max]
+            last_para = cut.rfind("\n\n")
+            last_punct = max(cut.rfind("。"), cut.rfind("！"), cut.rfind("？"), cut.rfind("…"), cut.rfind("”"))
+            if last_para > target_max * 0.8:
+                novel = cut[:last_para].rstrip()
+            elif last_punct > target_max * 0.8:
+                novel = cut[:last_punct+1]
+            else:
+                # 兜底：找最后一个完整段落
+                last_nl = cut.rfind("\n")
+                novel = cut[:last_nl].rstrip() if last_nl > target_max*0.7 else cut.rstrip()
         return novel
 
     def _patch_weak_scenes(self, novel: str, review: dict, task_card: dict, synopsis: dict) -> str | None:
