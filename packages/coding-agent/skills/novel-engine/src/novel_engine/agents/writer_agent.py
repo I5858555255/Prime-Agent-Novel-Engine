@@ -307,18 +307,31 @@ class WriterAgent:
             return ""
 
         # 顺序生成：每场景携带前序场景摘要与基调，避免重复 beats
+        # P0 自愈：每场景完成即原子落盘到 draft/partial，供中断后恢复
+        partial_path = self.root / "chapters" / "draft" / f"chapter_{chapter_num}_partial.txt"
+        try:
+            partial_path.parent.mkdir(parents=True, exist_ok=True)
+            # 章节开始时清空旧 partial（若为续跑则保留已有）
+            if not partial_path.exists() or partial_path.stat().st_size == 0:
+                partial_path.write_text("", encoding="utf-8")
+        except Exception:
+            pass
         all_scene_contents: list[tuple[dict, str]] = []
         previous_context = ""
-        # 记录已覆盖的情节指纹，用于去重提示
         covered_beats: list[str] = []
         for bp in sorted(scenes, key=lambda x: x.get("scene_num", 0)):
-            # 将已覆盖的 beats 注入 pacing 约束，提示模型避免重复
             beat_hint = ""
             if covered_beats:
                 beat_hint = f"\n已覆盖情节（避免重复）：{'; '.join(covered_beats[-5:])}\n"
             combined_pacing = (pacing_constraints or "") + beat_hint
             content = self.generate_scene(task_card, bp, synopsis_text, previous_context, combined_pacing, temperature_override)
             all_scene_contents.append((bp, content))
+            # 原子落盘：每场景完成即追加
+            try:
+                with open(partial_path, "a", encoding="utf-8") as pf:
+                    pf.write(f"【场景{bp.get('scene_num')}：{bp.get('location','')}】\n\n{content}\n\n※\n")
+            except Exception:
+                pass
             # 更新前序摘要（取前 300 字 + 场景目标，避免无限膨胀）
             snippet = content[:300].replace("\n", " ")
             covered_beats.append(f"场景{bp.get('scene_num')}({bp.get('location','')}:{bp.get('goal','')[:20]})")
