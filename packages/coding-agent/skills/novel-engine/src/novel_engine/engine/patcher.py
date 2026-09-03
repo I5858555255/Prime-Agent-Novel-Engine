@@ -71,11 +71,23 @@ class IncrementalPatcher:
                 logger.info(f"Successfully hot-swapped Scene {scene_num} patch (format 2) in chapter text.")
                 return new_text
         
-        # Format 3: 按 ※ 分隔符分割并替换（容忍任意空白包裹，兼容最后场景）
+        # Format 3: 按 ※ 分隔符分割并替换（容忍任意空白包裹，兼容最后场景；post-enforce 截断后标记可能丢失，故放宽 len 检查）
         parts = re.split(r'\n?\s*※\s*\n?', full_text)
-        if len(parts) >= 2 and 1 <= scene_num <= len(parts):
+        # 过滤空块但保留索引映射
+        non_empty_idx = [i for i, p in enumerate(parts) if p.strip()]
+        if 1 <= scene_num <= len(parts):
+            # 即使 len==1 也尝试按索引替换（适用于净化后无 ※ 的文本）
+            if len(parts) == 1 and scene_num == 1:
+                logger.info(f"Single-part text, replacing whole chapter as scene {scene_num} patch")
+                return patched_scene_content.strip()
             parts[scene_num - 1] = patched_scene_content.strip()
             logger.info(f"Successfully hot-swapped Scene {scene_num} patch (format 3) in chapter text.")
+            return "\n\n※\n\n".join(parts)
+        # 降级：按场景序号直接按 ※ 索引替换，忽略标记存在性
+        if non_empty_idx and 1 <= scene_num <= len(non_empty_idx):
+            idx = non_empty_idx[scene_num - 1]
+            parts[idx] = patched_scene_content.strip()
+            logger.info(f"Fallback hot-swapped Scene {scene_num} via index {idx} (marker missing but index hit)")
             return "\n\n※\n\n".join(parts)
 
         logger.warning(f"Scene {scene_num} marker not found. Skipping patch to avoid content duplication.")

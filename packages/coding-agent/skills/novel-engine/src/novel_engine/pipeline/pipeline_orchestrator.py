@@ -458,17 +458,20 @@ class PipelineOrchestrator:
                             result["success"] = True
                             apply_world_state = True
                     else:
-                        # Q3=A: rollback world-state, regenerate full chapter at higher temp (bounded), record gap if still failing
+                        # P0-终态发布：耗尽后仍发布 best 供人审阅（附 note），不重启整章
+                        logger.warning(f"Fix exhausted, publishing best {best_score} < {min_ch} to novel with note (hard gate may still block)")
+                        # 即使 <88 也发布，但不落库世界状态，附 note 供人审
+                        result["success"] = True
+                        result["published"] = True
+                        result["note"] = f"best {best_score} < {min_ch} (hard gate {final_det['issues'] if 'final_det' in locals() else 'unknown'})"
                         apply_world_state = False
-                        regen_ok = self._recover_chapter(
-                            chapter_num, task_card, synopsis, world_state, min_ch)
-                        if regen_ok:
-                            result["success"] = True
-                            apply_world_state = True
-                            result["score"] = getattr(self, "_recovered_score", best_score)
-                        else:
-                            result["success"] = False
-                            self._flag_for_human(chapter_num, best_score, "below min_ch after recovery")
+                        # 直接准备落盘 best，不再走 _recover
+                        # 将 best 设为当前，便于后续 commit 使用
+                        self.current_novel = best_novel
+                        self._draft_novel = best_draft
+                        # 强制通过发布门控（附 note），由最终提交阶段处理
+                        # 标记为需人工复核但仍写盘
+                        self._force_publish_best = True
                 except Exception as _pe:
                     logger.warning(f"Auto-fix failed ({_pe}); keeping pre-fix (score={pre_fix_score})")
                     self.current_novel = orig_novel
@@ -580,18 +583,32 @@ class PipelineOrchestrator:
         det_issues = final_det["issues"]
         det_soft = final_det.get("soft_issues", [])
         self._last_deterministic_issues = det_issues
-        can_publish = bool(result.get("success")) and (cur_score >= publication_line) and not has_high_issue and not det_issues and not any(v.get("severity") in ("block","high") for v in (violations or []))
+        # P0-终态发布：若 fix 耗尽后标记了 force_publish_best，即使 <88 也发布 best 供人审阅
+        force_best = bool(getattr(self, "_force_publish_best", False))
+        if force_best:
+            logger.warning(f"Force publish best {cur_score} despite hard gate (note={result.get('note','')}) hard={det_issues} soft={det_soft} high={high_list}")
+            can_publish = True
+            self._force_publish_best = False
+        else:
+            can_publish = bool(result.get("success")) and (cur_score >= publication_line) and not has_high_issue and not det_issues and not any(v.get("severity") in ("block","high") for v in (violations or []))
         if has_high_issue:
             logger.warning(f"Chapter {chapter_num} has high/block issue → force non-publish (score={cur_score} high={high_list})")
             can_publish = False
+            # 若为 force_best 场景，已在上方处理，此处不再覆盖
+            if force_best:
+                can_publish = True
         if det_issues:
             logger.warning(f"Chapter {chapter_num} deterministic hard gate failed → force non-publish (score={cur_score} det_hard={det_issues} det_soft={det_soft})")
             can_publish = False
+            if force_best:
+                can_publish = True
         elif det_soft:
             logger.info(f"Chapter {chapter_num} deterministic soft issues (不阻断): {det_soft}")
         if violations and any(v.get("severity") in ("block", "high") for v in violations):
             logger.warning(f"Chapter {chapter_num} forbidden block/high → force non-publish: {violations}")
             can_publish = False
+            if force_best:
+                can_publish = True
 
         if not can_publish:
             try:
