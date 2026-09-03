@@ -324,7 +324,40 @@ class PipelineOrchestrator:
             novel_text = self._stage_write(task_card, synopsis)
             novel_text = self._ensure_chinese(novel_text)
             self.current_novel = novel_text
+            # P1 场景数校验：正文场景数必须与任务卡一致，缺失则补写（避免 high 阻断）
+            try:
+                expected = len(task_card.get("scene_blueprints", []) or [])
+                # 用 purified 后的 ※ 分隔计数，避免标记干扰
+                from novel_engine.quality.repetition_detector import purify_novel_for_publish
+                import re as _re2
+                # 统计正文中实际场景标记数（净化前 draft 含 【场景，净化后无，故用 draft 计数）
+                draft_for_count = getattr(self, "_draft_novel", novel_text)
+                actual = len(_re2.findall(r"【场景\d+：", draft_for_count))
+                if expected and actual != expected:
+                    logger.warning(f"Scene count mismatch: expected {expected}, got {actual} (chapter {chapter_num}),补写缺失场景")
+                    # 补写缺失场景
+                    for bp in task_card.get("scene_blueprints", []):
+                        marker = f"【场景{bp.get('scene_num')}："
+                        if marker not in draft_for_count:
+                            try:
+                                missing = self.writer.generate_scene(task_card, bp, synopsis.get("synopsis",""), self.current_novel[-600:] if len(self.current_novel)>600 else "", "")
+                                # 追加到当前正文与 draft
+                                novel_text = self.current_novel + f"\n\n{marker}{bp.get('location','')}】\n\n{missing}\n\n※\n"
+                                self.current_novel = novel_text
+                                # 同步更新 draft
+                                try:
+                                    with open(self.root / "chapters" / "draft" / f"chapter_{chapter_num}_partial.txt", "a", encoding="utf-8") as pf:
+                                        pf.write(f"{marker}{bp.get('location','')}】\n\n{missing}\n\n※\n")
+                                except Exception:
+                                    pass
+                                draft_for_count += f"\n{marker}"
+                            except Exception as ce:
+                                logger.error(f"补写缺失场景 {bp.get('scene_num')} 失败: {ce}")
+            except Exception as sce:
+                logger.warning(f"Scene count check skipped: {sce}")
         except Exception as e:
+            import traceback
+            logger.error(f"WRITE: {e}\n{traceback.format_exc()}")
             result["errors"].append(f"WRITE: {e}")
             sm.handle_failure("writing_error", str(e))
             return result
@@ -531,6 +564,7 @@ class PipelineOrchestrator:
         # Task 9: forbidden gate — never silently publish a forbidden violation.
         # Only BLOCK on severity "block"/"high"; record everything as a defect
         # (medium/low are stylistic and would otherwise abort an autonomous run).
+        violations: list[dict] = []
         if apply_world_state:
             violations = self._forbidden_violations(self.current_novel, review)
             if violations:

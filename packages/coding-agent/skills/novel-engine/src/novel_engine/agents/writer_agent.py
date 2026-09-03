@@ -363,15 +363,14 @@ class WriterAgent:
         """P1-减少单次负载：按场景分批 polish，单场景 <2K 字符，90s 超时，避免整章 10K 上下文必超时。"""
         import re, time
         start = time.time()
-        # 严格按任务卡预期场景数拆分，避免内容中 ※ 导致越界（如 5 场景出现 scene 6）
         expected = len(task_card.get("scene_blueprints") or []) or 5
         parts = re.split(r"\n?\s*※\s*\n?", chapter_text)
         scenes = [p.strip() for p in parts if p.strip()]
-        # 若拆分结果与预期不符，按预期截断/补齐，确保不产生 scene 6
-        if len(scenes) > expected:
-            logger.warning(f"_polish_by_scenes: split {len(scenes)} > expected {expected}, truncate to expected")
-            # 将多余部分合并回最后一个场景，避免丢失
-            scenes = scenes[:expected-1] + ["\n\n※\n\n".join(scenes[expected-1:])]
+        # 数量不一致时不强制截断，仅告警并以实际段落为准，避免误删场景（如 5 场景被截为 4）
+        if len(scenes) != expected:
+            logger.warning(f"_polish_by_scenes: split {len(scenes)} vs expected {expected}, use actual ({len(scenes)}) for polish")
+            # 不截断，直接按实际 scenes 数处理，避免 scene 6 越界
+            expected = len(scenes)
         if len(scenes) <= 1:
             prompt = (
                 "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
