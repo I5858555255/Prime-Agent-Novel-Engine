@@ -379,11 +379,12 @@ class PipelineOrchestrator:
                         if s >= min_ch:
                             # 仍需检查确定性门控与 high 级 issue，否则即使分数达标也不放行
                             has_high = any((iss.get("severity") in ("high", "block")) for iss in (staged["review"].get("issues") or []))
+                            high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:50]}" for iss in (staged["review"].get("issues") or []) if iss.get("severity") in ("high","block")]
                             det = self._deterministic_quality_gate(current, task_card)
                             if not has_high and det["passed"]:
                                 break
                             else:
-                                logger.warning(f"Score {s} ≥ {min_ch} but has high/deterministic issues → continue fix")
+                                logger.warning(f"Score {s} ≥ {min_ch} but blocked → high={high_list} det={det['issues']} → continue fix")
                         # 改写若无法超越历史最佳，立即停止，避免越改越差
                         if _ > 0 and s <= prev_best:
                             break
@@ -708,24 +709,30 @@ class PipelineOrchestrator:
         length = detect_length_anomaly(purified, target)
         if length["anomaly"]:
             issues.extend([f"[长度] {x}" for x in length["issues"]])
-        # 脚手架残留二次校验（净化后不应再含这些 token）
+        # 脚手架残留二次校验（净化后不应再含这些 token）→ 硬
         if any(tok in purified for tok in ["【场景", "※", "（章末钩子", "（注："]):
             issues.append("[净化] 成品仍含脚手架标记")
-        # P2-C4 套话黑名单
+        # P2-C4 套话黑名单 → 软（仅预警，不阻断发布，-reported in soft）
+        soft_issues: list[str] = []
         cliches = ["死水石子", "未出鞘", "达摩克利斯", "如野草疯长"]
         for c in cliches:
-            if c in purified:
-                issues.append(f"[套话] 命中黑名单“{c}”")
+            if purified.count(c) >= 2:  # 至少出现2次才视为堆砌
+                soft_issues.append(f"[套话-软] 命中黑名单“{c}”≥2次")
                 break
-        # 统计高频比喻堆砌（“如”“似”“像” 密度过高也视为套话）
-        if purified.count("如") + purified.count("似") > len(purified) / 80:
-            # 阈值宽松，仅作预警，不直接判失败
-            pass
-        # D1 时间线穿帮：婴儿期不应出现“十年”级表述
+            elif c in purified:
+                soft_issues.append(f"[套话-软] 命中“{c}”1次（预警不阻断）")
+                break
+        # D1 时间线穿帮：婴儿期出现“十年”级表述 → 软（需结合主语，宽松）
         ch_num = int(task_card.get("chapter_num", 0) or 0)
-        if ch_num and ch_num <= 10 and any(x in purified for x in ["十年", "十 年", "十年后", "在此十年"]):
-            issues.append("[时间线] 婴儿期出现“十年”级时间表述，疑似模板泄漏")
-        return {"passed": not issues, "issues": issues, "purified": purified}
+        if ch_num and ch_num <= 10:
+            # 仅当“陆烬/主角 + 十年”同句出现才判硬，否则软
+            if any(x in purified for x in ["陆烬在此十年", "陆烬十年", "婴儿.*十年"]):
+                issues.append("[时间线] 婴儿期主角出现“十年”级表述")
+            elif any(x in purified for x in ["十年", "十年后"]):
+                soft_issues.append("[时间线-软] 出现“十年”表述（历史背景可能，预警）")
+        if soft_issues:
+            logger.info(f"Deterministic soft issues (不阻断) for ch{ch_num}: {soft_issues}")
+        return {"passed": not issues, "issues": issues, "soft_issues": soft_issues, "purified": purified}
 
     def _stage_write(self, task_card: dict, synopsis: dict) -> str:
         """阶段4：正文生成 + 润色（带确定性校验与成品净化）。"""

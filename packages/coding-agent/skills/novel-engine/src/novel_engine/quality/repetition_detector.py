@@ -51,10 +51,9 @@ def detect_truncation(text: str) -> dict:
     stripped = text.strip()
     if not stripped:
         return {"is_truncated": True, "issues": ["正文为空"]}
-    # 末尾必须以句读收尾
-    if stripped[-1] not in "。！？」”’\"…—":
-        # 允许以章末钩子收尾，但钩子已在净化后去除，故此处严格
-        if len(stripped) > 100 and stripped[-1] not in "。！？」”’\"…— \n":
+    # 末尾必须以句读收尾（允许 ）」等闭合符号）
+    if stripped[-1] not in "。！？」”’\"…—）":
+        if len(stripped) > 100 and stripped[-1] not in "。！？」”’\"…—） \n":
             issues.append(f"疑似硬截断：末字符为“{stripped[-1]}”非句读")
     # 检测半句截断（如以“的”“了”“在”等虚词结尾）
     if re.search(r"[的了在与和或但而]$", stripped[-12:]):
