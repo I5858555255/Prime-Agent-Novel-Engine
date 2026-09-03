@@ -376,14 +376,17 @@ class PipelineOrchestrator:
                 if det_issues_pre:
                     logger.warning(f"Deterministic gate has issues pre-fix: {det_issues_pre} → force patch/rewrite")
                 try:
+                    no_improve = 0
                     for _ in range(max_fix):
                         staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
                         s = staged["score"]
-                        # 同步更新 result["score"] 避免陈旧分数
                         result["score"] = s
                         prev_best = best[0]
                         if s > best[0]:
                             best = (s, current, current_draft)
+                            no_improve = 0
+                        else:
+                            no_improve += 1
                         if s >= min_ch:
                             has_high = any((iss.get("severity") in ("high", "block")) for iss in (staged["review"].get("issues") or []))
                             high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:60]}" for iss in (staged["review"].get("issues") or []) if iss.get("severity") in ("high","block")]
@@ -395,8 +398,14 @@ class PipelineOrchestrator:
                                 break
                             else:
                                 logger.warning(f"Score {s} ≥ {min_ch} but blocked → high={high_list} det_hard={det['issues']} det_soft={soft} → continue fix")
-                        if _ > 0 and s <= prev_best:
+                        # 3 轮不超 best 即提前终止，避免单章空转 1.5h
+                        if no_improve >= 2 and _ >= 2:
+                            logger.warning(f"Fix loop no improve for {no_improve} rounds (best {best[0]}), early stop")
                             break
+                        if _ > 0 and s <= prev_best:
+                            # 保留原逻辑作为兜底
+                            if no_improve >= 1:
+                                break
                         # 优先场景级增量缝合（基于 draft 带标记文本，避免 purified 找不到 marker）
                         patched_draft = self._patch_weak_scenes(current_draft, staged["review"], task_card, synopsis)
                         if patched_draft is not None and patched_draft != current_draft and len(patched_draft) >= len(current_draft) // 2:
@@ -914,12 +923,13 @@ class PipelineOrchestrator:
         ) or "（无具体意见）"
         prompt = (
             "你是一位资深小说润色编辑。请基于审查意见改写以下章节，"
-            "重点修复偏弱维度，保持其余情节、人物与伏笔不变。\n\n"
+            "重点修复偏弱维度，保持其余情节、人物与伏笔不变。\n"
+            "【长度约束】修复时保持或缩短正文长度，严禁无条件增加内容；若原文字数已超标（>目标*1.35），请精简、合并段落而非扩充。\n\n"
             f"偏弱维度（需重点提升）: {weak}\n\n"
             f"审查意见:\n{issue_text}\n\n"
             f"原文章节:\n{novel}"
         )
-        return call_llm(prompt, system_prompt="你是资深小说润色编辑，擅长根据审查意见精准改写章节", output_json=False)
+        return call_llm(prompt, system_prompt="你是资深小说润色编辑，擅长根据审查意见精准改写章节（保持或缩短，不增字）", output_json=False)
 
     def _rollback_world_to(self, prev_chapter: int):
         history = self.session_tree.get_branch_history("main")

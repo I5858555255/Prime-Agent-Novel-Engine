@@ -59,11 +59,14 @@ class ModelRouter:
         return out
 
     def chat_completion(self, messages, temperature=None, max_tokens=None, extra_body=None,
-                        retry_on_error=True, max_retries=3):
+                        retry_on_error=True, max_retries=3, timeout=None):
         est = int(max_tokens or 2000)
+        # P0-API: POLISH 等单步加 15min 看门狗由上层保证；此处对 Server disconnected 快速切模型，不在同一模型上空转 3 次
         candidates = list(self.models) or ["agnes-2.5-flash"]
         last_err = None
-        for attempt in range(max(1, len(candidates)) * max(1, max_retries)):
+        # 对 POLISH 强制缩短重试次数，避免 5min*3 空转
+        effective_retries = 2 if self.phase == "polish" else max_retries
+        for attempt in range(max(1, len(candidates)) * max(1, effective_retries)):
             model = candidates[attempt % len(candidates)]
             lim = self.limiters.get(model)
             client = self.providers.get(model)
@@ -72,7 +75,11 @@ class ModelRouter:
             try:
                 if lim:
                     lim.acquire(est)
-                result = client.chat_completion(messages, temperature=temperature, max_tokens=max_tokens, extra_body=extra_body)
+                # 透传 timeout 给 LLMClient，POLISH 用 90s 快速失败
+                kwargs = {}
+                if timeout is not None:
+                    kwargs["timeout"] = timeout
+                result = client.chat_completion(messages, temperature=temperature, max_tokens=max_tokens, extra_body=extra_body, **kwargs)
                 if lim:
                     lim.report_success()
                 return result
@@ -82,6 +89,11 @@ class ModelRouter:
                 last_err = f"rate_limited:{model}"
                 continue
             except Exception as e:
-                last_err = str(e)
+                msg = str(e)
+                # Server disconnected / 401 鉴权等快速切下一个模型，不在同一模型上重试
+                if "Server disconnected" in msg or "RemoteProtocolError" in msg or "Token is invalid" in msg or "401" in msg:
+                    last_err = f"fast-fail {model}: {msg[:120]}"
+                    continue
+                last_err = msg
                 continue
         raise RuntimeError(f"ModelRouter phase={self.phase} exhausted candidates: {last_err}")

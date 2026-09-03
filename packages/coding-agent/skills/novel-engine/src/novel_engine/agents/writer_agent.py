@@ -376,10 +376,12 @@ class WriterAgent:
         temps = [0.7, 0.85, 0.95]
         for attempt in range(len(temps)):
             try:
+                # P0-API: POLISH 快速失败，超时 90s，避免 5min 空转；2 次断连即切 fallback 由 ModelRouter 负责
                 raw = client.chat_completion(
                     [{"role": "user", "content": prompt}],
                     temperature=temps[attempt],
                     max_tokens=max_tokens,
+                    timeout=90,
                 )
             except Exception as exc:
                 # 超时/错误重试无意义，直接回退原始正文，避免长时挂起

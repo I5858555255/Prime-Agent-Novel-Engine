@@ -287,7 +287,17 @@ class LLMClient:
             use_mock=llm_cfg.get("use_mock", False),
         )
 
-    def _get_client(self) -> httpx.Client:
+    def _get_client(self, timeout: Optional[int] = None) -> httpx.Client:
+        # 若指定了覆盖超时，则为该次调用创建临时 client，不缓存
+        if timeout is not None and timeout != self.timeout:
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            return httpx.Client(
+                base_url=self.api_base,
+                headers=headers,
+                timeout=timeout,
+            )
         client = getattr(self._local, "client", None)
         if client is None:
             headers = {"Content-Type": "application/json"}
@@ -309,11 +319,14 @@ class LLMClient:
         retry_on_error: bool = True,
         max_retries: int = 3,
         extra_body: Optional[dict] = None,
+        timeout: Optional[int] = None,
     ) -> dict:
         if self.use_mock or self._mock:
             return self._mock.chat_completion(messages, temperature, max_tokens, retry_on_error, max_retries, extra_body)
 
-        client = self._get_client()
+        # 允许单次调用覆盖超时（用于 POLISH 等需快速失败的阶段）
+        call_timeout = timeout if timeout is not None else self.timeout
+        client = self._get_client(timeout=call_timeout) if timeout is not None else self._get_client()
         last_error = None
 
         for attempt in range(max_retries):
@@ -374,15 +387,30 @@ class LLMClient:
                 time.sleep(2 ** attempt)
             except httpx.ConnectError as e:
                 last_error = e
-                logger.error(f"连接失败 (尝试 {attempt+1}/{max_retries}): {e}")
+                # Server disconnected 等连接层错误，快速失败以便 ModelRouter 切 fallback，不做 30s 长等待
+                msg = str(e)
+                is_disconnected = "Server disconnected" in msg or "RemoteProtocolError" in msg or "Connection closed" in msg
+                logger.error(f"连接失败 (尝试 {attempt+1}/{max_retries}): {e} {'[fast-fail]' if is_disconnected else ''}")
                 if not retry_on_error or attempt == max_retries - 1:
                     raise RuntimeError(f"API连接失败：{e}") from e
-                time.sleep(30)
+                # 断连类错误不做指数退避，直接快速重试并触发 ModelRouter 切模型
+                time.sleep(2 if is_disconnected else 10)
+                if is_disconnected:
+                    raise RuntimeError(f"API连接失败(断连)：{e}") from e
             except Exception as e:
                 last_error = e
                 status = getattr(e, "status_code", None)
                 if status == 429 or "429" in str(e) or "429" in str(getattr(e, "response", "")):
                     raise RateLimitError(f"429 from {self.model}") from e
+                msg = str(e)
+                # Server disconnected 可能以非 ConnectError 形式抛出，同样快速失败
+                if "Server disconnected" in msg or "RemoteProtocolError" in msg:
+                    logger.error(f"Server disconnected (尝试 {attempt+1}/{max_retries}): {e} [fast-fail]")
+                    raise RuntimeError(f"API Server disconnected：{e}") from e
+                # Token 无效等鉴权错误不重试
+                if "401" in msg or "Token is invalid" in msg or "Unauthorized" in msg:
+                    logger.error(f"鉴权失败不重试: {e}")
+                    raise
                 logger.error(f"未知错误 (尝试 {attempt+1}/{max_retries}): {e}")
                 if not retry_on_error or attempt == max_retries - 1:
                     raise
