@@ -103,6 +103,9 @@ class PipelineOrchestrator:
         }
         # Pre-compute director's fixed context (bible + volumes + plot_graph) — loaded once at init
         self._director_fixed_context = self._load_director_fixed_context()
+        # P0 修复：冻结单章 task_card，避免移动目标死循环
+        self._frozen_task_cards: dict[int, dict] = {}
+        self._frozen_synopsis: dict[int, dict] = {}
 
         # Runtime config + provider config for chapter-level retry logic
         from novel_engine.core.llm_client import _provider_config_from_runtime
@@ -283,17 +286,27 @@ class PipelineOrchestrator:
             sm.handle_failure("world_sim_error", str(e))
             return result
 
-        # 阶段2：章节导演生成任务卡（使用预计算的固定上下文）
+        # 阶段2：章节导演生成任务卡（P0 冻结：复用首轮 task_card，避免移动目标）
         try:
-            task_card = self._stage_directing(chapter_num, world_state)
+            if chapter_num in self._frozen_task_cards:
+                task_card = self._frozen_task_cards[chapter_num]
+                logger.info(f"Using frozen task_card for chapter {chapter_num}")
+            else:
+                task_card = self._stage_directing(chapter_num, world_state)
+                self._frozen_task_cards[chapter_num] = task_card
         except Exception as e:
             result["errors"].append(f"DIRECTING: {e}")
             sm.handle_failure("directing_error", str(e))
             return result
 
-        # 阶段3：缩写生成
+        # 阶段3：缩写生成（若 task_card 已含 synopsis 则复用，避免重生成导致目标漂移）
         try:
-            synopsis = self._stage_synopsis(task_card)
+            if chapter_num in self._frozen_synopsis:
+                synopsis = self._frozen_synopsis[chapter_num]
+                logger.info(f"Using frozen synopsis for chapter {chapter_num}")
+            else:
+                synopsis = self._stage_synopsis(task_card)
+                self._frozen_synopsis[chapter_num] = synopsis
         except Exception as e:
             result["errors"].append(f"SYNOPSIS: {e}")
             sm.handle_failure("synopsis_error", str(e))
@@ -309,14 +322,24 @@ class PipelineOrchestrator:
             sm.handle_failure("writing_error", str(e))
             return result
 
-        # 阶段4.5：字数强制（A4）
+        # 阶段4.5：字数强制（统一区间 0.65-1.35，与门控一致，避免自相矛盾）
         try:
-            blueprints = (task_card.get("scene_blueprints") or [])
+            # 冻结目标：始终用首轮 task_card 的 total_target
+            frozen = self._frozen_task_cards.get(chapter_num, task_card)
+            blueprints = (frozen.get("scene_blueprints") or [])
             total_target = sum(int(bp.get("word_count_target", 0)) for bp in blueprints)
             if total_target > 0:
-                target_min = int(total_target * 0.85)
-                target_max = int(total_target * 1.15)
+                target_min = int(total_target * 0.65)
+                target_max = int(total_target * 1.35)
                 novel_text = self._enforce_word_count(novel_text, target_min, target_max)
+                self.current_novel = novel_text
+                # 强制后重跑确定性门控，以最终长度为准
+                gate_after = self._deterministic_quality_gate(novel_text, frozen)
+                self._last_deterministic_issues = gate_after["issues"]
+                if gate_after["passed"]:
+                    logger.info(f"Post-enforce gate passed for chapter {chapter_num} (target {total_target} → {target_min}-{target_max})")
+                else:
+                    logger.warning(f"Post-enforce gate still flagged: {gate_after['issues']}")
         except Exception as _we:
             logger.warning(f"Word-count enforcement skipped: {_we}")
 
@@ -579,6 +602,9 @@ class PipelineOrchestrator:
 
             # success 标记已在质检阶段如实写入，此处不再覆盖，避免掩盖弱章
             logger.info(f"Chapter {chapter_num} COMMITTED (success={result.get('success')})")
+            # P0 冻结目标：成功发布后清理冻结缓存，下一章重新生成
+            self._frozen_task_cards.pop(chapter_num, None)
+            self._frozen_synopsis.pop(chapter_num, None)
         except Exception as e:
             result["errors"].append(f"COMMIT: {e}")
             sm.handle_failure("commit_error", str(e))
