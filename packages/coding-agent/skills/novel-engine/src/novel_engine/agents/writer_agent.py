@@ -363,12 +363,16 @@ class WriterAgent:
         """P1-减少单次负载：按场景分批 polish，单场景 <2K 字符，90s 超时，避免整章 10K 上下文必超时。"""
         import re, time
         start = time.time()
-        # 尝试按 ※ 或 【场景 拆分
+        # 严格按任务卡预期场景数拆分，避免内容中 ※ 导致越界（如 5 场景出现 scene 6）
+        expected = len(task_card.get("scene_blueprints") or []) or 5
         parts = re.split(r"\n?\s*※\s*\n?", chapter_text)
-        # 过滤空块，保留至少 1 段
         scenes = [p.strip() for p in parts if p.strip()]
+        # 若拆分结果与预期不符，按预期截断/补齐，确保不产生 scene 6
+        if len(scenes) > expected:
+            logger.warning(f"_polish_by_scenes: split {len(scenes)} > expected {expected}, truncate to expected")
+            # 将多余部分合并回最后一个场景，避免丢失
+            scenes = scenes[:expected-1] + ["\n\n※\n\n".join(scenes[expected-1:])]
         if len(scenes) <= 1:
-            # 无法分场景，回退到整章单次 polish（300s，看门狗由上层处理）
             prompt = (
                 "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
                 f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
@@ -391,16 +395,20 @@ class WriterAgent:
             return chapter_text
         polished_parts = []
         for idx, scene_text in enumerate(scenes, 1):
-            # 看门狗：单章 POLISH 总耗时超过 15min 即跳过剩余场景，直接返回已 polish 部分 + 剩余原文
+            if idx > expected:
+                logger.warning(f"skip unexpected scene {idx} > expected {expected}")
+                break
             if time.time() - start > 900:
                 logger.warning(f"_polish_by_scenes watchdog 15min triggered at scene {idx}/{len(scenes)}, skip remaining")
                 polished_parts.extend(scenes[idx-1:])
                 break
+            # 明确要求仅润色不改情节/结构，长度保持 ±15%，防坍缩
             prompt = (
-                "请润色以下场景，保持人设、伏笔与节奏一致，仅返回润色后的场景正文，不要解释。\n\n"
-                f"【任务卡】{task_card.get('title', '')}\n\n【场景 {idx}】\n{scene_text}"
+                "请仅润色以下场景的语言（不改情节、人物、结构），保持与原文长度相近（±15%），仅返回润色后的场景正文，不要解释。\n\n"
+                f"【任务卡】{task_card.get('title', '')}\n\n【场景 {idx}】原文（{len(scene_text)}字）：\n{scene_text}\n\n"
+                f"要求：保留所有情节与对话，仅优化语句与衔接，输出长度控制在 {int(len(scene_text)*0.85)}-{int(len(scene_text)*1.15)} 字。"
             )
-            max_tokens = min(8000, max(2048, int(len(scene_text) / 1.2)))
+            max_tokens = min(8000, max(2048, int(len(scene_text) / 1.1)))
             try:
                 raw = client.chat_completion(
                     [{"role": "user", "content": prompt}],
@@ -411,15 +419,15 @@ class WriterAgent:
                 if isinstance(raw, dict):
                     raw = raw.get("content") or raw.get("reasoning_content") or ""
                 resp = raw if isinstance(raw, str) else ""
-                if len(resp.strip()) >= max(200, int(len(scene_text) * 0.6)):
+                # 防坍缩：输出 <60% 原文即视为退化，直接保原
+                if len(resp.strip()) >= max(300, int(len(scene_text) * 0.6)) and len(resp.strip()) <= int(len(scene_text) * 1.4):
                     polished_parts.append(resp.strip())
                 else:
-                    logger.warning(f"scene {idx} polish degenerate len={len(resp)}, keep original")
+                    logger.warning(f"scene {idx} polish degenerate len={len(resp)} vs orig {len(scene_text)}, keep original")
                     polished_parts.append(scene_text)
             except Exception as exc:
                 logger.warning(f"scene {idx} polish failed ({exc}), keep original")
                 polished_parts.append(scene_text)
-        # 重组：用 ※ 分隔，与 generate_full_chapter 保持一致
         return "\n\n※\n\n".join(polished_parts)
 
     def polish_chapter(self, chapter_text: str, task_card: dict, llm_client=None) -> str:
