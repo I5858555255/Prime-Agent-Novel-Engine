@@ -397,17 +397,27 @@ class LLMClient:
                 time.sleep(2 if is_disconnected else 10)
                 if is_disconnected:
                     raise RuntimeError(f"API连接失败(断连)：{e}") from e
+            except httpx.ReadTimeout as e:
+                last_error = e
+                logger.error(f"ReadTimeout (尝试 {attempt+1}/{max_retries}): {e} [fast-fail→fallback]")
+                # 读超时直接触发 ModelRouter 切 fallback，不在同一模型上重试
+                raise RuntimeError(f"ReadTimeout: {e}") from e
+            except httpx.TimeoutException as e:
+                last_error = e
+                logger.error(f"Timeout (尝试 {attempt+1}/{max_retries}): {e} [fast-fail→fallback]")
+                raise RuntimeError(f"Timeout: {e}") from e
             except Exception as e:
                 last_error = e
                 status = getattr(e, "status_code", None)
                 if status == 429 or "429" in str(e) or "429" in str(getattr(e, "response", "")):
                     raise RateLimitError(f"429 from {self.model}") from e
                 msg = str(e)
-                # Server disconnected 可能以非 ConnectError 形式抛出，同样快速失败
                 if "Server disconnected" in msg or "RemoteProtocolError" in msg:
                     logger.error(f"Server disconnected (尝试 {attempt+1}/{max_retries}): {e} [fast-fail]")
                     raise RuntimeError(f"API Server disconnected：{e}") from e
-                # Token 无效等鉴权错误不重试
+                if "timed out" in msg.lower() or "read operation timed out" in msg.lower():
+                    logger.error(f"Read timed out (尝试 {attempt+1}/{max_retries}): {e} [fast-fail→fallback]")
+                    raise RuntimeError(f"Read timed out: {e}") from e
                 if "401" in msg or "Token is invalid" in msg or "Unauthorized" in msg:
                     logger.error(f"鉴权失败不重试: {e}")
                     raise
