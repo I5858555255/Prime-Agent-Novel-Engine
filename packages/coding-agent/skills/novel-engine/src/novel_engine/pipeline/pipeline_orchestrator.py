@@ -888,29 +888,56 @@ class PipelineOrchestrator:
 
     def _enforce_word_count(self, novel, target_min, target_max):
         cur = len(novel)
+        # 提取章末 hook（若有）以便保留
+        hook_match = None
+        hook_text = ""
+        # hook 可能在 purified 后已被剥离，此处从 draft 中提取
+        try:
+            draft = getattr(self, "_draft_novel", "")
+            if draft and "（章末钩子" in draft:
+                import re as _re
+                m = _re.search(r"（章末钩子[^）]*）", draft)
+                if m:
+                    hook_text = m.group(0)
+        except Exception:
+            pass
         if cur < target_min:
             for _ in range(3):
                 add = target_min - len(novel) + 50
                 extra = call_llm(
                     f"请在不改变剧情前提下，为下文续写约{add}字使其更丰满：\n{novel}",
                     client=self.llm, output_json=False)
-                # 追加时保留段落分隔，避免无过渡粘连
                 novel = novel.rstrip() + "\n\n" + extra.strip()
                 if len(novel) >= target_min:
                     break
         elif cur > target_max:
-            # P2-B3: 永不硬截断，优先在段落/句读边界收束
-            cut = novel[:target_max]
+            # P1-长度门保完整：超长时优先裁中间冗余，保留章末 hook
+            # 若检测到 hook，先剥离 hook，裁剪后再拼回
+            has_hook = bool(hook_text)
+            body = novel
+            if has_hook and hook_text in body:
+                body = body.replace(hook_text, "").rstrip()
+            cut = body[:target_max]
             last_para = cut.rfind("\n\n")
             last_punct = max(cut.rfind("。"), cut.rfind("！"), cut.rfind("？"), cut.rfind("…"), cut.rfind("”"))
             if last_para > target_max * 0.8:
-                novel = cut[:last_para].rstrip()
+                body = cut[:last_para].rstrip()
             elif last_punct > target_max * 0.8:
-                novel = cut[:last_punct+1]
+                body = cut[:last_punct+1]
             else:
-                # 兜底：找最后一个完整段落
                 last_nl = cut.rfind("\n")
-                novel = cut[:last_nl].rstrip() if last_nl > target_max*0.7 else cut.rstrip()
+                body = cut[:last_nl].rstrip() if last_nl > target_max*0.7 else cut.rstrip()
+            # 拼回 hook
+            if has_hook:
+                novel = body.rstrip() + f"\n\n{hook_text}"
+            else:
+                # 无 hook 则确保末尾有收束句
+                if body and body[-1] not in "。！？…）":
+                    body = body.rstrip() + "。"
+                novel = body
+        # 若裁后仍无 hook，补一个通用 hook
+        if "（章末钩子" not in novel and hook_text:
+            novel = novel.rstrip() + f"\n\n{hook_text}"
         return novel
 
     def _patch_weak_scenes(self, novel: str, review: dict, task_card: dict, synopsis: dict) -> str | None:

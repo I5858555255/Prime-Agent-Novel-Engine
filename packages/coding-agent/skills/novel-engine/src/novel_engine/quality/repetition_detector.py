@@ -79,10 +79,14 @@ def detect_length_anomaly(text: str, target: int | None) -> dict:
 
 
 def purify_novel_for_publish(draft: str) -> str:
-    """成品净化：剥离所有脚手架标记，仅保留可发布正文。"""
+    """成品净化：剥离所有脚手架标记，仅保留可发布正文。P0 增强版。"""
     text = draft
-    # 去除 【场景N：...】 标题行
-    text = re.sub(r"【场景\d+：[^】]*】\s*\n*", "", text)
+    # 去除 【场景N：...】 标题行（兼容有无空格、全角/半角冒号）
+    text = re.sub(r"【场景\s*\d+\s*[:：][^】]*】\s*\n*", "", text)
+    # 去除所有含 元指令关键词 的 【...】 块（当前字数、节拍、拍点、本节等）
+    text = re.sub(r"【[^】]*?(?:字数|节拍|拍点|当前|本节)[^】]*】\s*\n*", "", text)
+    # 去除纯指令性短行（如 "场景 1：..." 单独成行）
+    text = re.sub(r"^\s*场景\s*\d+\s*[:：].*$\n*", "", text, flags=re.MULTILINE)
     # 去除 ※ 分隔符（含两侧空白）
     text = re.sub(r"\n?\s*※\s*\n?", "\n\n", text)
     # 去除 --- 分隔线
@@ -95,6 +99,39 @@ def purify_novel_for_publish(draft: str) -> str:
     text = re.sub(r"\(注：[^)]*\)", "", text)
     # 去除残留的场景标记变体
     text = re.sub(r"###\s*[一二三四五六七八九十]+\s*\n*", "", text)
+    # 去除章节内残留的 "# 第四章·..." 多余标题（仅保留首个）
+    lines = text.split("\n")
+    seen_first_title = False
+    cleaned_lines = []
+    for line in lines:
+        if re.match(r"^\s*#\s*第[一二三四五六七八九十\d]+章", line):
+            if not seen_first_title:
+                cleaned_lines.append(line)
+                seen_first_title = True
+            # 后续章节标题视为脚手架，丢弃
+            continue
+        # 过滤纯元数据行（仅含【】或节拍/字数关键词）
+        if re.match(r"^\s*【[^】]*】\s*$", line):
+            continue
+        if any(kw in line for kw in ["节拍点完成", "当前字数", "本节拍"]):
+            continue
+        cleaned_lines.append(line)
+    text = "\n".join(cleaned_lines)
     # 压缩多余空行
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+def verify_no_scaffolding(text: str) -> list[str]:
+    """发布前终检：成品不得含脚手架 token。"""
+    issues = []
+    if "【" in text or "】" in text:
+        # 允许章节标题 "# 第X章" 含的 【】 已在上步去除，此处再出现即污染
+        if re.search(r"【[^】]*】", text):
+            issues.append("残留【】包裹的指令/标记")
+    for tok in ["※", "（章末钩子", "（注：", "节拍点", "当前字数", "本节拍"]:
+        if tok in text:
+            issues.append(f"残留脚手架 token: {tok}")
+    # 检查场景标记格式混乱（多种标题混用）
+    if len(re.findall(r"#\s*第[一二三四五六七八九十\d]+章", text)) > 1:
+        issues.append("章节内含多个 # 第X章 标题，格式混乱")
+    return issues

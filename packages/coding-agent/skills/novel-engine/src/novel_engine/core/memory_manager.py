@@ -55,9 +55,28 @@ class MemoryManager:
             "chapter": chapter_num,
             **summary,
         })
-        # 保留最近30章（原80章，千万字级别需控制内存膨胀）
         data["recent_chapters"] = data["recent_chapters"][-30:]
         self._save_json(recent_file, data)
+        # 同步更新已用剧情节点库（用于跨章去重）
+        try:
+            beat_file = self.root / "memory" / "long_term" / "beat_history.json"
+            beat_data = self._load_json(beat_file)
+            beats = beat_data.get("beats", [])
+            # 提取本章核心 beats（goal + 场景目标）
+            core = summary.get("goal", "")[:30]
+            beats.append({"chapter": chapter_num, "beat": core, "ts": datetime.now(timezone.utc).isoformat()})
+            # 保留最近 50 章的 beats
+            beat_data["beats"] = beats[-50:]
+            self._save_json(beat_file, beat_data)
+        except Exception:
+            pass
+
+    def get_recent_beats(self, limit: int = 10) -> list[str]:
+        """获取最近已用剧情节点（用于注入 writer 避免重复）。"""
+        beat_file = self.root / "memory" / "long_term" / "beat_history.json"
+        data = self._load_json(beat_file)
+        beats = data.get("beats", [])
+        return [b.get("beat", "") for b in beats[-limit:] if b.get("beat")]
 
     def get_recent_summaries(self, chapter_num: int, count: int = 30) -> list[dict]:
         """获取最近 N 章摘要（默认30章，上限）。"""
