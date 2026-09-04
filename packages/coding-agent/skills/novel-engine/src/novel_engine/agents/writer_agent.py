@@ -323,6 +323,15 @@ class WriterAgent:
             beat_hint = ""
             if covered_beats:
                 beat_hint = f"\n已覆盖情节（避免重复）：{'; '.join(covered_beats[-5:])}\n"
+            # 跨章已用 beat 记忆（P0）：注入最近 5 个已用节点，要求升级而非重写同款
+            try:
+                from novel_engine.core.memory_manager import MemoryManager
+                _mm = MemoryManager(self.root)
+                _recent = _mm.get_recent_beats(limit=5)
+                if _recent:
+                    beat_hint += f"\n已用剧情节点（不可复用，需换冲突类型/加新变量）：{'; '.join(_recent)}\n"
+            except Exception:
+                pass
             combined_pacing = (pacing_constraints or "") + beat_hint
             content = self.generate_scene(task_card, bp, synopsis_text, previous_context, combined_pacing, temperature_override)
             all_scene_contents.append((bp, content))

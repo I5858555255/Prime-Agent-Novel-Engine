@@ -91,8 +91,8 @@ def purify_novel_for_publish(draft: str) -> str:
     text = re.sub(r"\n?\s*※\s*\n?", "\n\n", text)
     # 去除 --- 分隔线
     text = re.sub(r"\n?\s*---\s*\n?", "\n\n", text)
-    # 去除 *（章末钩子：…）*  及其变体
-    text = re.sub(r"\*?\s*（章末钩子[^）]*）\s*\*?", "", text)
+    # 保留章末钩子内容，仅剥离标记（P1 保 hook）
+    text = re.sub(r"\*?\s*（章末钩子[:：]\s*([^）]*)）\s*\*?", r"\n\n\1", text)
     text = re.sub(r"（章末钩子[^）]*）", "", text)
     # 去除 （注：...）
     text = re.sub(r"（注：[^）]*）", "", text)
@@ -119,6 +119,10 @@ def purify_novel_for_publish(draft: str) -> str:
     text = "\n".join(cleaned_lines)
     # 压缩多余空行
     text = re.sub(r"\n{3,}", "\n\n", text)
+    # P1 保 hook：若末尾无句读收束，补句号
+    stripped = text.strip()
+    if stripped and stripped[-1] not in "。！？…）」”":
+        text = stripped + "。"
     return text.strip()
 
 def verify_no_scaffolding(text: str) -> list[str]:
