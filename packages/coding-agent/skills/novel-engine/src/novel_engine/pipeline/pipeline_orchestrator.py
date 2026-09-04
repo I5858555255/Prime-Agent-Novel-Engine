@@ -935,33 +935,65 @@ class PipelineOrchestrator:
                 if len(novel) >= target_min:
                     break
         elif cur > target_max:
-            # P1-长度门保完整：超长时优先裁中间冗余，保留章末 hook
-            # 若检测到 hook，先剥离 hook，裁剪后再拼回
+            # P0-截断保完整：按场景边界裁剪，保留所有场景与 hook，不制造 high
+            # 若为净化后文本（无 【场景 标记），则按段落裁剪
+            import re as _re3
             has_hook = bool(hook_text)
             body = novel
             if has_hook and hook_text in body:
                 body = body.replace(hook_text, "").rstrip()
-            cut = body[:target_max]
-            last_para = cut.rfind("\n\n")
-            last_punct = max(cut.rfind("。"), cut.rfind("！"), cut.rfind("？"), cut.rfind("…"), cut.rfind("”"))
-            if last_para > target_max * 0.8:
-                body = cut[:last_para].rstrip()
-            elif last_punct > target_max * 0.8:
-                body = cut[:last_punct+1]
+            # 尝试按场景拆分（优先 draft 标记，其次 ※）
+            scenes = None
+            if "【场景" in body:
+                parts = _re3.split(r"(?=\n*【场景\d+：)", body)
+                scenes = [p for p in parts if p.strip()]
             else:
-                last_nl = cut.rfind("\n")
-                body = cut[:last_nl].rstrip() if last_nl > target_max*0.7 else cut.rstrip()
-            # 拼回 hook
+                # 净化后无标记，按 ※ 或段落拆分
+                parts = _re3.split(r"\n?\s*※\s*\n?", body)
+                scenes = [p.strip() for p in parts if p.strip()]
+                if len(scenes) <= 1:
+                    # 退化为段落裁剪
+                    scenes = None
+            if scenes and len(scenes) >= 2:
+                # 按场景等比裁剪，保留所有场景框架
+                per_scene_budget = target_max // len(scenes)
+                trimmed_scenes = []
+                for sc in scenes:
+                    if len(sc) > per_scene_budget * 1.2:
+                        # 场景内按段落裁剪
+                        cut_sc = sc[:per_scene_budget]
+                        last_para = cut_sc.rfind("\n\n")
+                        last_punct = max(cut_sc.rfind("。"), cut_sc.rfind("！"), cut_sc.rfind("？"))
+                        if last_para > per_scene_budget * 0.7:
+                            cut_sc = cut_sc[:last_para].rstrip()
+                        elif last_punct > per_scene_budget * 0.7:
+                            cut_sc = cut_sc[:last_punct+1]
+                        trimmed_scenes.append(cut_sc.rstrip())
+                    else:
+                        trimmed_scenes.append(sc)
+                body = "\n\n※\n\n".join(trimmed_scenes) if "※" in novel or len(scenes) > 1 else "\n\n".join(trimmed_scenes)
+            else:
+                # 段落级裁剪，保 hook
+                cut = body[:target_max]
+                last_para = cut.rfind("\n\n")
+                last_punct = max(cut.rfind("。"), cut.rfind("！"), cut.rfind("？"), cut.rfind("…"), cut.rfind("”"))
+                if last_para > target_max * 0.8:
+                    body = cut[:last_para].rstrip()
+                elif last_punct > target_max * 0.8:
+                    body = cut[:last_punct+1]
+                else:
+                    last_nl = cut.rfind("\n")
+                    body = cut[:last_nl].rstrip() if last_nl > target_max*0.7 else cut.rstrip()
             if has_hook:
                 novel = body.rstrip() + f"\n\n{hook_text}"
             else:
-                # 无 hook 则确保末尾有收束句
                 if body and body[-1] not in "。！？…）":
                     body = body.rstrip() + "。"
                 novel = body
-        # 若裁后仍无 hook，补一个通用 hook
         if "（章末钩子" not in novel and hook_text:
-            novel = novel.rstrip() + f"\n\n{hook_text}"
+            # 仅当原文无 hook 时补，当前 purified 已无 hook 标记，补一个叙事化收束而非标记
+            if len(novel) < target_min:
+                novel = novel.rstrip() + "\n\n夜色渐深，远处传来隐约的声响，预示着新的变局将至。"
         return novel
 
     def _patch_weak_scenes(self, novel: str, review: dict, task_card: dict, synopsis: dict) -> str | None:
