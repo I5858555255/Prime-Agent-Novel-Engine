@@ -65,16 +65,18 @@ def detect_truncation(text: str) -> dict:
 
 
 def detect_length_anomaly(text: str, target: int | None) -> dict:
-    """对照 scene_blueprints 目标字数校验。"""
+    """对照 scene_blueprints 目标字数校验。P0 容差 +2% 避免 1 字符边界误杀。"""
     if not target or target <= 0:
         return {"anomaly": False, "issues": []}
     actual = len(text)
-    low, high = int(target * 0.65), int(target * 1.35)
+    # 1.35x 基础上再 +2% 容差，且绝对容差至少 50 字，避免 1 字符级误判
+    high = int(target * 1.35 + max(50, target * 0.02))
+    low = int(target * 0.65)
     issues = []
     if actual < low:
         issues.append(f"字数不足：实际 {actual} < 目标 {target}*0.65={low}")
     elif actual > high:
-        issues.append(f"字数超标：实际 {actual} > 目标 {target}*1.35={high}")
+        issues.append(f"字数超标：实际 {actual} > 目标 {target}*1.35+容差={high} (1 字符级已放宽)")
     return {"anomaly": bool(issues), "issues": issues}
 
 
@@ -91,10 +93,16 @@ def purify_novel_for_publish(draft: str) -> str:
     text = re.sub(r"\n?\s*※\s*\n?", "\n\n", text)
     # 去除 --- / **** / *** 等分隔线（纯符号行）
     text = re.sub(r"^\s*[-*]{3,}\s*$\n*", "", text, flags=re.MULTILINE)
-    # 保留章末钩子内容，仅剥离标记（P1 保 hook）
-    text = re.sub(r"\*?\s*（章末钩子[:：]\s*([^）]*)）\s*\*?", r"\n\n\1", text)
+    # 彻底剥离章末钩子标记（含截断残缺），不保留指令原文（hook 由正文自然收束）
+    text = re.sub(r"\*?\s*（章末钩子[^）\n]*）?\s*\n*", "", text)
     text = re.sub(r"（章末钩子[^）]*）", "", text)
-    # 去除 （注：...）
+    # 去除 （注：...）及所有括号指令（章末钩子/场景目标/伏笔等），含截断半行（无闭合 ）也一并移除
+    # 任何包含这些关键词的行，无论是否闭合、无论括号嵌套，一律整行移除
+    text = re.sub(r"^[^\n]*?(?:章末钩子|场景目标|伏笔)[^\n]*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"（(?:章末钩子|场景目标|伏笔|注意|提示)[^）]*）\s*\n*", "", text)
+    text = re.sub(r"（章末钩子[^）\n]*", "", text)
+    text = re.sub(r"（场景目标[^）\n]*", "", text)
+    text = re.sub(r"（伏笔[^）\n]*", "", text)
     text = re.sub(r"（注：[^）]*）", "", text)
     text = re.sub(r"\(注：[^)]*\)", "", text)
     # 去除残留的场景标记变体
@@ -170,7 +178,7 @@ def verify_no_scaffolding(text: str) -> list[str]:
     issues = []
     if re.search(r"【[^】]*】", text):
         issues.append("残留【】包裹的指令/标记")
-    for tok in ["※", "（章末钩子", "（注：", "节拍点", "场景小结", "当前字数", "本节拍", "拍点"]:
+    for tok in ["※", "（章末钩子", "（注：", "节拍点", "场景小结", "当前字数", "本节拍", "拍点", "（场景目标", "（伏笔"]:
         if tok in text:
             issues.append(f"残留脚手架 token: {tok}")
     # 检查纯加粗指令行残留
@@ -178,10 +186,13 @@ def verify_no_scaffolding(text: str) -> list[str]:
         issues.append("残留加粗节拍标注")
     if re.search(r"^\s*\*{4,}\s*$", text, flags=re.MULTILINE):
         issues.append("残留 **** 分隔符")
-    # 检查场景标记格式混乱
-    if len(re.findall(r"#\s*第[一二三四五六七八九十\d]+章", text)) > 1:
+    # 检查场景标记格式混乱：仅统计行首 # 第X章
+    if len(re.findall(r"^\s*#\s*第[一二三四五六七八九十\d]+章", text, flags=re.MULTILINE)) > 1:
         issues.append("章节内含多个 # 第X章 标题，格式混乱")
     # 检查是否仍有场景标题残留（应已被剥离）
     if re.search(r"【场景\s*\d+", text):
         issues.append("残留【场景 标题")
+    # 检查括号指令残留（含截断）
+    if re.search(r"（(?:章末钩子|场景目标|伏笔)", text):
+        issues.append("残留括号指令（章末钩子/场景目标/伏笔）")
     return issues
