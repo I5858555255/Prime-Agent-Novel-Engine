@@ -362,20 +362,14 @@ class PipelineOrchestrator:
             sm.handle_failure("writing_error", str(e))
             return result
 
-        # 阶段4.5：字数强制（P1 全局冻结目标 + 统一区间 0.65-1.35）
+        # 阶段4.5：字数强制（P0 单一权威：终稿评审前必达标；P1 全局常量 7500，避免漂移）
         try:
-            # 全局冻结目标：首章目标作为全局常量，避免每 run 漂移（4500/5700/6400...）
+            # P1-目标全局常量：顶配网文章节 7000-8000 为优，不再每章 LLM 生成目标
+            GLOBAL_CONSTANT = 7500
             if not hasattr(self, "_global_target") or self._global_target is None:
-                # 首章冻结
-                _first_frozen = self._frozen_task_cards.get(chapter_num, task_card)
-                _bps = (_first_frozen.get("scene_blueprints") or [])
-                self._global_target = sum(int(bp.get("word_count_target", 0)) for bp in _bps) or 7200
-                logger.info(f"Global target frozen: {self._global_target} (from ch{chapter_num})")
+                self._global_target = GLOBAL_CONSTANT
+                logger.info(f"Global target frozen: {self._global_target} (constant 7500, P1)")
             total_target = self._global_target
-            # 若当前 task_card 目标与全局差异过大（>30%），仍以全局为准，避免 writer 目标漂移
-            cur_total = sum(int(bp.get("word_count_target", 0)) for bp in (task_card.get("scene_blueprints") or []))
-            if cur_total and abs(cur_total - total_target) / total_target > 0.3:
-                logger.warning(f"Task target {cur_total} vs global {total_target} drift >30%, use global")
             if total_target > 0:
                 target_min = int(total_target * 0.65)
                 target_max = int(total_target * 1.35 + max(50, total_target*0.02))  # +容差避免 1 字符误杀

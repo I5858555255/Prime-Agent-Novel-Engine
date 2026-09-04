@@ -15,10 +15,10 @@
     "medium_test_chapters": 70,
     "sliding_window_size": 50,
     "recent_memory_window": 30,
-    "max_review_retries": 3,
+    "max_review_retries": 2,
     "scene_per_chapter": {
       "min": 3,
-      "max": 5
+      "max": 4
     },
     "merge_synopsis_into_directing": true
   },
