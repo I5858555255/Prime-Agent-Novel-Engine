@@ -362,19 +362,28 @@ class PipelineOrchestrator:
             sm.handle_failure("writing_error", str(e))
             return result
 
-        # 阶段4.5：字数强制（统一区间 0.65-1.35，与门控一致，避免自相矛盾）
+        # 阶段4.5：字数强制（P1 全局冻结目标 + 统一区间 0.65-1.35）
         try:
-            # 冻结目标：始终用首轮 task_card 的 total_target
-            frozen = self._frozen_task_cards.get(chapter_num, task_card)
-            blueprints = (frozen.get("scene_blueprints") or [])
-            total_target = sum(int(bp.get("word_count_target", 0)) for bp in blueprints)
+            # 全局冻结目标：首章目标作为全局常量，避免每 run 漂移（4500/5700/6400...）
+            if not hasattr(self, "_global_target") or self._global_target is None:
+                # 首章冻结
+                _first_frozen = self._frozen_task_cards.get(chapter_num, task_card)
+                _bps = (_first_frozen.get("scene_blueprints") or [])
+                self._global_target = sum(int(bp.get("word_count_target", 0)) for bp in _bps) or 7200
+                logger.info(f"Global target frozen: {self._global_target} (from ch{chapter_num})")
+            total_target = self._global_target
+            # 若当前 task_card 目标与全局差异过大（>30%），仍以全局为准，避免 writer 目标漂移
+            cur_total = sum(int(bp.get("word_count_target", 0)) for bp in (task_card.get("scene_blueprints") or []))
+            if cur_total and abs(cur_total - total_target) / total_target > 0.3:
+                logger.warning(f"Task target {cur_total} vs global {total_target} drift >30%, use global")
             if total_target > 0:
                 target_min = int(total_target * 0.65)
-                target_max = int(total_target * 1.35)
+                target_max = int(total_target * 1.35 + max(50, total_target*0.02))  # +容差避免 1 字符误杀
                 novel_text = self._enforce_word_count(novel_text, target_min, target_max)
                 self.current_novel = novel_text
-                # 强制后重跑确定性门控，以最终长度为准
-                gate_after = self._deterministic_quality_gate(novel_text, frozen)
+                # 强制后重跑确定性门控，以最终长度为准（用全局目标校验）
+                _gate_card = {"scene_blueprints": [{"word_count_target": total_target}]}
+                gate_after = self._deterministic_quality_gate(novel_text, _gate_card)
                 self._last_deterministic_issues = gate_after["issues"]
                 if gate_after["passed"]:
                     logger.info(f"Post-enforce gate passed for chapter {chapter_num} (target {total_target} → {target_min}-{target_max})")
@@ -443,7 +452,7 @@ class PipelineOrchestrator:
                         patched_draft = self._patch_weak_scenes(current_draft, staged["review"], task_card, synopsis)
                         if patched_draft is not None and patched_draft != current_draft and len(patched_draft) >= len(current_draft) // 2:
                             # 缝合后需重新净化并强制字数
-                            patched_purified = purify_novel_for_publish(patched_draft)
+                            patched_purified = purify_novel_for_publish(patched_draft, chapter_num=chapter_num)
                             # 强制字数（用冻结目标）
                             frozen = self._frozen_task_cards.get(chapter_num, task_card)
                             total = sum(int(bp.get("word_count_target", 0)) for bp in (frozen.get("scene_blueprints") or []))
@@ -461,7 +470,7 @@ class PipelineOrchestrator:
                         if not rewritten or len(rewritten) < len(current) // 2:
                             break
                         # 重写后同样需净化+强制
-                        rewritten_purified = purify_novel_for_publish(rewritten) if "【场景" in rewritten or "※" in rewritten else rewritten
+                        rewritten_purified = purify_novel_for_publish(rewritten, chapter_num=chapter_num) if "【场景" in rewritten or "※" in rewritten else purify_novel_for_publish(rewritten, chapter_num=chapter_num)
                         frozen = self._frozen_task_cards.get(chapter_num, task_card)
                         total = sum(int(bp.get("word_count_target", 0)) for bp in (frozen.get("scene_blueprints") or []))
                         if total > 0:
@@ -613,13 +622,19 @@ class PipelineOrchestrator:
         det_issues = getattr(self, "_last_deterministic_issues", [])
         det_soft = getattr(self, "_last_deterministic_soft", [])
         # 重新校验当前 purified 文本的硬门控（以防 fix 循环后未更新）
-        final_det = self._deterministic_quality_gate(self._novel_string(), task_card)
+        # P0-写盘单一净化源：当前 purified 即为最终发布文本，检测与写盘同源
+        final_text = self._novel_string()
+        # 确保最终文本已按正确章号净化（防缓存标题章号错误）
+        from novel_engine.quality.repetition_detector import purify_novel_for_publish as _purify_final
+        final_text = _purify_final(final_text, chapter_num=chapter_num)
+        self.current_novel = final_text
+        final_det = self._deterministic_quality_gate(final_text, task_card)
         det_issues = final_det["issues"]
         det_soft = final_det.get("soft_issues", [])
         self._last_deterministic_issues = det_issues
-        # P0-发布前泄漏终检：成品不得含任何脚手架 token
+        # P0-发布前泄漏终检：成品不得含任何脚手架 token（与写盘同源）
         from novel_engine.quality.repetition_detector import verify_no_scaffolding
-        leak_issues = verify_no_scaffolding(self._novel_string())
+        leak_issues = verify_no_scaffolding(final_text)
         if leak_issues:
             logger.error(f"Leak check failed for chapter {chapter_num}: {leak_issues}")
             det_issues = det_issues + [f"[泄漏] {x}" for x in leak_issues]
@@ -813,7 +828,7 @@ class PipelineOrchestrator:
 
     def _deterministic_quality_gate(self, text: str, task_card: dict) -> dict:
         """P0-B1: 确定性硬校验（重复/截断/长度），命中即需修复。"""
-        purified = purify_novel_for_publish(text)
+        purified = purify_novel_for_publish(text, chapter_num=task_card.get("chapter_num"))
         # 若净化前后长度差异过大，说明脚手架污染严重，也视为问题
         issues: list[str] = []
         rep = detect_repetition(purified)
@@ -861,13 +876,13 @@ class PipelineOrchestrator:
         novel_text = self.writer.generate_full_chapter(task_card, synopsis, pacing_constraints)
         self.state_machine.transition(ChapterPhase.POLISH)
         novel_text = self.writer.polish_chapter(novel_text, task_card, llm_client=self.polish_router)
-        # 成品净化：草稿保留标记供 patcher，发布版剥离
-        purified = purify_novel_for_publish(novel_text)
+        # 成品净化：草稿保留标记供 patcher，发布版剥离（单一净化源，章号强制校正）
+        purified = purify_novel_for_publish(novel_text, chapter_num=task_card.get("chapter_num"))
         self._draft_novel = novel_text
         self.current_novel = purified
         logger.info(f"Novel text generated (draft {len(novel_text)} chars → purified {len(purified)} chars)")
         # 确定性硬校验：命中则在日志中标记，后续在提交前强制拦截
-        gate = self._deterministic_quality_gate(novel_text, task_card)
+        gate = self._deterministic_quality_gate(purified, task_card)
         if not gate["passed"]:
             logger.warning(f"Deterministic gate flagged chapter {task_card.get('chapter_num')}: {gate['issues']}")
             # 将硬校验问题注入待修复队列，供后续 patch 识别

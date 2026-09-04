@@ -359,10 +359,12 @@ class WriterAgent:
 
         full_chapter = "\n".join(full_chapter_parts)
 
-        # 添加章末钩子
-        hook = task_card.get("chapter_hook", "")
-        if hook:
-            full_chapter += f"\n\n---\n*（章末钩子：{hook}）*"
+        # P0-删除可见标记拼接：chapter_hook 不以 “（章末钩子：...）” 形式拼入正文
+        # 改为将 hook 作为“本章结尾须以叙事方式自然收束的悬念”注入末场景的写作指令，末场景自然落成钩子
+        # 保留 hook 仅用于指令，不直接拼入正文，确保成品无括号指令泄漏
+        # 若末场景内容未以句读收束，补句号
+        if full_chapter and full_chapter.strip() and full_chapter.strip()[-1] not in "。！？…）」”":
+            full_chapter = full_chapter.rstrip() + "。"
 
         logger.info(f"Full chapter {chapter_num} generated ({len(full_chapter)} chars)")
         return full_chapter

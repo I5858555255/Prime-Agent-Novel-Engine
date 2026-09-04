@@ -80,9 +80,17 @@ def detect_length_anomaly(text: str, target: int | None) -> dict:
     return {"anomaly": bool(issues), "issues": issues}
 
 
-def purify_novel_for_publish(draft: str) -> str:
+def purify_novel_for_publish(draft: str, chapter_num: int | None = None) -> str:
     """成品净化：剥离所有脚手架标记，仅保留可发布正文。P0 增强版 + Round8 结构性段落判伪。"""
     text = draft
+    # 若传入 chapter_num，强制校正首个章节标题为正确章号（防缓存模板章号错误）
+    if chapter_num is not None:
+        # 将首个 # 第X章 标题的章号强制改为传入的 chapter_num
+        def _fix_title(m):
+            # m.group(1) 是原章号，替换为 chapter_num
+            return f"# 第{chapter_num}章"
+        # 只替换首个匹配
+        text = re.sub(r"^\s*#\s*第[一二三四五六七八九十\d]+章", _fix_title, text, count=1, flags=re.MULTILINE)
     # 去除 【场景N：...】 标题行（兼容有无空格、全角/半角冒号）
     text = re.sub(r"【场景\s*\d+\s*[:：][^】]*】\s*\n*", "", text)
     # 去除所有含 元指令关键词 的 【...】 块（当前字数、节拍、拍点、本节、小结等）
