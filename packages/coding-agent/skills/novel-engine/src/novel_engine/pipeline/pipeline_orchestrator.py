@@ -103,9 +103,10 @@ class PipelineOrchestrator:
         }
         # Pre-compute director's fixed context (bible + volumes + plot_graph) — loaded once at init
         self._director_fixed_context = self._load_director_fixed_context()
-        # P0 修复：冻结单章 task_card，避免移动目标死循环
+        # P0 修复：冻结单章 task_card，避免移动目标死循环；全局目标批次级冻结 7500
         self._frozen_task_cards: dict[int, dict] = {}
         self._frozen_synopsis: dict[int, dict] = {}
+        self._global_target: int = 7500
 
         # Runtime config + provider config for chapter-level retry logic
         from novel_engine.core.llm_client import _provider_config_from_runtime
