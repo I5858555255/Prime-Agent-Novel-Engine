@@ -297,7 +297,7 @@ class WriterAgent:
                               temperature_override: Optional[float] = None) -> str:
         """
         生成完整章节正文。
-        P1-C1 修复：改为顺序执行并向前透传前序摘要，避免并行零上下文导致的重复叙事。
+        P1 修复：场景并发（3 场景并行，~2-3min），共享 synopsis 与 beat 去重提示，无需前序上下文串行。
         """
         chapter_num = task_card.get("chapter_num", 0)
         scenes = task_card.get("scene_blueprints", []) or task_card.get("scenes", [])
@@ -306,48 +306,48 @@ class WriterAgent:
         if not scenes:
             return ""
 
-        # 顺序生成：每场景携带前序场景摘要与基调，避免重复 beats
-        # P0 自愈：每场景完成即原子落盘到 draft/partial，供中断后恢复
+        # 跨章已用 beat 预取（仅一次，避免每场景重复 IO）
+        try:
+            from novel_engine.core.memory_manager import MemoryManager
+            _mm = MemoryManager(self.root)
+            _recent_beats = _mm.get_recent_beats(limit=5)
+        except Exception:
+            _recent_beats = []
+        # 原子落盘：章节开始时清空旧 partial
         partial_path = self.root / "chapters" / "draft" / f"chapter_{chapter_num}_partial.txt"
         try:
             partial_path.parent.mkdir(parents=True, exist_ok=True)
-            # 章节开始时清空旧 partial（若为续跑则保留已有）
-            if not partial_path.exists() or partial_path.stat().st_size == 0:
-                partial_path.write_text("", encoding="utf-8")
+            partial_path.write_text("", encoding="utf-8")
         except Exception:
             pass
-        all_scene_contents: list[tuple[dict, str]] = []
-        previous_context = ""
-        covered_beats: list[str] = []
-        for bp in sorted(scenes, key=lambda x: x.get("scene_num", 0)):
-            beat_hint = ""
-            if covered_beats:
-                beat_hint = f"\n已覆盖情节（避免重复）：{'; '.join(covered_beats[-5:])}\n"
-            # 跨章已用 beat 记忆（P0）：注入最近 5 个已用节点，要求升级而非重写同款
-            try:
-                from novel_engine.core.memory_manager import MemoryManager
-                _mm = MemoryManager(self.root)
-                _recent = _mm.get_recent_beats(limit=5)
-                if _recent:
-                    beat_hint += f"\n已用剧情节点（不可复用，需换冲突类型/加新变量）：{'; '.join(_recent)}\n"
-            except Exception:
-                pass
+        # 场景并发：独立场景组并行，组内无需上下文依赖（同任务卡，已通过 beat 去重）
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        max_workers = max(1, min(len(scenes), 4))
+        # 预先计算 beat 去重提示（基于任务卡，非运行时）
+        covered_beats = [f"场景{bp.get('scene_num')}({bp.get('location','')}:{bp.get('goal','')[:18]})" for bp in sorted(scenes, key=lambda x: x.get("scene_num", 0))]
+        def _do_one(bp):
+            beat_hint = f"\n已覆盖情节（避免重复）：{'; '.join(covered_beats)}\n" if len(covered_beats) > 1 else ""
+            if _recent_beats:
+                beat_hint += f"\n已用剧情节点（不可复用）：{'; '.join(_recent_beats)}\n"
             combined_pacing = (pacing_constraints or "") + beat_hint
-            content = self.generate_scene(task_card, bp, synopsis_text, previous_context, combined_pacing, temperature_override)
-            all_scene_contents.append((bp, content))
-            # 原子落盘：每场景完成即追加
-            try:
-                with open(partial_path, "a", encoding="utf-8") as pf:
-                    pf.write(f"【场景{bp.get('scene_num')}：{bp.get('location','')}】\n\n{content}\n\n※\n")
-            except Exception:
-                pass
-            # 更新前序摘要（取前 300 字 + 场景目标，避免无限膨胀）
-            snippet = content[:300].replace("\n", " ")
-            covered_beats.append(f"场景{bp.get('scene_num')}({bp.get('location','')}:{bp.get('goal','')[:20]})")
-            # 透传前序摘要：最多保留最近 2 场景的 600 字摘要
-            previous_context = "\n\n".join(c for _, c in all_scene_contents[-2:])
-            if len(previous_context) > 800:
-                previous_context = previous_context[-800:]
+            # 并发场景无需 previous_context（同章独立），传空避免串行依赖
+            content = self.generate_scene(task_card, bp, synopsis_text, "", combined_pacing, temperature_override)
+            return (bp, content)
+
+        all_scene_contents: list[tuple[dict, str]] = []
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scene") as ex:
+            fut2bp = {ex.submit(_do_one, bp): bp for bp in scenes}
+            for fut in as_completed(fut2bp):
+                bp, content = fut.result()
+                all_scene_contents.append((bp, content))
+                # 原子落盘：每场景完成即追加（线程安全：追加写）
+                try:
+                    with open(partial_path, "a", encoding="utf-8") as pf:
+                        pf.write(f"【场景{bp.get('scene_num')}：{bp.get('location','')}】\n\n{content}\n\n※\n")
+                except Exception:
+                    pass
+        # 按 scene_num 排序确保顺序
+        all_scene_contents.sort(key=lambda x: x[0].get("scene_num", 0))
 
         full_chapter_parts = []
         for bp, content in all_scene_contents:
@@ -371,74 +371,28 @@ class WriterAgent:
 
 
     def _polish_by_scenes(self, chapter_text: str, task_card: dict, client) -> str:
-        """P1-减少单次负载：按场景分批 polish，单场景 <2K 字符，90s 超时，避免整章 10K 上下文必超时。"""
-        import re, time
-        start = time.time()
-        expected = len(task_card.get("scene_blueprints") or []) or 5
-        parts = re.split(r"\n?\s*※\s*\n?", chapter_text)
-        scenes = [p.strip() for p in parts if p.strip()]
-        # 数量不一致时不强制截断，仅告警并以实际段落为准，避免误删场景（如 5 场景被截为 4）
-        if len(scenes) != expected:
-            logger.warning(f"_polish_by_scenes: split {len(scenes)} vs expected {expected}, use actual ({len(scenes)}) for polish")
-            # 不截断，直接按实际 scenes 数处理，避免 scene 6 越界
-            expected = len(scenes)
-        if len(scenes) <= 1:
-            prompt = (
-                "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
-                f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
+        """P0-单次全文 polish（1 次调用，300s），避免 4 次串行 7min 高耗低效。"""
+        prompt = (
+            "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
+            f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
+        )
+        max_tokens = min(16000, max(4096, int(len(chapter_text) / 1.5)))
+        try:
+            raw = client.chat_completion(
+                [{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=max_tokens,
+                timeout=300,
             )
-            max_tokens = min(16000, max(4096, int(len(chapter_text) / 1.5)))
-            try:
-                raw = client.chat_completion(
-                    [{"role": "user", "content": prompt}],
-                    temperature=0.7,
-                    max_tokens=max_tokens,
-                    timeout=300,
-                )
-                if isinstance(raw, dict):
-                    raw = raw.get("content") or raw.get("reasoning_content") or ""
-                resp = raw if isinstance(raw, str) else ""
-                if len(resp.strip()) >= max(200, int(len(chapter_text) * 0.5)):
-                    return resp.strip()
-            except Exception as exc:
-                logger.warning(f"single polish fallback failed ({exc}), keep original")
-            return chapter_text
-        polished_parts = []
-        for idx, scene_text in enumerate(scenes, 1):
-            if idx > expected:
-                logger.warning(f"skip unexpected scene {idx} > expected {expected}")
-                break
-            if time.time() - start > 900:
-                logger.warning(f"_polish_by_scenes watchdog 15min triggered at scene {idx}/{len(scenes)}, skip remaining")
-                polished_parts.extend(scenes[idx-1:])
-                break
-            # 明确要求仅润色不改情节/结构，长度保持 ±15%，防坍缩
-            prompt = (
-                "请仅润色以下场景的语言（不改情节、人物、结构），保持与原文长度相近（±15%），仅返回润色后的场景正文，不要解释。\n\n"
-                f"【任务卡】{task_card.get('title', '')}\n\n【场景 {idx}】原文（{len(scene_text)}字）：\n{scene_text}\n\n"
-                f"要求：保留所有情节与对话，仅优化语句与衔接，输出长度控制在 {int(len(scene_text)*0.85)}-{int(len(scene_text)*1.15)} 字。"
-            )
-            max_tokens = min(8000, max(2048, int(len(scene_text) / 1.1)))
-            try:
-                raw = client.chat_completion(
-                    [{"role": "user", "content": prompt}],
-                    temperature=0.7,
-                    max_tokens=max_tokens,
-                    timeout=90,
-                )
-                if isinstance(raw, dict):
-                    raw = raw.get("content") or raw.get("reasoning_content") or ""
-                resp = raw if isinstance(raw, str) else ""
-                # 防坍缩：输出 <60% 原文即视为退化，直接保原
-                if len(resp.strip()) >= max(300, int(len(scene_text) * 0.6)) and len(resp.strip()) <= int(len(scene_text) * 1.4):
-                    polished_parts.append(resp.strip())
-                else:
-                    logger.warning(f"scene {idx} polish degenerate len={len(resp)} vs orig {len(scene_text)}, keep original")
-                    polished_parts.append(scene_text)
-            except Exception as exc:
-                logger.warning(f"scene {idx} polish failed ({exc}), keep original")
-                polished_parts.append(scene_text)
-        return "\n\n※\n\n".join(polished_parts)
+            if isinstance(raw, dict):
+                raw = raw.get("content") or raw.get("reasoning_content") or ""
+            resp = raw if isinstance(raw, str) else ""
+            if len(resp.strip()) >= max(200, int(len(chapter_text) * 0.5)):
+                return resp.strip()
+            logger.warning(f"polish degenerate len={len(resp)} vs orig {len(chapter_text)}, keep original")
+        except Exception as exc:
+            logger.warning(f"polish failed ({exc}), keep original")
+        return chapter_text
 
     def polish_chapter(self, chapter_text: str, task_card: dict, llm_client=None) -> str:
         """章节润色：统一过渡与语气。
