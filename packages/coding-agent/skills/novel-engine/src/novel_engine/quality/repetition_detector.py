@@ -79,18 +79,18 @@ def detect_length_anomaly(text: str, target: int | None) -> dict:
 
 
 def purify_novel_for_publish(draft: str) -> str:
-    """成品净化：剥离所有脚手架标记，仅保留可发布正文。P0 增强版。"""
+    """成品净化：剥离所有脚手架标记，仅保留可发布正文。P0 增强版 + Round8 结构性段落判伪。"""
     text = draft
     # 去除 【场景N：...】 标题行（兼容有无空格、全角/半角冒号）
     text = re.sub(r"【场景\s*\d+\s*[:：][^】]*】\s*\n*", "", text)
-    # 去除所有含 元指令关键词 的 【...】 块（当前字数、节拍、拍点、本节等）
-    text = re.sub(r"【[^】]*?(?:字数|节拍|拍点|当前|本节)[^】]*】\s*\n*", "", text)
+    # 去除所有含 元指令关键词 的 【...】 块（当前字数、节拍、拍点、本节、小结等）
+    text = re.sub(r"【[^】]*?(?:字数|节拍|拍点|当前|本节|小结|场景小结)[^】]*】\s*\n*", "", text)
     # 去除纯指令性短行（如 "场景 1：..." 单独成行）
     text = re.sub(r"^\s*场景\s*\d+\s*[:：].*$\n*", "", text, flags=re.MULTILINE)
     # 去除 ※ 分隔符（含两侧空白）
     text = re.sub(r"\n?\s*※\s*\n?", "\n\n", text)
-    # 去除 --- 分隔线
-    text = re.sub(r"\n?\s*---\s*\n?", "\n\n", text)
+    # 去除 --- / **** / *** 等分隔线（纯符号行）
+    text = re.sub(r"^\s*[-*]{3,}\s*$\n*", "", text, flags=re.MULTILINE)
     # 保留章末钩子内容，仅剥离标记（P1 保 hook）
     text = re.sub(r"\*?\s*（章末钩子[:：]\s*([^）]*)）\s*\*?", r"\n\n\1", text)
     text = re.sub(r"（章末钩子[^）]*）", "", text)
@@ -99,21 +99,61 @@ def purify_novel_for_publish(draft: str) -> str:
     text = re.sub(r"\(注：[^)]*\)", "", text)
     # 去除残留的场景标记变体
     text = re.sub(r"###\s*[一二三四五六七八九十]+\s*\n*", "", text)
-    # 去除章节内残留的 "# 第四章·..." 多余标题（仅保留首个）
+    # 结构性段落判伪：逐段分类，剥离指令段/元信息段（P0）
+    paras = re.split(r"\n\s*\n", text)
+    cleaned_paras = []
+    for para in paras:
+        stripped = para.strip()
+        if not stripped:
+            continue
+        # 指令段特征：含 节拍点\d / 场景小结 / 当前字数 / 拍点 / 纯加粗短指令行
+        is_instruction = False
+        # 1. 节拍点\d（如 **节拍点1（冲突酝酿）：...**）
+        if re.search(r"节拍点\s*\d+", stripped):
+            is_instruction = True
+        # 2. 场景小结块
+        elif "场景小结" in stripped:
+            is_instruction = True
+        # 3. 当前字数 / 拍点 / 本节
+        elif any(kw in stripped for kw in ["当前字数", "本节拍", "拍点完成"]):
+            is_instruction = True
+        # 4. 纯加粗短指令行（整段为 **...** 且长度 <100 且含指令词）
+        elif re.match(r"^\s*\*{2,}.*\*{2,}\s*$", stripped) and len(stripped) < 200:
+            is_instruction = True
+        # 5. 独立 【】 包裹的元信息段（已在上步部分去除，此处兜底）
+        elif re.match(r"^\s*【[^】]*】\s*$", stripped):
+            is_instruction = True
+        # 6. 纯符号行
+        elif re.match(r"^\s*[-*]{3,}\s*$", stripped):
+            is_instruction = True
+        if is_instruction:
+            continue
+        cleaned_paras.append(para)
+    text = "\n\n".join(cleaned_paras)
+    # 去除章节内残留的 "# 第四章·..." 多余标题（仅保留首个，且 normalize）
     lines = text.split("\n")
     seen_first_title = False
     cleaned_lines = []
     for line in lines:
-        if re.match(r"^\s*#\s*第[一二三四五六七八九十\d]+章", line):
+        m = re.match(r"^\s*#\s*第([一二三四五六七八九十\d]+)章", line)
+        if m:
             if not seen_first_title:
-                cleaned_lines.append(line)
+                # 规范化为 "# 第N章" 统一格式（去除多余幕/标题后缀，保留首个）
+                # 提取章号并重写为标准格式
+                raw_num = m.group(1)
+                # 尝试保留原标题的后缀（取第一个 "·" 或 " " 后的标题）
+                title_part = ""
+                # 查找 "章" 后的标题
+                after = line.split("章", 1)[-1].strip()
+                # 去除 "·" " " 等分隔符后的额外幕信息，统一为 "第N章"
+                # 这里简化：只保留 "# 第N章" + 标题首段
+                if after:
+                    # 去除 leading "·" " " "第M幕" 等
+                    after = re.sub(r"^[·\s第幕\d一二三四五六七八九十\(\)（）·\s]+", "", after).strip()
+                    if after:
+                        title_part = f" {after.split()[0][:12]}"
+                cleaned_lines.append(f"# 第{raw_num}章{title_part}")
                 seen_first_title = True
-            # 后续章节标题视为脚手架，丢弃
-            continue
-        # 过滤纯元数据行（仅含【】或节拍/字数关键词）
-        if re.match(r"^\s*【[^】]*】\s*$", line):
-            continue
-        if any(kw in line for kw in ["节拍点完成", "当前字数", "本节拍"]):
             continue
         cleaned_lines.append(line)
     text = "\n".join(cleaned_lines)
@@ -126,16 +166,22 @@ def purify_novel_for_publish(draft: str) -> str:
     return text.strip()
 
 def verify_no_scaffolding(text: str) -> list[str]:
-    """发布前终检：成品不得含脚手架 token。"""
+    """发布前终检：成品不得含脚手架 token。P0 增强版。"""
     issues = []
-    if "【" in text or "】" in text:
-        # 允许章节标题 "# 第X章" 含的 【】 已在上步去除，此处再出现即污染
-        if re.search(r"【[^】]*】", text):
-            issues.append("残留【】包裹的指令/标记")
-    for tok in ["※", "（章末钩子", "（注：", "节拍点", "当前字数", "本节拍"]:
+    if re.search(r"【[^】]*】", text):
+        issues.append("残留【】包裹的指令/标记")
+    for tok in ["※", "（章末钩子", "（注：", "节拍点", "场景小结", "当前字数", "本节拍", "拍点"]:
         if tok in text:
             issues.append(f"残留脚手架 token: {tok}")
-    # 检查场景标记格式混乱（多种标题混用）
+    # 检查纯加粗指令行残留
+    if re.search(r"^\s*\*{2,}.*节拍.*\*{2,}\s*$", text, flags=re.MULTILINE):
+        issues.append("残留加粗节拍标注")
+    if re.search(r"^\s*\*{4,}\s*$", text, flags=re.MULTILINE):
+        issues.append("残留 **** 分隔符")
+    # 检查场景标记格式混乱
     if len(re.findall(r"#\s*第[一二三四五六七八九十\d]+章", text)) > 1:
         issues.append("章节内含多个 # 第X章 标题，格式混乱")
+    # 检查是否仍有场景标题残留（应已被剥离）
+    if re.search(r"【场景\s*\d+", text):
+        issues.append("残留【场景 标题")
     return issues

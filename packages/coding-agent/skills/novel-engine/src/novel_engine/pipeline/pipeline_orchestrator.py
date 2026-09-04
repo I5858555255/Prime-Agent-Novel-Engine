@@ -617,14 +617,23 @@ class PipelineOrchestrator:
         det_issues = final_det["issues"]
         det_soft = final_det.get("soft_issues", [])
         self._last_deterministic_issues = det_issues
-        # P0-终态发布：若 fix 耗尽后标记了 force_publish_best，即使 <88 也发布 best 供人审阅
+        # P0-发布前泄漏终检：成品不得含任何脚手架 token
+        from novel_engine.quality.repetition_detector import verify_no_scaffolding
+        leak_issues = verify_no_scaffolding(self._novel_string())
+        if leak_issues:
+            logger.error(f"Leak check failed for chapter {chapter_num}: {leak_issues}")
+            det_issues = det_issues + [f"[泄漏] {x}" for x in leak_issues]
+            self._last_deterministic_issues = det_issues
+        # P0-终态发布：若 fix 耗尽后标记了 force_publish_best，即使 <88 也发布 best 供人审阅（但泄漏仍阻断）
         force_best = bool(getattr(self, "_force_publish_best", False))
-        if force_best:
+        if force_best and not leak_issues:
             logger.warning(f"Force publish best {cur_score} despite hard gate (note={result.get('note','')}) hard={det_issues} soft={det_soft} high={high_list}")
             can_publish = True
             self._force_publish_best = False
         else:
-            can_publish = bool(result.get("success")) and (cur_score >= publication_line) and not has_high_issue and not det_issues and not any(v.get("severity") in ("block","high") for v in (violations or []))
+            if force_best and leak_issues:
+                logger.warning(f"Force publish blocked by leak: {leak_issues}")
+            can_publish = bool(result.get("success")) and (cur_score >= publication_line) and not has_high_issue and not det_issues and not leak_issues and not any(v.get("severity") in ("block","high") for v in (violations or []))
         if has_high_issue:
             logger.warning(f"Chapter {chapter_num} has high/block issue → force non-publish (score={cur_score} high={high_list})")
             can_publish = False
