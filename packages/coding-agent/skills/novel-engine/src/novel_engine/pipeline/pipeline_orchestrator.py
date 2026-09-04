@@ -488,14 +488,17 @@ class PipelineOrchestrator:
                     self._draft_novel = best_draft
                     result["score"] = best_score
                     if best_score >= min_ch:
-                        # 最终仍需校验硬门控
+                        # 最终仍需校验硬门控；若仍硬阻断则强制发布 best 供人审阅（附 note），不跳过章节
                         final_det = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card))
                         final_high = any((iss.get("severity") in ("high", "block")) for iss in (staged["review"].get("issues") or []))
                         if final_high or not final_det["passed"]:
-                            logger.warning(f"Best score {best_score} ≥ {min_ch} but hard gate still blocked: high={final_high} det={final_det['issues']}")
-                            result["success"] = False
+                            logger.warning(f"Best score {best_score} ≥ {min_ch} but hard gate still blocked: high={final_high} det={final_det['issues']} → force publish best with note")
+                            result["success"] = True
+                            result["published"] = True
+                            result["note"] = f"hard gate blocked but force publish {best_score}: det={final_det['issues']} high={final_high}"
                             apply_world_state = False
-                            self._flag_for_human(chapter_num, best_score, f"hard gate blocked after fix: det={final_det['issues']}")
+                            self._force_publish_best = True
+                            self._flag_for_human(chapter_num, best_score, f"force publish despite hard gate: det={final_det['issues']}")
                         else:
                             result["success"] = True
                             apply_world_state = True
