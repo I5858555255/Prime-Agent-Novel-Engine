@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def _review_issue_is_blocking(policy: dict, issue: dict) -> bool:
+    # NOTE(advisory-only): reviewer issues carry dimension/severity, not policy categories — dead-until-mapped pending beats-pilot dimension→category mapping (see quality-backlog.md).
     """评审 issue 是否阻断：只读 policy severity_map，以 issue 自身维度为类别。
 
     生产者（reviewer severity 标签）暂不改；比较点按类别查表。
@@ -670,12 +671,23 @@ class PipelineOrchestrator:
             logger.error(f"Leak check failed for chapter {chapter_num}: {leak_issues}")
             det_issues = det_issues + [f"[泄漏] {x}" for x in leak_issues]
             self._last_deterministic_issues = det_issues
-        # P0-终态发布：若 fix 耗尽后标记了 force_publish_best，即使 <88 也发布 best 供人审阅（但泄漏仍阻断）
+        # P0-终态发布：fix 耗尽后的 best 按 Q5 只进 chapters/draft（从不进 novel），供人审阅（泄漏仍阻断并走正常仲裁）。
         force_best = bool(getattr(self, "_force_publish_best", False))
         if force_best and not leak_issues:
-            logger.warning(f"Force publish best {cur_score} despite hard gate (note={result.get('note','')}) hard={det_issues} soft={det_soft} high={high_list}")
-            can_publish = True
+            logger.warning(f"Force-best to draft {cur_score} despite hard gate (note={result.get('note','')}) hard={det_issues} soft={det_soft} high={high_list}")
             self._force_publish_best = False
+            try:
+                draft_path = self.root / "chapters" / "draft" / f"chapter_{chapter_num}.txt"
+                draft_path.parent.mkdir(parents=True, exist_ok=True)
+                draft_path.write_text(self._novel_string(), encoding="utf-8")
+                logger.warning(f"Chapter {chapter_num} force-best saved to draft/{draft_path.name} (never novel/) high={high_list} det_hard={det_issues} soft={det_soft}")
+            except Exception as e:
+                logger.error(f"Failed to save force-best draft for chapter {chapter_num}: {e}")
+            result["score"] = cur_score
+            result["published"] = False
+            result["force_published"] = True
+            self._flag_for_human(chapter_num, cur_score, f"force-best to draft: {result.get('note','')} high={high_list} det_hard={det_issues} soft={det_soft}")
+            return result
         else:
             if force_best and leak_issues:
                 logger.warning(f"Force publish blocked by leak: {leak_issues}")

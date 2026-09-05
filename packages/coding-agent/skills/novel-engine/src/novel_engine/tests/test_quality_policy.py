@@ -16,7 +16,9 @@ def test_is_blocking_reads_table_only():
     assert is_blocking(p, "length_deviation") is False
     assert is_blocking(p, "truncation") is True
 
-def test_orchestrator_uses_policy_ratios(monkeypatch, tmp_path):
+def test_detector_uses_policy_ratios(monkeypatch, tmp_path):
+    # Detector-only coverage: the repetition detector reads policy via the
+    # quality_policy module attribute, so patching there shifts its bounds.
     from novel_engine.core import quality_policy as qp
     seen = {}
     real = qp.load_quality_policy
@@ -31,6 +33,27 @@ def test_orchestrator_uses_policy_ratios(monkeypatch, tmp_path):
     from novel_engine.quality.repetition_detector import detect_length_anomaly
     assert detect_length_anomaly("x" * 5000, 7500)["anomaly"] is False
     assert seen["chapter_target_chars"] == 7500
+
+def test_orchestrator_uses_policy_ratios(monkeypatch, tmp_path):
+    # Orchestrator binds load_quality_policy directly, so the spy must patch
+    # novel_engine.pipeline.pipeline_orchestrator.load_quality_policy.
+    from novel_engine.pipeline import pipeline_orchestrator as orch_mod
+    real = orch_mod.load_quality_policy
+    def spy(root):
+        p = dict(real(root))
+        p["min_ratio"] = 0.10
+        p["max_ratio"] = 10.0
+        return p
+    monkeypatch.setattr(orch_mod, "load_quality_policy", spy)
+    p = orch_mod.load_quality_policy(tmp_path)
+    assert p["min_ratio"] == 0.10
+    assert p["max_ratio"] == 10.0
+    # A shifted ratio changes the orchestrator's computed word-count bounds.
+    target_min = int(p["chapter_target_chars"] * p["min_ratio"])
+    target_max = int(p["chapter_target_chars"] * p["max_ratio"])
+    assert target_min == int(7500 * 0.10)
+    assert target_max == int(7500 * 10.0)
+    assert target_min < int(7500 * 0.65) < target_max
 
 def test_no_hardcoded_severity_in_orchestrator():
     import pathlib

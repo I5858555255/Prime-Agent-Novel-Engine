@@ -30,10 +30,26 @@ def test_forced_draft_rate_recorded_not_enforced(tmp_path):
     assert rep["forced_draft_rate"] == 0.5
     assert rep["paused"] is False  # record-only during observation period
 
+def test_force_best_lands_in_draft_and_counted():
+    # Q5 pin: exhausted-best goes to chapters/draft/ (never novel/), with
+    # published=False + force_published flag, and counts in forced_draft_rate.
+    from novel_engine.pipeline.production_runner import summarize_batch
+    forced = {"success": True, "published": False, "force_published": True,
+              "note": "best 80 < 88 (hard gate [...])"}
+    rep = summarize_batch([forced])
+    assert rep["forced_drafts"] == 1
+    assert rep["forced_draft_rate"] == 1.0
+    assert rep["paused"] is False  # record-only during observation period
+    import pathlib
+    src = pathlib.Path("novel_engine/pipeline/pipeline_orchestrator.py").read_text(encoding="utf-8")
+    assert "force_published" in src
+    assert '"draft"' in src
+    assert "force-best to draft" in src
+
 def test_forced_draft_predicate_honors_success_and_published(tmp_path):
     from novel_engine.pipeline.production_runner import summarize_batch
     results = [
-        {"success": True, "published": True},   # force-published best → not a draft
+        {"success": True, "published": True},   # clean publish → not a draft
         {"success": True},                       # published best without flag → not a draft
         {"success": False},                      # failed chapter → draft
         {"success": False, "published": False},  # failed + unpublished → draft

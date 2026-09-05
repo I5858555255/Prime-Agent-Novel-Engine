@@ -50,7 +50,7 @@ FORCED_DRAFT_ALERT_RATE = 0.15  # Q10 observation period: log only, never pause 
 
 def summarize_batch(results: list[dict]) -> dict:
     total = max(1, len(results))
-    drafts = sum(1 for r in results if (not r.get("success", True)) or (r.get("published") is False))
+    drafts = sum(1 for r in results if (not r.get("success", True)) or (r.get("published") is False) or bool(r.get("force_published")))
     rate = drafts / total
     return {"total": len(results), "forced_drafts": drafts,
             "forced_draft_rate": round(rate, 3), "paused": False,
