@@ -2,8 +2,11 @@
 import json
 from pathlib import Path
 
-def _path(root, chapter: int) -> Path:
+def journal_path(root, chapter: int) -> Path:
     return Path(root) / "chapters" / "draft" / f"chapter_{chapter}_partial.jsonl"
+
+def _path(root, chapter: int) -> Path:
+    return journal_path(root, chapter)
 
 def append_scene(root, chapter: int, scene: dict) -> bool:
     p = _path(root, chapter)
@@ -15,14 +18,27 @@ def append_scene(root, chapter: int, scene: dict) -> bool:
         f.write(line + "\n")
     return True
 
-def completed_scene_ids(root, chapter: int) -> set[int]:
-    p = _path(root, chapter)
-    done: set[int] = set()
+def load_scenes(root, chapter: int) -> list[dict]:
+    """Shared loader: validated scene dicts in file order; corrupt lines skipped.
+
+    Canonical corrupt-line rule (Q11/Q15c): a line that is not valid JSON, has
+    no integer scene_id, or is not a dict means that scene is incomplete — it is
+    skipped and the file itself stays valid.
+    """
+    p = journal_path(root, chapter)
+    scenes: list[dict] = []
     if not p.exists():
-        return done
+        return scenes
     for raw in p.read_text(encoding="utf-8").splitlines():
         try:
-            done.add(int(json.loads(raw)["scene_id"]))
+            d = json.loads(raw)
+            if not isinstance(d, dict):
+                continue  # valid JSON but not a scene record
+            scenes.append({"scene_id": int(d["scene_id"]), "scene_text": d.get("scene_text", ""),
+                           "hook": d.get("hook", ""), "beats": list(d.get("beats", []) or [])})
         except (ValueError, KeyError, TypeError):
             continue  # corrupt line = scene incomplete, file stays valid
-    return done
+    return scenes
+
+def completed_scene_ids(root, chapter: int) -> set[int]:
+    return {s["scene_id"] for s in load_scenes(root, chapter)}

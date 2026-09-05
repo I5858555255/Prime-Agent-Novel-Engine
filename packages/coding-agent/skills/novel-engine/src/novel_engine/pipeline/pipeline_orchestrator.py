@@ -19,7 +19,7 @@ from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.agents.chapter_director import ChapterDirector
 from novel_engine.agents.writer_agent import SynopsisAgent, WriterAgent
 from novel_engine.agents.scene_schema import SceneOutput
-from novel_engine.pipeline.chapter_journal import append_scene, completed_scene_ids
+from novel_engine.pipeline.chapter_journal import append_scene, completed_scene_ids, load_scenes
 from novel_engine.agents.reviewer_agent import ReviewerAgent
 from novel_engine.agents.pacing_advisor import PacingAdvisor
 from novel_engine.core.memory_manager import MemoryManager
@@ -922,20 +922,9 @@ class PipelineOrchestrator:
                                f"scene {getattr(s, 'scene_id', '?')}: {je}")
 
     def _load_journal_scenes(self, chapter_num: int) -> list:
-        """D1 resume：从 journal 重建已落盘场景（坏行按 corrupt-line 规则跳过）。"""
-        import json as _json
-        # 路径与 chapter_journal._path 同构（chapters/draft/chapter_{n}_partial.jsonl）
-        p = self.root / "chapters" / "draft" / f"chapter_{chapter_num}_partial.jsonl"
-        scenes: list = []
-        if not p.exists():
-            return scenes
-        for raw in p.read_text(encoding="utf-8").splitlines():
-            try:
-                d = _json.loads(raw)
-                scenes.append(SceneOutput(int(d["scene_id"]), d.get("scene_text", ""),
-                                          d.get("hook", ""), list(d.get("beats", []) or [])))
-            except (ValueError, KeyError, TypeError):
-                continue  # corrupt line = scene incomplete
+        """D1 resume：从 journal 重建已落盘场景（坏行按 corrupt-line 规则跳过，见 chapter_journal.load_scenes）。"""
+        scenes = [SceneOutput(d["scene_id"], d["scene_text"], d["hook"], d["beats"])
+                  for d in load_scenes(self.root, chapter_num)]
         scenes.sort(key=lambda s: s.scene_id)
         return scenes
 
