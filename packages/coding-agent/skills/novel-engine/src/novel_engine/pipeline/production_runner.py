@@ -44,6 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger("production")
 
 
+# Q10-locked observation-period constant (record-only), intentionally not in quality_policy — do not move it into the table.
 FORCED_DRAFT_ALERT_RATE = 0.15  # Q10 observation period: log only, never pause (revisit after 3 batches)
 
 def summarize_batch(results: list[dict]) -> dict:
@@ -257,12 +258,18 @@ def run_production(num_chapters: int = 0, use_real: bool = True,
     success = (failed == 0 and integrity_ok and
                cost_report['budget']['within_budget'])
 
+    # Record-only batch observability: merge forced-draft rate, never pause.
+    batch_summary = summarize_batch(results)
+    logger.info(f"Batch forced-draft summary: forced_draft_rate={batch_summary['forced_draft_rate']} (forced_drafts={batch_summary['forced_drafts']}/{batch_summary['total']})")
+
     report = {
         "test_type": "production",
         "total_chapters": num_chapters,
         "passed": passed,
         "failed": failed,
         "results": results,
+        "forced_drafts": batch_summary["forced_drafts"],
+        "forced_draft_rate": batch_summary["forced_draft_rate"],
         "checkpoint_count": checkpoint_count,
         "integrity_ok": integrity_ok,
         "elapsed_seconds": round(elapsed, 2),
