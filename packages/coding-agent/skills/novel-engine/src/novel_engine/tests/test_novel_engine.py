@@ -211,9 +211,11 @@ class TestNovelEngine(unittest.TestCase):
             # 验证流程完成并应用了局部修复
             self.assertTrue(result["success"])
             self.assertEqual(result["chapter"], 1)
-            # Verify at least 2 scenes survived (mock now returns 夜色如墨 rather than 藏经阁)
-            self.assertIn("场景2", orchestrator.current_novel)
-            # 原“藏经阁”断言已过时，改为检查场景标记完整性
+            # B2 zero-scaffolding：成品只含纯叙事，断言叙事正文存在且无脚手架标记残留
+            novel_text = orchestrator.current_novel
+            self.assertIn("夜色如墨", novel_text)
+            for marker in ("【", "】", "※", "章末钩子"):
+                self.assertNotIn(marker, novel_text)
             orchestrator.close()
         finally:
             try:

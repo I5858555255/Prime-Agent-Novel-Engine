@@ -212,8 +212,9 @@ async def generate_scene_unit(
 ):
     """Generate a SINGLE scene. This is the unit an RLM subagent produces.
 
-    Returns the scene text (str). A subagent spawned via ``rlm('sub-task')``
-    calls this and sends the result back over ``agent_message``.
+    Returns the structured scene (SceneOutput: scene_text + hook + beats).
+    A subagent spawned via ``rlm('sub-task')`` calls this and sends the
+    result back over ``agent_message``.
     """
     orch = _build_orchestrator(project_root, use_mock=use_mock)
     content = orch.writer.generate_scene(
@@ -223,21 +224,14 @@ async def generate_scene_unit(
     return content
 
 
-def _assemble_chapter(scene_contents: dict, task_card: dict) -> str:
-    """Build full chapter text from a {scene_num: content} map (mirrors writer)."""
-    parts = []
-    for scene_num in sorted(scene_contents):
-        content = scene_contents[scene_num]
-        bp = next(
-            (b for b in task_card.get("scene_blueprints", [])
-             if b.get("scene_num") == scene_num), {})
-        location = bp.get("location", "")
-        parts.append(f"【场景{scene_num}：{location}】\n\n{content}\n\n※\n")
-    full = "\n".join(parts)
-    hook = task_card.get("chapter_hook", "")
-    if hook:
-        full += f"\n\n---\n*（章末钩子：{hook}）*"
-    return full
+def _assemble_chapter(scene_contents: dict, assembler) -> str:
+    """Build full chapter text from a {scene_num: SceneOutput} map.
+
+    Delegates to the canonical pipeline assembler (zero scaffolding by
+    construction: scene_text only, last hook raw-appended, no templates).
+    """
+    scenes = [scene_contents[n] for n in sorted(scene_contents)]
+    return assembler(scenes)
 
 
 async def generate_chapter_with_subagents(chapter_num: int, project_root=None, use_mock=False):
@@ -288,7 +282,7 @@ async def generate_chapter_with_subagents(chapter_num: int, project_root=None, u
         logger.warning("RLM dispatch failed (%s); fallback to standard pipeline", exc)
         return await generate_chapter(ch, project_root=project_root, use_mock=use_mock)
 
-    full = _assemble_chapter(scene_contents, task_card)
+    full = _assemble_chapter(scene_contents, orch._assemble_chapter_text)
     orch.current_novel = full
     try:
         staged = orch._stage_review(ch, task_card, synopsis, full, world_state)
