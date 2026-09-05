@@ -343,35 +343,26 @@ class PipelineOrchestrator:
             novel_text = self._stage_write(task_card, synopsis)
             novel_text = self._ensure_chinese(novel_text)
             self.current_novel = novel_text
-            # P1 场景数校验：正文场景数必须与任务卡一致，缺失则补写（避免 high 阻断）
+            # P1 场景数校验（B2 结构版）：结构化场景按构造保证数量（generate_full_chapter
+            # 缺任一场景即抛错走 WRITE 失败路径，不会静默缺失），故不再按标记计数。
+            # 此处仅做结构复核：计数不一致时按蓝图补生成缺失场景，并经
+            # _assemble_chapter_text 重组（无标记拼接）。writer.last_scenes 为空
+            #（mock/改写等未走结构化生成的路径）则跳过。
             try:
-                expected = len(task_card.get("scene_blueprints", []) or [])
-                # 用 purified 后的 ※ 分隔计数，避免标记干扰
-                from novel_engine.quality.repetition_detector import purify_novel_for_publish
-                import re as _re2
-                # 统计正文中实际场景标记数（净化前 draft 含 【场景，净化后无，故用 draft 计数）
-                draft_for_count = getattr(self, "_draft_novel", novel_text)
-                actual = len(_re2.findall(r"【场景\d+：", draft_for_count))
-                if expected and actual != expected:
-                    logger.warning(f"Scene count mismatch: expected {expected}, got {actual} (chapter {chapter_num}),补写缺失场景")
-                    # 补写缺失场景
-                    for bp in task_card.get("scene_blueprints", []):
-                        marker = f"【场景{bp.get('scene_num')}："
-                        if marker not in draft_for_count:
+                expected_bps = task_card.get("scene_blueprints", []) or []
+                staged = list(getattr(self.writer, "last_scenes", None) or [])
+                if staged and expected_bps and len(staged) != len(expected_bps):
+                    logger.warning(f"Scene count mismatch: expected {len(expected_bps)}, got {len(staged)} (chapter {chapter_num}),补写缺失场景")
+                    have_ids = {s.scene_id for s in staged}
+                    for bp in expected_bps:
+                        if bp.get("scene_num") not in have_ids:
                             try:
-                                missing = self.writer.generate_scene(task_card, bp, synopsis.get("synopsis",""), self.current_novel[-600:] if len(self.current_novel)>600 else "", "")
-                                # 追加到当前正文与 draft
-                                novel_text = self.current_novel + f"\n\n{marker}{bp.get('location','')}】\n\n{missing}\n\n※\n"
-                                self.current_novel = novel_text
-                                # 同步更新 draft
-                                try:
-                                    with open(self.root / "chapters" / "draft" / f"chapter_{chapter_num}_partial.txt", "a", encoding="utf-8") as pf:
-                                        pf.write(f"{marker}{bp.get('location','')}】\n\n{missing}\n\n※\n")
-                                except Exception:
-                                    pass
-                                draft_for_count += f"\n{marker}"
+                                staged.append(self.writer.generate_scene(task_card, bp, synopsis.get("synopsis",""), self.current_novel[-600:] if len(self.current_novel)>600 else "", ""))
                             except Exception as ce:
                                 logger.error(f"补写缺失场景 {bp.get('scene_num')} 失败: {ce}")
+                    staged.sort(key=lambda s: s.scene_id)
+                    novel_text = self._assemble_chapter_text(staged)
+                    self.current_novel = novel_text
             except Exception as sce:
                 logger.warning(f"Scene count check skipped: {sce}")
         except Exception as e:
@@ -892,6 +883,13 @@ class PipelineOrchestrator:
             logger.info(f"Deterministic soft issues (不阻断) for ch{ch_num}: {soft_issues}")
         return {"passed": not issues, "issues": issues, "soft_issues": soft_issues, "purified": purified}
 
+    def _assemble_chapter_text(self, scenes) -> str:
+        """B2 管道组装：只拼 scene_text；末场景 hook 原样另起段落追加，无任何模板包装。"""
+        chapter_text = "\n\n".join(s.scene_text for s in scenes)
+        if scenes[-1].hook:
+            chapter_text = chapter_text.rstrip() + "\n\n" + scenes[-1].hook
+        return chapter_text
+
     def _stage_write(self, task_card: dict, synopsis: dict) -> str:
         """阶段4：正文生成 + 润色（带确定性校验与成品净化）。"""
         self.state_machine.transition(ChapterPhase.WRITE_SCENE)
@@ -1058,7 +1056,9 @@ class PipelineOrchestrator:
             if not bp:
                 continue
             try:
-                new_scene = self.writer.generate_scene(task_card, bp, synopsis_text, "", "")
+                new_scene_out = self.writer.generate_scene(task_card, bp, synopsis_text, "", "")
+                # B2：generate_scene 返回 SceneOutput；热插拔缝合的是纯叙事 scene_text
+                new_scene = new_scene_out.scene_text if hasattr(new_scene_out, "scene_text") else new_scene_out
             except Exception as e:
                 logger.warning(f"Incremental patch scene {sn} generation failed: {e}")
                 return None

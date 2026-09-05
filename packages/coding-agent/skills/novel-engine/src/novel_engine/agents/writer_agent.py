@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from novel_engine.core.llm_client import LLMClient, call_llm
 from novel_engine.core.quality_policy import load_quality_policy, derive_scene_targets
+from novel_engine.agents.scene_schema import SceneOutput, parse_scene
 
 logger = logging.getLogger(__name__)
 def _get_root():
@@ -155,12 +156,18 @@ class WriterAgent:
 - 严格执行 foreshadow_actions 中的所有伏笔指令
 - 禁止人物台词风格与设定不符
 - 禁止场景内容重复
-- 严禁超龄认知（婴儿期出现“棋局/十年后”等未来知识直接判失败）"""
+- 严禁超龄认知（婴儿期出现“棋局/十年后”等未来知识直接判失败）
+
+输出契约：
+- 输出必须为严格 JSON（结构见用户指令中的“结构化输出契约”），scene_text 为纯叙事正文
+- 严禁输出散文体或任何脚手架标记（【】/※/（）/章末钩子字样）"""
 
     def __init__(self, llm_client: Optional[LLMClient] = None, project_root: str | Path = None):
         self.llm = llm_client or LLMClient()
         self.root = Path(project_root or Path(__file__).parent.parent)
         self._bible_cache: dict[str, str] = {}
+        # B2：最近一次成功生成的结构化场景（供管道做结构复核；mock/改写路径下为空）
+        self.last_scenes: list[SceneOutput] = []
         self._load_bible_cache()
 
     def _load_bible_cache(self):
@@ -186,8 +193,30 @@ class WriterAgent:
         text = "\n\n".join(parts)
         return text[:max_chars]
 
-    def generate_scene(self, task_card: dict, scene_blueprint: dict, chapter_synopsis: str, previous_context: str = "", pacing_constraints: str = "", temperature_override: Optional[float] = None) -> str:
-        """生成单个场景的正文。"""
+    def _scene_strict_models(self) -> list:
+        """B2：strict 模型 = 所绑 phase 列表首位（B1 语义），其余 lenient。
+
+        绑定 ModelRouter 时直接取其 models[0]；stub/mock 等无 models 属性时，
+        回退读本工程 config 的 scenes phase 首位；最终兜底为已知首位模型名。
+        """
+        models = getattr(self.llm, "models", None)
+        if models:
+            return [models[0]]
+        try:
+            cfg = json.loads((self.root / "config" / "runtime_config.json").read_text(encoding="utf-8"))
+            head = cfg.get("model_router", {}).get("phases", {}).get("scenes", [])
+            if head:
+                return [head[0]]
+        except (OSError, ValueError, KeyError):
+            pass
+        return ["deepseek-ai/DeepSeek-V3.2"]
+
+    def generate_scene(self, task_card: dict, scene_blueprint: dict, chapter_synopsis: str, previous_context: str = "", pacing_constraints: str = "", temperature_override: Optional[float] = None) -> SceneOutput:
+        """生成单个场景（结构化契约）：模型只输出严格 JSON，经 parse_scene 解析为 SceneOutput。
+
+        hook 为独立字段收集，永不与标记拼接进正文。strict 模型解析失败则再生一次，
+        仍失败则抛错走补丁路径（绝不用正则清洗凑形）。
+        """
         chapter_num = task_card.get("chapter_num", 0)
         scene_num = scene_blueprint.get("scene_num", 0)
 
@@ -236,22 +265,38 @@ class WriterAgent:
 {pacing_block}
 节奏控制：场景内部要有张力起伏（冲突酝酿→爆发→余波），避免平铺直叙；对话与动作交替推进。
 创新亮点：多用生动具体的细节和新鲜比喻，可安排小节内的意外转折，避免套路化表达。
-目标字数：{scene_blueprint.get('word_count_target', _fallback_target)}字左右"""
+目标字数：{scene_blueprint.get('word_count_target', _fallback_target)}字左右
 
-        try:
-            content = call_llm(
-                prompt=prompt,
-                system_prompt=self.SCENE_SYSTEM_PROMPT,
-                client=self.llm,
+## 结构化输出契约（强制）
+只输出严格JSON {{"scene_id","scene_text","hook","beats"}}；scene_text 为纯叙事，禁任何【】括号指令；hook 为完整自然语句，可为空
+- scene_id 取本场景 scene_num（{scene_num}）；beats 为本场景情节点字符串数组
+- hook 为独立字段，不得拼入 scene_text，不得加任何括号/标记包装（如【】/（）/章末钩子字样）"""
+
+        strict_models = self._scene_strict_models()
+
+        def _call_once() -> SceneOutput:
+            # 直调 chat_completion 以保留 ModelRouter 的 _model_used 戳（call_llm 会剥离它）
+            result = self.llm.chat_completion(
+                [{"role": "system", "content": self.SCENE_SYSTEM_PROMPT},
+                 {"role": "user", "content": prompt}],
                 temperature=temperature_override,
             )
-            logger.info(f"Scene {scene_num} generated for chapter {chapter_num}")
-            return content
-        except Exception as e:
-            logger.error(f"Failed to generate scene {scene_num} for chapter {chapter_num}: {e}")
-            raise
+            model_used = result.get("_model_used", "") if isinstance(result, dict) else ""
+            raw = result.get("content", "") if isinstance(result, dict) else str(result)
+            return parse_scene(raw or "", model_used, strict_models)
 
-    def _generate_scene_sync(self, task_card, scene_blueprint, chapter_synopsis, previous_context="", pacing_constraints=""):
+        try:
+            out = _call_once()
+        except ValueError:
+            logger.warning(f"Scene {scene_num} structured parse failed, regenerating once (chapter {chapter_num})")
+            out = _call_once()  # 仍失败则抛给补丁路径
+        # B1 遗留：lenient 散文回退的 scene_id 为 0，此处赋真实场景号
+        if not out.scene_id:
+            out.scene_id = int(scene_blueprint.get("scene_num", 0) or 0)
+        logger.info(f"Scene {scene_num} generated for chapter {chapter_num}")
+        return out
+
+    def _generate_scene_sync(self, task_card, scene_blueprint, chapter_synopsis, previous_context="", pacing_constraints="") -> SceneOutput:
         """同步生成单个场景（用于顺序执行）。"""
         return self.generate_scene(task_card, scene_blueprint, chapter_synopsis, previous_context, pacing_constraints)
 
@@ -289,7 +334,7 @@ class WriterAgent:
 
         return groups
 
-    def _generate_group(self, task_card: dict, group: list[dict], synopsis_text: str, pacing_constraints: str = "", temperature_override: Optional[float] = None) -> list[tuple[dict, str]]:
+    def _generate_group(self, task_card: dict, group: list[dict], synopsis_text: str, pacing_constraints: str = "", temperature_override: Optional[float] = None) -> list[tuple[dict, SceneOutput]]:
         """顺序生成一个场景组（组内场景共享人物，存在上下文依赖）。"""
         group_contents = []
         previous_context = ""
@@ -297,22 +342,25 @@ class WriterAgent:
             content = self.generate_scene(task_card, bp, synopsis_text, previous_context, pacing_constraints, temperature_override)
             group_contents.append((bp, content))
             previous_context = "\n\n※\n\n".join(
-                c for _, c in group_contents[-3:]
-            ) if len(group_contents) >= 3 else "\n\n".join(c for _, c in group_contents)
+                c.scene_text for _, c in group_contents[-3:]
+            ) if len(group_contents) >= 3 else "\n\n".join(c.scene_text for _, c in group_contents)
         return group_contents
 
-    def generate_full_chapter(self, task_card: dict, synopsis: dict, pacing_constraints: str = "",
-                              temperature_override: Optional[float] = None) -> str:
+    def generate_scenes(self, task_card: dict, synopsis: dict, pacing_constraints: str = "",
+                        temperature_override: Optional[float] = None) -> list[SceneOutput]:
         """
-        生成完整章节正文。
+        并发生成本章全部结构化场景。
         P1 修复：场景并发（3 场景并行，~2-3min），共享 synopsis 与 beat 去重提示，无需前序上下文串行。
+        返回按 scene_num 排序的 SceneOutput 列表；任一场景契约失败即抛错。
+        成功后记 self.last_scenes 供管道结构复核。
         """
         chapter_num = task_card.get("chapter_num", 0)
         scenes = task_card.get("scene_blueprints", []) or task_card.get("scenes", [])
         synopsis_text = synopsis.get("synopsis", "")
 
         if not scenes:
-            return ""
+            self.last_scenes = []
+            return []
 
         # 跨章已用 beat 预取（仅一次，避免每场景重复 IO）
         try:
@@ -342,40 +390,38 @@ class WriterAgent:
             content = self.generate_scene(task_card, bp, synopsis_text, "", combined_pacing, temperature_override)
             return (bp, content)
 
-        all_scene_contents: list[tuple[dict, str]] = []
+        all_scene_contents: list[tuple[dict, SceneOutput]] = []
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scene") as ex:
             fut2bp = {ex.submit(_do_one, bp): bp for bp in scenes}
             for fut in as_completed(fut2bp):
                 bp, content = fut.result()
                 all_scene_contents.append((bp, content))
-                # 原子落盘：每场景完成即追加（线程安全：追加写）
+                # 原子落盘：每场景完成即追加（B2：仅存纯叙事 scene_text，无任何标记；线程安全：追加写）
                 try:
                     with open(partial_path, "a", encoding="utf-8") as pf:
-                        pf.write(f"【场景{bp.get('scene_num')}：{bp.get('location','')}】\n\n{content}\n\n※\n")
+                        pf.write(f"{content.scene_text}\n\n")
                 except Exception:
                     pass
         # 按 scene_num 排序确保顺序
         all_scene_contents.sort(key=lambda x: x[0].get("scene_num", 0))
+        self.last_scenes = [content for _, content in all_scene_contents]
+        return self.last_scenes
 
-        full_chapter_parts = []
-        for bp, content in all_scene_contents:
-            scene_num = bp.get('scene_num', 0)
-            location = bp.get('location', '')
-            full_chapter_parts.append(
-                f"【场景{scene_num}：{location}】\n\n{content}\n\n※\n"
-            )
-
-        full_chapter = "\n".join(full_chapter_parts)
-
-        # P0-删除可见标记拼接：chapter_hook 不以 “（章末钩子：...）” 形式拼入正文
-        # 改为将 hook 作为“本章结尾须以叙事方式自然收束的悬念”注入末场景的写作指令，末场景自然落成钩子
-        # 保留 hook 仅用于指令，不直接拼入正文，确保成品无括号指令泄漏
-        # 若末场景内容未以句读收束，补句号
-        if full_chapter and full_chapter.strip() and full_chapter.strip()[-1] not in "。！？…）」”":
-            full_chapter = full_chapter.rstrip() + "。"
-
-        logger.info(f"Full chapter {chapter_num} generated ({len(full_chapter)} chars)")
-        return full_chapter
+    def generate_full_chapter(self, task_card: dict, synopsis: dict, pacing_constraints: str = "",
+                              temperature_override: Optional[float] = None) -> str:
+        """
+        生成完整章节正文：并发结构化场景 + 组装（仅拼 scene_text，末场景 hook 原样另起段落追加）。
+        组装语义与 PipelineOrchestrator._assemble_chapter_text 一致（管道侧为权威实现，本处为兼容封装）。
+        """
+        chapter_num = task_card.get("chapter_num", 0)
+        scenes = self.generate_scenes(task_card, synopsis, pacing_constraints, temperature_override)
+        if not scenes:
+            return ""
+        chapter_text = "\n\n".join(s.scene_text for s in scenes)
+        if scenes[-1].hook:
+            chapter_text = chapter_text.rstrip() + "\n\n" + scenes[-1].hook
+        logger.info(f"Full chapter {chapter_num} generated ({len(chapter_text)} chars)")
+        return chapter_text
 
 
     def _polish_by_scenes(self, chapter_text: str, task_card: dict, client) -> str:
