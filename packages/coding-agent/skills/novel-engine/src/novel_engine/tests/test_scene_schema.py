@@ -1,4 +1,11 @@
-from novel_engine.agents.scene_schema import parse_scene
+from novel_engine.agents.scene_schema import extract_beats_fallback, parse_scene
+
+
+def test_fallback_extracts_from_text_not_self_report():
+    text = "陈老根抱起婴儿走出迷雾，脚步沉重而坚定。村民在槐树下质疑婴儿的来历，议论纷纷不肯散去。"
+    beats = extract_beats_fallback(text)
+    assert any("陈老根" in b or "婴儿" in b for b in beats)
+    assert len(beats) >= 1
 
 STRICT = ["deepseek-ai/DeepSeek-V3.2"]
 

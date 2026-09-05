@@ -21,6 +21,13 @@ def _from_prose(text: str) -> dict:
     return {"scene_id": 0, "scene_text": text.strip(), "hook": "", "beats": []}
 
 
+def extract_beats_fallback(scene_text: str, limit: int = 3) -> list[str]:
+    import re
+    sents = [s.strip() for s in re.split(r"[。！？]", scene_text) if len(s.strip()) > 12]
+    scored = sorted(sents, key=lambda s: (len(set(re.findall(r"[\u4e00-\u9fa5]{2,}", s))), -len(s)))
+    return scored[:limit]
+
+
 def parse_scene(raw: str, model_used: str, strict_models: list) -> "SceneOutput":
     strict = model_used in (strict_models or [])
     data = None
