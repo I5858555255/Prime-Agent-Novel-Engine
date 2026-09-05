@@ -678,25 +678,18 @@ class PipelineOrchestrator:
         else:
             if force_best and leak_issues:
                 logger.warning(f"Force publish blocked by leak: {leak_issues}")
-            can_publish = bool(result.get("success")) and (cur_score >= publication_line) and not has_high_issue and not det_issues and not leak_issues and not any(_forbidden_violation_is_blocking(_commit_policy, v) for v in (violations or []))
+            from novel_engine.pipeline.quality_gate import evaluate_publish
+            verdict = evaluate_publish(score=cur_score, reviewer_issues=review.get("issues", []),
+                                       det_hard=det_issues, leak=leak_issues, violations=violations, policy=_commit_policy)
+            can_publish = verdict["publish"]
         if has_high_issue:
             logger.warning(f"Chapter {chapter_num} has high/block issue → force non-publish (score={cur_score} high={high_list})")
-            can_publish = False
-            # 若为 force_best 场景，已在上方处理，此处不再覆盖
-            if force_best:
-                can_publish = True
         if det_issues:
             logger.warning(f"Chapter {chapter_num} deterministic hard gate failed → force non-publish (score={cur_score} det_hard={det_issues} det_soft={det_soft})")
-            can_publish = False
-            if force_best:
-                can_publish = True
         elif det_soft:
             logger.info(f"Chapter {chapter_num} deterministic soft issues (不阻断): {det_soft}")
         if violations and any(_forbidden_violation_is_blocking(_commit_policy, v) for v in violations):
             logger.warning(f"Chapter {chapter_num} forbidden policy-hard → force non-publish: {violations}")
-            can_publish = False
-            if force_best:
-                can_publish = True
 
         if not can_publish:
             try:
