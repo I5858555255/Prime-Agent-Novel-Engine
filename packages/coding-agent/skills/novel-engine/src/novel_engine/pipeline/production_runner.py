@@ -44,6 +44,17 @@ logging.basicConfig(
 logger = logging.getLogger("production")
 
 
+FORCED_DRAFT_ALERT_RATE = 0.15  # Q10 observation period: log only, never pause (revisit after 3 batches)
+
+def summarize_batch(results: list[dict]) -> dict:
+    total = max(1, len(results))
+    drafts = sum(1 for r in results if not r.get("published", True))
+    rate = drafts / total
+    return {"total": len(results), "forced_drafts": drafts,
+            "forced_draft_rate": round(rate, 3), "paused": False,
+            "alert": rate >= FORCED_DRAFT_ALERT_RATE}
+
+
 def print_progress(chapter: int, total: int, elapsed: float,
                    passed: int, failed: int, avg_score: float,
                    cost_usd: float, budget_max: float):

@@ -23,3 +23,9 @@ def test_dimension_fallback_matches_orchestrator_log():
     r = evaluate_publish(score=90, reviewer_issues=[issue], det_hard=[], leak=[], violations=[], policy=DEFAULT_POLICY)
     assert r["publish"] is False
     assert _review_issue_is_blocking(DEFAULT_POLICY, issue) is True
+
+def test_forced_draft_rate_recorded_not_enforced(tmp_path):
+    from novel_engine.pipeline.production_runner import summarize_batch
+    rep = summarize_batch([{"published": True}, {"published": False, "draft": True}] * 5)
+    assert rep["forced_draft_rate"] == 0.5
+    assert rep["paused"] is False  # record-only during observation period
