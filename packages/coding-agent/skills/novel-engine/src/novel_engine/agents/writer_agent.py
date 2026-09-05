@@ -354,7 +354,6 @@ class WriterAgent:
         返回按 scene_num 排序的 SceneOutput 列表；任一场景契约失败即抛错。
         成功后记 self.last_scenes 供管道结构复核。
         """
-        chapter_num = task_card.get("chapter_num", 0)
         scenes = task_card.get("scene_blueprints", []) or task_card.get("scenes", [])
         synopsis_text = synopsis.get("synopsis", "")
 
@@ -369,13 +368,8 @@ class WriterAgent:
             _recent_beats = _mm.get_recent_beats(limit=5)
         except Exception:
             _recent_beats = []
-        # 原子落盘：章节开始时清空旧 partial
-        partial_path = self.root / "chapters" / "draft" / f"chapter_{chapter_num}_partial.txt"
-        try:
-            partial_path.parent.mkdir(parents=True, exist_ok=True)
-            partial_path.write_text("", encoding="utf-8")
-        except Exception:
-            pass
+        # Runner-owned persistence (D1): Writer produces memory objects only.
+        # The orchestrator journals validated scenes via chapter_journal.append_scene.
         # 场景并发：独立场景组并行，组内无需上下文依赖（同任务卡，已通过 beat 去重）
         from concurrent.futures import ThreadPoolExecutor, as_completed
         max_workers = max(1, min(len(scenes), 4))
@@ -396,12 +390,6 @@ class WriterAgent:
             for fut in as_completed(fut2bp):
                 bp, content = fut.result()
                 all_scene_contents.append((bp, content))
-                # 原子落盘：每场景完成即追加（B2：仅存纯叙事 scene_text，无任何标记；线程安全：追加写）
-                try:
-                    with open(partial_path, "a", encoding="utf-8") as pf:
-                        pf.write(f"{content.scene_text}\n\n")
-                except Exception:
-                    pass
         # 按 scene_num 排序确保顺序
         all_scene_contents.sort(key=lambda x: x[0].get("scene_num", 0))
         self.last_scenes = [content for _, content in all_scene_contents]

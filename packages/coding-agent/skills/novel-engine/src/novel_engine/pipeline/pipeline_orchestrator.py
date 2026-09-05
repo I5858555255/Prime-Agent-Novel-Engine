@@ -18,6 +18,8 @@ from novel_engine.core.quality_policy import load_quality_policy, is_blocking
 from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.agents.chapter_director import ChapterDirector
 from novel_engine.agents.writer_agent import SynopsisAgent, WriterAgent
+from novel_engine.agents.scene_schema import SceneOutput
+from novel_engine.pipeline.chapter_journal import append_scene, completed_scene_ids
 from novel_engine.agents.reviewer_agent import ReviewerAgent
 from novel_engine.agents.pacing_advisor import PacingAdvisor
 from novel_engine.core.memory_manager import MemoryManager
@@ -357,7 +359,14 @@ class PipelineOrchestrator:
                     for bp in expected_bps:
                         if bp.get("scene_num") not in have_ids:
                             try:
-                                staged.append(self.writer.generate_scene(task_card, bp, synopsis.get("synopsis",""), self.current_novel[-600:] if len(self.current_novel)>600 else "", ""))
+                                new_scene = self.writer.generate_scene(task_card, bp, synopsis.get("synopsis",""), self.current_novel[-600:] if len(self.current_novel)>600 else "", "")
+                                staged.append(new_scene)
+                                try:
+                                    append_scene(self.root, chapter_num,
+                                                 {"scene_id": new_scene.scene_id, "scene_text": new_scene.scene_text,
+                                                  "hook": new_scene.hook, "beats": new_scene.beats})
+                                except Exception as je:
+                                    logger.warning(f"Journal append failed for补写 scene {bp.get('scene_num')}: {je}")
                             except Exception as ce:
                                 logger.error(f"补写缺失场景 {bp.get('scene_num')} 失败: {ce}")
                     staged.sort(key=lambda s: s.scene_id)
@@ -890,12 +899,80 @@ class PipelineOrchestrator:
             chapter_text = chapter_text.rstrip() + "\n\n" + scenes[-1].hook
         return chapter_text
 
+    def _journal_validated_scenes(self, chapter_num: int) -> None:
+        """D1 runner-owned journaling：落盘每个验证通过的结构化场景。
+
+        Writer 只产出内存对象，持久化归 runner 层。写失败只记日志，
+        不阻断正文流（journal 是可重建的派生状态）。已落盘 id 跳过，
+        使章节重试幂等（completed_scene_ids 为集合，重复行无害）。
+        """
+        try:
+            done = completed_scene_ids(self.root, chapter_num)
+        except Exception:
+            done = set()
+        for s in (getattr(self.writer, "last_scenes", None) or []):
+            if s.scene_id in done:
+                continue
+            try:
+                append_scene(self.root, chapter_num,
+                             {"scene_id": s.scene_id, "scene_text": s.scene_text,
+                              "hook": s.hook, "beats": s.beats})
+            except Exception as je:
+                logger.warning(f"Journal append failed for chapter {chapter_num} "
+                               f"scene {getattr(s, 'scene_id', '?')}: {je}")
+
+    def _load_journal_scenes(self, chapter_num: int) -> list:
+        """D1 resume：从 journal 重建已落盘场景（坏行按 corrupt-line 规则跳过）。"""
+        import json as _json
+        # 路径与 chapter_journal._path 同构（chapters/draft/chapter_{n}_partial.jsonl）
+        p = self.root / "chapters" / "draft" / f"chapter_{chapter_num}_partial.jsonl"
+        scenes: list = []
+        if not p.exists():
+            return scenes
+        for raw in p.read_text(encoding="utf-8").splitlines():
+            try:
+                d = _json.loads(raw)
+                scenes.append(SceneOutput(int(d["scene_id"]), d.get("scene_text", ""),
+                                          d.get("hook", ""), list(d.get("beats", []) or [])))
+            except (ValueError, KeyError, TypeError):
+                continue  # corrupt line = scene incomplete
+        scenes.sort(key=lambda s: s.scene_id)
+        return scenes
+
     def _stage_write(self, task_card: dict, synopsis: dict) -> str:
         """阶段4：正文生成 + 润色（带确定性校验与成品净化）。"""
         self.state_machine.transition(ChapterPhase.WRITE_SCENE)
         synopsis_text = synopsis.get("synopsis", "")
         pacing_constraints = PacingAdvisor().pre_write_constraints(synopsis_text)
-        novel_text = self.writer.generate_full_chapter(task_card, synopsis, pacing_constraints)
+        chapter_num = int(task_card.get("chapter_num", 0) or 0)
+        # D1 resume-skip：journal 已有场景不再重生成，只生成缺失场景
+        bps = task_card.get("scene_blueprints", []) or []
+        done_ids = completed_scene_ids(self.root, chapter_num) if bps else set()
+        need_merge = False
+        if done_ids:
+            missing = [bp for bp in bps if int(bp.get("scene_num", 0) or 0) not in done_ids]
+            need_merge = True
+            if missing:
+                logger.info(f"Resume chapter {chapter_num}: skip journaled {sorted(done_ids)}, "
+                            f"generate {[b.get('scene_num') for b in missing]}")
+                gen_card = dict(task_card, scene_blueprints=missing)
+                novel_text = self.writer.generate_full_chapter(gen_card, synopsis, pacing_constraints)
+                self._journal_validated_scenes(chapter_num)
+            else:
+                logger.info(f"Resume chapter {chapter_num}: all scenes journaled {sorted(done_ids)}, reuse journal")
+                novel_text = ""
+        else:
+            novel_text = self.writer.generate_full_chapter(task_card, synopsis, pacing_constraints)
+            self._journal_validated_scenes(chapter_num)
+        if need_merge:
+            # resume 合并：journal 场景为底，新生成场景覆盖同 id，按 scene_id 排序组装
+            journaled = {s.scene_id: s for s in self._load_journal_scenes(chapter_num)}
+            for s in (getattr(self.writer, "last_scenes", None) or []):
+                journaled[s.scene_id] = s
+            merged = [journaled[k] for k in sorted(journaled)]
+            if merged:
+                self.writer.last_scenes = merged
+                novel_text = self._assemble_chapter_text(merged)
         self.state_machine.transition(ChapterPhase.POLISH)
         novel_text = self.writer.polish_chapter(novel_text, task_card, llm_client=self.polish_router)
         # 成品净化：草稿保留标记供 patcher，发布版剥离（单一净化源，章号强制校正）
@@ -1123,6 +1200,7 @@ class PipelineOrchestrator:
                 self._rollback_world_to(chapter_num - 1)
                 novel = self.writer.generate_full_chapter(
                     task_card, synopsis, None, temperature_override=temps[i % len(temps)])
+                self._journal_validated_scenes(chapter_num)
                 novel = self.writer.polish_chapter(novel, task_card, llm_client=self.polish_router)
                 novel = self._ensure_chinese(novel)
                 review = self._stage_review(chapter_num, task_card, synopsis, novel, world_state)
