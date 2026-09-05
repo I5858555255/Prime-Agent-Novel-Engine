@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from novel_engine.core.llm_client import LLMClient, call_llm
+from novel_engine.core.quality_policy import load_quality_policy, derive_scene_targets, is_blocking
 from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.core.memory_manager import MemoryManager
 from novel_engine.engine.db import StateDB
@@ -317,6 +318,9 @@ class ChapterDirector:
             if fs.get("id") in foreshadow_ids
         ]
 
+        # 单一策略源：场景字数目标来自 quality_policy（单场景卡独占整章目标）
+        _policy = load_quality_policy(self.root)
+        _scene_targets = derive_scene_targets(_policy["chapter_target_chars"], 1)
         task_card = {
             "chapter_num": chapter_num,
             "core_goal": node.get("description", ""),
@@ -337,7 +341,7 @@ class ChapterDirector:
                 "goal": node.get("description", ""),
                 "conflict": node.get("description", ""),
                 "emotion": node.get("emotional_tone", ""),
-                "word_count_target": 2000,
+                "word_count_target": _scene_targets[0],
             }],
             "foreshadow_actions": [
                 {
@@ -421,10 +425,12 @@ class ChapterDirector:
         )
 
         # 质量记忆 — 从质量记忆中提取高优先级问题，生成硬约束
+        # 单一策略源：是否成硬约束只读 quality_policy 的 severity_map
         quality_memory = self._load_json(self.root / "memory" / "quality_memory.json")
+        _policy = load_quality_policy(self.root)
         hard_constraints = []
         for issue in quality_memory.get("overused_elements", []):
-            if issue.get("severity") == "high":
+            if is_blocking(_policy, issue.get("category", issue.get("severity", ""))):
                 hard_constraints.append(f"- 禁止出现{issue.get('type', '重复元素')}类问题：{issue.get('description', '')}")
         dynamic_constraints = "\n".join(hard_constraints) if hard_constraints else "无新增动态约束"
 
@@ -452,6 +458,9 @@ class ChapterDirector:
             "volume_outline": volume_outline,
             "author_intent": author_intent,
         }
+
+        # 单一策略源：prompt 示例中的场景字数目标来自 quality_policy（4 场景均分首值）
+        _scene_example = derive_scene_targets(_policy["chapter_target_chars"], 4)[0]
 
         prompt = f"""请为第 {chapter_num} 章生成任务卡。
 
@@ -509,7 +518,7 @@ class ChapterDirector:
       "goal": "本场景目标",
       "conflict": "本场景冲突",
       "emotion": "本场景情绪",
-      "word_count_target": 1800
+      "word_count_target": {_scene_example}
     }}
   ],
   "foreshadow_actions": [
@@ -555,6 +564,10 @@ class ChapterDirector:
         返回结构化 JSON。
         """
         context = self.get_context_for_chapter(chapter_num)
+
+        # 单一策略源：prompt 示例中的场景字数目标来自 quality_policy（4 场景均分首值）
+        _scene_example = derive_scene_targets(
+            load_quality_policy(self.root)["chapter_target_chars"], 4)[0]
 
         prompt = f"""请为第 {chapter_num} 章生成任务卡。
 
@@ -609,7 +622,7 @@ class ChapterDirector:
       "goal": "本场景目标",
       "conflict": "本场景冲突",
       "emotion": "本场景情绪",
-      "word_count_target": 1800
+      "word_count_target": {_scene_example}
     }}
   ],
   "foreshadow_actions": [

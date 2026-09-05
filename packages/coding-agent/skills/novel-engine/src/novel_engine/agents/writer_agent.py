@@ -10,6 +10,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from novel_engine.core.llm_client import LLMClient, call_llm
+from novel_engine.core.quality_policy import load_quality_policy, derive_scene_targets
 
 logger = logging.getLogger(__name__)
 def _get_root():
@@ -207,6 +208,13 @@ class WriterAgent:
         else:
             perspective_block = f"\n\n## 视角与时间线锚点\n- 当前时间：第 {chapter_num} 章\n- 按当前年龄与状态描写心理，禁止时间线穿帮\n"
 
+        # 单一策略源：蓝图缺目标时的兜底来自 quality_policy（按本章场景数均分）
+        _policy = load_quality_policy(self.root)
+        _scenes = task_card.get("scene_blueprints", []) or [scene_blueprint]
+        _targets = derive_scene_targets(_policy["chapter_target_chars"], len(_scenes))
+        _idx = min(max(int(scene_blueprint.get("scene_num", 1) or 1) - 1, 0), len(_targets) - 1)
+        _fallback_target = _targets[_idx]
+
         prompt = f"""请生成第 {chapter_num} 章第 {scene_num} 场景的正文。
 
 ## 章节缩写
@@ -228,7 +236,7 @@ class WriterAgent:
 {pacing_block}
 节奏控制：场景内部要有张力起伏（冲突酝酿→爆发→余波），避免平铺直叙；对话与动作交替推进。
 创新亮点：多用生动具体的细节和新鲜比喻，可安排小节内的意外转折，避免套路化表达。
-目标字数：{scene_blueprint.get('word_count_target', 1000)}字左右"""
+目标字数：{scene_blueprint.get('word_count_target', _fallback_target)}字左右"""
 
         try:
             content = call_llm(

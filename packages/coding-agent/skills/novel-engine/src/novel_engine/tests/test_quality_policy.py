@@ -31,3 +31,15 @@ def test_orchestrator_uses_policy_ratios(monkeypatch, tmp_path):
     from novel_engine.quality.repetition_detector import detect_length_anomaly
     assert detect_length_anomaly("x" * 5000, 7500)["anomaly"] is False
     assert seen["chapter_target_chars"] == 7500
+
+def test_no_hardcoded_severity_in_orchestrator():
+    import pathlib
+    src = pathlib.Path("novel_engine/pipeline/pipeline_orchestrator.py").read_text(encoding="utf-8")
+    assert 'in ("high", "block")' not in src
+    assert 'in ("high","block")' not in src
+
+def test_director_targets_come_from_policy():
+    import pathlib
+    src = pathlib.Path("novel_engine/agents/chapter_director.py").read_text(encoding="utf-8")
+    assert '"word_count_target": 2000' not in src
+    assert '"word_count_target": 1800' not in src
