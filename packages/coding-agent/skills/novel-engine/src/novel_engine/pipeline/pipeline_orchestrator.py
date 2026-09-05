@@ -43,9 +43,10 @@ logger = logging.getLogger(__name__)
 def _review_issue_is_blocking(policy: dict, issue: dict) -> bool:
     """评审 issue 是否阻断：只读 policy severity_map，以 issue 自身维度为类别。
 
-    生产者（reviewer severity 标签）暂不改；比较点按维度查表。
+    生产者（reviewer severity 标签）暂不改；比较点按类别查表。
+    回退顺序与 quality_gate.evaluate_publish 一致：category → dimension → severity。
     """
-    return is_blocking(policy, issue.get("category", issue.get("dimension", "")))
+    return is_blocking(policy, issue.get("category") or issue.get("dimension") or issue.get("severity", ""))
 
 
 def _forbidden_violation_is_blocking(policy: dict, violation: dict) -> bool:
@@ -682,13 +683,13 @@ class PipelineOrchestrator:
             verdict = evaluate_publish(score=cur_score, reviewer_issues=review.get("issues", []),
                                        det_hard=det_issues, leak=leak_issues, violations=violations, policy=_commit_policy)
             can_publish = verdict["publish"]
-        if has_high_issue:
+        if has_high_issue and not can_publish:
             logger.warning(f"Chapter {chapter_num} has high/block issue → force non-publish (score={cur_score} high={high_list})")
-        if det_issues:
+        if det_issues and not can_publish:
             logger.warning(f"Chapter {chapter_num} deterministic hard gate failed → force non-publish (score={cur_score} det_hard={det_issues} det_soft={det_soft})")
         elif det_soft:
             logger.info(f"Chapter {chapter_num} deterministic soft issues (不阻断): {det_soft}")
-        if violations and any(_forbidden_violation_is_blocking(_commit_policy, v) for v in violations):
+        if violations and any(_forbidden_violation_is_blocking(_commit_policy, v) for v in violations) and not can_publish:
             logger.warning(f"Chapter {chapter_num} forbidden policy-hard → force non-publish: {violations}")
 
         if not can_publish:

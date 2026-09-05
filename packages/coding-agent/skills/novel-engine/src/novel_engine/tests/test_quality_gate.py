@@ -14,3 +14,12 @@ def test_length_is_note_only():
     r = evaluate_publish(score=90, reviewer_issues=[], det_hard=["[长度] 超标"], leak=[], violations=[], policy=DEFAULT_POLICY)
     assert r["publish"] is True
     assert "长度" in r["note"]
+
+def test_dimension_fallback_matches_orchestrator_log():
+    # 回退顺序 category → dimension → severity：hard 维度即使 severity 为 low 也阻断，
+    # 且仲裁器与 orchestrator 日志谓词一致。
+    from novel_engine.pipeline.pipeline_orchestrator import _review_issue_is_blocking
+    issue = {"dimension": "scene_missing", "severity": "low", "description": "x"}
+    r = evaluate_publish(score=90, reviewer_issues=[issue], det_hard=[], leak=[], violations=[], policy=DEFAULT_POLICY)
+    assert r["publish"] is False
+    assert _review_issue_is_blocking(DEFAULT_POLICY, issue) is True
