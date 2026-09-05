@@ -7,6 +7,18 @@ def test_fallback_extracts_from_text_not_self_report():
     assert any("陈老根" in b or "婴儿" in b for b in beats)
     assert len(beats) >= 1
 
+
+def test_fallback_sorts_descending_by_keyword_count():
+    lo = "夜色如墨寒风穿林而过久久不散"
+    mid1 = "陈老根抱起婴儿走出迷雾，脚步沉重而坚定"
+    mid2 = "村民在槐树下质疑婴儿的来历，议论纷纷不肯散去"
+    hi = "老槐树下村民围住陈老根，质问婴儿的来历，争吵声惊醒了沉睡的村庄"
+    text = "。".join([lo, mid1, mid2, hi]) + "。"
+    beats = extract_beats_fallback(text, limit=3)
+    assert len(beats) == 3
+    assert "争吵声" in beats[0]
+    assert not any("夜色如墨" in b for b in beats)
+
 STRICT = ["deepseek-ai/DeepSeek-V3.2"]
 
 

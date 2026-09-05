@@ -24,7 +24,7 @@ def _from_prose(text: str) -> dict:
 def extract_beats_fallback(scene_text: str, limit: int = 3) -> list[str]:
     import re
     sents = [s.strip() for s in re.split(r"[。！？]", scene_text) if len(s.strip()) > 12]
-    scored = sorted(sents, key=lambda s: (len(set(re.findall(r"[\u4e00-\u9fa5]{2,}", s))), -len(s)))
+    scored = sorted(sents, key=lambda s: (len(set(re.findall(r"[\u4e00-\u9fa5]{2,}", s))), len(s)), reverse=True)
     return scored[:limit]
 
 
