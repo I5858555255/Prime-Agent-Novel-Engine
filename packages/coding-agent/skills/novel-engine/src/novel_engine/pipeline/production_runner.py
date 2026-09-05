@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from novel_engine.core.llm_client import reset_call_log
 from novel_engine.core.llm_failover import FailoverLLMClient
+from novel_engine.core.checkpoint import CheckpointManager
 from novel_engine.pipeline.pipeline_orchestrator import PipelineOrchestrator
 from novel_engine.pipeline.reset_state import (
     reset_runtime_state,
@@ -56,6 +57,90 @@ def summarize_batch(results: list[dict]) -> dict:
             "alert": rate >= FORCED_DRAFT_ALERT_RATE}
 
 
+# D2: runner-owned resume files. The state machine keeps pure in-memory flow
+# and never touches these paths (pinned by test_state_machine_touches_no_resume_files).
+# resume_state.json reuses the pre-existing {"done": [...]} shape — no format migration.
+RESUME_STATE_FILENAME = "runtime/resume_state.json"
+LAST_SUCCESS_FILENAME = "runtime/last_success_chapter.txt"
+
+
+def _resume_state_path(project_root) -> Path:
+    return Path(project_root) / RESUME_STATE_FILENAME
+
+
+def _last_success_path(project_root) -> Path:
+    return Path(project_root) / LAST_SUCCESS_FILENAME
+
+
+def load_resume_state(project_root=None) -> dict:
+    """Read runner-owned resume state.
+
+    Always returns {"done": [...], "last_success_chapter": int}. A missing or
+    corrupt resume_state.json falls back to the plain-int
+    last_success_chapter.txt pointer, else to empty. Legacy files holding only
+    {"done": [...]} derive last_success_chapter from done.
+    """
+    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    done: list[int] = []
+    last_success = 0
+    json_usable = False
+    try:
+        raw = json.loads(_resume_state_path(root).read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            done = sorted({int(c) for c in raw.get("done", [])})
+            if "last_success_chapter" in raw:
+                last_success = int(raw["last_success_chapter"])
+            elif done:
+                last_success = max(done)
+            json_usable = True
+    except (OSError, ValueError, TypeError):
+        json_usable = False
+    if not done and not json_usable:
+        try:
+            last_success = int(_last_success_path(root).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            last_success = 0
+    return {"done": done, "last_success_chapter": last_success}
+
+
+def save_resume_state(project_root, done) -> dict:
+    """Atomically persist runner-owned resume state.
+
+    `done` is an iterable of fully-committed chapter numbers. Writes
+    resume_state.json ({"done": [...]}) plus the plain-int
+    last_success_chapter.txt pointer. Returns the canonical state dict.
+    """
+    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    chapters = sorted({int(c) for c in done})
+    last_success = max(chapters) if chapters else 0
+    state_path = _resume_state_path(root)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_state = state_path.with_suffix(".json.tmp")
+    tmp_state.write_text(json.dumps({"done": chapters}, ensure_ascii=False), encoding="utf-8")
+    tmp_state.replace(state_path)
+    last_path = _last_success_path(root)
+    last_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_last = last_path.with_suffix(".txt.tmp")
+    tmp_last.write_text(f"{last_success}\n", encoding="utf-8")
+    tmp_last.replace(last_path)
+    return {"done": chapters, "last_success_chapter": last_success}
+
+
+def last_success_chapter(project_root=None) -> int:
+    """Highest fully-committed chapter recorded in runner-owned resume files."""
+    return load_resume_state(project_root)["last_success_chapter"]
+
+
+def is_chapter_committed(project_root, chapter: int) -> bool:
+    """Idempotent chapter-commit check: a chapter counts as committed only if
+    its committed files exist and match their checkpoint hashes. A half-written
+    chapter never verifies, so resume safely regenerates it."""
+    try:
+        return bool(CheckpointManager(Path(project_root)).verify_integrity(int(chapter)))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def print_progress(chapter: int, total: int, elapsed: float,
                    passed: int, failed: int, avg_score: float,
                    cost_usd: float, budget_max: float):
@@ -88,6 +173,12 @@ def run_production(num_chapters: int = 0, use_real: bool = True,
     logger.info(f"===== PRODUCTION START: {num_chapters} chapters =====")
     logger.info(f"Start from chapter: {start_from}")
     logger.info(f"Resume checkpoint: {resume_checkpoint}")
+    # D2: runner-owned resume — file state supplements the CLI pointer.
+    file_state = load_resume_state(project_root)
+    done_chapters = list(file_state["done"])
+    effective_resume = max(resume_checkpoint, file_state["last_success_chapter"])
+    if file_state["last_success_chapter"]:
+        logger.info(f"Resume state: last success chapter {file_state['last_success_chapter']}")
     start_time = time.time()
 
     (project_root / "audit").mkdir(parents=True, exist_ok=True)
@@ -125,13 +216,12 @@ def run_production(num_chapters: int = 0, use_real: bool = True,
     last_progress_log = 0  # Track last chapter logged
 
     for i in range(start_from, num_chapters + 1):
-        # Skip chapters already committed via checkpoint — but verify files exist
-        if resume_checkpoint > 0 and i <= resume_checkpoint:
-            novel_path = project_root / "chapters" / "novel" / f"chapter_{i}.txt"
-            synopsis_path = project_root / "chapters" / "synopsis" / f"chapter_{i}.txt"
-            outline_path = project_root / "chapters" / "outline" / f"chapter_{i}.json"
-            if novel_path.exists() and synopsis_path.exists() and outline_path.exists():
+        # D2: runner-owned idempotent resume — skip only verified commits.
+        if effective_resume > 0 and i <= effective_resume:
+            if is_chapter_committed(project_root, i):
                 logger.info(f"Skipping chapter {i} (already committed at checkpoint)")
+                if i not in done_chapters:
+                    done_chapters.append(i)
                 passed += 1
                 continue
             logger.warning(f"Chapter {i} missing files despite checkpoint — will regenerate")
@@ -148,6 +238,9 @@ def run_production(num_chapters: int = 0, use_real: bool = True,
             score = result.get("score", "N/A")
             if result["success"]:
                 passed += 1
+                if i not in done_chapters:
+                    done_chapters.append(i)
+                save_resume_state(project_root, done_chapters)
                 if score is not None:
                     scores.append(score)
             else:
