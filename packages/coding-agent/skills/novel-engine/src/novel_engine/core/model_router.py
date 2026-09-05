@@ -82,6 +82,8 @@ class ModelRouter:
                 result = client.chat_completion(messages, temperature=temperature, max_tokens=max_tokens, extra_body=extra_body, **kwargs)
                 if lim:
                     lim.report_success()
+                if isinstance(result, dict):
+                    result["_model_used"] = model
                 return result
             except RateLimitError:
                 if lim:
