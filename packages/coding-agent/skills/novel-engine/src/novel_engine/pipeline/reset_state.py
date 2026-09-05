@@ -24,6 +24,8 @@ def reset_runtime_state(root: Path):
         "audit/per_chapter_reviews.json",
         "audit/sliding_window_reviews.json",
         "audit/resume_state.json",
+        "runtime/resume_state.json",
+        "runtime/last_success_chapter.txt",
         "memory/quality_memory.json",
     ):
         p = root / sub

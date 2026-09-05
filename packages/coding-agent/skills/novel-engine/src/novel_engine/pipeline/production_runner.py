@@ -141,6 +141,40 @@ def is_chapter_committed(project_root, chapter: int) -> bool:
         return False
 
 
+def compute_resume_plan(resume_checkpoint=0, file_state=None, start_from=1) -> dict:
+    """Pure resume decision from the CLI pointer and runner file state.
+
+    Returns {"effective_resume": int, "fresh": bool, "done": [...]}. fresh is
+    True only when neither source indicates prior progress, so a CLI-0 restart
+    with file progress never wipes. `done` carries over only chapters outside
+    this run's window (c < start_from): in-window entries are rebuilt from
+    verification (skip path) or fresh generation, so an un-regenerated chapter
+    can never be re-persisted as done.
+    """
+    state = dict(file_state or {})
+    try:
+        done = sorted({int(c) for c in state.get("done", [])})
+    except (ValueError, TypeError):
+        done = []
+    try:
+        last_success = int(state.get("last_success_chapter", 0) or 0)
+    except (ValueError, TypeError):
+        last_success = 0
+    if not last_success and done:
+        last_success = max(done)
+    try:
+        cli = int(resume_checkpoint or 0)
+    except (ValueError, TypeError):
+        cli = 0
+    try:
+        start = int(start_from or 1)
+    except (ValueError, TypeError):
+        start = 1
+    effective = max(cli, last_success)
+    kept = [c for c in done if c < start]
+    return {"effective_resume": effective, "fresh": effective == 0, "done": kept}
+
+
 def print_progress(chapter: int, total: int, elapsed: float,
                    passed: int, failed: int, avg_score: float,
                    cost_usd: float, budget_max: float):
@@ -173,21 +207,23 @@ def run_production(num_chapters: int = 0, use_real: bool = True,
     logger.info(f"===== PRODUCTION START: {num_chapters} chapters =====")
     logger.info(f"Start from chapter: {start_from}")
     logger.info(f"Resume checkpoint: {resume_checkpoint}")
-    # D2: runner-owned resume — file state supplements the CLI pointer.
+    # D2 fix: runner-owned resume — file state supplements the CLI pointer, and the
+    # reset gate honors either source (a CLI-0 restart with file progress must not wipe).
     file_state = load_resume_state(project_root)
-    done_chapters = list(file_state["done"])
-    effective_resume = max(resume_checkpoint, file_state["last_success_chapter"])
+    plan = compute_resume_plan(resume_checkpoint, file_state, start_from)
+    done_chapters = plan["done"]
+    effective_resume = plan["effective_resume"]
     if file_state["last_success_chapter"]:
         logger.info(f"Resume state: last success chapter {file_state['last_success_chapter']}")
     start_time = time.time()
 
     (project_root / "audit").mkdir(parents=True, exist_ok=True)
-    
-    # 仅首次运行时重置状态；恢复模式跳过重置
-    if resume_checkpoint == 0:
+
+    # 仅真正全新运行（CLI 与文件均无进度）时重置状态；恢复模式跳过重置
+    if plan["fresh"]:
         reset_runtime_state(project_root)
     else:
-        logger.info(f"Resuming from chapter {resume_checkpoint}, skipping runtime reset")
+        logger.info(f"Resuming from chapter {effective_resume}, skipping runtime reset")
 
     if use_real:
         cfg = json.loads((project_root / "config" / "runtime_config.json").read_text(encoding="utf-8"))

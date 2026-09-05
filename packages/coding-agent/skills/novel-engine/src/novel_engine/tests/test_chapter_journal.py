@@ -90,3 +90,89 @@ def test_resume_state_tolerates_corrupt_files(tmp_path):
     (rt / "resume_state.json").write_text('{"done": [1]}', encoding="utf-8")
     (rt / "last_success_chapter.txt").write_text("not-a-number", encoding="utf-8")
     assert load_resume_state(tmp_path) == {"done": [1], "last_success_chapter": 1}
+
+def test_reset_gate_honors_file_resume():
+    """D2 fix F1: reset gate must honor file state OR the CLI pointer."""
+    from novel_engine.pipeline.production_runner import compute_resume_plan
+    # CLI 0 + file done=[1,2] -> resume, never fresh (no wipe).
+    plan = compute_resume_plan(0, {"done": [1, 2], "last_success_chapter": 2}, 1)
+    assert plan == {"effective_resume": 2, "fresh": False, "done": []}
+    # True fresh run: CLI 0 + empty file -> wipe allowed.
+    plan = compute_resume_plan(0, {"done": [], "last_success_chapter": 0}, 1)
+    assert plan == {"effective_resume": 0, "fresh": True, "done": []}
+    # CLI pointer alone still resumes.
+    plan = compute_resume_plan(3, {"done": [], "last_success_chapter": 0}, 1)
+    assert plan == {"effective_resume": 3, "fresh": False, "done": []}
+    # Out-of-window entries survive for start_from > 1; in-window do not.
+    plan = compute_resume_plan(0, {"done": [1, 2], "last_success_chapter": 2}, 3)
+    assert plan == {"effective_resume": 2, "fresh": False, "done": [1, 2]}
+
+def test_file_resume_skips_verified_only(tmp_path):
+    """D2 fix F1: CLI 0 + file done=[1,2] with committed files present ->
+    both chapters verify, so both skip (no wipe, no regeneration)."""
+    from novel_engine.core.checkpoint import CheckpointManager, create_commit_transaction
+    from novel_engine.pipeline.production_runner import (
+        compute_resume_plan,
+        is_chapter_committed,
+        load_resume_state,
+        save_resume_state,
+    )
+    mgr = CheckpointManager(tmp_path)
+    for ch in (1, 2):
+        create_commit_transaction(
+            mgr, tmp_path, ch,
+            novel_content=f"novel {ch}", synopsis_content=f"syn {ch}",
+            outline_content="{}", world_state_snapshot={"w": ch},
+        )
+    save_resume_state(tmp_path, [1, 2])
+    plan = compute_resume_plan(0, load_resume_state(tmp_path), 1)
+    assert plan["fresh"] is False and plan["effective_resume"] == 2
+    # Runner skip path: verified chapters re-enter done, nothing regenerates.
+    done = list(plan["done"])
+    for i in (1, 2):
+        assert is_chapter_committed(tmp_path, i)
+        if i not in done:
+            done.append(i)
+    assert sorted(done) == [1, 2]
+
+def test_stale_done_not_repersisted(tmp_path):
+    """D2 fix F1: CLI 0 + file done=[1,2] with committed files ABSENT ->
+    regenerate, and the re-save after regenerating ch 1 must be [1], not [1,2]."""
+    from novel_engine.core.checkpoint import CheckpointManager, create_commit_transaction
+    from novel_engine.pipeline.production_runner import (
+        compute_resume_plan,
+        is_chapter_committed,
+        load_resume_state,
+        save_resume_state,
+    )
+    save_resume_state(tmp_path, [1, 2])
+    plan = compute_resume_plan(0, load_resume_state(tmp_path), 1)
+    assert plan["fresh"] is False and plan["done"] == []
+    assert not is_chapter_committed(tmp_path, 1)
+    assert not is_chapter_committed(tmp_path, 2)
+    # Simulate the runner loop regenerating chapter 1 then saving.
+    done = list(plan["done"])
+    create_commit_transaction(
+        CheckpointManager(tmp_path), tmp_path, 1,
+        novel_content="novel 1", synopsis_content="syn 1",
+        outline_content="{}", world_state_snapshot={"w": 1},
+    )
+    assert is_chapter_committed(tmp_path, 1)
+    if 1 not in done:
+        done.append(1)
+    save_resume_state(tmp_path, done)
+    assert load_resume_state(tmp_path) == {"done": [1], "last_success_chapter": 1}
+
+def test_fresh_reset_clears_runner_resume_files(tmp_path):
+    """D2 fix F2: a true fresh reset deletes the runner-owned resume files."""
+    from novel_engine.pipeline.production_runner import load_resume_state, save_resume_state
+    from novel_engine.pipeline.reset_state import reset_runtime_state
+    save_resume_state(tmp_path, [1, 2])
+    legacy = tmp_path / "audit" / "resume_state.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text('{"done": [1]}', encoding="utf-8")
+    reset_runtime_state(tmp_path)
+    assert not (tmp_path / "runtime" / "resume_state.json").exists()
+    assert not (tmp_path / "runtime" / "last_success_chapter.txt").exists()
+    assert not legacy.exists()
+    assert load_resume_state(tmp_path) == {"done": [], "last_success_chapter": 0}
