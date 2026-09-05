@@ -15,3 +15,19 @@ def test_is_blocking_reads_table_only():
     p = {"severity_map": {"length_deviation": "note", "truncation": "hard"}}
     assert is_blocking(p, "length_deviation") is False
     assert is_blocking(p, "truncation") is True
+
+def test_orchestrator_uses_policy_ratios(monkeypatch, tmp_path):
+    from novel_engine.core import quality_policy as qp
+    seen = {}
+    real = qp.load_quality_policy
+    def spy(root):
+        p = real(root)
+        seen.update(p)
+        p["min_ratio"] = 0.10
+        p["max_ratio"] = 10.0
+        return p
+    monkeypatch.setattr(qp, "load_quality_policy", spy)
+    # any length gate computed afterwards must use 0.10/10.0 bounds
+    from novel_engine.quality.repetition_detector import detect_length_anomaly
+    assert detect_length_anomaly("x" * 5000, 7500)["anomaly"] is False
+    assert seen["chapter_target_chars"] == 7500

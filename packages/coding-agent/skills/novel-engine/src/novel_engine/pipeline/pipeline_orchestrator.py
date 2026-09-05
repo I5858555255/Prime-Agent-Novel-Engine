@@ -14,6 +14,7 @@ from typing import Optional
 
 from novel_engine.core.state_machine import StateMachine, ChapterPhase
 from novel_engine.core.checkpoint import CheckpointManager
+from novel_engine.core.quality_policy import load_quality_policy
 from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.agents.chapter_director import ChapterDirector
 from novel_engine.agents.writer_agent import SynopsisAgent, WriterAgent
@@ -103,10 +104,10 @@ class PipelineOrchestrator:
         }
         # Pre-compute director's fixed context (bible + volumes + plot_graph) — loaded once at init
         self._director_fixed_context = self._load_director_fixed_context()
-        # P0 修复：冻结单章 task_card，避免移动目标死循环；全局目标批次级冻结 7500
+        # P0 修复：冻结单章 task_card，避免移动目标死循环；全局目标批次级冻结（读 quality_policy，默认 7500）
         self._frozen_task_cards: dict[int, dict] = {}
         self._frozen_synopsis: dict[int, dict] = {}
-        self._global_target: int = 7500
+        self._global_target: int = int(load_quality_policy(self.root)["chapter_target_chars"])
 
         # Runtime config + provider config for chapter-level retry logic
         from novel_engine.core.llm_client import _provider_config_from_runtime
@@ -366,14 +367,17 @@ class PipelineOrchestrator:
         # 阶段4.5：字数强制（P0 单一权威：终稿评审前必达标；P1 全局常量 7500，避免漂移）
         try:
             # P1-目标全局常量：顶配网文章节 7000-8000 为优，不再每章 LLM 生成目标
-            GLOBAL_CONSTANT = 7500
+            # 单一策略源：目标字数读 quality_policy（默认 7500，与旧常量同值）
+            _qp = load_quality_policy(self.root)
+            GLOBAL_CONSTANT = int(_qp["chapter_target_chars"])
             if not hasattr(self, "_global_target") or self._global_target is None:
                 self._global_target = GLOBAL_CONSTANT
                 logger.info(f"Global target frozen: {self._global_target} (constant 7500, P1)")
             total_target = self._global_target
             if total_target > 0:
-                target_min = int(total_target * 0.65)
-                target_max = int(total_target * 1.35 + max(50, total_target*0.02))  # +容差避免 1 字符误杀
+                policy = _qp
+                target_min = int(total_target * policy["min_ratio"])
+                target_max = int(total_target * policy["max_ratio"] + max(policy["tolerance_chars"], total_target * 0.02))  # +容差避免 1 字符误杀
                 novel_text = self._enforce_word_count(novel_text, target_min, target_max)
                 self.current_novel = novel_text
                 # 强制后重跑确定性门控，以最终长度为准（用全局目标校验）
@@ -403,7 +407,7 @@ class PipelineOrchestrator:
                 orig_novel = self.current_novel
                 orig_draft = getattr(self, "_draft_novel", orig_novel)
                 pre_fix_score = score
-                publication_line = int(self.config.get("quality", {}).get("publication_line", 88))
+                publication_line = int(load_quality_policy(self.root)["publication_line"])
                 min_ch = publication_line
                 max_fix = int(self.config.get("pipeline", {}).get("max_review_retries", 3)) + 1
                 current = orig_novel
@@ -452,7 +456,11 @@ class PipelineOrchestrator:
                             frozen = self._frozen_task_cards.get(chapter_num, task_card)
                             total = sum(int(bp.get("word_count_target", 0)) for bp in (frozen.get("scene_blueprints") or []))
                             if total > 0:
-                                patched_purified = self._enforce_word_count(patched_purified, int(total*0.65), int(total*1.35))
+                                _pol = load_quality_policy(self.root)
+                                patched_purified = self._enforce_word_count(
+                                    patched_purified,
+                                    int(total * _pol["min_ratio"]),
+                                    int(total * _pol["max_ratio"] + max(_pol["tolerance_chars"], total * 0.02)))
                             current = patched_purified
                             current_draft = patched_draft
                             self.current_novel = current
@@ -469,7 +477,11 @@ class PipelineOrchestrator:
                         frozen = self._frozen_task_cards.get(chapter_num, task_card)
                         total = sum(int(bp.get("word_count_target", 0)) for bp in (frozen.get("scene_blueprints") or []))
                         if total > 0:
-                            rewritten_purified = self._enforce_word_count(rewritten_purified, int(total*0.65), int(total*1.35))
+                            _pol = load_quality_policy(self.root)
+                            rewritten_purified = self._enforce_word_count(
+                                rewritten_purified,
+                                int(total * _pol["min_ratio"]),
+                                int(total * _pol["max_ratio"] + max(_pol["tolerance_chars"], total * 0.02)))
                         else:
                             rewritten_purified = rewritten
                         current = rewritten_purified
@@ -612,7 +624,7 @@ class PipelineOrchestrator:
         review_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 high/block 且确定性硬门控通过才写最终目录）
-        publication_line = int(self.config.get("quality", {}).get("publication_line", 88))
+        publication_line = int(load_quality_policy(self.root)["publication_line"])
         cur_score = int(result.get("score", score or 0) or 0)
         has_high_issue = any((iss.get("severity") in ("high", "block")) for iss in (review.get("issues") or []))
         high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:50]}" for iss in (review.get("issues") or []) if iss.get("severity") in ("high","block")]
@@ -1295,7 +1307,7 @@ class PipelineOrchestrator:
         import json
         max_rounds = self.config.get("autonomy", {}).get("remediation_max_rounds", 1)
         per_ch_max = self.config.get("autonomy", {}).get("remediation_per_chapter_retries", 2)
-        pub_line = self.config.get("quality", {}).get("publication_line", 88)
+        pub_line = int(load_quality_policy(self.root)["publication_line"])
         # Q6=A: exactly one bounded remediation round
         for _ in range(max_rounds):
             pending = [d for d in self.defects.pending()]

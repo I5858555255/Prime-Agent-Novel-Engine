@@ -4,15 +4,19 @@ import json
 
 
 def _load_thresholds():
+    from novel_engine.core.quality_policy import load_quality_policy
     defaults = {"min_avg": 88.0, "min_chapter": 82.0,
                 "min_pacing": 7.5, "min_innovation": 7.0}
     try:
         cfg = json.loads((Path(__file__).parent.parent / "config" /
                           "runtime_config.json").read_text(encoding="utf-8"))
         q = cfg.get("quality", {})
+        # 单一策略源：min_chapter_score 优先读 quality_policy（默认缺省时沿用旧值 82.0，同行为）
+        policy = load_quality_policy(Path(__file__).parent.parent)
         return {
             "min_avg": q.get("min_avg_score", defaults["min_avg"]),
-            "min_chapter": q.get("min_chapter_score", defaults["min_chapter"]),
+            "min_chapter": policy.get("min_chapter_score",
+                                      q.get("min_chapter_score", defaults["min_chapter"])),
             "min_pacing": q.get("min_pacing", defaults["min_pacing"]),
             "min_innovation": q.get("min_innovation", defaults["min_innovation"]),
         }

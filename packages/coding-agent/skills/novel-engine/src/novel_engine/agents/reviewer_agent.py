@@ -156,13 +156,18 @@ class ReviewerAgent:
     def grade_review(self, review: dict) -> str:
         import json
         from pathlib import Path
+        from novel_engine.core.quality_policy import load_quality_policy
         try:
             cfg = json.loads((Path(__file__).parent.parent / "config" /
                               "runtime_config.json").read_text(encoding="utf-8"))
         except Exception:
             cfg = {}
-        line = cfg.get("quality", {}).get("publication_line", 85)
-        fix_t = cfg.get("quality", {}).get("fix_threshold", 60)
+        # 单一策略源：分级线读 quality_policy（policy 默认 88/60；线上配置值同为 88/60，行为不变）
+        policy = load_quality_policy(Path(__file__).parent.parent)
+        line = int(policy.get("publication_line",
+                              cfg.get("quality", {}).get("publication_line", 88)))
+        fix_t = int(policy.get("fix_threshold",
+                               cfg.get("quality", {}).get("fix_threshold", 60)))
         score = review.get("total_score", 0)
         if score >= line:
             return "pass"

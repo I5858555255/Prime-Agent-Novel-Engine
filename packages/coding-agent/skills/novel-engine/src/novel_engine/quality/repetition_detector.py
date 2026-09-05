@@ -4,6 +4,9 @@
 """
 import re
 from collections import Counter
+from pathlib import Path
+
+from novel_engine.core import quality_policy as _quality_policy
 
 
 def detect_repetition(text: str, min_block: int = 200, min_repeats: int = 3) -> dict:
@@ -69,14 +72,15 @@ def detect_length_anomaly(text: str, target: int | None) -> dict:
     if not target or target <= 0:
         return {"anomaly": False, "issues": []}
     actual = len(text)
-    # 1.35x 基础上再 +2% 容差，且绝对容差至少 50 字，避免 1 字符级误判
-    high = int(target * 1.35 + max(50, target * 0.02))
-    low = int(target * 0.65)
+    # 单一策略源：比率/容差一律读 quality_policy（默认 0.65/1.35/50，与旧硬编码同值）
+    policy = _quality_policy.load_quality_policy(Path(__file__).resolve().parent.parent)
+    low = int(target * policy["min_ratio"])
+    high = int(target * policy["max_ratio"] + max(policy["tolerance_chars"], target * 0.02))
     issues = []
     if actual < low:
-        issues.append(f"字数不足：实际 {actual} < 目标 {target}*0.65={low}")
+        issues.append(f"字数不足：实际 {actual} < 目标 {target}*{policy['min_ratio']}={low}")
     elif actual > high:
-        issues.append(f"字数超标：实际 {actual} > 目标 {target}*1.35+容差={high} (1 字符级已放宽)")
+        issues.append(f"字数超标：实际 {actual} > 目标 {target}*{policy['max_ratio']}+容差={high} (1 字符级已放宽)")
     return {"anomaly": bool(issues), "issues": issues}
 
 
