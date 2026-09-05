@@ -109,5 +109,22 @@
     },
     "probe_on_startup": false,
     "max_parallel_chapters": 1
+  },
+  "quality_policy": {
+    "chapter_target_chars": 7500,
+    "min_ratio": 0.65,
+    "max_ratio": 1.35,
+    "tolerance_chars": 50,
+    "publication_line": 88,
+    "severity_map": {
+      "leak_scaffolding": "hard",
+      "truncation": "hard",
+      "verbatim_duplication": "hard",
+      "forbidden_block": "hard",
+      "scene_missing": "hard",
+      "length_deviation": "note",
+      "beat_repetition_thematic": "note",
+      "hook_missing": "note"
+    }
   }
 }
