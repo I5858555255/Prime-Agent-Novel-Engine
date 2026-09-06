@@ -869,7 +869,7 @@ class PipelineOrchestrator:
         return synopsis
 
     def _deterministic_quality_gate(self, text: str, task_card: dict) -> dict:
-        """P0-B1: 确定性硬校验（重复/截断/长度），命中即需修复。"""
+        """确定性校验（重复/截断硬；长度仅记soft）。"""
         purified = purify_novel_for_publish(text, chapter_num=task_card.get("chapter_num"))
         # 若净化前后长度差异过大，说明脚手架污染严重，也视为问题
         issues: list[str] = []
