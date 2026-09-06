@@ -17,3 +17,13 @@ Incoming reports use this format:
 - Suspected module: pipeline/pipeline_orchestrator.py (_review_issue_is_blocking), pipeline/quality_gate.py (evaluate_publish)
 - Deferred to: beats pilot (dimension鈫抍ategory mapping)
 - Notes: real reviewer issues carry dimension in the 6 score dims + severity high/medium/low, neither of which are policy severity_map categories, so the reviewer check never blocks in practice. Advisory-only until the beats pilot lands the dimension鈫抍ategory mapping; do NOT "fix" by mapping all reviewer-high to hard.
+
+## 2026-09-06 — force-best 日志文案与行为不一致
+- Suspected module: pipeline/pipeline_orchestrator.py (force-best log line)
+- Deferred to: post-foundation
+- Notes: 日志写 "publishing best X < 88 to novel"，实际写的是 draft/（下一行自证 never novel/）。纯文案修正，不涉及行为。
+
+## 2026-09-06 — force 时刻 note 缺 hard/det 状态快照
+- Suspected module: pipeline/pipeline_orchestrator.py (force-best note)
+- Deferred to: post-foundation
+- Notes: note 写 "(hard gate unknown)"；若将来某次带硬问题 force，将缺归因证据。加一行快照即可。
