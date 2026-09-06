@@ -107,6 +107,60 @@ def test_seam_check_is_read_only():
     assert original == "…scene1 ends 午后…\n\n…scene2 starts 午后…"  # input untouched
 
 
+def test_collapse_survivor_keeps_beats(tmp_path, monkeypatch):
+    """H1 regression: journal write-back must preserve beats.
+    Original append WITH beats, then retry write-back; after duplicate
+    scene_id collapse (last-wins), the surviving record must carry
+    complete/non-empty beats on BOTH write-back paths."""
+    from novel_engine.pipeline.chapter_journal import append_scene, load_scenes
+
+    orch = _make_orchestrator(tmp_path)
+
+    # --- patch path (~1182): regenerated SceneOutput carries beats ---
+    append_scene(tmp_path, 1, {"scene_id": 1, "scene_text": "场景一旧正文：村口晨雾弥漫行人稀少。", "hook": "", "beats": ["晨雾村口"]})
+    append_scene(tmp_path, 1, {"scene_id": 2, "scene_text": "场景二旧正文：集市喧闹人声鼎沸。", "hook": "", "beats": ["集市喧闹"]})
+    append_scene(tmp_path, 1, {"scene_id": 3, "scene_text": "夜色中陈老根抱起婴儿走出迷雾", "hook": "", "beats": ["抱婴出雾"]})
+
+    draft = "第一章正文旧场景三内容：祠堂夜话。无人知晓的旧事。"
+
+    class _SceneOut:
+        scene_text = "夜色中陈老根抱起婴儿走出迷雾旧事重提灯火通明祠堂夜话。"
+        hook = ""
+        beats = ["抱婴出雾"]
+
+    monkeypatch.setattr(orch.writer, "generate_scene", lambda *a, **k: _SceneOut())
+
+    task_card = {
+        "chapter_num": 1,
+        "scene_blueprints": [
+            {"scene_num": 1}, {"scene_num": 2}, {"scene_num": 3},
+        ],
+    }
+    result = orch._patch_weak_scenes(draft, {"fix_scope": "场景3", "issues": []},
+                                     task_card, {"synopsis": ""})
+    assert result is not None
+
+    collapsed = {}
+    for s in load_scenes(tmp_path, 1):
+        collapsed[s["scene_id"]] = s  # last-wins: later append overwrites
+    survivor = collapsed[3]
+    assert survivor["beats"], f"patch write-back dropped beats: {survivor!r}"
+    assert "抱婴出雾" in survivor["beats"]
+
+    # --- rewrite-sync path (~1221): unstructured text, fallback-extract ---
+    append_scene(tmp_path, 2, {"scene_id": 1, "scene_text": "场景一旧正文：村口晨雾弥漫行人稀少。", "hook": "", "beats": ["晨雾村口"]})
+    append_scene(tmp_path, 2, {"scene_id": 2, "scene_text": "场景二旧正文：集市喧闹人声鼎沸。", "hook": "", "beats": ["集市喧闹"]})
+    orch._sync_journal_from_draft(
+        2,
+        "夜色中陈老根抱起婴儿走出迷雾旧事重提灯火通明。\n\n※\n\n集市喧闹人声鼎沸锣鼓喧天热闹非凡景象重现。",
+    )
+    collapsed2 = {}
+    for s in load_scenes(tmp_path, 2):
+        collapsed2[s["scene_id"]] = s
+    for sid, rec in collapsed2.items():
+        assert rec["beats"], f"rewrite write-back dropped beats for scene {sid}: {rec!r}"
+
+
 def test_fresh_reset_clears_stale_draft_journals(tmp_path):
     """P3 fix round 1: fresh reset must clear run-scoped chapters/draft artifacts
     (stale chapter_{n}_partial.jsonl would otherwise clobber newer draft text via

@@ -18,7 +18,7 @@ from novel_engine.core.quality_policy import load_quality_policy, is_blocking
 from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.agents.chapter_director import ChapterDirector
 from novel_engine.agents.writer_agent import SynopsisAgent, WriterAgent
-from novel_engine.agents.scene_schema import SceneOutput
+from novel_engine.agents.scene_schema import SceneOutput, extract_beats_fallback
 from novel_engine.pipeline.chapter_journal import append_scene, completed_scene_ids, load_scenes
 from novel_engine.agents.reviewer_agent import ReviewerAgent
 from novel_engine.agents.pacing_advisor import PacingAdvisor
@@ -1158,6 +1158,7 @@ class PipelineOrchestrator:
         synopsis_text = synopsis.get("synopsis", "") if isinstance(synopsis, dict) else str(synopsis or "")
         regenerated = False
         patched_ids: set[int] = set()
+        patched_outs: dict[int, tuple] = {}
         for sn in sorted(target_nums):
             bp = blueprints.get(sn)
             if not bp:
@@ -1172,6 +1173,7 @@ class PipelineOrchestrator:
             journal[sn] = new_scene.strip() if isinstance(new_scene, str) else new_scene
             regenerated = True
             patched_ids.add(sn)
+            patched_outs[sn] = (new_scene_out, new_scene)
         if not regenerated:
             return None
         # Journal write-back：被 patch 的 scene_id 即刻回写 journal（append 即 update，
@@ -1179,8 +1181,10 @@ class PipelineOrchestrator:
         # source of truth；否则 round-2 patch 会从陈旧落盘复活原文，丢弃 round-1 增益。
         for sn in sorted(patched_ids):
             try:
+                new_scene_out, new_scene = patched_outs.get(sn, (None, journal.get(sn, "")))
+                beats = list(getattr(new_scene_out, "beats", []) or []) or extract_beats_fallback(new_scene)
                 append_scene(self.root, ch, {"scene_id": sn, "scene_text": journal[sn],
-                                             "hook": "", "beats": []})
+                                             "hook": getattr(new_scene_out, "hook", ""), "beats": beats})
             except Exception as je:
                 logger.warning(f"Journal write-back failed for chapter {ch} scene {sn}: {je}")
         patched = "\n\n※\n\n".join(journal[k] for k in sorted(journal))
@@ -1219,7 +1223,7 @@ class PipelineOrchestrator:
         for sid, text in zip(ids, parts):
             try:
                 append_scene(self.root, chapter_num, {"scene_id": sid, "scene_text": text,
-                                                      "hook": "", "beats": []})
+                                                      "hook": "", "beats": extract_beats_fallback(text)})
             except Exception as je:
                 logger.warning(f"Journal write-back failed for chapter {chapter_num} scene {sid}: {je}")
 
