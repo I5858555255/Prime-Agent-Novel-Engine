@@ -432,6 +432,9 @@ class WriterAgent:
                 timeout=300,
             )
             if isinstance(raw, dict):
+                if raw.get("finish_reason") == "length":
+                    logger.warning(f"scene polish hit token cap, keep original ({len(scene_text)} chars)")
+                    return scene_text
                 raw = raw.get("content") or raw.get("reasoning_content") or ""
             resp = raw if isinstance(raw, str) else ""
             if len(resp.strip()) >= max(200, int(len(scene_text) * 0.5)):

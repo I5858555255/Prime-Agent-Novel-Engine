@@ -21,3 +21,13 @@ def test_split_preserves_scene_count_and_budget():
     parts = out.split("※")
     assert len(parts) == 2
     assert all(p.count("正") > 1500 for p in parts)
+
+
+def test_length_truncation_keeps_original():
+    class CappedStub:
+        def chat_completion(self, *a, **k):
+            return {"content": "截" * 1500, "finish_reason": "length"}
+    w = WriterAgent(llm_client=CappedStub())
+    scene = "正" * 2000
+    out = w._polish_single(scene, {"chapter_num": 1, "title": "t"}, CappedStub())
+    assert out == scene  # truncated output must not replace the original
