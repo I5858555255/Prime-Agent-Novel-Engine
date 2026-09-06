@@ -184,6 +184,7 @@ def purify_novel_for_publish(draft: str, chapter_num: int | None = None) -> str:
         text = stripped + "。"
     return text.strip()
 
+
 def verify_no_scaffolding(text: str) -> list[str]:
     """发布前终检：成品不得含脚手架 token。P0 增强版。"""
     issues = []
@@ -207,3 +208,47 @@ def verify_no_scaffolding(text: str) -> list[str]:
     if re.search(r"（(?:章末钩子|场景目标|伏笔)", text):
         issues.append("残留括号指令（章末钩子/场景目标/伏笔）")
     return issues
+
+
+# 相邻场景边界常见时间词（只读 seam 检查用，不做任何改写依据）
+_SEAM_TIME_TOKENS = (
+    "凌晨", "清晨", "早晨", "上午", "正午", "中午",
+    "午后", "下午", "傍晚", "黄昏", "夜晚", "深夜", "子夜",
+)
+
+
+def verify_seams(text: str) -> list[str]:
+    """Read-only: adjacent-scene time/appellation consistency. Notes only.
+
+    只读缝检查：相邻场景边界的时间词一致性。仅返回备注列表，
+    永不改写、永不抛异常、永不作为门控或重抛光触发条件。
+    """
+    notes: list[str] = []
+    try:
+        src = text if isinstance(text, str) else ""
+        parts = [p.strip() for p in re.split(r"\n?\s*※\s*\n?", src) if p.strip()]
+        if len(parts) < 2:
+            # 兜底：按 【场景N】 标记切分
+            alt = [p.strip() for p in re.split(r"(?=\n*【场景\d+\s*[:：])", src) if p.strip()]
+            if len(alt) >= 2:
+                parts = alt
+        if len(parts) < 2:
+            return []
+        for i in range(len(parts) - 1):
+            tail = parts[i][-120:]
+            head = parts[i + 1][:120]
+            tail_times = {t for t in _SEAM_TIME_TOKENS if t in tail}
+            head_times = {t for t in _SEAM_TIME_TOKENS if t in head}
+            shared = tail_times & head_times
+            if shared:
+                notes.append(
+                    f"seam {i + 1}->{i + 2}: 相邻场景重复时间词“{'/'.join(sorted(shared))}”（仅备注，不阻断）"
+                )
+            elif tail_times and head_times:
+                notes.append(
+                    f"seam {i + 1}->{i + 2}: 时间跳跃“{'/'.join(sorted(tail_times))}”→“{'/'.join(sorted(head_times))}”（仅备注，不阻断）"
+                )
+    except Exception:
+        # 只读检查永不抛异常：有备注就返回已有备注，否则空列表
+        pass
+    return notes

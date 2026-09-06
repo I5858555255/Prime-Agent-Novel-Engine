@@ -31,12 +31,12 @@ from novel_engine.quality.forbidden_scanner import ForbiddenScanner
 from novel_engine.quality.continuity_auditor import ContinuityAuditor
 from novel_engine.engine.db import StateDB
 from novel_engine.engine.session import SessionTree
-from novel_engine.engine.patcher import IncrementalPatcher
 from novel_engine.quality.repetition_detector import (
     detect_repetition,
     detect_truncation,
     detect_length_anomaly,
     purify_novel_for_publish,
+    verify_seams,
 )
 
 logger = logging.getLogger(__name__)
@@ -467,7 +467,8 @@ class PipelineOrchestrator:
                             if no_improve >= 1:
                                 break
                         # 优先场景级增量缝合（基于 draft 带标记文本，避免 purified 找不到 marker）
-                        patched_draft = self._patch_weak_scenes(current_draft, staged["review"], task_card, synopsis)
+                        patched_draft = self._patch_weak_scenes(current_draft, staged["review"], task_card, synopsis,
+                                                              chapter_num=chapter_num)
                         if patched_draft is not None and patched_draft != current_draft and len(patched_draft) >= len(current_draft) // 2:
                             # 缝合后需重新净化并强制字数
                             patched_purified = purify_novel_for_publish(patched_draft, chapter_num=chapter_num)
@@ -1096,8 +1097,16 @@ class PipelineOrchestrator:
                 novel = novel.rstrip() + "\n\n夜色渐深，远处传来隐约的声响，预示着新的变局将至。"
         return novel
 
-    def _patch_weak_scenes(self, novel: str, review: dict, task_card: dict, synopsis: dict) -> str | None:
-        """场景级增量缝合：解析 fix_scope / issues 中的场景号，逐场景重写后热插拔。"""
+    def _patch_weak_scenes(self, novel: str, review: dict, task_card: dict, synopsis: dict,
+                           chapter_num: int | None = None) -> str | None:
+        """场景级增量缝合：scene_id-indexed replace（THE patch path）。
+
+        直接经 chapter_journal partials 按 scene_id 替换并以 ※ 重组；
+        不做 marker 匹配（生产 miss 率 12:1，marker 优先的两段式已否决），
+        不再调用 IncrementalPatcher.apply_scene_patch。
+        缝合后仅调用一次只读 verify_seams 记 info 备注：永不门控、永不重抛光。
+        目标场景不在 partials 中时记 warning 并返回 None（fix loop 落到 rewrite 路径）。
+        """
         # Mock/测试模式下跳过增量缝合，避免确定性 mock 的调用计数被额外 LLM 调用打乱
         try:
             if (self.config.get("llm") or {}).get("use_mock"):
@@ -1127,8 +1136,22 @@ class PipelineOrchestrator:
         if len(target_nums) > 2:
             return None
         blueprints = {bp.get("scene_num"): bp for bp in (task_card.get("scene_blueprints") or [])}
-        patched = novel
+        ch = int(chapter_num or (task_card.get("chapter_num", 0) or 0))
+        try:
+            journal = {d["scene_id"]: d.get("scene_text", "")
+                       for d in load_scenes(self.root, ch)}
+        except Exception as e:
+            logger.warning(f"Incremental patch aborted: load partials failed for chapter {ch}: {e}")
+            return None
+        if not journal:
+            logger.warning(f"Incremental patch aborted: no partials for chapter {ch}")
+            return None
+        for sn in sorted(target_nums):
+            if sn not in journal:
+                logger.warning(f"Scene {sn} not in chapter {ch} partials; skipping patch (falls through to rewrite path)")
+                return None
         synopsis_text = synopsis.get("synopsis", "") if isinstance(synopsis, dict) else str(synopsis or "")
+        regenerated = False
         for sn in sorted(target_nums):
             bp = blueprints.get(sn)
             if not bp:
@@ -1140,7 +1163,17 @@ class PipelineOrchestrator:
             except Exception as e:
                 logger.warning(f"Incremental patch scene {sn} generation failed: {e}")
                 return None
-            patched = IncrementalPatcher.apply_scene_patch(patched, sn, new_scene)
+            journal[sn] = new_scene.strip() if isinstance(new_scene, str) else new_scene
+            regenerated = True
+        if not regenerated:
+            return None
+        patched = "\n\n※\n\n".join(journal[k] for k in sorted(journal))
+        try:
+            seam_notes = verify_seams(patched)
+        except Exception:
+            seam_notes = []
+        if seam_notes:
+            logger.info(f"Seam notes (read-only, non-blocking) for chapter {ch}: {seam_notes}")
         if patched == novel:
             return None
         logger.info(f"Incremental patch applied for scenes {sorted(target_nums)} (fix_scope={fix_scope!r})")
