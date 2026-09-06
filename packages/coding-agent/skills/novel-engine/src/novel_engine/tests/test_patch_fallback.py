@@ -67,3 +67,24 @@ def test_seam_check_is_read_only():
     notes = verify_seams(original)
     assert isinstance(notes, list)  # notes only, no rewrite, no raise
     assert original == "…scene1 ends 午后…\n\n…scene2 starts 午后…"  # input untouched
+
+
+def test_fresh_reset_clears_stale_draft_journals(tmp_path):
+    """P3 fix round 1: fresh reset must clear run-scoped chapters/draft artifacts
+    (stale chapter_{n}_partial.jsonl would otherwise clobber newer draft text via
+    the scene_id-indexed patch path, which trusts the journal by filename)."""
+    from novel_engine.pipeline.reset_state import reset_runtime_state
+
+    # Seed a stale journal + a stale force-best draft .txt (both run-scoped).
+    append_scene(tmp_path, 1, {"scene_id": 1, "scene_text": "stale", "hook": "", "beats": []})
+    stale_txt = tmp_path / "chapters" / "draft" / "chapter_1.txt"
+    stale_txt.write_text("stale draft", encoding="utf-8")
+    # Out-of-scope files must survive the reset.
+    keeper = tmp_path / "chapters" / "draft" / "notes.md"
+    keeper.write_text("keep", encoding="utf-8")
+
+    reset_runtime_state(tmp_path)
+
+    assert not (tmp_path / "chapters" / "draft" / "chapter_1_partial.jsonl").exists()
+    assert not stale_txt.exists()
+    assert keeper.read_text(encoding="utf-8") == "keep"

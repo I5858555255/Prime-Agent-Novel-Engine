@@ -43,6 +43,19 @@ def reset_runtime_state(root: Path):
         except (PermissionError, OSError):
             pass
 
+    # Run-scoped draft artifacts（P3 fix）：stale chapter_{n}_partial.jsonl 会在
+    # fresh reset 后残留，而 scene_id-indexed patch 按章号文件名信任 journal，
+    # 旧 partial 会覆盖新 draft 正文。仅清两种当轮产物，其他文件不动。
+    _draft_dir = root / "chapters" / "draft"
+    if _draft_dir.is_dir():
+        for _pattern in ("chapter_*_partial.jsonl", "chapter_*.txt"):
+            for _stale in _draft_dir.glob(_pattern):
+                try:
+                    if _stale.is_file():
+                        _stale.unlink()
+                except (PermissionError, OSError):
+                    pass
+
     # 需清空（删除后重建）的目录
     for sub in (
         "chapters/novel",
