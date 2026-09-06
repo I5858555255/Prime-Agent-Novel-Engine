@@ -417,13 +417,35 @@ class WriterAgent:
         parts = [p.strip() for p in re.split(r"【场景\d+[:：][^】]*】|\n?\s*※\s*\n?", chapter_text) if p.strip()]
         return parts  # never truncate: if count mismatches, return [chapter_text]
 
+    @staticmethod
+    def _polish_max_tokens(n: int) -> int:
+        """Measured polish budget shared by both paths (no old /1.5 estimate)."""
+        return min(16000, max(4096, int(n / 0.9) + 512))
+
+    @staticmethod
+    def _coerce_polish_text(raw, orig_text: str) -> str | None:
+        """Shared dict→finish_reason-guard→length-check for both polish paths.
+
+        Returns the stripped polished text, or None when the caller must keep
+        the original (length-truncated or degenerate response).
+        """
+        if isinstance(raw, dict):
+            if raw.get("finish_reason") == "length":
+                logger.warning(f"scene polish hit token cap, keep original ({len(orig_text)} chars)")
+                return None
+            raw = raw.get("content") or raw.get("reasoning_content") or ""
+        resp = raw if isinstance(raw, str) else ""
+        if len(resp.strip()) >= max(200, int(len(orig_text) * 0.5)):
+            return resp.strip()
+        return None
+
     def _polish_single(self, scene_text, task_card, client, scene=False):
-        """单场景（或单次全文兜底）polish：测量预算 max_tokens = min(16000, max(4096, int(len/0.9)+512))。"""
+        """单场景（或单次全文兜底）polish：测量预算经 _polish_max_tokens 统一计算。"""
         prompt = (
             "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
             f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{scene_text}"
         )
-        max_tokens = min(16000, max(4096, int(len(scene_text) / 0.9) + 512))
+        max_tokens = self._polish_max_tokens(len(scene_text))
         try:
             raw = client.chat_completion(
                 [{"role": "user", "content": prompt}],
@@ -431,15 +453,10 @@ class WriterAgent:
                 max_tokens=max_tokens,
                 timeout=300,
             )
-            if isinstance(raw, dict):
-                if raw.get("finish_reason") == "length":
-                    logger.warning(f"scene polish hit token cap, keep original ({len(scene_text)} chars)")
-                    return scene_text
-                raw = raw.get("content") or raw.get("reasoning_content") or ""
-            resp = raw if isinstance(raw, str) else ""
-            if len(resp.strip()) >= max(200, int(len(scene_text) * 0.5)):
-                return resp.strip()
-            logger.warning(f"polish degenerate len={len(resp)} vs orig {len(scene_text)}, keep original")
+            resp = self._coerce_polish_text(raw, scene_text)
+            if resp is not None:
+                return resp
+            logger.warning(f"polish degenerate vs orig {len(scene_text)}, keep original")
         except Exception as exc:
             logger.warning(f"polish failed ({exc}), keep original")
         return scene_text
@@ -461,13 +478,12 @@ class WriterAgent:
         全部失败后回退到原始正文，避免生成残缺章节。
         """
         client = llm_client or self.llm
-        # 估算输出 token：中文约 1.5 字符/token，留少量余量避免截断，也避免过大导致超时
-        max_tokens = min(16000, max(4096, int(len(chapter_text) / 1.5)))
+        # 测量预算经 _polish_max_tokens 与分段路径统一（旧 /1.5 估计已废弃，避免截断）
+        max_tokens = self._polish_max_tokens(len(chapter_text))
         prompt = (
             "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
             f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
         )
-        min_ok = max(200, int(len(chapter_text) * 0.5))
         # P0-超时分级：POLISH 整章重写需 300s，Scene/评审保持 90s；整章一次 polish 改为分场景批处理以降低单次负载
         if len(chapter_text) > 4000:
             # 大章节按场景分批 polish，避免单次 7-10K 上下文 90s 误杀
@@ -485,15 +501,13 @@ class WriterAgent:
                 # 超时/错误重试无意义，直接回退原始正文，避免长时挂起
                 logger.warning(f"polish_chapter call failed ({exc}); falling back to original text")
                 return chapter_text
-            # ModelRouter/LLMClient 返回 dict（含 content 字段）；统一提取为字符串
-            if isinstance(raw, dict):
-                raw = raw.get("content") or raw.get("reasoning_content") or ""
-            resp = raw if isinstance(raw, str) else ""
-            if len(resp.strip()) >= min_ok:
-                return resp.strip()
+            # ModelRouter/LLMClient 返回 dict（含 content 字段）；经共享 guard 统一提取
+            # （finish_reason=length 截断与退化短输出均回 None 走重试/回退）。
+            resp = self._coerce_polish_text(raw, chapter_text)
+            if resp is not None:
+                return resp
             logger.warning(
-                f"polish_chapter attempt {attempt + 1} returned degenerate output "
-                f"(len={len(resp)}), retrying"
+                f"polish_chapter attempt {attempt + 1} returned degenerate/truncated output, retrying"
             )
         # 所有重试均失败：回退到未润色原始正文，保证章节完整不残缺
         logger.warning("polish_chapter: all attempts degenerate, falling back to original text")

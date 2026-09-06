@@ -61,6 +61,44 @@ def test_marker_miss_falls_back_to_scene_index(tmp_path, monkeypatch):
     assert "旧场景三内容" not in result
 
 
+def test_round1_gain_survives_round2_patch(tmp_path, monkeypatch):
+    """Journal write-back: a round-1 patch gain must survive a round-2 patch
+    (round-2 reassembles from the journal, which must already hold round-1)."""
+    orch = _make_orchestrator(tmp_path)
+
+    append_scene(tmp_path, 1, {"scene_id": 1, "scene_text": "场景一旧正文：村口晨雾。", "hook": "", "beats": []})
+    append_scene(tmp_path, 1, {"scene_id": 2, "scene_text": "场景二旧正文：集市喧闹。", "hook": "", "beats": []})
+    append_scene(tmp_path, 1, {"scene_id": 3, "scene_text": "旧场景三内容：祠堂夜话。", "hook": "", "beats": []})
+
+    draft = "第一章正文旧场景三内容：祠堂夜话。无人知晓的旧事。"
+
+    class _SceneOut:
+        def __init__(self, text):
+            self.scene_text = text
+
+    def _gen(task_card, bp, *a, **k):
+        return _SceneOut(f"新场景{bp['scene_num']}内容重写版：灯火通明旧事重提。")
+
+    monkeypatch.setattr(orch.writer, "generate_scene", _gen)
+
+    task_card = {
+        "chapter_num": 1,
+        "scene_blueprints": [
+            {"scene_num": 1}, {"scene_num": 2}, {"scene_num": 3},
+        ],
+    }
+    round1 = orch._patch_weak_scenes(draft, {"fix_scope": "场景3", "issues": []},
+                                     task_card, {"synopsis": ""})
+    assert round1 is not None and "新场景3内容重写版" in round1
+
+    round2 = orch._patch_weak_scenes(draft, {"fix_scope": "场景2", "issues": []},
+                                     task_card, {"synopsis": ""})
+    assert round2 is not None
+    assert "新场景2内容重写版" in round2
+    assert "新场景3内容重写版" in round2, "round-1 gain lost: journal not written back"
+    assert "旧场景三内容" not in round2
+
+
 def test_seam_check_is_read_only():
     from novel_engine.quality.repetition_detector import verify_seams
     original = "…scene1 ends 午后…\n\n…scene2 starts 午后…"

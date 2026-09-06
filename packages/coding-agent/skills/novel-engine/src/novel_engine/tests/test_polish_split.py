@@ -31,3 +31,21 @@ def test_length_truncation_keeps_original():
     scene = "正" * 2000
     out = w._polish_single(scene, {"chapter_num": 1, "title": "t"}, CappedStub())
     assert out == scene  # truncated output must not replace the original
+
+
+def test_short_path_length_truncation_keeps_original():
+    """Short (<=4000-char) polish_chapter path shares the finish_reason guard:
+    a length-truncated response clearing no bar must yield the original text."""
+    seen = {}
+
+    class CappedStub:
+        def chat_completion(self, messages, temperature=None, max_tokens=None, timeout=None, **kw):
+            seen["max_tokens"] = max_tokens
+            return {"content": "截" * 1500, "finish_reason": "length"}
+
+    w = WriterAgent(llm_client=CappedStub())
+    short = "正" * 1000  # <= 4000 → short path with temperature retry loop
+    out = w.polish_chapter(short, {"chapter_num": 1, "title": "t"}, llm_client=CappedStub())
+    assert out == short
+    # Unified measured budget (no old /1.5 estimate) on the short path too.
+    assert seen["max_tokens"] >= int(1000 / 0.9)

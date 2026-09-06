@@ -485,6 +485,8 @@ class PipelineOrchestrator:
                             current_draft = patched_draft
                             self.current_novel = current
                             self._draft_novel = current_draft
+                            # 注：patch 增益已在 _patch_weak_scenes 内回写 journal，
+                            # 此处无需额外同步（journal 即 source of truth）。
                             # 更新 gate
                             gate_after = self._deterministic_quality_gate(current, frozen)
                             self._last_deterministic_issues = gate_after["issues"]
@@ -508,6 +510,9 @@ class PipelineOrchestrator:
                         current_draft = rewritten  # 重写结果视为新 draft
                         self.current_novel = current
                         self._draft_novel = current_draft
+                        # Journal write-back：重写增益同步回 journal，否则下一轮
+                        # patch 会从陈旧落盘复活原文（journal-vs-draft drift）。
+                        self._sync_journal_from_draft(chapter_num, rewritten)
                         gate_after = self._deterministic_quality_gate(current, frozen)
                         self._last_deterministic_issues = gate_after["issues"]
                     best_score, best_novel, best_draft = best
@@ -1152,6 +1157,7 @@ class PipelineOrchestrator:
                 return None
         synopsis_text = synopsis.get("synopsis", "") if isinstance(synopsis, dict) else str(synopsis or "")
         regenerated = False
+        patched_ids: set[int] = set()
         for sn in sorted(target_nums):
             bp = blueprints.get(sn)
             if not bp:
@@ -1165,8 +1171,18 @@ class PipelineOrchestrator:
                 return None
             journal[sn] = new_scene.strip() if isinstance(new_scene, str) else new_scene
             regenerated = True
+            patched_ids.add(sn)
         if not regenerated:
             return None
+        # Journal write-back：被 patch 的 scene_id 即刻回写 journal（append 即 update，
+        # load 侧 dict 后写覆盖先写），使 journal 在多轮 fix loop 中保持为真正的
+        # source of truth；否则 round-2 patch 会从陈旧落盘复活原文，丢弃 round-1 增益。
+        for sn in sorted(patched_ids):
+            try:
+                append_scene(self.root, ch, {"scene_id": sn, "scene_text": journal[sn],
+                                             "hook": "", "beats": []})
+            except Exception as je:
+                logger.warning(f"Journal write-back failed for chapter {ch} scene {sn}: {je}")
         patched = "\n\n※\n\n".join(journal[k] for k in sorted(journal))
         try:
             seam_notes = verify_seams(patched)
@@ -1178,6 +1194,34 @@ class PipelineOrchestrator:
             return None
         logger.info(f"Incremental patch applied for scenes {sorted(target_nums)} (fix_scope={fix_scope!r})")
         return patched
+
+    def _sync_journal_from_draft(self, chapter_num: int, draft_text: str) -> None:
+        """Fix-loop journal write-back for full-rewrite gains.
+
+        按 ※ 切分新 draft 并按 journal 已有 scene_id 顺序逐个回写（append 即
+        update，后写覆盖先写）。切分数与 journal 场景数不一致时跳过并记 warning，
+        使非结构化重写永不污染 journal。Best-effort：失败只记日志。
+        """
+        import re
+        try:
+            existing = load_scenes(self.root, chapter_num)
+        except Exception as je:
+            logger.warning(f"Journal write-back skipped (load failed, ch {chapter_num}): {je}")
+            return
+        if not existing:
+            return
+        parts = [p.strip() for p in re.split(r"\n?\s*※\s*\n?", draft_text or "") if p.strip()]
+        ids = sorted(d["scene_id"] for d in existing)
+        if len(parts) != len(ids):
+            logger.warning(f"Journal write-back skipped: draft parts {len(parts)} vs "
+                           f"journal scenes {len(ids)} (ch {chapter_num})")
+            return
+        for sid, text in zip(ids, parts):
+            try:
+                append_scene(self.root, chapter_num, {"scene_id": sid, "scene_text": text,
+                                                      "hook": "", "beats": []})
+            except Exception as je:
+                logger.warning(f"Journal write-back failed for chapter {chapter_num} scene {sid}: {je}")
 
     def _rewrite_weak_dimensions(self, novel, review):
         scores = review.get("scores") or {}
