@@ -18,12 +18,12 @@ Incoming reports use this format:
 - Deferred to: beats pilot (dimension→category mapping)
 - Notes: real reviewer issues carry dimension in the 6 score dims + severity high/medium/low, neither of which are policy severity_map categories, so the reviewer check never blocks in practice. Advisory-only until the beats pilot lands the dimension→category mapping; do NOT "fix" by mapping all reviewer-high to hard.
 
-## 2026-09-06 — force-best log wording vs actual behavior
+## 2026-09-06 - force-best log wording vs actual behavior
 - Suspected module: pipeline/pipeline_orchestrator.py (force-best log line)
 - Deferred to: post-foundation
 - Notes: log writes "publishing best X < 88 to novel" but actually writes draft/ (next line self-proves never novel/). Pure log-wording fix, no behavior involved.
 
-## 2026-09-06 — force-note missing hard/det snapshot
+## 2026-09-06 - force-note missing hard/det snapshot
 - Suspected module: pipeline/pipeline_orchestrator.py (force-best note)
 - Deferred to: post-foundation
 - Notes: note writes "(hard gate unknown)"; if a future force carries hard issues there will be no attribution evidence. One snapshot line suffices.
