@@ -873,6 +873,7 @@ class PipelineOrchestrator:
         purified = purify_novel_for_publish(text, chapter_num=task_card.get("chapter_num"))
         # 若净化前后长度差异过大，说明脚手架污染严重，也视为问题
         issues: list[str] = []
+        soft_issues: list[str] = []
         rep = detect_repetition(purified)
         if rep["has_repetition"]:
             issues.extend([f"[重复] {x}" for x in rep["issues"]])
@@ -884,12 +885,11 @@ class PipelineOrchestrator:
         target = sum(int(bp.get("word_count_target", 0)) for bp in blueprints) or None
         length = detect_length_anomaly(purified, target)
         if length["anomaly"]:
-            issues.extend([f"[长度] {x}" for x in length["issues"]])
+            soft_issues.extend([f"[长度] {x}" for x in length["issues"]])
         # 脚手架残留二次校验（净化后不应再含这些 token）→ 硬
         if any(tok in purified for tok in ["【场景", "※", "（章末钩子", "（注："]):
             issues.append("[净化] 成品仍含脚手架标记")
         # P2-C4 套话黑名单 → 软（仅预警，不阻断发布，-reported in soft）
-        soft_issues: list[str] = []
         cliches = ["死水石子", "未出鞘", "达摩克利斯", "如野草疯长"]
         for c in cliches:
             if purified.count(c) >= 2:  # 至少出现2次才视为堆砌
