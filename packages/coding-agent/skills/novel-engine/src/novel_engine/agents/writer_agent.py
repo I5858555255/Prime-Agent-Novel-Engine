@@ -412,13 +412,18 @@ class WriterAgent:
         return chapter_text
 
 
-    def _polish_by_scenes(self, chapter_text: str, task_card: dict, client) -> str:
-        """P0-单次全文 polish（1 次调用，300s），避免 4 次串行 7min 高耗低效。"""
+    def _split_scenes(self, chapter_text, scene_count):
+        import re
+        parts = [p.strip() for p in re.split(r"【场景\d+[:：][^】]*】|\n?\s*※\s*\n?", chapter_text) if p.strip()]
+        return parts  # never truncate: if count mismatches, return [chapter_text]
+
+    def _polish_single(self, scene_text, task_card, client, scene=False):
+        """单场景（或单次全文兜底）polish：测量预算 max_tokens = min(16000, max(4096, int(len/0.9)+512))。"""
         prompt = (
             "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
-            f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
+            f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{scene_text}"
         )
-        max_tokens = min(16000, max(4096, int(len(chapter_text) / 1.5)))
+        max_tokens = min(16000, max(4096, int(len(scene_text) / 0.9) + 512))
         try:
             raw = client.chat_completion(
                 [{"role": "user", "content": prompt}],
@@ -429,12 +434,22 @@ class WriterAgent:
             if isinstance(raw, dict):
                 raw = raw.get("content") or raw.get("reasoning_content") or ""
             resp = raw if isinstance(raw, str) else ""
-            if len(resp.strip()) >= max(200, int(len(chapter_text) * 0.5)):
+            if len(resp.strip()) >= max(200, int(len(scene_text) * 0.5)):
                 return resp.strip()
-            logger.warning(f"polish degenerate len={len(resp)} vs orig {len(chapter_text)}, keep original")
+            logger.warning(f"polish degenerate len={len(resp)} vs orig {len(scene_text)}, keep original")
         except Exception as exc:
             logger.warning(f"polish failed ({exc}), keep original")
-        return chapter_text
+        return scene_text
+
+    def _polish_by_scenes(self, chapter_text: str, task_card: dict, client) -> str:
+        """按场景边界分段 polish：逐场景顺序调用（无并发），※-join；切分不符预期时单次全文兜底。"""
+        expected = len(task_card.get("scene_blueprints") or []) or 1
+        scenes = self._split_scenes(chapter_text, expected)
+        if len(scenes) != expected:
+            logger.warning(f"scene split {len(scenes)} vs expected {expected}, single-call fallback")
+            return self._polish_single(chapter_text, task_card, client)
+        out = [self._polish_single(s, task_card, client, scene=True) for s in scenes]
+        return "\n\n※\n\n".join(out)
 
     def polish_chapter(self, chapter_text: str, task_card: dict, llm_client=None) -> str:
         """章节润色：统一过渡与语气。
