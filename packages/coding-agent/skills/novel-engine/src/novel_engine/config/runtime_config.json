@@ -1,9 +1,9 @@
 {
   "llm": {
     "provider": "openai",
-    "model": "deepseek-ai/DeepSeek-V3.2",
-    "api_base": "https://api.siliconflow.cn",
-    "api_key_env": "ZLEAP_MODEL_API_KEY",
+    "model": "agnes-2.5-flash",
+    "api_base": "https://apihub.agnes-ai.com",
+    "api_key_env": "AGNES_API_KEY",
     "temperature": 0.7,
     "max_tokens": 12000,
     "timeout_seconds": 600,
@@ -20,48 +20,57 @@
       "min": 3,
       "max": 4
     },
-    "merge_synopsis_into_directing": true
+    "merge_synopsis_into_directing": true,
+    "allow_whole_chapter_rewrite": false
   },
   "quality": {
     "pass_threshold": 88,
     "fix_threshold": 60,
     "publication_line": 88,
     "min_chapter_score": 60,
-  "min_pacing": 7.5,
-  "min_innovation": 7.0,
+    "min_pacing": 7.5,
+    "min_innovation": 7.0,
     "target_avg_score": 88,
     "overuse_window_chapters": 100,
     "overuse_count_threshold": 4,
     "well_received_min_confidence": 0.6
   },
   "provider": {
-    "family": "qwen",
-    "api_base": "https://api.siliconflow.cn",
-    "model": "deepseek-ai/DeepSeek-V3.2",
-    "reasoning_fallback": true,
-    "thinking_param": null,
-    "cache_bust_suffix": "\n\n[请直接给出最终答案，严格使用合法 JSON，不要使用思考模式，不要输出任何分析或推理过程。]",
-    "retry_temperatures": [0.7, 0.6]
-  },
-  "review_llm": {
+    "family": "agnes",
     "api_base": "https://apihub.agnes-ai.com",
     "model": "agnes-2.5-flash",
-    "api_key_env": "AGNES_API_KEY",
+    "reasoning_fallback": false,
+    "thinking_param": null,
+    "cache_bust_suffix": "\n\n[请直接给出最终答案，严格使用合法 JSON，不要使用思考模式，不要输出任何分析或推理过程。]",
+    "retry_temperatures": [
+      0.7,
+      0.6
+    ]
+  },
+  "review_llm": {
+    "api_base": "https://api.siliconflow.cn",
+    "model": "Qwen/Qwen3.5-4B",
+    "api_key_env": "LLM_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
     "timeout_seconds": 60,
     "use_mock": false
   },
   "review_provider": {
-    "family": "agnes",
+    "family": "siliconflow",
     "reasoning_fallback": false,
     "thinking_param": null,
-    "retry_temperatures": [0.3, 0.4, 0.2, 0.5]
+    "retry_temperatures": [
+      0.3,
+      0.4,
+      0.2,
+      0.5
+    ]
   },
   "fallback_llm": {
     "api_base": "https://api.siliconflow.cn",
-    "model": "deepseek-ai/DeepSeek-V3.2",
-    "api_key_env": "ZLEAP_MODEL_API_KEY",
+    "model": "Qwen/Qwen3.5-4B",
+    "api_key_env": "LLM_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
     "timeout_seconds": 600,
@@ -89,32 +98,63 @@
   "model_router": {
     "phases": {
       "scenes": [
-        "deepseek-ai/DeepSeek-V3.2",
-        "Qwen/Qwen3.5-27B",
-        "inclusionAI/Ling-mini-2.0"
+        "Qwen/Qwen3.5-4B"
       ],
-      "polish": ["deepseek-ai/DeepSeek-V3.2", "Qwen/Qwen3.5-27B"],
-      "planning": ["deepseek-ai/DeepSeek-V3.1-Terminus", "deepseek-ai/DeepSeek-V3"],
-      "synopsis": ["deepseek-ai/DeepSeek-V3.1-Terminus", "Qwen/Qwen3.5-9B"],
-      "review": ["agnes-2.5-flash"]
+      "polish": [
+        "Qwen/Qwen3.5-4B"
+      ],
+      "planning": [
+        "Qwen/Qwen3.5-4B"
+      ],
+      "synopsis": [
+        "Qwen/Qwen3.5-4B"
+      ],
+      "review": [
+        "Qwen/Qwen3.5-4B"
+      ],
+      "director": [
+        "Qwen/Qwen3.5-4B"
+      ]
     },
     "limits": {
-      "deepseek-ai/DeepSeek-V3.2":  {"rpm": 1000, "tpm": 100000},
-      "deepseek-ai/DeepSeek-V3.1-Terminus": {"rpm": 1000, "tpm": 100000},
-      "deepseek-ai/DeepSeek-V3":    {"rpm": 1000, "tpm": 100000},
-      "Qwen/Qwen3.5-9B":            {"rpm": 1000, "tpm": 50000},
-      "Qwen/Qwen3.5-27B":           {"rpm": 1000, "tpm": 100000},
-      "inclusionAI/Ling-mini-2.0":  {"rpm": 1000, "tpm": 50000},
-      "agnes-2.5-flash":            {"rpm": 20,   "tpm": 200000}
+      "deepseek-ai/DeepSeek-V3.2": {
+        "rpm": 1000,
+        "tpm": 100000
+      },
+      "deepseek-ai/DeepSeek-V3.1-Terminus": {
+        "rpm": 1000,
+        "tpm": 100000
+      },
+      "deepseek-ai/DeepSeek-V3": {
+        "rpm": 1000,
+        "tpm": 100000
+      },
+      "Qwen/Qwen3.5-9B": {
+        "rpm": 1000,
+        "tpm": 50000
+      },
+      "Qwen/Qwen3.5-27B": {
+        "rpm": 1000,
+        "tpm": 100000
+      },
+      "inclusionAI/Ling-mini-2.0": {
+        "rpm": 1000,
+        "tpm": 50000
+      },
+      "agnes-2.5-flash": {
+        "rpm": 20,
+        "tpm": 200000
+      }
     },
     "probe_on_startup": false,
     "max_parallel_chapters": 1
   },
   "quality_policy": {
-    "chapter_target_chars": 7500,
-    "min_ratio": 0.65,
-    "max_ratio": 1.35,
-    "tolerance_chars": 50,
+    "chapter_target_chars": 8000,
+    "scene_target_chars": 2150,
+    "min_ratio": 0.85,
+    "max_ratio": 1.3125,
+    "tolerance_chars": 100,
     "publication_line": 88,
     "severity_map": {
       "leak_scaffolding": "hard",
