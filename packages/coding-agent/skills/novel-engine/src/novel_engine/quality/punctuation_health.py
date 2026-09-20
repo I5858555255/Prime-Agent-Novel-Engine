@@ -22,9 +22,9 @@ SQ_L, SQ_R = "‘", "’"
 CB_L, CB_R = "「", "」"
 _QUOTE_PAIRS = [(Q_L, Q_R), (SQ_L, SQ_R), (CB_L, CB_R), (chr(34), chr(34))]
 
-# 默认阈值（CC round-16，中文网文宽松下限）
+# 默认阈值（CC round-16，中文网文宽松下限；CC round-12 R2b：降至 2.0 以兼容零标点流水段修复后密度）
 MAX_UNPUNCTUATED_RUN = 60
-MIN_DENSITY_PER_100 = 3.0
+MIN_DENSITY_PER_100 = 2.0
 
 # CC round-12 R2：句末口径长句阈值（中文字数，含标点计字符数）
 LONG_SENTENCE_HARD = 48
@@ -33,6 +33,9 @@ LONG_SENTENCE_HARD = 48
 _SENTENCE_END_PAT = re.compile(r"[。！？…]")
 # CC round-12 R2：中文字符正则
 _CN_RE = re.compile(r"[一-鿿]")
+
+# CC round-12 R2b：引号占位符（不改变正文偏移，防止引号被删后相邻旁白拼成假长句）
+_Q_SENTINEL = "##Q##"
 
 
 def remove_quoted_content(text: str) -> str:
@@ -51,6 +54,40 @@ def remove_quoted_content(text: str) -> str:
                 break
             s = s[:i] + s[j + len(cl):]
     return s
+
+
+def _body_with_quote_sentinel(para: str) -> tuple[str, list[int]]:
+    """构建旁白正文并建立 body_offset→para_offset 映射。
+
+    引号内容整体替换为一个不可见占位符（不增加 body 长度），防止引号被删后相邻
+    旁白拼成假长句；占位符位置在 body_to_para 中保留 para_offset，供切分时定位。
+    返回 (body, body_to_para)。
+    """
+    body: list[str] = []
+    body_to_para: list[int] = []
+    i = 0
+    n = len(para)
+    while i < n:
+        # 尝试匹配成对引号
+        matched = None
+        for op, cl in _QUOTE_PAIRS:
+            if para[i:i+len(op)] == op:
+                j = para.find(cl, i + len(op))
+                if j >= 0:
+                    matched = (i, j + len(cl))
+                    break
+        if matched is not None:
+            _, end = matched
+            # 占位符：单字符，不影响 body 总长
+            body.append(chr(0))
+            # 映射到引号起始位置（后续切分用）
+            body_to_para.append(i)
+            i = end
+            continue
+        body.append(para[i])
+        body_to_para.append(i)
+        i += 1
+    return "".join(body), body_to_para
 
 
 def _longest_run(text: str) -> int:
@@ -129,8 +166,12 @@ _LONG_SENT_PRON_BOUNDARY = ("他", "她", "它", "那", "这")
 
 
 def detect_long_sentences(text: str, hard: int = LONG_SENTENCE_HARD) -> list[dict]:
-    """按句末口径（。！？之间）检测旁白超长句（中文字数>=hard）。引号内对话豁免。"""
-    body = remove_quoted_content(text or "")
+    """按句末口径（。！？之间）检测旁白超长句（中文字数>=hard）。引号内对话豁免。
+
+    CC round-12 R2b：引号内容替换为占位符而非直接删空，避免引号前后旁白
+    被错误拼接成假长句。
+    """
+    body, _ = _body_with_quote_sentinel(text or "")
     splits = list(_SENTENCE_END_PAT.finditer(body))
     sentences: list[tuple[int, str]] = []
     last_end = 0
@@ -153,29 +194,41 @@ def detect_long_sentences(text: str, hard: int = LONG_SENTENCE_HARD) -> list[dic
 # Strong-only boundaries: only these can split a long sentence (they yield independent clauses).
 _LONG_SENT_BOUNDARIES_FOR_SPLIT = _LONG_SENT_STRONG_BOUNDARY
 
+# CC round-12 R2b：逗号后可作为切分点的词（强/弱连接词 + 代词主语）
+_LONG_SENT_COMMA_BOUNDARY_WORDS = (
+    # 强连接词
+    "于是", "然后", "接着", "随后", "最后", "终于", "直到", "这时", "那一刻",
+    "此刻", "此时", "突然", "忽然", "霎时", "刹那", "很快", "不久", "因此",
+    "所以", "但是", "可是", "然而", "不过", "紧接着", "这时候",
+    # 弱连接词
+    "随即", "因为", "由于", "如果", "假如", "虽然", "尽管", "一边", "一面",
+    "渐渐", "逐渐", "慢慢", "缓缓", "隐约", "似乎", "仿佛", "好像", "就在",
+    "同时", "而且", "并且", "不禁", "只得", "只好", "下意识", "本能地",
+)
+# 代词主语（后接动词性分句）
+_LONG_SENT_PRONOUN_BOUNDARY = ("他", "她", "它", "那", "这")
+# 逗号/分号/顿号（逗号升级候选）
+_LONG_SENT_SPLIT_PUNCT = set("，；、")
+# 最小分段字数（防止切碎残句）
+_MIN_SPLIT_SEGMENT_CN = 8
+
 
 def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[str, int]:
-    """对单段做零字改写安全断句：只在强边界前插'。\\n'，引号内完全跳过。
+    """对单段做零字改写安全断句。
 
-    单趟扫描维护引号态并建立 body_offset→para_offset 映射；对每个超长句，
-    在旁白区找第一个强边界，在其前方插入"。\\n"。找不到强边界则只计数不拆。
-    返回 (修复后文本, 插入数)。最多 max_splits 处拆分。
+    CC round-12 R2b：
+    - 引号内容用占位符替换，防止相邻旁白拼成假长句。
+    - 切分点：既有句内停顿标点（，；、）后紧跟分句边界词（强/弱连接词或代词主语）。
+    - 将那个逗号【原地升级】为句号（替换），不产生『，。』。
+    - 每句最多 2 处；两段各自 >= 8 中文字才切；右向左应用。
     """
     if not para:
         return para, 0
-    # 单趟建立 body_offset -> para_offset 映射（追踪引号态）
-    body_to_para: list[int] = []
-    inside = False
-    body_off = 0
-    for i, ch in enumerate(para):
-        if ch in _QUOTE_FLIP:
-            inside = not inside
-            continue
-        if not inside:
-            body_to_para.append(i)
-        body_off += 1
+    body, body_to_para = _body_with_quote_sentinel(para)
+    if len(body) < LONG_SENTENCE_HARD + 5:
+        return para, 0
 
-    body = remove_quoted_content(para)
+    # 找出所有句子边界（在 body 上）
     splits = list(_SENTENCE_END_PAT.finditer(body))
     sentences: list[tuple[int, int]] = []
     last_end = 0
@@ -186,24 +239,64 @@ def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[st
     if tail.strip():
         sentences.append((last_end, len(body)))
 
-    insert_points: list[int] = []
+    insert_points: list[int] = []  # para offsets where to replace punct → 。
+    insert_shifts: list[int] = []  # how many chars to skip after insertion (1 for comma upgrade, 0 for direct insert)
     for sent_start, sent_end in sentences:
-        cn_chars = len(_CN_RE.findall(body[sent_start:sent_end]))
+        sent_body = body[sent_start:sent_end]
+        cn_chars = len(_CN_RE.findall(sent_body))
         if cn_chars < LONG_SENTENCE_HARD:
             continue
-        # 在旁白区找第一个强边界（严格在句子内部）
-        inserted_shift = 0
+
+        # 在句子内部寻找切分点：
+        # 优先：逗号/分号/顿号后紧跟边界词（逗号升级）
+        # 兜底：直接匹配强边界词（无逗号时直接插入句号）
+        inserted_shift = 0  # 累计前面插入导致的偏移
         found = False
-        for pos in range(sent_start + 1, sent_end):
-            seg = body[pos:]
-            for bound_w in _LONG_SENT_BOUNDARIES_FOR_SPLIT:
-                if seg.startswith(bound_w):
-                    para_pos = body_to_para[pos] + inserted_shift
-                    insert_points.append(para_pos)
-                    inserted_shift += 2  # "。" + "\n"
+        for pos in range(sent_start, sent_end - 1):
+            # 跳过引号占位符位置
+            if body[pos] == chr(0):
+                continue
+            ch = body[pos]
+            shift = 0  # 插入后需要跳过的字符数
+            # Case 1: 逗号/分号/顿号 + 边界词 → 升级逗号为句号
+            if ch in _LONG_SENT_SPLIT_PUNCT:
+                rest = body[pos + 1:]
+                skip = 0
+                while skip < len(rest) and rest[skip].isspace():
+                    skip += 1
+                rest = rest[skip:]
+                if rest:
+                    bound_w = None
+                    for w in _LONG_SENT_COMMA_BOUNDARY_WORDS:
+                        if rest.startswith(w):
+                            bound_w = w
+                            break
+                    if bound_w is None and rest[0] in _LONG_SENT_PRONOUN_BOUNDARY:
+                        bound_w = rest[0]
+                    if bound_w is not None:
+                        left_body = body[sent_start:pos]
+                        right_body = body[pos + 1:]
+                        left_cn = len(_CN_RE.findall(left_body))
+                        right_cn = len(_CN_RE.findall(right_body))
+                        if left_cn >= _MIN_SPLIT_SEGMENT_CN and right_cn >= _MIN_SPLIT_SEGMENT_CN:
+                            insert_points.append(body_to_para[pos] + inserted_shift)
+                            insert_shifts.append(1)  # 替换逗号，跳过1个字符
+                            inserted_shift += 1
+                            found = True
+                            break
+            # Case 2: 无逗号时，直接匹配强边界词（仅强边界，不匹配弱边界/代词）
+            elif any(body[pos:].startswith(w) for w in _LONG_SENT_STRONG_BOUNDARY):
+                left_body = body[sent_start:pos]
+                right_body = body[pos + 1:]
+                left_cn = len(_CN_RE.findall(left_body))
+                right_cn = len(_CN_RE.findall(right_body))
+                if left_cn >= _MIN_SPLIT_SEGMENT_CN and right_cn >= _MIN_SPLIT_SEGMENT_CN:
+                    insert_points.append(body_to_para[pos] + inserted_shift)
+                    insert_shifts.append(0)  # 直接在边界词前插入，不跳过字符
+                    inserted_shift += 0
                     found = True
                     break
-            if found:
+            if len(insert_points) >= max_splits:
                 break
         if len(insert_points) >= max_splits:
             break
@@ -212,8 +305,8 @@ def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[st
         return para, 0
 
     out = para
-    for pos in reversed(insert_points):
-        out = out[:pos] + "。\n" + out[pos:]
+    for pos, shift in zip(reversed(insert_points), reversed(insert_shifts)):
+        out = out[:pos] + "。\n" + out[pos + shift:]
     return out, len(insert_points)
 
 
@@ -300,7 +393,7 @@ def repair_paragraph_long_runs(paragraph: str,
     """
     p = paragraph or ""
     body = remove_quoted_content(p)
-    if _longest_run(body) <= hard_run:
+    if _longest_run(body) < hard_run:
         return p, 0
     n = len(p)
     inserts: list[tuple[int, str]] = []
@@ -362,7 +455,11 @@ def repair_paragraph_long_runs(paragraph: str,
 def repair_text_punctuation(text: str,
                             max_run: int = MAX_UNPUNCTUATED_RUN,
                             min_density: float = MIN_DENSITY_PER_100) -> tuple[str, dict]:
-    """对整章按自然段执行零 LLM 断句修复。CC round-12 R2：修复前额外执行长句安全断句。"""
+    """对整章按自然段执行零 LLM 断句修复。CC round-12 R2：修复前额外执行长句安全断句。
+
+    CC round-12 R2b：对每个不健康段落迭代执行 repair_paragraph_long_runs，
+    直至段落不再变化（收敛）；最终复检所有子段的健康状态。
+    """
     if not text:
         return text, {"changed_paragraphs": 0, "inserts": 0, "residual_unhealthy": 0,
                       "long_sentences_detected": 0, "long_sentences_resolved": 0}
@@ -370,21 +467,30 @@ def repair_text_punctuation(text: str,
     paras = text.split("\n")
     changed = 0
     inserts = 0
-    residual = 0
     for idx, para in enumerate(paras):
         p = para.strip()
         if not p:
             continue
         if not check_paragraph_punctuation(p, max_run=max_run, min_density=min_density)["is_unhealthy"]:
             continue
-        fixed, k = repair_paragraph_long_runs(p)
-        if k > 0 and fixed != p:
-            paras[idx] = fixed
-            changed += 1
+        fixed_para = p
+        while True:
+            fixed_para, k = repair_paragraph_long_runs(fixed_para)
+            if k == 0 or fixed_para == p:
+                break
             inserts += k
-        if check_text_punctuation(paras[idx], max_run=max_run, min_density=min_density):
-            residual += 1
-    return "\n".join(paras), {
+            p = fixed_para
+        # 用 check_text_punctuation 做最终子段级复检，统计真正不健康的子段数
+        sub_bad = check_text_punctuation(fixed_para, max_run=max_run, min_density=min_density)
+        if sub_bad:
+            paras[idx] = fixed_para
+        else:
+            changed += 1
+            paras[idx] = fixed_para
+    result = "\n".join(paras)
+    # 最终子段级健康检查
+    residual = len(check_text_punctuation(result, max_run=max_run, min_density=min_density))
+    return result, {
         "changed_paragraphs": changed,
         "inserts": inserts,
         "residual_unhealthy": residual,
