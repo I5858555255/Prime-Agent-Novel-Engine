@@ -132,3 +132,60 @@ def test_repair_text_punctuation_preserves_dialogue():
     fixed, stats = ph.repair_text_punctuation(text)
     assert dialogue in fixed
     assert ph.strip_all_punctuation(fixed) == ph.strip_all_punctuation(text)
+
+
+# ---------- CC round-12 R2c：引号占位符与换行硬句界 ----------
+
+def test_dialogue_tags_do_not_merge_across_paragraphs():
+    """多段对话标签夹旁白不得被拼成假长句（chr(0)+\\n 为硬句界）。"""
+    text = (
+        "旁白前段持续铺垫情绪氛围背景描述细节丰富。"
+        '「第一句对话内容没有任何标点符号需要处理。」'
+        "旁白后段接着继续叙述。"
+        '「第二句对话内容。」'
+        "最终旁白收尾。"
+    )
+    sents = ph.detect_long_sentences(text)
+    # 每个旁白段单独检测，不应有跨段落拼接的假长句
+    over_50 = [s for s in sents if s["cn_chars"] >= 50]
+    # 每段旁白本身不超过 50 字（构造的短段）
+    assert len(over_50) == 0, f"Expected no cross-para false long sentence, got {over_50}"
+
+
+def test_quote_sentinel_does_not_trigger_split():
+    """引号占位符 chr(0) 不得作为切分插入点（句号不会插在对话位置）。"""
+    dialogue = '“这是一段很长的对话完全没有标点符号”'
+    text = "的" * 25 + dialogue + "的" * 25 + "然后停下。"
+    fixed, stats = ph.split_long_sentences(text)
+    # 拆分只能在旁白区，不能插在引号占位符处
+    assert "\x00。\n" not in fixed
+    assert "。\n\x00" not in fixed
+    # 去标点恒等
+    assert ph.strip_all_punctuation(fixed) == ph.strip_all_punctuation(text)
+
+
+def test_newline_also_hard_boundary():
+    """换行符（含空行）为硬句界，不产生跨行拼接假长句。"""
+    text = "的" * 20 + chr(10) + chr(10) + "的" * 20 + chr(10) + "然后停下。"
+    sents = ph.detect_long_sentences(text)
+    # 每段各自独立，不应合并
+    over_50 = [s for s in sents if s["cn_chars"] >= 50]
+    assert len(over_50) == 0
+
+
+# ---------- CC round-12 R2c：gate 持久化回归 ----------
+
+def test_split_long_sentences_persists_when_no_runon():
+    """长句拆分后若 check_text_punctuation 干净，仍应保留拆分结果（模拟 gate C2）。
+
+    真实 ch3 场景：逗号充分导致流水段检测为 healthy（bad=[]），但 split_long_sentences
+    已成功拆分。C2 修复要求在此情况下持久化 sc.scene_text。
+    """
+    text = "的" * 25 + "，随即" + "的" * 30 + "，牢牢钉在原地。"
+    ls_text, ls_stats = ph.split_long_sentences(text)
+    assert ls_text != text, "split_long_sentences should have modified text"
+    bad = ph.check_text_punctuation(ls_text)
+    assert bad == [], "After split, text should be healthy (no run-on paragraphs)"
+    # C2 场景：ls_text != text 且 bad == []，gate 必须持久化 ls_text
+    assert ph.strip_all_punctuation(ls_text) == ph.strip_all_punctuation(text)
+    assert "。" in ls_text

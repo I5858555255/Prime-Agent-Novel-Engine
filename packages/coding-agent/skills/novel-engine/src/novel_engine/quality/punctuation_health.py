@@ -31,6 +31,8 @@ LONG_SENTENCE_HARD = 48
 
 # CC round-12 R2：句末标点正则（。！？…）
 _SENTENCE_END_PAT = re.compile(r"[。！？…]")
+# CC round-12 R2c：引号占位符（chr(0)）与换行亦为硬句界，防止跨对话拼接假长句
+_SENTENCE_HARD_BOUNDARY_PAT = re.compile(r"[。！？…\x00\n]")
 # CC round-12 R2：中文字符正则
 _CN_RE = re.compile(r"[一-鿿]")
 
@@ -170,9 +172,12 @@ def detect_long_sentences(text: str, hard: int = LONG_SENTENCE_HARD) -> list[dic
 
     CC round-12 R2b：引号内容替换为占位符而非直接删空，避免引号前后旁白
     被错误拼接成假长句。
+    CC round-12 R2c：引号占位符（chr(0)）与换行（\n）亦为硬句界，不参与字数统计、
+    不作为切分插入点，确保跨对话/跨段旁白不拼成假长句。
     """
     body, _ = _body_with_quote_sentinel(text or "")
-    splits = list(_SENTENCE_END_PAT.finditer(body))
+    # 用硬句界切分：句号 + chr(0) + 换行
+    splits = list(_SENTENCE_HARD_BOUNDARY_PAT.finditer(body))
     sentences: list[tuple[int, str]] = []
     last_end = 0
     for m in splits:
@@ -228,8 +233,8 @@ def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[st
     if len(body) < LONG_SENTENCE_HARD + 5:
         return para, 0
 
-    # 找出所有句子边界（在 body 上）
-    splits = list(_SENTENCE_END_PAT.finditer(body))
+    # 找出所有句子边界（在 body 上）——使用硬句界：句号 + chr(0) + 换行
+    splits = list(_SENTENCE_HARD_BOUNDARY_PAT.finditer(body))
     sentences: list[tuple[int, int]] = []
     last_end = 0
     for m in splits:

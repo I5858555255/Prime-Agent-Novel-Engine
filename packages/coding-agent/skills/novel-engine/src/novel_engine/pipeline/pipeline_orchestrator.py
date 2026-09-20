@@ -3265,17 +3265,23 @@ class PipelineOrchestrator:
             if not _is_cjk(text):
                 continue
             # CC round-12 R2b：句末口径长句拆分（独立于流水段检测），无条件对每个中文场景执行
+            ls_persisted = False
             try:
                 ls_text, ls_stats = ph.split_long_sentences(text)
                 if ls_text != text:
                     text = ls_text
                     changed = True
+                    ls_persisted = True
                     logger.info(f"Punctuation gate ch{chapter_num} scene{sid}: "
                                 f"long-sentence split resolved {ls_stats.get('split_count', 0)}/"
                                 f"{ls_stats.get('long_sentences_detected', 0)}")
             except Exception as _e:
                 logger.warning(f"Long sentence split error ch{chapter_num} scene{sid}: {_e}")
             bad = ph.check_text_punctuation(text)
+            if ls_persisted:
+                # 即使 bad 为空（仅有长句拆分、无流水段），也须持久化回写 scene_text
+                sc.scene_text = text.strip()
+                self._chapter_gate_fired = True
             if not bad:
                 continue
             changed = True
