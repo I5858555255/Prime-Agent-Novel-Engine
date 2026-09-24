@@ -206,6 +206,20 @@ class StateDB:
         rows = cursor.fetchall()
         return [dict(r) for r in rows]
 
+    def plant_foreshadow(self, foreshadow_id: str, plant_chapter: int, plant_context: str, resolve_chapter: int, resolve_method: str = "", importance: str = "medium") -> bool:
+        """Register a newly planted foreshadow at runtime (CC P0#3 ledger closure)."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO foreshadows (id, plant_chapter, resolve_chapter, plant_context, resolve_method, importance, status) VALUES (?, ?, ?, ?, ?, ?, 'planned')",
+                (foreshadow_id, plant_chapter, resolve_chapter, plant_context, resolve_method, importance),
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error("plant_foreshadow failed: " + str(e))
+            return False
+
     def execute_custom_query(self, sql: str, params: tuple = ()) -> list[dict]:
         """支持 Agent 在运行中动态编写和运行 SQL 逻辑。"""
         cursor = self.conn.cursor()
@@ -216,5 +230,45 @@ class StateDB:
             logger.error(f"SQL execution failed: {e}")
             return []
 
+    def hybrid_search(self, query: str, limit: int = 8) -> list[dict]:
+        """混合召回：精确 LIKE + 轻量 BM25 风格的 token 重叠，弥补纯精确匹配对隐含关系/动机的漏检。"""
+        if not query or not query.strip():
+            return []
+        tokens = [t for t in query.replace("，", " ").replace("。", " ").split() if len(t.strip()) >= 2]
+        if not tokens:
+            tokens = [query.strip()[:4]]
+        scored: list[tuple[int, dict]] = []
+        cur = self.conn.cursor()
+        for tbl, cols in [
+            ("characters", ["name", "description", "realm", "location"]),
+            ("relationships", ["description", "relation_type"]),
+            ("foreshadows", ["plant_context", "resolve_method"]),
+        ]:
+            try:
+                cur.execute(f"SELECT * FROM {tbl} LIMIT 200")
+                for row in cur.fetchall():
+                    d = dict(row)
+                    text = " ".join(str(d.get(c, "")) for c in cols)
+                    # token 重叠分数 + 子串命中加分
+                    overlap = sum(1 for t in tokens if t in text)
+                    if overlap == 0:
+                        continue
+                    # 长度归一化，避免长文本虚高
+                    scored.append((overlap, {"table": tbl, **d, "_score": overlap}))
+            except Exception:
+                continue
+        scored.sort(key=lambda x: -x[0])
+        return [d for _, d in scored[:limit]]
+
     def close(self):
-        self.conn.close()
+        try:
+            # Checkpoint WAL to main db so -wal/-shm can be released on Windows
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+        finally:
+            try:
+                self.conn.close()
+            except Exception:
+                pass

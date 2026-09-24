@@ -51,8 +51,18 @@ packages/coding-agent/skills/novel-engine/src/novel_engine/audit/
 packages/coding-agent/skills/novel-engine/src/novel_engine/runtime/
 packages/coding-agent/skills/novel-engine/src/novel_engine/test_out.txt
 
-# Local launch script with secrets (contains API keys) — never commit
+# Local launch scripts with secrets (contains API keys) — never commit
 launch_prod.bat
+launch_10.bat
+launch_10_wmi.ps1
+launch_p0p1_3.bat
 
 # Local superpowers tooling data
 .superpowers/
+
+# Local one-off diagnostics (hardcoded machine paths, not project code)
+packages/coding-agent/skills/novel-engine/src/novel_engine/scripts/diagnostic_director_fix.py
+
+# Local manual runtime backups (state snapshots, not source code)
+packages/coding-agent/skills/novel-engine/src/novel_engine/manual_backup_ch5_pre_20260923-113045/
+packages/coding-agent/skills/novel-engine/src/novel_engine/manual_backup_ch6_pre_20260923-1620/

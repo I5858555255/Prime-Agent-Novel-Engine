@@ -9,7 +9,7 @@ novel-engine 生成控制脚本
   stop             优雅停止生成(已完成章节不会丢失)
   resume           从最后一个已完成章节续写(自动探测)
   status           查看运行状态与最近日志
-  setkey <key>     修改 src/novel_engine/.env 中的 ZLEAP_MODEL_API_KEY
+  setkey <key>     修改当前 active_profile 对应 api_key_env 的 .env 密钥（切换供应商用 select_llm）
 
 说明:
   - 生成进程以后台方式启动，pid 保存在本脚本同级的 runtime_gen.pid。
@@ -123,10 +123,74 @@ def start(num_chapters: int = 0, resume: int = 0):
            str(num_chapters), "1", str(resume), "--real"]
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     logf = open(str(LOG_FILE), "a", encoding="utf-8")
+    # API key 注入：从 runtime_config.json 各 api_key_env + .env 读取，注入子进程环境
+    env = os.environ.copy()
+    _rc = NE / "config" / "runtime_config.json"
+    _key_envs = []
+    try:
+        if _rc.exists():
+            _cfg = json.loads(_rc.read_text(encoding="utf-8"))
+            for _seg in _cfg.values():
+                if isinstance(_seg, dict) and _seg.get("api_key_env"):
+                    _key_envs.append(_seg["api_key_env"])
+        # ModelRouter 以 llm_providers.json 的 active_profile 为权威：补入其 api_key_env，
+        # 保证用 select_llm 切到不同供应商时 start/resume 也能注入对应密钥。
+        _pf = NE / "config" / "llm_providers.json"
+        try:
+            if _pf.exists():
+                _pfc = json.loads(_pf.read_text(encoding="utf-8"))
+                _ap = _pfc.get("active_profile")
+                _prof = (_pfc.get("profiles") or {}).get(_ap) or {}
+                if _prof.get("api_key_env"):
+                    _key_envs.append(_prof["api_key_env"])
+        except Exception:
+            pass
+        _envfile = NE / ".env"
+        _envmap = {}
+        if _envfile.exists():
+            for line in _envfile.read_text(encoding="utf-8").splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    _envmap[k.strip()] = v.strip()
+        for _ke in _key_envs:
+            if not env.get(_ke) and _envmap.get(_ke):
+                env[_ke] = _envmap[_ke]
+        _have_key = any(env.get(k) for k in _key_envs)
+        if _have_key:
+            # 启动自检：key 无效立即报错退出，不静默 401 全 draft。
+            # CC round-25：端点/模型不再写死 SiliconFlow，改为读 llm_providers.json 的
+            # active_profile（与引擎运行时权威一致），缺省回退 Agnes flash。
+            import urllib.request
+            try:
+                _pfc0 = locals().get("_pfc") or {}
+                _prof0 = (_pfc0.get("profiles") or {}).get(_pfc0.get("active_profile")) or {}
+                _base = (_prof0.get("base_url") or "https://apihub.agnes-ai.com").rstrip("/")
+                _model = "agnes-2.5-flash"
+                for _pn in ("outline", "director", "scenes"):
+                    _ms = ((_prof0.get("phases") or {}).get(_pn) or {}).get("models") or []
+                    if _ms:
+                        _model = _ms[0]
+                        break
+                _url = _base if _base.endswith("/chat/completions") else _base + "/v1/chat/completions"
+                _body = json.dumps(
+                    {"model": _model,
+                     "messages": [{"role": "user", "content": "ping"}],
+                     "max_tokens": 1}).encode("utf-8")
+                req = urllib.request.Request(
+                    _url, data=_body,
+                    headers={"Authorization": "Bearer " + env.get(_key_envs[0], ""),
+                             "Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=20).read()
+                print("API key 有效（%s @ %s）" % (_model, _base))
+            except Exception as e:
+                print("API key 无效或不可用: %s。请用 setkey 更新后重试。" % e)
+                return
+    except Exception as e:
+        print("API key 检查异常: %s（继续启动，可能 401）" % e)
     # DETACHED_PROCESS: 子进程不依附于启动它的控制台，
     # 关闭窗口(CTRL_CLOSE)不会杀掉它，可后台长期运行。
     creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
-    proc = subprocess.Popen(cmd, cwd=str(SRC_DIR),
+    proc = subprocess.Popen(cmd, cwd=str(SRC_DIR), env=env,
                             stdout=logf, stderr=subprocess.STDOUT,
                             creationflags=creationflags)
     PID_FILE.write_text(str(proc.pid), encoding="utf-8")
@@ -238,20 +302,37 @@ def follow():
         print("\n已退出实时日志。")
 
 
+def _active_key_env() -> str:
+    """取 llm_providers.json active_profile 的 api_key_env；失败回退 AGNES_API_KEY。"""
+    pf = NE / "config" / "llm_providers.json"
+    try:
+        pfc = json.loads(pf.read_text(encoding="utf-8"))
+        prof = (pfc.get("profiles") or {}).get(pfc.get("active_profile")) or {}
+        if prof.get("api_key_env"):
+            return prof["api_key_env"]
+    except Exception:
+        pass
+    return "AGNES_API_KEY"
+
+
 def setkey(key: str):
+    env_name = _active_key_env()
     envf = NE / ".env"
     lines = envf.read_text(encoding="utf-8").splitlines() if envf.exists() else []
     out, found = [], False
     for l in lines:
-        if l.startswith("ZLEAP_MODEL_API_KEY="):
-            out.append("ZLEAP_MODEL_API_KEY=%s" % key)
+        if l.startswith(env_name + "="):
+            out.append("%s=%s" % (env_name, key))
             found = True
         else:
             out.append(l)
     if not found:
-        out.append("ZLEAP_MODEL_API_KEY=%s" % key)
+        if out and out[-1].strip():
+            out.append("")
+        out.append("%s=%s" % (env_name, key))
     envf.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
-    print("已更新 API KEY -> %s" % envf)
+    print("已更新 %s -> %s" % (env_name, envf))
+    print("如需切换供应商/模型，请改用 select_llm.bat（详见 LLM选择说明.md）。")
 
 
 def main():

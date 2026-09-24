@@ -2,9 +2,11 @@
 Checkpoint + Commit 事务模块。
 每次章节提交时计算文件hash并写入checkpoint，支持从最近完整checkpoint恢复。
 """
+import os
 import json
 import hashlib
 import logging
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -43,8 +45,10 @@ class CheckpointManager:
             return json.load(f)
 
     def save(self, data: dict):
-        """保存checkpoint文件。"""
-        self.checkpoint_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        """保存checkpoint文件（原子写入）。"""
+        tmp_path = self.checkpoint_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(self.checkpoint_path)
 
     def create_checkpoint(
         self,
@@ -58,9 +62,13 @@ class CheckpointManager:
         为指定章节创建完整checkpoint。
         计算所有产出文件的hash，记录到checkpoint。
         """
-        novel_hash = _sha256_string(novel_content)
-        synopsis_hash = _sha256_string(synopsis_content)
-        outline_hash = _sha256_string(outline_content)
+        # Normalize CRLF→LF to match _sha256_file's verification path (platform-safe)
+        novel_content_norm = novel_content.replace("\r\n", "\n")
+        synopsis_content_norm = synopsis_content.replace("\r\n", "\n")
+        outline_content_norm = outline_content.replace("\r\n", "\n")
+        novel_hash = _sha256_string(novel_content_norm)
+        synopsis_hash = _sha256_string(synopsis_content_norm)
+        outline_hash = _sha256_string(outline_content_norm)
         world_state_hash = _sha256_string(json.dumps(world_state_snapshot, ensure_ascii=False, sort_keys=True))
 
         checkpoint_entry = {

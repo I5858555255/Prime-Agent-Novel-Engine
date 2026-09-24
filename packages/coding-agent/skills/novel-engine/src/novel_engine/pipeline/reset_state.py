@@ -23,7 +23,14 @@ def reset_runtime_state(root: Path):
         "runtime/session_tree.json",
         "audit/per_chapter_reviews.json",
         "audit/sliding_window_reviews.json",
+        "audit/resume_state.json",
+        "runtime/resume_state.json",
+        "runtime/last_success_chapter.txt",
         "memory/quality_memory.json",
+        "runtime/event_ledger.jsonl",
+        "runtime/chapter_end_states.jsonl",
+        "runtime/chapter_status.json",
+        "runtime/HALT_REASON.json",
     ):
         p = root / sub
         if p.exists():
@@ -31,6 +38,27 @@ def reset_runtime_state(root: Path):
                 p.unlink()
             except (PermissionError, OSError):
                 pass
+
+    # StateDB 持久化进度（state.db / *.db）：必须一并清空，否则残留的
+    # “已完成”检查点会让全新运行跳过大量章节、造成小说缺章。
+    for db_file in root.glob("runtime/*.db"):
+        try:
+            db_file.unlink()
+        except (PermissionError, OSError):
+            pass
+
+    # Run-scoped draft artifacts（P3 fix）：stale chapter_{n}_partial.jsonl 会在
+    # fresh reset 后残留，而 scene_id-indexed patch 按章号文件名信任 journal，
+    # 旧 partial 会覆盖新 draft 正文。仅清两种当轮产物，其他文件不动。
+    _draft_dir = root / "chapters" / "draft"
+    if _draft_dir.is_dir():
+        for _pattern in ("chapter_*_partial.jsonl", "chapter_*.txt"):
+            for _stale in _draft_dir.glob(_pattern):
+                try:
+                    if _stale.is_file():
+                        _stale.unlink()
+                except (PermissionError, OSError):
+                    pass
 
     # 需清空（删除后重建）的目录
     for sub in (
@@ -41,6 +69,7 @@ def reset_runtime_state(root: Path):
         "memory/short_term",
         "memory/long_term",
         "memory/world_state",
+        "cache",
     ):
         p = root / sub
         if p.exists():

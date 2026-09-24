@@ -4,11 +4,13 @@
     "total": 500.00,
     "mini_test_max": 5.00,
     "medium_test_max": 50.00,
-    "full_production_max": 400.00
+    "full_production_max": 400.00,
+    "daily_max": 50.00,
+    "total_max": 400.00
   },
   "cost_tracking": {
     "per_call": true,
-    "per_chapter_estimate": 0.08,
+    "per_chapter_estimate": 0.12,
     "sliding_window_review_cost": 0.15,
     "director_cost": 0.12,
     "synopsis_cost": 0.06,
@@ -21,8 +23,8 @@
   },
   "currency_conversion": {
     "api_pricing": {
-      "input_per_1k_tokens": 0.50,
-      "output_per_1k_tokens": 1.00
+      "input_per_1m_tokens": 0.05,
+      "output_per_1m_tokens": 0.15
     }
   }
 }
