@@ -61,19 +61,19 @@ class LLMProvider:
                             cleaned = _strip_fences(content)
                             if cleaned:
                                 parsed = _repair_json(cleaned)
-                                if parsed is not None:
+                                # 结构化校验：字典 + 必填字段非空
+                                if parsed is not None and isinstance(parsed, dict):
                                     return parsed
-                            last_err = "json"
-                        if not busted:
-                            busted = True
-                            attempt_msgs = self._bust(messages)
-                if last_err in ("empty", "json") and reasoning_cache:
+                                last_err = "json_parse_failed"
+                            else:
+                                last_err = "empty_content"
+                if last_err in ("empty", "json", "json_parse_failed", "empty_content") and reasoning_cache:
                     if output_json:
                         parsed = _repair_json(reasoning_cache)
                         if parsed is not None:
                             return parsed
                         raise RuntimeError("LLM返回的内容无法解析为有效JSON")
-                    if cfg.reasoning_fallback and len(reasoning_cache) <= 6000:
+                    if cfg.reasoning_fallback:
                         return reasoning_cache
                 raise RuntimeError("LLM返回空响应（content 与 reasoning_content 均空，已跨温度重试）")
             except RateLimitError as e:

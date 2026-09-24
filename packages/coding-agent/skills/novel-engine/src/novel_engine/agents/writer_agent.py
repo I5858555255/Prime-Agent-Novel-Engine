@@ -5,13 +5,19 @@
 """
 import json
 import logging
+import re
+import threading
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from novel_engine.core.llm_client import LLMClient, call_llm
 from novel_engine.core.quality_policy import load_quality_policy, derive_scene_targets
-from novel_engine.agents.scene_schema import SceneOutput, parse_scene
+from novel_engine.agents.scene_schema import (
+    SceneOutput, parse_scene, build_scene_prompt, validate_scene_text,
+    detect_scene_overlap,
+)
+from novel_engine.core.errors import SceneUnrecoverableError
 
 logger = logging.getLogger(__name__)
 def _get_root():
@@ -139,11 +145,13 @@ class WriterAgent:
 3. 对话符合角色身份
 4. 战斗描写简洁有力，重意境轻招式罗列
 5. 心理描写克制内敛，通过动作和环境折射
-6. 环境描写服务于情绪，不单独铺陈超过200字
-7. 每场景目标3000-5000字（整个章节）
+6. 环境描写服务于情绪，不单独铺陈超过200字；穿越/通道/传送等过渡场景为功能场景，单场景正文不超过800字，禁止纯感官铺陈堆叠
+7. 全章总字数目标与每个场景的目标字数以用户指令中给出的”目标字数”为准，各场景目标之和应≈全章目标，严禁写短
 8. 遵守 scene_blueprints 中的 goal/conflict/emotion
 9. 若任务卡中有 foreshadow_actions，必须在本场景中执行
-10. 严禁套话堆砌（“死水石子/古井/未出鞘/达摩克利斯/如野草疯长”等出现即扣分）
+10. 严禁套话堆砌（”死水石子/古井/未出鞘/达摩克利斯/如野草疯长”等出现即扣分）
+11. 【句长纪律】以中短句为主、一句一义：凡超过约40字的句子主动断成两句或三句，不得用逗号串起三个以上分句形成流水句；同义氛围词不得堆叠，每个氛围词只出现一次
+12. 【发展场反饱和】非高潮场景必须包含：①一个具体外部事件（可观察的动作/对话，不纯内心）；②一个具名对手戏角色并发生实际互动；③一个不可逆的新状态或新信息推进下一章钩子；静态氛围/心理独白占比不得超过全场景30%
 
 禁忌：
 - 禁止现代词汇、西典词汇
@@ -155,11 +163,11 @@ class WriterAgent:
 - 必须完整呈现所有场景，不得截断
 - 严格执行 foreshadow_actions 中的所有伏笔指令
 - 禁止人物台词风格与设定不符
-- 禁止场景内容重复
-- 严禁超龄认知（婴儿期出现“棋局/十年后”等未来知识直接判失败）
+- 禁止场景内容重复；若多个场景属于同一时刻的同一事件（如发现婴儿/某人介入），只允许一个场景详细展开，其余场景必须推进时间线或展开新事件，严禁换视角重述已发生内容
+- 严禁超龄认知（婴儿期出现”棋局/十年后”等未来知识直接判失败）
 
 输出契约：
-- 输出必须为严格 JSON（结构见用户指令中的“结构化输出契约”），scene_text 为纯叙事正文
+- 输出必须为严格 JSON（结构见用户指令中的”结构化输出契约”），scene_text 为纯叙事正文
 - 严禁输出散文体或任何脚手架标记（【】/※/（）/章末钩子字样）"""
 
     def __init__(self, llm_client: Optional[LLMClient] = None, project_root: str | Path = None):
@@ -168,6 +176,19 @@ class WriterAgent:
         self._bible_cache: dict[str, str] = {}
         # B2：最近一次成功生成的结构化场景（供管道做结构复核；mock/改写路径下为空）
         self.last_scenes: list[SceneOutput] = []
+        # CC30（DS Q1/Q2/Q3）：按场 flash->pro 故障转移。默认关闭；真机由 orchestrator
+        # 调 set_pro_failover(enabled=True, client=refine_router=agnes-2.5-pro) 开启。
+        self._failover_enabled = False
+        self.pro_client = None
+        from novel_engine.quality.scene_model_router import ProSceneBudget
+        from novel_engine.quality.degrade_window import DegradeWindow
+        self._fb_budget = ProSceneBudget()   # 跨章持久：10章/50章 pro 预算
+        self._fb_degrade = DegradeWindow()   # 跨章持久：退化滑窗状态机
+        self._fb = None                       # 本章 SceneFailoverController
+        self._fb_idx_of_scene: dict[int, int] = {}
+        # CC30 Q2：退化窗口 P0/P2 全局冷却协调（多场景线程共享同一截止时刻）
+        self._fb_pause_lock = threading.Lock()
+        self._fb_pause_until = 0.0
         self._load_bible_cache()
 
     def _load_bible_cache(self):
@@ -194,24 +215,185 @@ class WriterAgent:
         return text[:max_chars]
 
     def _scene_strict_models(self) -> list:
-        """B2：strict 模型 = 所绑 phase 列表首位（B1 语义），其余 lenient。
+        """返回按 strict JSON 解析的场景模型列表（这些模型均以 response_format=json_object 调用）。
 
-        绑定 ModelRouter 时直接取其 models[0]；stub/mock 等无 models 属性时，
-        回退读本工程 config 的 scenes phase 首位；最终兜底为已知首位模型名。
+        优先级：客户端已绑定的 .models（标量或列表均可）；否则取 llm_providers.json
+        当前 active profile 的 scenes 模型；再退回 runtime_config 主模型；最终 Agnes。
         """
         models = getattr(self.llm, "models", None)
         if models:
-            return [models[0]]
+            return list(models) if isinstance(models, (list, tuple)) else [models]
+        # 权威来源：llm_providers.json 当前 active profile 的 scenes 模型
         try:
-            cfg = json.loads((self.root / "config" / "runtime_config.json").read_text(encoding="utf-8"))
-            head = cfg.get("model_router", {}).get("phases", {}).get("scenes", [])
-            if head:
-                return [head[0]]
+            pc = json.loads((self.root / "config" / "llm_providers.json").read_text(encoding="utf-8"))
+            prof = (pc.get("profiles") or {}).get(pc.get("active_profile"), {}) or {}
+            sm = ((prof.get("phases") or {}).get("scenes") or {}).get("models") or []
+            if sm:
+                return list(sm)
         except (OSError, ValueError, KeyError):
             pass
-        return ["deepseek-ai/DeepSeek-V3.2"]
+        # 兼容回退：runtime_config 主模型（由 LLM 选择器同步维护）
+        try:
+            cfg = json.loads((self.root / "config" / "runtime_config.json").read_text(encoding="utf-8"))
+            mm = cfg.get("llm", {}).get("model")
+            if mm:
+                return [mm]
+        except (OSError, ValueError, KeyError):
+            pass
+        return ["agnes-2.5-flash"]
 
-    def generate_scene(self, task_card: dict, scene_blueprint: dict, chapter_synopsis: str, previous_context: str = "", pacing_constraints: str = "", temperature_override: Optional[float] = None) -> SceneOutput:
+    def _pro_strict_models(self) -> list:
+        """CC30：可用于场景严格 JSON 重出的 pro 模型（取 phases.refine.models）。"""
+        try:
+            pc = json.loads((self.root / "config" / "llm_providers.json").read_text(encoding="utf-8"))
+            prof = (pc.get("profiles") or {}).get(pc.get("active_profile"), {}) or {}
+            rm = list(((prof.get("phases") or {}).get("refine") or {}).get("models") or [])
+            if rm:
+                return rm
+        except (OSError, ValueError, KeyError):
+            pass
+        return ["agnes-2.5-pro"]
+    # ---- CC30 按场 flash->pro 故障转移（real-only，默认休眠；mock 路径永不进入）----
+    def set_pro_failover(self, enabled: bool, client=None):
+        self._failover_enabled = bool(enabled)
+        self.pro_client = client if enabled else None
+        if enabled:
+            self._attach_degen_observers(self.llm)
+            if client is not None and client is not self.llm:
+                self._attach_degen_observers(client)
+
+    def _attach_degen_observers(self, router, _seen=None):
+        """把退化事件观察者挂到 router 背后的具体 LLMClient（含 Failover/ModelRouter）。"""
+        if router is None:
+            return
+        if _seen is None:
+            _seen = set()
+        if id(router) in _seen:
+            return
+        _seen.add(id(router))
+        if isinstance(router, LLMClient):
+            try:
+                router.degenerate_observer = self._on_client_degenerate
+            except Exception:
+                pass
+        pro = getattr(router, "providers", None)
+        if isinstance(pro, dict):
+            for _v in pro.values():
+                self._attach_degen_observers(_v, _seen)
+        elif isinstance(pro, (list, tuple)):
+            for _v in pro:
+                self._attach_degen_observers(_v, _seen)
+        for _attr in ("primary", "fallback", "client", "_client"):
+            _v = getattr(router, _attr, None)
+            if _v is not None and _v is not router:
+                self._attach_degen_observers(_v, _seen)
+
+    def _on_client_degenerate(self, deg_cls: str):
+        if not (self._failover_enabled and self._fb is not None):
+            return
+        import time as _t30
+        action = self._fb.observe_client_degenerate(deg_cls, now=_t30.monotonic())
+        if action and action.get("cooldown_seconds"):
+            until = _t30.monotonic() + int(action["cooldown_seconds"])
+            with self._fb_pause_lock:
+                self._fb_pause_until = max(self._fb_pause_until, until)
+            logger.warning(f"CC30 provider degrade {deg_cls} -> {action.get('level')} "
+                           f"global cooldown {action['cooldown_seconds']}s")
+
+    def _fb_wait_before_call(self):
+        if not (self._failover_enabled and self._fb is not None):
+            return
+        import time as _t30
+        d = self._fb_pause_until - _t30.monotonic()
+        if d > 0:
+            logger.warning(f"CC30 waiting out degrade cooldown {d:.0f}s")
+            _t30.sleep(d)
+
+    def begin_chapter_failover(self, task_card: dict, scenes: list, force_whole: bool = False):
+        # 先把【上一章】最终 pro 计划计入跨章预算（重生阶段发生在初稿之后，故延后到此处结算）
+        if self._failover_enabled and self._fb is not None:
+            _p = self._fb.plan
+            self._fb_budget.record_chapter(
+                self._fb.chapter_num, _p.get("pro_scene_count", 0),
+                whole_chapter_pro=bool(_p.get("whole_chapter_pro")))
+        if not self._failover_enabled:
+            self._fb = None
+            return
+        chapter_num = int(task_card.get("chapter_num", 0) or 0)
+        nums = sorted(int(bp.get("scene_num", 0) or 0) for bp in (scenes or []))
+        self._fb_idx_of_scene = {sn: i for i, sn in enumerate(nums)}
+        from novel_engine.quality.scene_failover_controller import SceneFailoverController
+        self._fb = SceneFailoverController(
+            chapter_num, self._fb_budget, self._fb_degrade,
+            force_whole_chapter=force_whole, n_scenes=len(nums), enabled=True)
+        logger.info(f"CC30 failover armed ch{chapter_num} scenes={nums} force_whole={force_whole}")
+
+    def finish_chapter_failover(self):
+        """把本章 pro 计划用量计入跨章预算（上界口径）。"""
+        if self._failover_enabled and self._fb is not None:
+            plan = self._fb.plan
+            self._fb_budget.record_chapter(
+                self._fb.chapter_num, plan.get("pro_scene_count", 0),
+                whole_chapter_pro=bool(plan.get("whole_chapter_pro")))
+
+    def _fb_pick_client(self, scene_num: int):
+        if (self._failover_enabled and self.pro_client is not None
+                and self._fb is not None):
+            idx = self._fb_idx_of_scene.get(int(scene_num))
+            if idx is not None and self._fb.use_pro_for_scene(idx):
+                return self.pro_client
+        return self.llm
+
+    def _fb_report(self, scene_num: int, out: SceneOutput, scene_blueprint: dict):
+        if not (self._failover_enabled and self._fb is not None):
+            return
+        idx = self._fb_idx_of_scene.get(int(scene_num))
+        if idx is None:
+            return
+        import time as _t30
+        try:
+            _wt = scene_blueprint.get("word_count_target", 2000)
+            if isinstance(_wt, (list, tuple)):
+                _wt = _wt[0] if _wt else 2000
+            _floor = max(860, int(float(_wt) * 0.5))
+        except (TypeError, ValueError):
+            _floor = 860
+        try:
+            from novel_engine.quality.scene_language_gate import is_degenerate_non_chinese
+            _latin = is_degenerate_non_chinese(out.scene_text or "")
+        except Exception:
+            _latin = False
+        from novel_engine.quality.scene_failover_controller import classify_scene_attempt
+        cls = classify_scene_attempt(
+            scene_text=out.scene_text or "",
+            beats_covered_count=len(getattr(out, "beats_covered", []) or []),
+            finish_reason=getattr(out, "finish_reason", "") or "",
+            short_floor=_floor, latin_wordstream=_latin)
+        action = self._fb.report_scene_attempt(idx, cls, now=_t30.monotonic())
+        if action and action.get("cooldown_seconds"):
+            logger.warning(f"CC30 degrade cooldown {action['cooldown_seconds']}s "
+                           f"level={action.get('level')} scene{scene_num}")
+            _t30.sleep(int(action["cooldown_seconds"]))
+
+    def _fb_report_waste(self):
+        if self._failover_enabled and self._fb is not None:
+            import time as _t30
+            self._fb.report_parse_waste(now=_t30.monotonic())
+
+    def generate_scene(
+        self,
+        task_card: dict,
+        scene_blueprint: dict,
+        chapter_synopsis: str,
+        previous_context: str = "",
+        pacing_constraints: str = "",
+        temperature_override: Optional[float] = None,
+        negative_examples: list[str] | None = None,
+        all_blueprints: list[dict] | None = None,
+        fix_directive: str | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+    ) -> SceneOutput:
         """生成单个场景（结构化契约）：模型只输出严格 JSON，经 parse_scene 解析为 SceneOutput。
 
         hook 为独立字段收集，永不与标记拼接进正文。strict 模型解析失败则再生一次，
@@ -219,80 +401,110 @@ class WriterAgent:
         """
         chapter_num = task_card.get("chapter_num", 0)
         scene_num = scene_blueprint.get("scene_num", 0)
+        self._fb_wait_before_call()
 
-        context_section = ""
-        if previous_context:
-            context_section = f"\n\n## 前序场景摘要\n{previous_context}"
+        # Use deterministic prompt builder (pkg2e)
+        bps = all_blueprints or task_card.get("scene_blueprints", []) or [scene_blueprint]
+        prompt = build_scene_prompt(task_card, scene_blueprint, bps, negative_examples, fix_directive=fix_directive)
 
-        pacing_block = f"\n## 节奏硬性约束\n{pacing_constraints}\n" if pacing_constraints else ""
-
+        # Add bible/perspective blocks (unchanged from before)
         bible_block = self._bible_snippet()
         bible_section = f"\n\n## 人物/世界观显式设定（逐章注入，防 OOC/漂移）\n{bible_block}\n" if bible_block else ""
-        # P1-C3 视角与时间线绑定：婴儿期禁用成人独白
         perspective_block = ""
         if chapter_num <= 5:
-            perspective_block = "\n\n## 视角与时间线锚点\n- 当前时间：第 {} 章（主角为新生儿/婴儿期，年龄≈0岁）\n- 严禁任何成人式全知内心独白、未来知识（“棋局”“十年后”等）与超龄推理；仅保留感官、本能与外部观察\n- 内心独白强度：0（无）\n".format(chapter_num)
+            perspective_block = f"\n\n## 视角与时间线锚点\n- 当前时间：第 {chapter_num} 章（主角为新生儿/婴儿期，年龄≈0岁）\n- 严禁任何成人式全知内心独白、未来知识（\"棋局\"\"十年后\"等）与超龄推理；仅保留感官、本能与外部观察\n- 内心独白强度：0（无）\n"
         elif chapter_num <= 20:
             perspective_block = f"\n\n## 视角与时间线锚点\n- 当前时间：第 {chapter_num} 章（幼年期）\n- 心理描写需符合年龄，避免超龄谋略独白\n"
         else:
             perspective_block = f"\n\n## 视角与时间线锚点\n- 当前时间：第 {chapter_num} 章\n- 按当前年龄与状态描写心理，禁止时间线穿帮\n"
 
-        # 单一策略源：蓝图缺目标时的兜底来自 quality_policy（按本章场景数均分）
-        _policy = load_quality_policy(self.root)
-        _scenes = task_card.get("scene_blueprints", []) or [scene_blueprint]
-        _targets = derive_scene_targets(_policy["chapter_target_chars"], len(_scenes))
-        _idx = min(max(int(scene_blueprint.get("scene_num", 1) or 1) - 1, 0), len(_targets) - 1)
-        _fallback_target = _targets[_idx]
+        full_prompt = f"{prompt}{bible_section}{perspective_block}"
+        if pacing_constraints:
+            full_prompt += f"\n\n## 节奏硬性约束\n{pacing_constraints}\n"
+        if previous_context:
+            full_prompt += f"\n\n## 前序场景摘要\n{previous_context}"
+        # CC P0：注入近 N 章已演事件台账，禁止重演、只能写余波
+        try:
+            from novel_engine.pipeline.event_ledger import recent_event_block
+            _ledger_block = recent_event_block(self.root, chapter_num)
+            if _ledger_block:
+                full_prompt += f"\n\n{_ledger_block}\n"
+        except Exception:
+            pass
 
-        prompt = f"""请生成第 {chapter_num} 章第 {scene_num} 场景的正文。
+        # CC30：pro 重出同样以 json_object 严格契约返回，需并入 strict 名单，避免
+        # pro 模型名不在 scene 名单时被当宽松模型而 fail-open。
+        strict_models = list(dict.fromkeys(self._scene_strict_models() + self._pro_strict_models()))
 
-## 章节缩写
-{chapter_synopsis}
-{context_section}
-{bible_section}{perspective_block}
-## 本场景蓝图
-{json.dumps(scene_blueprint, ensure_ascii=False, indent=2)}
-
-## 全章节奏参数
-- 核心目标：{task_card.get('core_goal', '')}
-- 情绪曲线：{json.dumps(task_card.get('emotion_curve', {}), ensure_ascii=False)}
-- 章末钩子：{task_card.get('chapter_hook', '')}
-
-## 写作指令
-请严格按 scene_blueprint 中的 goal、conflict、emotion 写作。
-场景地点：{scene_blueprint.get('location', '未知')}
-出场人物：{', '.join(scene_blueprint.get('characters', []))}
-{pacing_block}
-节奏控制：场景内部要有张力起伏（冲突酝酿→爆发→余波），避免平铺直叙；对话与动作交替推进。
-创新亮点：多用生动具体的细节和新鲜比喻，可安排小节内的意外转折，避免套路化表达。
-目标字数：{scene_blueprint.get('word_count_target', _fallback_target)}字左右
-
-## 结构化输出契约（强制）
-只输出严格JSON {{"scene_id","scene_text","hook","beats"}}；scene_text 为纯叙事，禁任何【】括号指令；hook 为完整自然语句，可为空
-- scene_id 取本场景 scene_num（{scene_num}）；beats 为本场景情节点字符串数组
-- hook 为独立字段，不得拼入 scene_text，不得加任何括号/标记包装（如【】/（）/章末钩子字样）"""
-
-        strict_models = self._scene_strict_models()
+        # 给足输出预算：默认客户端 4096 tokens 会在约 1400-2000 中文字处被 finish_reason=length
+        # 截断（JSON/beats 还占用预算）。按本场景目标字数换算并夹在 4096-8192。
+        _mt_raw = scene_blueprint.get("word_count_target", 2000)
+        if isinstance(_mt_raw, (list, tuple)):
+            _mt_raw = _mt_raw[0] if _mt_raw else 2000
+        try:
+            _scene_max_tokens = max(4096, min(8192, int(float(_mt_raw) * 2.0) + 1024))
+        except (TypeError, ValueError):
+            _scene_max_tokens = 6144
 
         def _call_once() -> SceneOutput:
-            # 直调 chat_completion 以保留 ModelRouter 的 _model_used 戳（call_llm 会剥离它）
-            result = self.llm.chat_completion(
-                [{"role": "system", "content": self.SCENE_SYSTEM_PROMPT},
-                 {"role": "user", "content": prompt}],
-                temperature=temperature_override,
-            )
+            # CC round-7: 摆烂/退化救援用 frequency/presence penalty 抑制自我重复，
+            # 经 extra_body 作为 OpenAI 兼容顶层字段下发（缺省 None 不带，行为不变）。
+            _extra = None
+            if frequency_penalty is not None or presence_penalty is not None:
+                _extra = {}
+                if frequency_penalty is not None:
+                    _extra["frequency_penalty"] = float(frequency_penalty)
+                if presence_penalty is not None:
+                    _extra["presence_penalty"] = float(presence_penalty)
+            # CC round-25 P1(a): 记录单场景往返时延，便于近空时区分"连接层异常"与"完整但摆烂"。
+            import time as _time25
+            _t0 = _time25.monotonic()
+            _signal25 = ""
+            _client30 = self._fb_pick_client(scene_num)
+            try:
+                result = _client30.chat_completion(
+                    [{"role": "system", "content": self.SCENE_SYSTEM_PROMPT},
+                     {"role": "user", "content": full_prompt}],
+                    temperature=temperature_override,
+                    max_tokens=_scene_max_tokens,
+                    extra_body=_extra,
+                )
+            except Exception as _exc25:
+                _signal25 = f"error:{type(_exc25).__name__}"
+                _out25 = SceneOutput(int(scene_blueprint.get("scene_num", 0) or 0),
+                                     "", "", [])
+                _out25.latency_ms = int((_time25.monotonic() - _t0) * 1000)
+                _out25.http_signal = _signal25
+                raise
+            _lat_ms = int((_time25.monotonic() - _t0) * 1000)
             model_used = result.get("_model_used", "") if isinstance(result, dict) else ""
             raw = result.get("content", "") if isinstance(result, dict) else str(result)
-            return parse_scene(raw or "", model_used, strict_models)
+            _out = parse_scene(raw or "", model_used, strict_models)
+            # 透传 finish_reason，供上游区分 stop(摆烂) 与 length(截断) 两类失败
+            if isinstance(result, dict):
+                _out.finish_reason = str(result.get("finish_reason", "") or "")
+            _out.latency_ms = _lat_ms
+            # 连接/采样归因：length=截断（预算或提前收束）；往返异常快(<1.2s)且内容极短更像
+            # 连接层给了不完整片段；正常往返但 content 短=模型采样退化（降并发无法解决）。
+            _n25 = len(_out.scene_text or "")
+            if _out.finish_reason == "length":
+                _signal25 = "length_truncated"
+            elif _lat_ms < 1200 and _n25 < 150:
+                _signal25 = "suspicious_fast_short"
+            else:
+                _signal25 = "complete_but_short" if _n25 < int(_scene_max_tokens * 0.15) else "ok"
+            _out.http_signal = _signal25
+            return _out
 
         try:
             out = _call_once()
         except ValueError:
+            self._fb_report_waste()
             logger.warning(f"Scene {scene_num} structured parse failed, regenerating once (chapter {chapter_num})")
-            out = _call_once()  # 仍失败则抛给补丁路径
-        # B1 遗留：lenient 散文回退的 scene_id 为 0，此处赋真实场景号
+            out = _call_once()
         if not out.scene_id:
             out.scene_id = int(scene_blueprint.get("scene_num", 0) or 0)
+        self._fb_report(scene_num, out, scene_blueprint)
         logger.info(f"Scene {scene_num} generated for chapter {chapter_num}")
         return out
 
@@ -300,6 +512,130 @@ class WriterAgent:
         """同步生成单个场景（用于顺序执行）。"""
         return self.generate_scene(task_card, scene_blueprint, chapter_synopsis, previous_context, pacing_constraints)
 
+    # ---- CC round-25 P0-1：近空场景章内抢救阶梯 Level 2 / Level 3（更便宜，先于整章重排）----
+    FOCUSED_SYSTEM_PROMPT = (
+        "你是专业中文网文写手。你只输出成稿正文本身：纯中文第三人称有限视角叙事，"
+        "半文半白、对白使用引号、正常中文标点。严禁输出 JSON、字段名、解释、思考过程、"
+        "前缀说明、markdown/代码围栏或任何【】（）指令标记，严禁出现英文。"
+    )
+
+    @staticmethod
+    def _plain_prose(raw) -> str:
+        """把 focused / beat-split 调用返回净化为纯正文；容忍 flash 偶尔仍包一层 JSON/fence。"""
+        if isinstance(raw, dict):
+            raw = raw.get("content") or raw.get("reasoning_content") or ""
+        t = (raw or "").strip()
+        # 容忍 {"scene_text": "..."} 包裹
+        try:
+            from novel_engine.agents.scene_schema import _loads_scene_object
+            data = _loads_scene_object(t)
+            if isinstance(data, dict) and str(data.get("scene_text", "")).strip():
+                t = str(data["scene_text"]).strip()
+        except Exception:
+            t = re.sub(r"^\s*```(?:json|scene)?\s*|\s*```\s*$", "", t).strip()
+        t = re.sub(r"^(?:正文|场景正文|回复|答案)\s*[:：]\s*", "", t.strip()).strip()
+        return t
+
+    def _scene_contract_lines(self, scene_blueprint: dict) -> list[str]:
+        bp = scene_blueprint or {}
+        lines: list[str] = []
+        pc = bp.get("scene_progression_contract") or {}
+        for x in (pc.get("new_state_or_entity") or []):
+            if str(x).strip():
+                lines.append(f"- 必须落地本场新状态/新实体：{str(x).strip()}")
+        ic = pc.get("irreversible_change")
+        if str(ic or "").strip():
+            lines.append(f"- 必须演到本场不可逆变化：{str(ic).strip()}")
+        return lines
+
+    def focused_rewrite_scene(self, task_card: dict, scene_blueprint: dict, target_chars: int) -> str:
+        """Level 2：同任务卡单场"聚焦重写"（只给本场 beats+推进契约+技法，不带整章上下文）。
+
+        成功（>=300 字且无脚手架标记）返回纯正文；失败/仍近空返回 ""。预算 1 次。
+        """
+        from novel_engine.agents.craft_elements import craft_directive_lines
+        bp = scene_blueprint or {}
+        sn = bp.get("scene_num", 0)
+        cn = task_card.get("chapter_num", 0)
+        beats = [str(b) for b in (bp.get("beats") or []) if str(b).strip()]
+        beat_block = "\n".join(f"{i + 1}. {b}" for i, b in enumerate(beats)) or \
+            "（任务卡未列 beats：按本场目标自主补足必要的具体动作，不得空场）"
+        contract = self._scene_contract_lines(bp) or ["- 本场必须演到一个可验证的新事件或新信息，不能只渲染气氛"]
+        craft = craft_directive_lines(bp)
+        floor = max(300, int(float(target_chars) * 0.4))
+        user = (
+            f"只写第 {cn} 章第 {sn} 场这一个场景的完整正文，不要写其它任何场景。\n"
+            f"地点：{bp.get('location', '未指定')}\n"
+            f"出场人物：{'、'.join(str(c) for c in (bp.get('characters') or [])) or '未指定'}\n"
+            f"本场目标：{bp.get('goal', '')}\n"
+            f"本场冲突：{bp.get('conflict', '')}\n"
+            f"本场情绪：{bp.get('emotion', '')}\n"
+            "本场必须依次演足的情节点（每条都要写成具体动作/对白/感官，不许概述）：\n"
+            f"{beat_block}\n"
+            "本场推进契约（必须在正文里演出来）：\n" + "\n".join(contract) + "\n"
+            + ("\n".join(f"- {c}" for c in craft) + "\n" if craft else "")
+            + f"篇幅：正文不少于 {floor} 个中文字、向 {int(target_chars)} 字写足，严禁写短。\n"
+            "必须直接输出本场景完整正文：禁止任何前导说明、禁止思考过程、禁止 JSON 或代码围栏、"
+            "禁止空 content、禁止提前结束。"
+        )
+        max_tokens = min(8192, max(2048, int(float(target_chars) * 2) + 512))
+        try:
+            res = self.llm.chat_completion(
+                [{"role": "system", "content": self.FOCUSED_SYSTEM_PROMPT},
+                 {"role": "user", "content": user}],
+                temperature=0.8, max_tokens=max_tokens)
+        except Exception as e:
+            logger.warning(f"L2 focused rewrite scene {sn} request failed: {e}")
+            return ""
+        prose = self._plain_prose(res)
+        if isinstance(res, dict) and res.get("finish_reason") == "length" and len(prose) < floor:
+            logger.warning(f"L2 scene {sn} hit length cap at {len(prose)} chars")
+        if len(prose) >= 300 and "【" not in prose and "】" not in prose:
+            logger.info(f"L2 focused rewrite scene {sn} OK ({len(prose)} chars)")
+            return prose
+        logger.warning(f"L2 focused rewrite scene {sn} still near-empty ({len(prose)} chars) -> Level 3")
+        return ""
+
+    def beat_split_rewrite_scene(self, task_card: dict, scene_blueprint: dict, target_chars: int) -> str:
+        """Level 3：单 beat 拆分重写——每个 beat 一次短请求(150-300字)，顺序拼接。
+
+        整场只走 1 遍（不逐 beat 各自重试）。成功返回拼接正文；无法救回返回 ""。
+        """
+        bp = scene_blueprint or {}
+        sn = bp.get("scene_num", 0)
+        cn = task_card.get("chapter_num", 0)
+        beats = [str(b) for b in (bp.get("beats") or []) if str(b).strip()]
+        if not beats:
+            return ""
+        per = max(150, min(300, int(float(target_chars) / max(1, len(beats)))))
+        loc = bp.get("location", "未指定")
+        chars = "、".join(str(c) for c in (bp.get("characters") or [])) or "未指定"
+        parts: list[str] = []
+        for i, b in enumerate(beats):
+            bridge = f"上一段结尾（衔接，不得复述）：…{parts[-1][-60:]}" if parts else "本段为本场开头"
+            user = (
+                f"为第 {cn} 章第 {sn} 场写其中【第 {i + 1}/{len(beats)} 个情节点】的正文片段，约 {per} 字（150-300）。\n"
+                f"地点：{loc}；出场人物：{chars}\n"
+                f"只具体演出这一个情节点：{b}\n{bridge}\n"
+                "直接输出该片段的成稿正文：具体动作/对白/感官，无解释、无 JSON、无标记、无标题，中文标点，禁英文。"
+            )
+            try:
+                res = self.llm.chat_completion(
+                    [{"role": "system", "content": self.FOCUSED_SYSTEM_PROMPT},
+                     {"role": "user", "content": user}],
+                    temperature=0.8, max_tokens=700)
+            except Exception as e:
+                logger.warning(f"L3 beat {i + 1} scene {sn} failed: {e}")
+                continue
+            seg = self._plain_prose(res)
+            if len(seg) >= 40 and "【" not in seg and "】" not in seg:
+                parts.append(seg)
+        text = "\n\n".join(parts).strip()
+        if len(text) >= 300:
+            logger.info(f"L3 beat-split scene {sn} OK ({len(parts)}/{len(beats)} beats, {len(text)} chars)")
+            return text
+        logger.warning(f"L3 beat-split scene {sn} insufficient ({len(parts)} beats, {len(text)} chars)")
+        return ""
 
     def _group_independent_scenes(self, scenes: list[dict]) -> list[list[dict]]:
         """
@@ -334,12 +670,23 @@ class WriterAgent:
 
         return groups
 
-    def _generate_group(self, task_card: dict, group: list[dict], synopsis_text: str, pacing_constraints: str = "", temperature_override: Optional[float] = None) -> list[tuple[dict, SceneOutput]]:
-        """顺序生成一个场景组（组内场景共享人物，存在上下文依赖）。"""
+    def _generate_group(
+        self, task_card: dict, group: list[dict], synopsis_text: str, pacing_constraints: str = "",
+        temperature_override: Optional[float] = None,
+    ) -> list[tuple[dict, SceneOutput]]:
+        """顺序生成一个场景组（组内场景共享人物，存在上下文依赖）。
+
+        串行路径：每个场景传入前一场景的 scene_text 作为 previous_context，
+        同时走 build_scene_prompt 获取确定性前情锚点。
+        """
+        all_bps = task_card.get("scene_blueprints", []) or group
         group_contents = []
         previous_context = ""
         for bp in group:
-            content = self.generate_scene(task_card, bp, synopsis_text, previous_context, pacing_constraints, temperature_override)
+            content = self.generate_scene(
+                task_card, bp, synopsis_text, previous_context, pacing_constraints,
+                temperature_override, all_blueprints=all_bps,
+            )
             group_contents.append((bp, content))
             previous_context = "\n\n※\n\n".join(
                 c.scene_text for _, c in group_contents[-3:]
@@ -372,7 +719,10 @@ class WriterAgent:
         # The orchestrator journals validated scenes via chapter_journal.append_scene.
         # 场景并发：独立场景组并行，组内无需上下文依赖（同任务卡，已通过 beat 去重）
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        max_workers = max(1, min(len(scenes), 4))
+        self.begin_chapter_failover(task_card, scenes)
+        _base_workers = max(1, min(len(scenes), 4))
+        max_workers = self._fb.concurrency(4) if (self._failover_enabled and self._fb is not None) else _base_workers
+        max_workers = max(1, min(_base_workers, int(max_workers)))
         # 预先计算 beat 去重提示（基于任务卡，非运行时）
         covered_beats = [f"场景{bp.get('scene_num')}({bp.get('location','')}:{bp.get('goal','')[:18]})" for bp in sorted(scenes, key=lambda x: x.get("scene_num", 0))]
         def _do_one(bp):
@@ -381,7 +731,11 @@ class WriterAgent:
                 beat_hint += f"\n已用剧情节点（不可复用）：{'; '.join(_recent_beats)}\n"
             combined_pacing = (pacing_constraints or "") + beat_hint
             # 并发场景无需 previous_context（同章独立），传空避免串行依赖
-            content = self.generate_scene(task_card, bp, synopsis_text, "", combined_pacing, temperature_override)
+            # 传入 all_blueprints 使 build_scene_prompt 可生成前情锚点/禁写清单
+            content = self.generate_scene(
+                task_card, bp, synopsis_text, "", combined_pacing, temperature_override,
+                all_blueprints=scenes,
+            )
             return (bp, content)
 
         all_scene_contents: list[tuple[dict, SceneOutput]] = []
@@ -395,19 +749,18 @@ class WriterAgent:
         self.last_scenes = [content for _, content in all_scene_contents]
         return self.last_scenes
 
-    def generate_full_chapter(self, task_card: dict, synopsis: dict, pacing_constraints: str = "",
-                              temperature_override: Optional[float] = None) -> str:
+    def generate_full_chapter(
+        self, task_card: dict, synopsis: dict, pacing_constraints: str = "",
+        temperature_override: Optional[float] = None,
+    ) -> str:
         """
-        生成完整章节正文：并发结构化场景 + 组装（仅拼 scene_text，末场景 hook 原样另起段落追加）。
-        组装语义与 PipelineOrchestrator._assemble_chapter_text 一致（管道侧为权威实现，本处为兼容封装）。
+        生成完整章节正文：并发结构化场景 + 组装（仅拼 scene_text，无 hook 追加）。
         """
         chapter_num = task_card.get("chapter_num", 0)
         scenes = self.generate_scenes(task_card, synopsis, pacing_constraints, temperature_override)
         if not scenes:
             return ""
         chapter_text = "\n\n".join(s.scene_text for s in scenes)
-        if scenes[-1].hook:
-            chapter_text = chapter_text.rstrip() + "\n\n" + scenes[-1].hook
         logger.info(f"Full chapter {chapter_num} generated ({len(chapter_text)} chars)")
         return chapter_text
 
@@ -415,7 +768,9 @@ class WriterAgent:
     def _split_scenes(self, chapter_text, scene_count):
         import re
         parts = [p.strip() for p in re.split(r"【场景\d+[:：][^】]*】|\n?\s*※\s*\n?", chapter_text) if p.strip()]
-        return parts  # never truncate: if count mismatches, return [chapter_text]
+        if len(parts) < 2:
+            parts = [chapter_text[i:i + 2400].strip() for i in range(0, len(chapter_text), 2400) if chapter_text[i:i + 2400].strip()]
+        return parts if len(parts) >= 2 else [chapter_text]
 
     @staticmethod
     def _polish_max_tokens(n: int) -> int:
@@ -442,7 +797,7 @@ class WriterAgent:
     def _polish_single(self, scene_text, task_card, client, scene=False):
         """单场景（或单次全文兜底）polish：测量预算经 _polish_max_tokens 统一计算。"""
         prompt = (
-            "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
+            "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，正常使用中文标点（每个完整句不超过约40字、每2-4个分句用逗号分隔、对话用引号，严禁整段无标点的流水句），仅返回润色后的完整正文，不要解释。\n\n"
             f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{scene_text}"
         )
         max_tokens = self._polish_max_tokens(len(scene_text))
@@ -451,7 +806,6 @@ class WriterAgent:
                 [{"role": "user", "content": prompt}],
                 temperature=0.7,
                 max_tokens=max_tokens,
-                timeout=300,
             )
             resp = self._coerce_polish_text(raw, scene_text)
             if resp is not None:
@@ -461,33 +815,119 @@ class WriterAgent:
             logger.warning(f"polish failed ({exc}), keep original")
         return scene_text
 
-    def _polish_by_scenes(self, chapter_text: str, task_card: dict, client) -> str:
-        """按场景边界分段 polish：逐场景顺序调用（无并发），※-join；切分不符预期时单次全文兜底。"""
+    def _polish_by_scenes_concurrent(self, chapter_text: str, task_card: dict, client) -> str:
+        """按场景并发 polish：复用 ThreadPoolExecutor，并发度取配置；
+        每个场景附带相邻场景结尾/开头作为只读衔接锚点。
+
+        单场景失败回退原文，不得因一段失败拖垮整章。
+        并发完成后做确定性接缝校验，失败则打 seam_warning 标记。
+        """
         expected = len(task_card.get("scene_blueprints") or []) or 1
         scenes = self._split_scenes(chapter_text, expected)
-        if len(scenes) != expected:
+        if len(scenes) < 2:
             logger.warning(f"scene split {len(scenes)} vs expected {expected}, single-call fallback")
             return self._polish_single(chapter_text, task_card, client)
-        out = [self._polish_single(s, task_card, client, scene=True) for s in scenes]
+
+        # 读取 concurrency 配置（从 model_router phases.polish.concurrency）
+        concurrency = getattr(client, "concurrency", 4) if hasattr(client, "concurrency") else 4
+
+        def _do_one(idx: int, scene_text: str) -> tuple[int, str, bool]:
+            """Polish 单个场景，返回 (index, polished_text, success)。"""
+            # 构造衔接锚点
+            prev_anchor = ""
+            next_anchor = ""
+            if idx > 0:
+                prev_anchor = scenes[idx - 1][-300:] if len(scenes[idx - 1]) >= 300 else scenes[idx - 1]
+                prev_anchor = f"\n\n## 上一场景结尾（只读衔接，不得改写）\n{prev_anchor}"
+            if idx < len(scenes) - 1:
+                next_anchor = scenes[idx + 1][:300] if len(scenes[idx + 1]) >= 300 else scenes[idx + 1]
+                next_anchor = f"\n\n## 下一场景开头（只读衔接，不得改写）\n{next_anchor}"
+
+            prompt = (
+                "请润色并修正以下场景正文，保持人设、伏笔与节奏一致，"
+                "正常使用中文标点（每个完整句不超过约40字、每2-4个分句用逗号分隔、对话用引号，严禁整段无标点的流水句），仅返回润色后的场景正文，不要解释。\n\n"
+                f"【任务卡】{task_card.get('title', '')}\n"
+                f"{prev_anchor}\n{next_anchor}\n"
+                "【正文】\n{scene_text}"
+            ).format(scene_text=scene_text)
+
+            max_tokens = self._polish_max_tokens(len(scene_text))
+            try:
+                raw = client.chat_completion(
+                    [{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    max_tokens=max_tokens,
+                )
+                resp = self._coerce_polish_text(raw, scene_text)
+                if resp is not None:
+                    return (idx, resp, True)
+                logger.warning(f"Scene {idx} polish degenerate, keep original")
+                return (idx, scene_text, False)
+            except Exception as exc:
+                logger.warning(f"Scene {idx} polish failed ({exc}), keep original")
+                return (idx, scene_text, False)
+
+        # 并发执行
+        results: list[tuple[int, str, bool]] = []
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="polish") as ex:
+            futures = {ex.submit(_do_one, i, s): i for i, s in enumerate(scenes)}
+            for fut in as_completed(futures):
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    idx = futures[fut]
+                    logger.warning(f"Scene {idx} polish executor error: {e}")
+                    results.append((idx, scenes[idx], False))
+
+        # 按 index 排序重组
+        results.sort(key=lambda x: x[0])
+        out = [r[1] for r in results]
+
+        # 接缝校验：相邻场景衔接处不得出现明显冲突
+        seam_warnings = self._validate_seams(out)
+        if seam_warnings:
+            logger.warning(f"Seam warnings after polish: {seam_warnings[:3]}")
+
         return "\n\n※\n\n".join(out)
+
+    def _validate_seams(self, scenes: list[str]) -> list[str]:
+        """轻量接缝校验：检查相邻场景衔接处的人称/时间线冲突。"""
+        warnings = []
+        for i in range(len(scenes) - 1):
+            curr_end = scenes[i][-100:] if len(scenes[i]) >= 100 else scenes[i]
+            next_start = scenes[i + 1][:100] if len(scenes[i + 1]) >= 100 else scenes[i + 1]
+            # 检查重复句子（简单实现）
+            if curr_end.strip() and next_start.strip():
+                # 如果结尾和开头有超过20字的重复，记 warning
+                overlap_len = 0
+                for l in range(min(len(curr_end), len(next_start)), 0, -1):
+                    if curr_end[-l:] == next_start[:l]:
+                        overlap_len = l
+                        break
+                if overlap_len > 20:
+                    warnings.append(f"Seam overlap between scene {i} and {i+1}: {overlap_len} chars")
+        return warnings
 
     def polish_chapter(self, chapter_text: str, task_card: dict, llm_client=None) -> str:
         """章节润色：统一过渡与语气。
 
-        校验润色结果长度：过短（退化/空输出，如 5 字符）时提高温度重试；
+        大章节按场景并发 polish（取 phases.polish.concurrency），
+        小章节单次全文 polish。
+        校验润色结果长度：过短（退化/空输出）时提高温度重试；
         全部失败后回退到原始正文，避免生成残缺章节。
         """
         client = llm_client or self.llm
-        # 测量预算经 _polish_max_tokens 与分段路径统一（旧 /1.5 估计已废弃，避免截断）
         max_tokens = self._polish_max_tokens(len(chapter_text))
+
+        # 大章节走并发场景路径
+        if len(chapter_text) > 4000:
+            return self._polish_by_scenes_concurrent(chapter_text, task_card, client)
+
+        # 小章节单次全文 polish
         prompt = (
-            "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，仅返回润色后的完整正文，不要解释。\n\n"
+            "请润色并修正以下完整章节，保持人设、伏笔与节奏一致，正常使用中文标点（每个完整句不超过约40字、每2-4个分句用逗号分隔、对话用引号，严禁整段无标点的流水句），仅返回润色后的完整正文，不要解释。\n\n"
             f"【任务卡】{task_card.get('title', '')}\n\n【正文】\n{chapter_text}"
         )
-        # P0-超时分级：POLISH 整章重写需 300s，Scene/评审保持 90s；整章一次 polish 改为分场景批处理以降低单次负载
-        if len(chapter_text) > 4000:
-            # 大章节按场景分批 polish，避免单次 7-10K 上下文 90s 误杀
-            return self._polish_by_scenes(chapter_text, task_card, client)
         temps = [0.7, 0.85, 0.95]
         for attempt in range(len(temps)):
             try:
@@ -495,20 +935,116 @@ class WriterAgent:
                     [{"role": "user", "content": prompt}],
                     temperature=temps[attempt],
                     max_tokens=max_tokens,
-                    timeout=300,
                 )
             except Exception as exc:
-                # 超时/错误重试无意义，直接回退原始正文，避免长时挂起
                 logger.warning(f"polish_chapter call failed ({exc}); falling back to original text")
                 return chapter_text
-            # ModelRouter/LLMClient 返回 dict（含 content 字段）；经共享 guard 统一提取
-            # （finish_reason=length 截断与退化短输出均回 None 走重试/回退）。
             resp = self._coerce_polish_text(raw, chapter_text)
             if resp is not None:
                 return resp
             logger.warning(
                 f"polish_chapter attempt {attempt + 1} returned degenerate/truncated output, retrying"
             )
-        # 所有重试均失败：回退到未润色原始正文，保证章节完整不残缺
         logger.warning("polish_chapter: all attempts degenerate, falling back to original text")
         return chapter_text
+
+    def polish_scenes(self, scenes: list, task_card: dict, client=None, only_ids: set[int] | None = None) -> tuple:
+        """结构化场景级并发润色。
+
+        以 SceneOutput 为边界，每个场景一次纯文本流式调用，
+        并发度取 phases.polish.concurrency，用 ThreadPoolExecutor。
+        每场景附相邻场景结尾/开头约 250 字作为只读衔接锚点。
+        返回 (list[SceneOutput], list[bool])，bool 表示该场景是否成功润色。
+        任一场景失败或退化则保留原文，对应 bool=False。
+        only_ids: 只对这些 scene_id 进行润色，其他场景原样保留（flag=False）。
+        """
+        from novel_engine.quality.chinese_gate import is_chinese_clean
+
+        if not scenes or len(scenes) < 1:
+            return (list(scenes), [])
+
+        client = client or self.llm
+        # 取并发度：ModelRouter 有 concurrency 属性，否则默认 4
+        concurrency = getattr(client, "concurrency", 4) if hasattr(client, "concurrency") else 4
+
+        def _do_one(idx: int, scene: "SceneOutput") -> tuple[int, "SceneOutput", bool]:
+            """Polish 单个场景，返回 (index, polished_scene, success)。"""
+            # 跳过不在 only_ids 中的场景（journaled 场景）
+            if only_ids is not None and scene.scene_id not in only_ids:
+                return (idx, scene, False)
+            orig_text = scene.scene_text
+
+            # 构造衔接锚点（只读，不得改写）
+            prev_anchor = ""
+            next_anchor = ""
+            if idx > 0:
+                prev = scenes[idx - 1].scene_text
+                prev_anchor = prev[-250:] if len(prev) >= 250 else prev
+                prev_anchor = f"\n\n## 上一场景结尾（只读衔接，不得改写）\n{prev_anchor}"
+            if idx < len(scenes) - 1:
+                nxt = scenes[idx + 1].scene_text
+                next_anchor = nxt[:250] if len(nxt) >= 250 else nxt
+                next_anchor = f"\n\n## 下一场景开头（只读衔接，不得改写）\n{next_anchor}"
+
+            prompt = (
+                "请润色并修正以下场景正文，保持人设、伏笔与节奏一致，"
+                "正常使用中文标点（每个完整句不超过约40字、每2-4个分句用逗号分隔、对话用引号，严禁整段无标点的流水句），仅返回润色后的场景正文，不要解释。\n\n"
+                f"【任务卡】{task_card.get('title', '')}\n"
+                f"{prev_anchor}\n{next_anchor}\n"
+                "【正文】\n{scene_text}"
+            ).format(scene_text=orig_text)
+
+            max_tokens = self._polish_max_tokens(len(orig_text))
+            try:
+                raw = client.chat_completion(
+                    [{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    max_tokens=max_tokens,
+                )
+                resp = self._coerce_polish_text(raw, orig_text)
+                if resp is None:
+                    logger.warning(f"Scene {scene.scene_id} polish degenerate, keep original")
+                    return (idx, scene, False)
+                # 确定性校验：非空、中文主导、无脚手架标记、长度在 0.5-1.5 倍
+                if not resp.strip():
+                    return (idx, scene, False)
+                if not is_chinese_clean(resp):
+                    logger.warning(f"Scene {scene.scene_id} polish not Chinese-clean, keep original")
+                    return (idx, scene, False)
+                if "【" in resp or "】" in resp or "※" in resp:
+                    logger.warning(f"Scene {scene.scene_id} polish has scaffolding, keep original")
+                    return (idx, scene, False)
+                orig_len = len(orig_text)
+                resp_len = len(resp)
+                if resp_len < orig_len * 0.5 or resp_len > orig_len * 1.5:
+                    logger.warning(f"Scene {scene.scene_id} polish length out of range ({resp_len} vs {orig_len}), keep original")
+                    return (idx, scene, False)
+                # 创建新 SceneOutput，保留原 hook 和 beats
+                new_scene = SceneOutput(scene.scene_id, resp.strip(), scene.hook, list(scene.beats))
+                return (idx, new_scene, True)
+            except Exception as exc:
+                logger.warning(f"Scene {scene.scene_id} polish failed ({exc}), keep original")
+                return (idx, scene, False)
+
+        results: list[tuple[int, "SceneOutput", bool]] = []
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="polish_scenes") as ex:
+            futures = {ex.submit(_do_one, i, s): i for i, s in enumerate(scenes)}
+            for fut in as_completed(futures):
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    idx = futures[fut]
+                    logger.warning(f"Scene {idx} polish executor error: {e}")
+                    results.append((idx, scenes[idx], False))
+
+        results.sort(key=lambda x: x[0])
+        polished_scenes = [r[1] for r in results]
+        polished_flags = [r[2] for r in results]
+
+        # 接缝校验（只读）
+        seam_texts = [s.scene_text for s in polished_scenes]
+        seam_warnings = self._validate_seams(seam_texts)
+        if seam_warnings:
+            logger.warning(f"Seam warnings after polish_scenes: {seam_warnings[:3]}")
+
+        return (polished_scenes, polished_flags)

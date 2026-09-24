@@ -88,14 +88,14 @@ def test_dialogue_preserved_after_split():
     assert ph.strip_all_punctuation(fixed) == ph.strip_all_punctuation(text)
 
 
-def test_max_two_splits_per_sentence():
-    """每句至多2处拆分（max_splits=2）。"""
+def test_max_splits_per_sentence():
+    """每句至多3处拆分（max_splits=3，P8B升级）。"""
     text = ("的" * 50 + "然后" + "的" * 20
             + "接着" + "的" * 20 + "随后" + "的" * 20)
     fixed, stats = ph.split_long_sentences(text)
     split_count = fixed.count("。\n")
-    assert split_count <= 2
-    assert stats["split_count"] <= 2
+    assert split_count <= 3
+    assert stats["split_count"] <= 3
 
 
 def test_weak_boundary_not_used_for_split():

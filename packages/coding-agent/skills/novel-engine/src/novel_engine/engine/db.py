@@ -206,6 +206,20 @@ class StateDB:
         rows = cursor.fetchall()
         return [dict(r) for r in rows]
 
+    def plant_foreshadow(self, foreshadow_id: str, plant_chapter: int, plant_context: str, resolve_chapter: int, resolve_method: str = "", importance: str = "medium") -> bool:
+        """Register a newly planted foreshadow at runtime (CC P0#3 ledger closure)."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO foreshadows (id, plant_chapter, resolve_chapter, plant_context, resolve_method, importance, status) VALUES (?, ?, ?, ?, ?, ?, 'planned')",
+                (foreshadow_id, plant_chapter, resolve_chapter, plant_context, resolve_method, importance),
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error("plant_foreshadow failed: " + str(e))
+            return False
+
     def execute_custom_query(self, sql: str, params: tuple = ()) -> list[dict]:
         """支持 Agent 在运行中动态编写和运行 SQL 逻辑。"""
         cursor = self.conn.cursor()

@@ -111,6 +111,32 @@ def allows_year_span(max_time_progression: str | None) -> bool:
     return "年" in s
 
 
+# CC round-14 R1：空间地点短语守卫。when forbidden_marker 实际是地点方位词（如
+# "禁区边缘"/"禁地边上"/"后山深处"/"林子边上"/"井边"）时，不应判为时间线越界。
+_SPATIAL_LOCATION_ROOTS = frozenset({
+    "禁区", "禁地", "后山", "林子", "山林", "山林边", "山边", "井边", "井台",
+    "村口", "村头", "祠堂", "屋后", "坡下", "洼处", "洼地", "雾中", "雾里",
+    "河边", "江畔", "湖边", "塘边", "道旁", "路旁", "巷口", "街口",
+})
+_SPATIAL_SUFFIXES = frozenset({
+    "边缘", "边上", "边", "深处", "入口", "外围", "附近", "外头", "那边",
+    "周围", "里头", "里面", "旁边", "尽头", "顶端", "底端",
+})
+
+
+def _is_spatial_marker(marker: str) -> bool:
+    """判断 forbidden_marker 是否为空间地点短语（非时间词）。"""
+    if not marker or len(marker) < 2:
+        return False
+    has_root = any(root in marker for root in _SPATIAL_LOCATION_ROOTS)
+    has_suffix = any(marker.endswith(s) for s in _SPATIAL_SUFFIXES)
+    if has_root and has_suffix:
+        return True
+    if has_root and len(marker) >= 2:
+        return True
+    return False
+
+
 def detect_timeline_jump(
     scene_text: str,
     timeline_anchor: dict | None = None,
@@ -139,6 +165,9 @@ def detect_timeline_jump(
     for marker in anchor.get("forbidden_markers", []) or []:
         m = str(marker or "").strip()
         if len(m) >= 2 and m in masked_text:
+            # CC round-14 R1：空间地点短语不得当时间越界拦截
+            if _is_spatial_marker(m):
+                continue
             # CC round-12 R1：回溯性时间词 —— 仅在重演 cue 同句才判
             if m in _BACK_REF_MARKERS:
                 pos = masked_text.find(m)

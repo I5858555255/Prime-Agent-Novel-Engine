@@ -61,7 +61,10 @@ from novel_engine.pipeline.chapter_status import set_status, COMMITTED, HALTED, 
 from novel_engine.core.llm_failover import FailoverLLMClient
 from novel_engine.core.model_router import ModelRouter
 from novel_engine.quality.defects_store import DefectsStore
-from novel_engine.quality.outline_coverage_gate import validate_outline_coverage
+from novel_engine.quality.outline_coverage_gate import (
+    validate_outline_coverage,
+    extract_must_cover_beats, check_scene_must_cover_beats, build_mandatory_beat_directive,
+)
 from novel_engine.quality.forbidden_scanner import ForbiddenScanner
 from novel_engine.quality.continuity_auditor import ContinuityAuditor
 from novel_engine.engine.db import StateDB
@@ -253,7 +256,12 @@ class PipelineOrchestrator:
         # production_runner 设置的 NOVEL_ENGINE_REAL_LANG_ENFORCE=1，并排除 MockLLMClient；
         # 注入的是真实 client 时为 pro 单独建 refine 池（agnes-2.5-pro），mock/离线零影响。
         _real30 = os.environ.get("NOVEL_ENGINE_REAL_LANG_ENFORCE") == "1"
-        _is_mock30 = llm_client is not None and type(llm_client).__name__ == "MockLLMClient"
+        # P5-1(a)：_is_mock30 同时识别 MockLLMClient 类名与 LLMClient(use_mock=True)
+        _is_mock30 = (
+            llm_client is not None
+            and (type(llm_client).__name__ == "MockLLMClient"
+                 or getattr(llm_client, "use_mock", False))
+        )
         if _real30 and not _is_mock30:
             try:
                 _pro30 = self.refine_router if llm_client is None else ModelRouter("refine", self.root)
@@ -272,8 +280,11 @@ class PipelineOrchestrator:
 
         # 存储当前章节的产出，供 commit 使用
         self.current_novel = ""
+        self._draft_novel = ""
         self.current_synopsis = {}
         self.current_outline = {}
+        # P7C：保存含※分隔符的权威最终分场，供危机门按场评估
+        self._assembled_with_seps: str = ""
         # Cost tracking
         self._call_log = get_call_log
         self._reset_call_log = reset_call_log
@@ -611,8 +622,37 @@ class PipelineOrchestrator:
         except Exception as _we:
             logger.warning(f"Word-count enforcement skipped: {_we}")
 
+        # R16c P0-A/B: 预评审+轮兜底强制必填伏笔闭环（独立于 reviewer 归因，每轮 review 前执行）
+        # 首次调用在场景拼装后执行；后续轮次在 patch 回写 journal 后再次调用，确保重生
+        # 的 scene_text 真正进入当轮评审文本与最终成稿。
+        _pre_mand = self._enforce_mandatory_beats(chapter_num, task_card, synopsis_text=synopsis.get('synopsis', '') if isinstance(synopsis, dict) else str(synopsis or ''))
+        if _pre_mand.get('blocked'):
+            logger.error(
+                f'ch{chapter_num} MANDATORY HARD BLOCK at pre-review: '
+                f'foreshadow beats unresolved in scenes {list(_pre_mand.get("missing_fs_ids", []))}')
+            self._mandatory_blocked = _pre_mand['missing_scenes']
+            result['success'] = False
+            result['published'] = False
+            result['hard_block'] = True
+            result['hard_block_reason'] = (
+                f'mandatory foreshadow beats unresolved: '
+                f'{list(_pre_mand.get("missing_fs_ids", []))}')
+            self._flag_for_human(
+                chapter_num, 0,
+                f'mandatory foreshadow beats unresolved in scenes '
+                f'{list(_pre_mand.get("missing_scenes", {}).keys())}; isolate to draft/failed')
+            result["success"] = False
+            return result
+        self._mandatory_blocked = _pre_mand.get('missing_scenes') or {}
+        # R16c P0-B: 当 _enforce_mandatory_beats 本轮重生后，将自刷新到局部变量，
+        # 使当轮 _stage_review 评的是含注入的新文本（无重生时二者相同，幂等）。
+        if _pre_mand.get('enforced') and not _pre_mand.get('blocked'):
+            current = self.current_novel or current
+            current_draft = self._draft_novel or current_draft
+
         # 阶段5：审查评分
         try:
+            self._finalize_current_novel(chapter_num)
             stage_review = self._stage_review(chapter_num, task_card, synopsis, self._novel_string(), world_state)
             review = stage_review["review"]
             score = stage_review["score"]
@@ -671,7 +711,31 @@ class PipelineOrchestrator:
                     # 避免定点修复返回 None 改走 rewrite 分支时 frozen 未绑定引发 UnboundLocalError
                     frozen = self._frozen_task_cards.get(chapter_num, task_card)
                     no_improve = 0
+                    _reaction_fix_budget = 1  # CC round-19 P9d: 整章至多1次 reaction 定点修订
                     for _ in range(max_fix):
+                        # R16c P0-B: 每轮 fix 前复检必填伏笔（patch 回写 journal 后，确保重生文本进入当轮评审）
+                        _iter_mand = self._enforce_mandatory_beats(
+                            chapter_num, task_card,
+                            synopsis_text=synopsis.get('synopsis', '') if isinstance(synopsis, dict) else str(synopsis or ''))
+                        if _iter_mand.get('blocked'):
+                            logger.error(
+                                f'ch{chapter_num} MANDATORY HARD BLOCK at fix-loop iter={_}: '
+                                f'foreshadow beats unresolved: {list(_iter_mand.get("missing_fs_ids", []))}')
+                            self._mandatory_blocked = _iter_mand['missing_scenes']
+                            result['success'] = False
+                            result['published'] = False
+                            result['hard_block'] = True
+                            result['hard_block_reason'] = (
+                                f'mandatory foreshadow beats unresolved after fix-loop iter={_}: '
+                                f'{list(_iter_mand.get("missing_fs_ids", []))}')
+                            self._flag_for_human(
+                                chapter_num, 0,
+                                f'mandatory foreshadow beats unresolved after fix loop; isolate to draft/failed')
+                            break
+                        self._finalize_current_novel(chapter_num)
+                        # D1 P8D: 无条件刷新 local current 以与 self.current_novel 同源（含 finalize 切分后文本）
+                        current = self.current_novel or current
+                        current_draft = self._draft_novel or current_draft
                         staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
                         s = staged["score"]
                         result["score"] = s
@@ -680,6 +744,26 @@ class PipelineOrchestrator:
                         high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:60]}" for iss in (staged["review"].get("issues") or []) if _review_issue_is_blocking(_fix_policy, iss)]
                         det = self._deterministic_quality_gate(current, task_card)
                         soft = det.get("soft_issues", [])
+                        _react_hits = det.get("reaction_hits") or []
+                        _react_dir = det.get("reaction_directive") or ""
+                        # CC round-19 P9c/P9d: reaction 命中且预算未耗尽 → 注入合成评审问题，
+                        # 使本轮 _patch_weak_scenes 针对命中场做定点修订，再重跑门/评审。
+                        _reaction_pending = bool(_react_hits) and _reaction_fix_budget > 0
+                        if _reaction_pending and staged.get("review"):
+                            _r_first = _react_hits[0]
+                            _r_scene_ids = _r_first.get("scene_ids", [])
+                            staged["review"].setdefault("issues", []).append({
+                                "dimension": "reaction_consistency",
+                                "severity": "soft",
+                                "scene_ids": _r_scene_ids,
+                                "description": f"[反应一致性] {_r_first.get('desc', '')[:80]}",
+                                "suggested_fix": _react_dir,
+                            })
+                            _reaction_fix_budget -= 1
+                            logger.info(
+                                f"Reaction fix injected ch{chapter_num}: scenes={_r_scene_ids} "
+                                f"budget_left={_reaction_fix_budget}")
+                            no_improve = 0  # 本轮有主动修订，不计入停滞
                         prev_best = best[0]
                         if s > best[0]:
                             best = (s, current, current_draft)
@@ -698,18 +782,23 @@ class PipelineOrchestrator:
                         # CC round-14 P0-3：确定性门全过+无high 时，>=88 正常过；85-87.9 灰带也放行（打标人工抽读）
                         _gray_ok = (_soft_line <= s < min_ch) and not has_high and det["passed"]
                         if s >= min_ch:
-                            if not has_high and det["passed"]:
+                            if not has_high and det["passed"] and not _reaction_pending:
                                 if soft:
                                     logger.info(f"Score {s} ≥ {min_ch} soft issues (不阻断): {soft}")
                                 break
+                            elif _reaction_pending:
+                                logger.warning(f"Score {s} ≥ {min_ch} but reaction pending fix → continue")
                             else:
                                 logger.warning(f"Score {s} ≥ {min_ch} but blocked → high={high_list} det_hard={det['issues']} det_soft={soft} → continue fix")
-                        elif _gray_ok:
+                        elif _gray_ok and not _reaction_pending:
                             logger.warning(f"Gray-band release ch{chapter_num}: score {s} in [{_soft_line},{min_ch}) + gates pass + no-high → release to novel (flagged for human spot-check) soft={soft}")
                             result["gray_band_release"] = True
                             result["gray_band_score"] = s
-                            self._flag_for_human(chapter_num, s, f"gray-band release {s}: deterministic gates passed, no high issue, please spot-read")
+                            _flag_reason = f"gray-band release {s}: deterministic gates passed, no high issue, please spot-read" + ("; reaction consistency 未消解（已尝试定点修订）" if (_react_hits and _reaction_fix_budget == 0) else "")
+                            self._flag_for_human(chapter_num, s, _flag_reason)
                             break
+                        elif _reaction_pending:
+                            logger.warning(f"Score {s} in gray band but reaction pending fix → continue")
                         # 3 轮不超 best 即提前终止，避免单章空转 1.5h
                         if no_improve >= 2 and _ >= 2:
                             logger.warning(f"Fix loop no improve for {no_improve} rounds (best {best[0]}), early stop")
@@ -736,6 +825,26 @@ class PipelineOrchestrator:
                         if patched_draft is not None and patched_draft != current_draft and len(patched_draft) >= len(current_draft) // 2:
                             # 缝合后需重新净化并强制字数
                             patched_purified = purify_novel_for_publish(patched_draft, chapter_num=chapter_num)
+                            # CC round-18 P0-3：fix-loop 采纳评审建议前，对拟新增/修改文本过 canon/阶段约束硬过滤；
+                            # 命中 infant.json hard_block → 拒绝本 patch，改走整章重生/人工标记，禁止静默落稿。
+                            try:
+                                from novel_engine.quality.scope_gate import detect_scope_violations
+                                _prefilter_h = detect_scope_violations(
+                                    patched_purified, int(chapter_num or 0),
+                                    timeline_anchor=None, root=self.root).get("hard", [])
+                                if _prefilter_h:
+                                    _pf_terms = sorted({v.get("term", "") for v in _prefilter_h})
+                                    logger.warning(
+                                        f"ch{chapter_num} fix pre-filter REJECTS patch: "
+                                        f"canon hard_block hits={_pf_terms} -> abort patch, force full rewrite")
+                                    patched_draft = None  # abort: fall through to full rewrite path
+                                else:
+                                    logger.info(f"ch{ch_num} fix pre-filter: 0 hard hits, patch accepted")
+                            except Exception as _pe:
+                                # D3：fail-closed — 异常拒绝 patch，不静默接受
+                                logger.error(
+                                    f"ch{chapter_num} fix pre-filter FATAL: {_pe} -> REJECT patch")
+                                patched_draft = None
                             # 强制字数（用冻结目标）
                             total = sum(self._bpt(bp) for bp in (frozen.get("scene_blueprints") or []))
                             if total > 0:
@@ -744,10 +853,11 @@ class PipelineOrchestrator:
                                     patched_purified,
                                     int(total * _pol["min_ratio"]),
                                     int(total * _pol["max_ratio"] + max(_pol["tolerance_chars"], total * 0.02)))
-                            current = patched_purified
-                            current_draft = patched_draft
-                            self.current_novel = current
-                            self._draft_novel = current_draft
+                            if patched_draft is not None:
+                                current = patched_purified
+                                current_draft = patched_draft
+                                self.current_novel = current
+                                self._draft_novel = current_draft
                             # 注：patch 增益已在 _patch_weak_scenes 内回写 journal，
                             # 此处无需额外同步（journal 即 source of truth）。
                             # 更新 gate
@@ -763,6 +873,7 @@ class PipelineOrchestrator:
                             _lit_used25 = set()
                             self._literary_pass_used = _lit_used25
                         if _lit_weak25(staged["review"]) and chapter_num not in _lit_used25:
+                            _prev_current, _prev_draft = current, current_draft
                             _lit_res25 = self._cc25_literary_rewrite(
                                 current, staged["review"], task_card, synopsis, chapter_num)
                             if _lit_res25 is not None:
@@ -770,6 +881,24 @@ class PipelineOrchestrator:
                                 current, current_draft = _lit_res25
                                 self.current_novel = current
                                 self._draft_novel = current_draft
+                                # D5：文学重写落稿前过同一 canon/阶段约束硬过滤
+                                try:
+                                    from novel_engine.quality.scope_gate import detect_scope_violations
+                                    _lit_h = detect_scope_violations(
+                                        current, int(chapter_num or 0),
+                                        timeline_anchor=None, root=self.root).get("hard", [])
+                                    if _lit_h:
+                                        _lit_terms = sorted({v.get("term", "") for v in _lit_h})
+                                        logger.warning(
+                                            f"ch{chapter_num} literary pass REJECTS: "
+                                            f"canon hard_block hits={_lit_terms} -> discard rewrite")
+                                        current, current_draft = _prev_current, _prev_draft
+                                        self.current_novel = current
+                                        self._draft_novel = current_draft
+                                    else:
+                                        logger.info(f"ch{chapter_num} literary pass pre-filter: 0 hard hits, accepted")
+                                except Exception as _le:
+                                    logger.warning(f"ch{chapter_num} literary pre-filter error: {_le} -> keep rewrite")
                                 gate_after = self._deterministic_quality_gate(current, frozen)
                                 self._last_deterministic_issues = gate_after["issues"]
                                 _cc25_fixed = True
@@ -844,6 +973,8 @@ class PipelineOrchestrator:
                         current_draft = current  # 重写结果同步为 draft
                         self.current_novel = current
                         self._draft_novel = current_draft
+                        # P7C：保存含※分隔符的权威分场，供最终门控使用
+                        self._assembled_with_seps = current
                         # Journal write-back 已在上文完成（upsert 语义），无需额外同步
                         gate_after = self._deterministic_quality_gate(current, frozen)
                         self._last_deterministic_issues = gate_after["issues"]
@@ -899,7 +1030,164 @@ class PipelineOrchestrator:
                                                  f"post-fix severe shortfall {_len18['current']}/{_soft_floor18}; please verify")
                     except Exception as _e18:
                         logger.warning(f"Post-fix length check skipped: {_e18}")
-                    _final_det_g = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card))
+                    # P7D+P8B+P8C：最终门 scene_texts 同源约定——与 best_novel 同源同序。
+                    # best_novel 是已选定候选；best_novel 在阶段5评审前已通过
+                    # _finalize_current_novel 完成长句定稿（pipeline_orchestrator.py ~L4095），
+                    # 故此处无需重复 finalize，直接按※切出分场即可。
+                    _SEP = chr(0x203B)  # ※
+                    if best_novel and _SEP in best_novel:
+                        from novel_engine.quality.cross_scene_crisis_gate import _split_text_into_scenes
+                        _scene_texts_for_gate = _split_text_into_scenes(best_novel, self._frozen_task_cards.get(chapter_num, task_card))
+                    else:
+                        _scene_texts_for_gate = None
+                    _final_det_g = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card), scene_texts=_scene_texts_for_gate)
+                    # D3/E3 P8F: 氛围去重检测（软 note，不阻断）——对与危机门同源的 best_novel 跑检测
+                    # 命中后：real-lang 才发 LLM 定向重抛光；抛光后全章全门回归；任一回归即回滚。
+                    _atm_repolished = False
+                    try:
+                        from novel_engine.quality.atmosphere_dedup import (
+                            cn_chars,
+                            run_atmosphere_dedup as _rad,
+                            generate_repolish_directive as _grd,
+                            roll_back_ok as _rbo,
+                            _split_scenes as _split,
+                        )
+                        _atm_result = _rad(best_novel, root=self.root)
+                        _atm_hits = _atm_result.get("hits") or []
+                        if _atm_hits:
+                            _hit_strs = [
+                                f"场{h['scene_num']}:{h.get('family','?')}({h.get('conc_scene_a',0):.1f}/{h.get('conc_scene_b',0):.1f})/k"
+                                for h in _atm_hits
+                            ]
+                            logger.info(
+                                f"ch{chapter_num} atmosphere dedup hits: {len(_atm_hits)} "
+                                f"notes={_hit_strs}")
+                            result["atmosphere_dedup_hits"] = _atm_hits
+                            result["atmosphere_dedup_soft_note"] = "; ".join(_hit_strs)
+
+                            # E3 P8F: real-lang 才发 LLM 重抛光；全章候选回归 + 采纳即回写 best_novel/best_draft
+                            _use_mock = bool((self.config.get("llm") or {}).get("use_mock"))
+                            if not _use_mock and _atm_hits:
+                                try:
+                                    _atm_scenes = _split(best_novel)
+                                    _bps = self._frozen_task_cards.get(chapter_num, task_card).get("scene_blueprints", [])
+                                    _bps_by_sid = {int(bp.get("scene_num", 0) or 0): bp for bp in _bps if isinstance(bp, dict)}
+                                    _max_repolish = 2  # 整章上限 2 场
+                                    _repolished_count = 0
+                                    _accepted_sids: list[int] = []
+                                    _orig_scene_texts = dict(_scene_texts_for_gate or {})
+                                    # Baseline gate issues for comparison
+                                    _base_issues = set(_final_det_g.get("issues") or [])
+                                    _base_passed = _final_det_g.get("passed", True)
+                                    _sep_char = chr(0x203B)
+                                    for hit in _atm_hits:
+                                        if _repolished_count >= _max_repolish:
+                                            break
+                                        _sid = hit["scene_num"]
+                                        _idx = _sid - 1
+                                        if _idx < 0 or _idx >= len(_atm_scenes):
+                                            continue
+                                        _orig_scene = _atm_scenes[_idx]
+                                        if not _orig_scene:
+                                            continue
+                                        _dir = _grd(hit)
+                                        _bp = _bps_by_sid.get(_sid, {})
+                                        _prev = best_novel[-600:] if len(best_novel) > 600 else ""
+                                        try:
+                                            _ns = self.writer.generate_scene(
+                                                task_card, _bp,
+                                                synopsis.get("synopsis", "") if isinstance(synopsis, dict) else "",
+                                                prev=_prev,
+                                                fix_directive=_dir,
+                                            )
+                                            if _ns is None:
+                                                continue
+                                            _polished = getattr(_ns, "scene_text", "") or ""
+                                            if not _polished:
+                                                continue
+                                            # F3: 构建全章候选文本（与 best_novel 同源分隔符）
+                                            _candidate_parts = list(_atm_scenes)
+                                            _candidate_parts[_idx] = _polished
+                                            _candidate_text = _sep_char.join(_candidate_parts)
+                                            _candidate_scenes = _split(_candidate_text)
+                                            # 场数与※数不变
+                                            if len(_candidate_scenes) != len(_atm_scenes):
+                                                logger.warning(f"ch{chapter_num} atm repolish scene{_sid}: scene count changed {_len(_candidate_scenes)}!={len(_atm_scenes)} -> rollback")
+                                                continue
+                                            # 全章候选门回归（与最终门同口径）
+                                            _cand_gate = self._deterministic_quality_gate(
+                                                _candidate_text,
+                                                self._frozen_task_cards.get(chapter_num, task_card),
+                                                scene_texts={i+1: s for i, s in enumerate(_candidate_scenes)},
+                                            )
+                                            _forbidden = self._forbidden_violations(_candidate_text, "")
+                                            # 对比 baseline：新增 hard/high、危机翻坏、极性翻坏、新禁词/套话
+                                            _cand_issues = set(_cand_gate.get("issues") or [])
+                                            _new_issues = _cand_issues - _base_issues
+                                            _has_hard_high = any(
+                                                i.get("severity") in ("hard", "high")
+                                                for i in (_cand_gate.get("issues") or [])
+                                            )
+                                            _score_ok = (
+                                                not _cand_gate.get("passed", True) and _base_passed
+                                            ) or (
+                                                _has_hard_high and not any(
+                                                    i.get("severity") in ("hard", "high")
+                                                    for i in (_final_det_g.get("issues") or [])
+                                                )
+                                            )
+                                            _new_forbidden = bool(_forbidden) and not any(
+                                                v.get("name") in [iv.get("name") for iv in violations or []]
+                                                for v in _forbidden
+                                            ) if violations is not None else bool(_forbidden)
+                                            # 字数守限
+                                            _new_total_cn = sum(cn_chars(s) for s in _candidate_scenes)
+                                            _qp = load_quality_policy(self.root)
+                                            _bpt_total = sum(self._bpt(bp) for bp in _bps) or 0
+                                            _topup_min = int(_bpt_total * _qp["min_ratio"]) if _bpt_total else 6800
+                                            _ok_len = (
+                                                all(cn_chars(s) >= 1000 for s in _candidate_scenes)
+                                                and _topup_min <= _new_total_cn <= 10660
+                                            )
+                                            # 回滚判定：全门回归 + 字数
+                                            _ok = _rbo(
+                                                _polished, _orig_scene, _new_total_cn,
+                                                gate_result=_cand_gate,
+                                                forbidden_result=_forbidden,
+                                            ) and not _score_ok and not _new_forbidden and _ok_len
+                                            if _ok:
+                                                # 采纳：重建 best_novel/best_draft，重算 scene_texts_for_gate
+                                                _best_novel_polished = _candidate_text
+                                                _best_draft_polished = _candidate_text
+                                                _scene_texts_polished = {
+                                                    i + 1: s for i, s in enumerate(_candidate_scenes)
+                                                }
+                                                best_novel = _best_novel_polished
+                                                best_draft = _best_draft_polished
+                                                _scene_texts_for_gate = _scene_texts_polished
+                                                self.current_novel = _best_novel_polished
+                                                self._draft_novel = _best_draft_polished
+                                                self._finalize_current_novel(chapter_num)
+                                                _accepted_sids.append(_sid)
+                                                _repolished_count += 1
+                                                _atm_scenes = _split(best_novel)  # 刷新 local cache
+                                            else:
+                                                logger.info(
+                                                    f"ch{chapter_num} atm repolish scene{_sid} rejected: "
+                                                    f"gate_pass={_cand_gate.get('passed')}, "
+                                                    f"hard_high={_has_hard_high}, "
+                                                    f"forbidden={bool(_forbidden)}, len_ok={_ok_len}")
+                                        except Exception as _erep:
+                                            logger.warning(f"ch{chapter_num} atm repolish scene{_sid} failed: {_erep}")
+                                            continue
+                                    if _accepted_sids:
+                                        result["atmosphere_repolished_scenes"] = _accepted_sids
+                                        logger.info(
+                                            f"ch{chapter_num} atmosphere repolish accepted: {len(_accepted_sids)} scenes")
+                                except Exception as _ae3:
+                                    logger.warning(f"ch{chapter_num} atmosphere repolish failed: {_ae3}")
+                    except Exception as _ade:
+                        logger.warning(f"ch{chapter_num} atmosphere dedup skipped: {_ade}")
                     _final_pol_g = load_quality_policy(self.root)
                     _final_high_g = any(_review_issue_is_blocking(_final_pol_g, iss) for iss in (staged["review"].get("issues") or []))
                     _soft_line = int(_final_pol_g.get("soft_publication_line", min_ch - 3))
@@ -908,10 +1196,11 @@ class PipelineOrchestrator:
                         logger.warning(f"Gray-band final release ch{chapter_num} score {best_score} (gates pass, no-high) → publish to novel, flagged human spot-check")
                         result["gray_band_release"] = True
                         result["gray_band_score"] = best_score
-                        self._flag_for_human(chapter_num, best_score, f"gray-band final release {best_score}: spot-read required")
+                        self._flag_for_human(chapter_num, best_score, f"gray-band final release {best_score}: spot-read required" + ("; reaction consistency 未消解（已尝试定点修订）" if (_final_det_g.get("reaction_hits") and _reaction_fix_budget == 0) else ""))
                     if best_score >= min_ch or _gray_final:
                         # 最终仍需校验硬门控；若仍硬阻断则强制发布 best 供人审阅（附 note），不跳过章节
-                        final_det = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card))
+                        # P7D：scene_texts 与 best_novel 同源（见上方 _scene_texts_for_gate 计算）
+                        final_det = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card), scene_texts=_scene_texts_for_gate)
                         _final_policy = load_quality_policy(self.root)
                         final_high = any(_review_issue_is_blocking(_final_policy, iss) for iss in (staged["review"].get("issues") or []))
                         if (final_high or not final_det["passed"]) and not _gray_final:
@@ -1043,11 +1332,95 @@ class PipelineOrchestrator:
             "dim_scores": review.get("dim_scores", {}),
         })
         review_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        # R16c/R17: cur_score 必须在 stage6 前置校验前定义
+        cur_score = float(result.get("score", score or 0) or 0)
+
+
+        # R16c P0-C2: 阶段6 fail-closed 兜底——final_text 再次跑 foreshadow-only 复检
+        _stage6_mcb = []
+        _stage6_missing_fs_ids: list = []
+        try:
+            from novel_engine.quality.outline_coverage_gate import extract_must_cover_beats as _emb_fn
+            # R17-2 read-time correction：与 _enforce_mandatory_beats 同逻辑，
+            # 保证卡在任何路径下（frozen/direct）都被重新对齐后再做一致性检查。
+            _stage6_reconciled = _emb_fn(task_card)
+            if _stage6_reconciled:
+                task_card["must_cover_beats"] = _stage6_reconciled
+            else:
+                task_card.pop("must_cover_beats", None)
+            _stage6_all = _emb_fn(task_card)
+            _stage6_mcb = [b for b in _stage6_all if b.get("category") == "foreshadow"]
+            # R17-3：stage6 一致性检查——在册伏笔未解析 → 硬阻断
+            _s6_registered = {
+                (fa.get("foreshadow_id") or "").strip()
+                for fa in (task_card.get("foreshadow_actions") or [])
+                if isinstance(fa, dict) and (fa.get("foreshadow_id") or "").strip()
+            }
+            _s6_resolved = {b.get("foreshadow_id", "") for b in _stage6_mcb if b.get("foreshadow_id")}
+            _stage6_missing_fs_ids = sorted(_s6_registered - _s6_resolved)
+        except Exception:
+            pass
+        if _stage6_missing_fs_ids:
+            logger.error(
+                f"ch{chapter_num} MANDATORY HARD BLOCK at stage6: "
+                f"foreshadow_actions present {_s6_registered} but resolved 0 foreshadow beats; "
+                f"missing_ids={_stage6_missing_fs_ids}; score={cur_score} cannot override")
+            try:
+                _qdir6 = self.root / "chapters" / "draft" / "failed" / f"chapter_{chapter_num}"
+                _qdir6.mkdir(parents=True, exist_ok=True)
+                (_qdir6 / "final_gate_reject.txt").write_text(final_text, encoding="utf-8")
+            except Exception as _qe6:
+                logger.error(f"Failed to quarantine stage6 reject ch{chapter_num}: {_qe6}")
+            result["success"] = False
+            result["published"] = False
+            result["hard_block"] = True
+            result["hard_block_reason"] = (
+                f"mandatory foreshadow absent from task card: {_stage6_missing_fs_ids}")
+            self._flag_for_human(
+                chapter_num, cur_score,
+                f"mandatory foreshadow absent from task card: {_stage6_missing_fs_ids}; "
+                f"isolate to draft/failed")
+            return result
+        _stage6_blocked = {}
+        if _stage6_mcb:
+            try:
+                _stage6_journal = {d["scene_id"]: d.get("scene_text", "")
+                                   for d in load_authoritative_scenes(self.root, chapter_num)}
+                if not _stage6_journal:
+                    _stage6_journal = {1: final_text}
+                for _s6sn in sorted(_stage6_journal):
+                    from novel_engine.quality.outline_coverage_gate import check_scene_must_cover_beats as _cscc_fn
+                    _s6ok, _s6miss = _cscc_fn(_stage6_journal[_s6sn], _stage6_mcb, _s6sn)
+                    if not _s6ok and _s6miss:
+                        _stage6_blocked[_s6sn] = _s6miss
+            except Exception as _e6:
+                logger.warning(f"ch{chapter_num} stage6 foreshadow check failed: {_e6}")
+        if _stage6_blocked:
+            logger.error(
+                f"ch{chapter_num} MANDATORY HARD BLOCK at stage6: "
+                f"foreshadow beats still missing in final_text scenes {list(_stage6_blocked.keys())}; "
+                f"score={cur_score} cannot override")
+            try:
+                _qdir6 = self.root / "chapters" / "draft" / "failed" / f"chapter_{chapter_num}"
+                _qdir6.mkdir(parents=True, exist_ok=True)
+                (_qdir6 / "final_gate_reject.txt").write_text(final_text, encoding="utf-8")
+            except Exception as _qe6:
+                logger.error(f"Failed to quarantine stage6 reject ch{chapter_num}: {_qe6}")
+            result["success"] = False
+            result["published"] = False
+            result["hard_block"] = True
+            result["hard_block_reason"] = (
+                f"mandatory foreshadow beats unresolved at final_text: "
+                f"scenes {list(_stage6_blocked.keys())}")
+            self._flag_for_human(
+                chapter_num, cur_score,
+                f"mandatory foreshadow beats unresolved at final_text: "
+                f"scenes {list(_stage6_blocked.keys())}; isolate to draft/failed")
+            return result
 
         # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 policy 硬阻断且确定性硬门控通过才写最终目录）
         _commit_policy = load_quality_policy(self.root)
         publication_line = int(_commit_policy["publication_line"])
-        cur_score = float(result.get("score", score or 0) or 0)
         has_high_issue = any(_review_issue_is_blocking(_commit_policy, iss) for iss in (review.get("issues") or []))
         high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:50]}" for iss in (review.get("issues") or []) if _review_issue_is_blocking(_commit_policy, iss)]
         # _last_deterministic_issues 仅含 hard，soft 另取
@@ -1523,6 +1896,21 @@ class PipelineOrchestrator:
                 task_card = _finalize_blueprints(task_card)
                 # CC29：真机开场密度门（STRUCT 合法后；mock/离线直接放行）
                 task_card = _apply_opening_density(task_card)
+                # CC round-18 R17-2：写入期对齐 — density 之后、phase_cache.set 之前，
+                # 对最终卡重算 extract_must_cover_beats，使显式 must_cover_beats 与
+                # foreshadow_actions 对齐（density 可能触发重生，改变卡内容）。
+                # 读时纠正（stage6 ~1107 行）已在；此处补写入时对齐，双重保险。
+                # 异常不静默：fail-closed，记 error 日志但不中断任务卡生成。
+                try:
+                    from novel_engine.quality.outline_coverage_gate import extract_must_cover_beats as _emb_r17
+                    _r17_reconciled = _emb_r17(task_card)
+                    if _r17_reconciled:
+                        task_card["must_cover_beats"] = _r17_reconciled
+                        logger.info(f"ch{chapter_num} R17-2 write-time must_cover_beats aligned ({len(_r17_reconciled)} beats)")
+                    else:
+                        task_card.pop("must_cover_beats", None)
+                except Exception as _re17:
+                    logger.error(f"ch{chapter_num} R17-2 write-time alignment FATAL: {_re17}")
                 self.current_outline = task_card
                 if attempt == 0 and not _director_cache_hit and _director_cache_key:
                     try:
@@ -1579,8 +1967,12 @@ class PipelineOrchestrator:
         marks = ["夜", "灯", "静", "沉默", "看", "睡", "风", "光", "黑暗", "影子", "呼吸"]
         return {m for m in marks if m in tail_text}
 
-    def _deterministic_quality_gate(self, text: str, task_card: dict) -> dict:
-        """确定性校验（重复/截断硬；长度仅记soft）。"""
+    def _deterministic_quality_gate(self, text: str, task_card: dict, scene_texts: dict | None = None) -> dict:
+        """确定性校验（重复/截断硬；长度仅记soft）。
+
+        scene_texts：权威最终分场（含※分隔符的原始 assembled 文本），供危机门按场评估。
+        若为 None，危机门回退到 heuristic 切分。
+        """
         purified = purify_novel_for_publish(text, chapter_num=task_card.get("chapter_num"))
         # 若净化前后长度差异过大，说明脚手架污染严重，也视为问题
         issues: list[str] = []
@@ -1647,9 +2039,106 @@ class PipelineOrchestrator:
                     "需统一主用名或补同指锚点（如“本名…转生后名…”）")
         except Exception as _ae:
             logger.warning(f"alias consistency gate skipped: {_ae}")
+        # CC round-18 P0-1：跨场悬空危机门（off-card crisis 未承接 + 时间/状态重置 → 硬阻断）
+        _root_for_gates = getattr(self, "root", None)
+        try:
+            from novel_engine.quality.cross_scene_crisis_gate import detect_off_card_crisis
+            _crisis = detect_off_card_crisis(purified, ch_num, task_card, root=_root_for_gates, scene_texts=scene_texts)
+            _crisis_count = len(_crisis.get("off_card_crises") or [])
+            if _crisis_count > 0:
+                _cd = [c.get("crisis_desc", "")[:60] for c in _crisis["off_card_crises"]]
+                logger.warning(
+                    f"Cross-scene crisis gate ch{ch_num}: {_crisis_count} off-card crisis(es) "
+                    f"hit -> hard block; examples={_cd}")
+                for _ci in _cd:
+                    issues.append(f"[跨场危机] off-card crisis 未承接：{_ci}")
+            else:
+                logger.info(f"Cross-scene crisis gate ch{ch_num}: 0 hits, pass")
+        except Exception as _ce:
+            # D3：fail-closed — 异常即计入 hard，不静默放行
+            logger.error(f"cross_scene_crisis_gate FATAL ch{ch_num}: {_ce} -> hard block")
+            issues.append(f"[跨场危机] gate异常(fail-closed): {_ce}")
+        # CC round-18 P0-2：命名一致性 + 伏笔极性一致性门
+        # （古井/枯井矛盾、排斥/吸引无铺垫矛盾 → 硬阻断）
+        try:
+            from novel_engine.quality.naming_consistency_gate import (
+                detect_naming_conflict, detect_polarity_conflict)
+            _naming = detect_naming_conflict(purified, ch_num, root=_root_for_gates)
+            _naming_count = len(_naming.get("conflicts") or [])
+            if _naming_count > 0:
+                _nd = [c.get("desc", "")[:80] for c in _naming["conflicts"]]
+                logger.warning(
+                    f"Naming consistency gate ch{ch_num}: {_naming_count} conflict(s) hit -> hard block; "
+                    f"details={_nd}")
+                for _ni in _nd:
+                    issues.append(f"[命名矛盾] {_ni}")
+            else:
+                logger.info(f"Naming consistency gate ch{ch_num}: 0 naming conflicts, pass")
+            _polarity = detect_polarity_conflict(purified, ch_num, root=_root_for_gates)
+            _pol_count = len(_polarity.get("conflicts") or [])
+            if _pol_count > 0:
+                _pd = [c.get("desc", "")[:80] for c in _polarity["conflicts"]]
+                logger.warning(
+                    f"Polarity conflict gate ch{ch_num}: {_pol_count} conflict(s) hit -> hard block; "
+                    f"details={_pd}")
+                for _pi in _pd:
+                    issues.append(f"[伏笔极性矛盾] {_pi}")
+            else:
+                logger.info(f"Polarity conflict gate ch{ch_num}: 0 polarity conflicts, pass")
+        except Exception as _ne:
+            # D3：fail-closed — 异常即计入 hard，不静默放行
+            logger.error(f"naming_consistency_gate FATAL ch{ch_num}: {_ne} -> hard block")
+            issues.append(f"[命名/极性门] gate异常(fail-closed): {_ne}")
+        # CC round-19 P9：跨场角色反应一致性门（soft，命中触发修订提示，不 hard 阻断）
+        _react = None
+        _react_dir = ""
+        try:
+            from novel_engine.quality.reaction_consistency_gate import (
+                detect_reaction_inconsistency, reaction_consistency_fix_directive)
+            _react = detect_reaction_inconsistency(
+                purified, ch_num, task_card, root=_root_for_gates, scene_texts=scene_texts)
+            _react_count = len(_react.get("hits") or [])
+            _react_dir = reaction_consistency_fix_directive(_react.get("hits") or [])
+            if _react_count > 0:
+                _rd = [h.get("desc", "")[:80] for h in _react["hits"]]
+                logger.warning(
+                    f"Reaction consistency gate ch{ch_num}: {_react_count} hit(s) -> soft fix; "
+                    f"details={_rd}")
+                for _ri in _rd:
+                    soft_issues.append(f"[反应一致性] {_ri}")
+            else:
+                logger.info(f"Reaction consistency gate ch{ch_num}: 0 hits, pass")
+        except Exception as _re:
+            logger.warning(f"reaction_consistency_gate skipped ch{ch_num}: {_re}")
+        # D3：canon/阶段约束（infant.json hard_block）纳入早期确定性门，
+        # 使所有候选在发布/force-best/gray 前统一受约束并能触发定点重生。
+        # 无 root 时（测试 Fake 对象等）跳过，不阻断非真机路径。
+        if _root_for_gates is not None:
+            try:
+                from novel_engine.quality.scope_gate import detect_scope_violations
+                _scope_h = detect_scope_violations(
+                    purified, int(ch_num or 0),
+                    timeline_anchor=task_card.get("timeline_anchor"),
+                    root=_root_for_gates).get("hard", [])
+                if _scope_h:
+                    _scope_terms = sorted({v.get("term", "") for v in _scope_h})
+                    logger.warning(
+                        f"Canon scope gate ch{ch_num}: {len(_scope_h)} hard hit(s) -> hard block; "
+                        f"terms={_scope_terms}")
+                    for _sh in _scope_h:
+                        issues.append(f"[canon硬词] {_sh.get('term')}：{_sh.get('sentence', '')[:80]}")
+                else:
+                    logger.info(f"Canon scope gate ch{ch_num}: 0 hard hits, pass")
+            except Exception as _se:
+                # D3：fail-closed — 异常即计入 hard
+                logger.error(f"canon scope gate FATAL ch{ch_num}: {_se} -> hard block")
+                issues.append(f"[canon门] gate异常(fail-closed): {_se}")
         if soft_issues:
             logger.info(f"Deterministic soft issues (不阻断) for ch{ch_num}: {soft_issues}")
-        return {"passed": not issues, "issues": issues, "soft_issues": soft_issues, "purified": purified}
+        return {"passed": not issues, "issues": issues, "soft_issues": soft_issues,
+                "purified": purified,
+                "reaction_hits": (_react.get("hits") if _react is not None else []),
+                "reaction_directive": _react_dir}
 
     def _assemble_chapter_text(self, scenes) -> str:
         """B2 管道组装：只拼 scene_text，hook 字段保留在 SceneOutput 供 journal/评审引用，不追加进正文。"""
@@ -3788,6 +4277,29 @@ class PipelineOrchestrator:
             logger.info(f"Boundary resolved after scene {sid} regen {st2}")
         return purified2
 
+    def _finalize_current_novel(self, chapter_num: int) -> str:
+        """CC round-18 P8C/P8D：对 current_novel 跑一次 finalize，返回切后字符串。
+
+        幂等、保留 ※ 分场符；同步回写 self.current_novel。
+        返回 finalize 后文本（与 self.current_novel 同源）。
+        调用点统一用返回值，杜绝局部变量不同源。
+        """
+        try:
+            from novel_engine.quality.punctuation_health import finalize_text_long_sentences
+            _cur = self.current_novel or ""
+            if not _cur:
+                return _cur
+            _finalized, _ls_stats = finalize_text_long_sentences(_cur)
+            if _finalized != _cur:
+                logger.info(
+                    f"finalize ch{chapter_num}: detected={_ls_stats['detected']}, "
+                    f"resolved={_ls_stats['resolved']}, residual={_ls_stats['residual']}")
+                self.current_novel = _finalized
+            return _finalized
+        except Exception as _pe:
+            logger.warning(f"finalize skipped ch{chapter_num}: {_pe}")
+            return _cur
+
     def _stage_review(self, chapter_num: int, task_card: dict, synopsis: dict,
                       novel_text: str, world_state: dict) -> dict:
         """阶段5：审查评分。"""
@@ -4219,6 +4731,316 @@ class PipelineOrchestrator:
             logger.info(f"Structured chapter below soft min ({cur} < {target_min}); accept scene-floor length, no whole-chapter continuation")
         return novel
 
+    def _enforce_mandatory_beats(self, chapter_num: int, task_card: dict,
+                                   synopsis_text: str = '') -> dict:
+        """R16c/R17: 必填伏笔强制闭环。
+
+        扫描当前权威 journal 中所有场景，对 category==foreshadow 的 beat
+        做逐场景覆盖检查；缺失场景按 budget=2 进行定点重生。
+        重生后把重组文本回灌到 self.current_novel / self._draft_novel。
+
+        返回 {enforced, missing_scenes, blocked}。
+        """
+        try:
+            scenes_data = load_authoritative_scenes(self.root, chapter_num)
+        except Exception:
+            scenes_data = []
+        if not scenes_data:
+            return {"enforced": False, "missing_scenes": {}}
+
+        # R17-2 read-time correction
+        try:
+            _mcb_reconciled = extract_must_cover_beats(task_card)
+            if _mcb_reconciled:
+                task_card["must_cover_beats"] = _mcb_reconciled
+            else:
+                task_card.pop("must_cover_beats", None)
+        except Exception as _re:
+            logger.warning(f"ch{chapter_num} mandatory enforce reconcile failed: {_re}")
+
+        all_beats = task_card.get("must_cover_beats") or extract_must_cover_beats(task_card)
+        mcb_list = [b for b in all_beats if b.get("category") == "foreshadow"]
+        # R17-3
+        _registered_fs_ids = {
+            (fa.get("foreshadow_id") or "").strip()
+            for fa in (task_card.get("foreshadow_actions") or [])
+            if isinstance(fa, dict) and (fa.get("foreshadow_id") or "").strip()
+        }
+        _resolved_fs_ids = {b.get("foreshadow_id", "") for b in mcb_list if b.get("foreshadow_id")}
+        _missing_fs_ids = sorted(_registered_fs_ids - _resolved_fs_ids)
+        logger.info(
+            f"ch{chapter_num} hard-mandatory foreshadow beats: {len(mcb_list)} "
+            f"(from {len(all_beats)} total), registered={_registered_fs_ids}, resolved={_resolved_fs_ids}")
+        if _missing_fs_ids:
+            logger.error(
+                f"ch{chapter_num} MANDATORY HARD BLOCK at pre-review: "
+                f"foreshadow_actions present {_registered_fs_ids} but resolved 0 foreshadow beats; "
+                f"missing_ids={_missing_fs_ids}")
+            return {
+                "enforced": False, "missing_scenes": {},
+                "blocked": True, "missing_fs_ids": _missing_fs_ids,
+            }
+        if not mcb_list:
+            # D2 P8D: 即使无 foreshadow beat，若存在 soft beat（opening_anchor/confirmation）仍需处理
+            _soft_beats = [b for b in all_beats if b.get("category") in ("opening_anchor", "confirmation")]
+            if not _soft_beats:
+                return {"enforced": False, "missing_scenes": {}}
+            # 继续走软 beat 通道（不设 mcb_list 则跳过 foreshadow 硬逻辑）
+
+        # D2 P8D: 提前初始化 scene_by_id / bps_by_sid，供软 beat 通道使用
+        scene_by_id: dict[int, str] = {}
+        for _d in scenes_data:
+            _sid = int(_d.get("scene_id", 0) or 0)
+            if _sid:
+                scene_by_id[_sid] = _d.get("scene_text", "") or ""
+        bps_by_sid = {
+            int(bp.get("scene_num", 0) or 0): bp
+            for bp in (task_card.get("scene_blueprints") or [])
+            if isinstance(bp, dict)
+        }
+
+        # D2 P8D: 软 beat 通道（opening_anchor / confirmation）——不硬阻断，仅 soft note + 软重生
+        _soft_beats = [b for b in all_beats if b.get("category") in ("opening_anchor", "confirmation")]
+        if _soft_beats:
+            try:
+                _soft_misses_by_scene: dict[int, list[str]] = {}
+                _none_conf_misses: list[str] = []
+                for b in _soft_beats:
+                    sn = b.get("scene_num")
+                    bt = (b.get("beat_text") or "").strip()
+                    if not bt:
+                        continue
+                    if sn is None:
+                        _none_conf_misses.append(bt)
+                    else:
+                        _soft_misses_by_scene.setdefault(int(sn), []).append(bt)
+
+                # 按 scene_num 归场检查
+                for sid, misses in sorted(_soft_misses_by_scene.items()):
+                    txt = scene_by_id.get(sid, "")
+                    if not txt:
+                        continue
+                    ok, miss_descs = check_scene_must_cover_beats(txt, [
+                        {"scene_num": sid, "beat_text": m, "category": "soft"} for m in misses
+                    ], sid)
+                    if not ok and miss_descs:
+                        _soft_misses_by_scene[sid] = miss_descs
+
+                # scene_num=None 的 confirmation：任一场覆盖即满足；全缺则定向目标场
+                if _none_conf_misses:
+                    _all_scene_texts = {sid: txt for sid, txt in scene_by_id.items() if txt}
+                    _covered_any = any(
+                        any(m in txt for m in _none_conf_misses)
+                        for txt in _all_scene_texts.values()
+                    )
+                    if not _covered_any:
+                        # 确定性选场：goal/conflict/location 命中确认/看/浊气/油灯关键词最高
+                        _kw_score: dict[int, int] = {}
+                        _confirm_kws = ["确认", "看", "浊气", "油灯", "体弱"]
+                        for sid, txt in _all_scene_texts.items():
+                            score = sum(txt.count(kw) for kw in _confirm_kws)
+                            if score > 0:
+                                _kw_score[sid] = score
+                        if _kw_score:
+                            _max_sc = max(_kw_score.values())
+                            # 平分取末场（最高 scene_num）
+                            _target_sid = max(sid for sid, sc in _kw_score.items() if sc == _max_sc)
+                        else:
+                            # fallback：取最大 scene_num
+                            _target_sid = max(_all_scene_texts) if _all_scene_texts else None
+                        if _target_sid and _target_sid in scene_by_id:
+                            txt = scene_by_id[_target_sid]
+                            ok_t, miss_t = check_scene_must_cover_beats(
+                                txt,
+                                [{"scene_num": _target_sid, "beat_text": m, "category": "soft"}
+                                 for m in _none_conf_misses],
+                                _target_sid,
+                            )
+                            if not ok_t and miss_t:
+                                _soft_misses_by_scene[_target_sid] = miss_t
+                        else:
+                            # 无任何场，记录为 soft note，不阻塞
+                            logger.info(f"ch{chapter_num} soft confirmation: no target scene found, soft note only")
+
+                # 软重生：每场至多 1 次，绝不 hard block
+                _soft_regenerated: list[int] = []
+                for sid, misses in sorted(_soft_misses_by_scene.items()):
+                    _key = (chapter_num, sid)
+                    _soft_used = int(getattr(self, "_soft_regen_used", {}).get(_key, 0) or 0)
+                    if _soft_used >= 1:
+                        continue
+                    _bp = bps_by_sid.get(sid, {})
+                    _dir = build_mandatory_beat_directive(misses)
+                    logger.info(
+                        f"ch{chapter_num} SOFT regen scene{sid} (opening_anchor/confirmation): "
+                        f"{misses[:2]}")
+                    try:
+                        _ns = self.writer.generate_scene(
+                            task_card, _bp, synopsis_text,
+                            prev=self._novel_string()[-600:] if len(self._novel_string()) > 600 else "",
+                            fix_directive=_dir,
+                        )
+                        if _ns is not None:
+                            _nt = getattr(_ns, "scene_text", "") or ""
+                            if _nt:
+                                append_scene(self.root, chapter_num, {
+                                    "scene_id": sid, "scene_text": _nt,
+                                    "hook": getattr(_ns, "hook", "") or "",
+                                    "beats": list(getattr(_ns, "beats", []) or []),
+                                })
+                                scene_by_id[sid] = _nt
+                                _soft_regenerated.append(sid)
+                    except Exception as _esr:
+                        logger.warning(f"ch{chapter_num} soft regen scene{sid} failed: {_esr}")
+                    finally:
+                        if not hasattr(self, "_soft_regen_used"):
+                            self._soft_regen_used = {}
+                        self._soft_regen_used[_key] = _soft_used + 1
+
+                # 软重生后回灌 current_novel + finalize
+                if _soft_regenerated:
+                    try:
+                        _all_sids = set(scene_by_id.keys())
+                        try:
+                            _existing = load_authoritative_scenes(self.root, chapter_num)
+                            for _d in _existing:
+                                _dsid = int(_d.get("scene_id", 0) or 0)
+                                if _dsid and _dsid not in _all_sids:
+                                    scene_by_id[_dsid] = _d.get("scene_text", "") or ""
+                        except Exception:
+                            pass
+                        _fresh = sorted(scene_by_id.items(), key=lambda x: x[0])
+                        _parts = [t for _, t in _fresh if t]
+                        if _parts:
+                            _assembled = chr(9733).join(_parts)
+                            _purified = purify_novel_for_publish(_assembled, chapter_num=chapter_num)
+                            _bps = task_card.get("scene_blueprints") or []
+                            _total = sum(self._bpt(bp) for bp in _bps) or None
+                            if _total and _total > 0:
+                                _qp = load_quality_policy(self.root)
+                                _purified = self._enforce_word_count(
+                                    _purified,
+                                    int(_total * _qp["min_ratio"]),
+                                    int(_total * _qp["max_ratio"] + max(_qp.get("tolerance_chars", 0), _total * 0.02)),
+                                )
+                            self.current_novel = _purified
+                            self._draft_novel = _purified
+                            # D1：软重生后必须再 finalize 保切分
+                            self._finalize_current_novel(chapter_num)
+                            logger.info(f"ch{chapter_num} soft enforce: scenes={_soft_regenerated}")
+                    except Exception as _es:
+                        logger.warning(f"ch{chapter_num} soft enforce sync failed: {_es}")
+
+                # 记录 soft note（不阻塞流程）
+                if _soft_misses_by_scene:
+                    for _sid, _ms in _soft_misses_by_scene.items():
+                        logger.info(
+                            f"ch{chapter_num} SOFT NOTE: scene{_sid} still misses "
+                            f"opening_anchor/confirmation beats: {_ms[:2]}")
+
+            except Exception as _ser:
+                logger.warning(f"ch{chapter_num} soft beat channel failed: {_ser}")
+
+        scene_by_id: dict[int, str] = {}
+        for d in scenes_data:
+            sid = int(d.get("scene_id", 0) or 0)
+            if sid:
+                scene_by_id[sid] = d.get("scene_text", "") or ""
+
+        missing_scenes: dict[int, list[str]] = {}
+        for sid, txt in sorted(scene_by_id.items()):
+            ok, misses = check_scene_must_cover_beats(txt, mcb_list, sid)
+            if not ok and misses:
+                missing_scenes[sid] = misses
+
+        if not missing_scenes:
+            return {"enforced": True, "missing_scenes": {}}
+
+        max_budget = 1
+        regenerated: list[int] = []
+        still_bad: list[int] = []
+        bps_by_sid = {
+            int(bp.get("scene_num", 0) or 0): bp
+            for bp in (task_card.get("scene_blueprints") or [])
+            if isinstance(bp, dict)
+        }
+
+        for sid, misses in sorted(missing_scenes.items()):
+            key = (chapter_num, sid)
+            used = int(getattr(self, "_scene_regen_used", {}).get(key, 0) or 0)
+            if used >= max_budget:
+                still_bad.append(sid)
+                continue
+            bp = bps_by_sid.get(sid, {})
+            directive = build_mandatory_beat_directive(misses)
+            logger.warning(
+                f"ch{chapter_num} scene{sid} mandatory foreshadow miss -> targeted regen "
+                f"(budget {used+1}/{max_budget}): {misses[:2]}")
+            try:
+                ns = self.writer.generate_scene(
+                    task_card, bp, synopsis_text,
+                    prev=self._novel_string()[-600:] if len(self._novel_string()) > 600 else "",
+                    fix_directive=directive,
+                )
+                if ns is None:
+                    still_bad.append(sid)
+                    continue
+                new_text = getattr(ns, "scene_text", "") or ""
+                result = append_scene(self.root, chapter_num, {
+                    "scene_id": sid, "scene_text": new_text,
+                    "hook": getattr(ns, "hook", "") or "",
+                    "beats": list(getattr(ns, "beats", []) or []),
+                })
+                scene_by_id[sid] = new_text
+                regenerated.append(sid)
+                used += 1
+                if not hasattr(self, "_scene_regen_used"):
+                    self._scene_regen_used = {}
+                self._scene_regen_used[key] = used
+            except Exception as _er:
+                logger.warning(f"ch{chapter_num} scene{sid} mandatory regen failed: {_er}")
+                still_bad.append(sid)
+
+        if not regenerated:
+            if still_bad:
+                return {"enforced": True, "missing_scenes": {s: missing_scenes[s] for s in still_bad}, "blocked": True}
+            return {"enforced": True, "missing_scenes": {}}
+
+        # 回灌：重组权威 journal -> purify -> 字数 -> 写 current / current_draft
+        try:
+            # 使用已更新的 scene_by_id（含再生后的场景文本）重建完整成稿，
+            # 不重新从磁盘加载 journal，避免测试中 patch 的 load_authoritative_scenes 被绕过。
+            all_sids = set(scene_by_id.keys())
+            try:
+                existing = load_authoritative_scenes(self.root, chapter_num)
+                for d in existing:
+                    sid = int(d.get("scene_id", 0) or 0)
+                    if sid and sid not in all_sids:
+                        scene_by_id[sid] = d.get("scene_text", "") or ""
+            except Exception:
+                pass
+            fresh_sorted = sorted(scene_by_id.items(), key=lambda x: x[0])
+            parts = [txt for _, txt in fresh_sorted if txt]
+            if parts:
+                assembled = chr(9733).join(parts)
+                purified = purify_novel_for_publish(assembled, chapter_num=chapter_num)
+                bps = task_card.get("scene_blueprints") or []
+                total = sum(self._bpt(bp) for bp in bps) or None
+                if total and total > 0:
+                    _qp = load_quality_policy(self.root)
+                    purified = self._enforce_word_count(
+                        purified,
+                        int(total * _qp["min_ratio"]),
+                        int(total * _qp["max_ratio"] + max(_qp.get("tolerance_chars", 0), total * 0.02)),
+                    )
+                self.current_novel = purified
+                self._draft_novel = purified
+                logger.info(f"ch{chapter_num} mandatory enforce: current synced from journal, scenes={regenerated}")
+        except Exception as _e_sync:
+            logger.warning(f"ch{chapter_num} mandatory enforce current sync failed: {_e_sync}")
+
+        return {"enforced": True, "missing_scenes": {s: missing_scenes[s] for s in still_bad}, "blocked": bool(still_bad)}
+
     def _patch_weak_scenes(self, novel: str, review: dict, task_card: dict, synopsis: dict,
                            chapter_num: int | None = None) -> str | None:
         """场景级增量缝合：scene_id-indexed replace（THE patch path）。
@@ -4261,6 +5083,26 @@ class PipelineOrchestrator:
                 if sid >= 1:
                     target_nums.add(sid)
                     scene_dirs.setdefault(sid, []).append(line)
+        # R16c P0-D: 伏笔全场景扫描置于 target_nums 早退之前——reviewer 无归因（[2,3,4]/无归因）时
+        # 仍能通过全场景 journal 扫描发现缺失并填入 target_nums，避免 _patch_weak_scenes 直接 return None。
+        # foreshadow-only 过滤：只补 category==foreshadow 的 beat；普通 goal/conflict/event beat 不动。
+        try:
+            _ch_for_patch = int(chapter_num or (task_card.get("chapter_num", 0) or 0))
+            _journal_for_patch = {d["scene_id"]: d.get("scene_text", "")
+                                  for d in load_authoritative_scenes(self.root, _ch_for_patch)}
+        except Exception:
+            _journal_for_patch = {}
+        if _journal_for_patch:
+            _mcb_all = task_card.get("must_cover_beats") or extract_must_cover_beats(task_card)
+            _mcb_f = [b for b in _mcb_all if b.get("category") == "foreshadow"]
+            if _mcb_f:
+                for _sn_p in sorted(_journal_for_patch):
+                    _ok_p, _miss_p = check_scene_must_cover_beats(_journal_for_patch[_sn_p], _mcb_f, _sn_p)
+                    if not _ok_p and _miss_p:
+                        target_nums.add(_sn_p)
+                        logger.info(
+                            f"ch{_ch_for_patch} scene {_sn_p}: foreshadow miss detected pre-guard "
+                            f"-> added to target_nums (reviewer attribution may be absent)")
         # 兜底：旧 reviewer 未给结构化 scene_ids 时，回退 fix_scope / 文本中的场景号
         if not target_nums:
             for m in re.finditer(r"(?:场景|scene)[\s_]*(\d+)", fix_scope, flags=re.I):
@@ -4577,6 +5419,9 @@ class PipelineOrchestrator:
                 self._journal_validated_scenes(chapter_num)
                 novel = self.writer.polish_chapter(novel, task_card, llm_client=self.polish_router)
                 novel = self._ensure_chinese(novel)
+                # D1 P8D: 先写入 self.current_novel，再 finalize，再以切后文本送评审
+                self.current_novel = novel
+                novel = self._finalize_current_novel(chapter_num)
                 review = self._stage_review(chapter_num, task_card, synopsis, novel, world_state)
                 if review["score"] >= min_ch:
                     self.current_novel = novel

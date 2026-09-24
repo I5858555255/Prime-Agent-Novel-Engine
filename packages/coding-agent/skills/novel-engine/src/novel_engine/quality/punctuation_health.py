@@ -27,7 +27,8 @@ MAX_UNPUNCTUATED_RUN = 60
 MIN_DENSITY_PER_100 = 2.0
 
 # CC round-12 R2：句末口径长句阈值（中文字数，含标点计字符数）
-LONG_SENTENCE_HARD = 48
+# CC round-13 R2：reviewer 口径约 40 字，降至 40 以覆盖 41–47 漏检段
+LONG_SENTENCE_HARD = 40
 
 # CC round-12 R2：句末标点正则（。！？…）
 _SENTENCE_END_PAT = re.compile(r"[。！？…]")
@@ -212,20 +213,63 @@ _LONG_SENT_COMMA_BOUNDARY_WORDS = (
 )
 # 代词主语（后接动词性分句）
 _LONG_SENT_PRONOUN_BOUNDARY = ("他", "她", "它", "那", "这")
+# CC round-18 P8B：枚举分号升级候选——分号右侧紧跟连接词/代词主语时升级为句号
+_LONG_SENT_SEMICOLON_CONNECTIVES = (
+    "想起", "还有", "又有", "却又", "却也", "但又", "同时又", "还有一",
+    "以及", "乃至", "进而", "从而", "反之", "相对", "相较", "对应", "同样",
+    "同理", "另起", "继续", "接着又", "随后又", "然后再",
+)
+# CC round-18 P8B：破折号同位语枚举边界——破折号内解释段结束时，后续分号可升级
+_LONG_SENT_EM_DASH_CLOSE = ("——", "―", "─")
+# CC round-18 P8B：逗号链兜底阈值（连续逗号数≥threshold 且无强边界词时触发）
+_LONG_SENT_COMMA_CHAIN_THRESHOLD = 4
+# CC round-18 P8C：C1A 逗号链最小剩余逗号数（至少还需1个逗号才切，防止切到末尾）
+_MIN_REMAINING_COMMAS_FOR_C1A = 2
 # 逗号/分号/顿号（逗号升级候选）
 _LONG_SENT_SPLIT_PUNCT = set("，；、")
 # 最小分段字数（防止切碎残句）
 _MIN_SPLIT_SEGMENT_CN = 8
+# CC round-18 P8C：逗号链均衡切分最小左/右段汉字数
+_MIN_COMMA_CHAIN_LEFT_CN = 12
+_MIN_COMMA_CHAIN_RIGHT_CN = 12
+# CC round-18 P8C：枚举分号两侧最小汉字数（放宽连接词要求）
+_MIN_ENUM_SEMI_CN = 12
+# CC round-18 P8C：逗号链右侧独立小句起始词（谓语短语引导词）
+_COMMA_CHAIN_RIGHT_OPENERS = (
+    "像", "不是", "将", "把", "被", "在", "向", "朝", "又", "也", "只", "都", "就", "才",
+    "有", "是", "有", "还", "又", "再", "且", "并", "同", "跟", "与",
+)
+# CC round-18 P8C：助词黑名单（逗号右侧不得以此起头，防切碎）
+_COMMA_CHAIN_AUX_BLACKLIST = ("的", "地", "得", "了", "着", "过")
+# CC round-18 P8C：地名/方位词中“地/上/下/中”等不构成助词切分阻止
+# 当助词后紧跟名词性字符（方位/处所/物体）时视为复合词而非语法助词
+_COMMA_CHAIN_AUX_COMPOUND_FOLLOWERS = set("上下中里外边面头手心病口眼鼻耳肩背胸腹腿脚门窗桌椅床车山 waters 树木花草土石路街巷村庄城天云风雨雪雷电日月星火光影音声色触念思情意魂魄精神气血血肉筋骨脉络皮毛发指牙舌唇颊腮颈")
+_COMMA_CHAIN_AUX_COMPOUND_FOLLOWERS |= set("一二三四五六七八九十百千万亿两第初再又还也却但而并且或或者或若即就算纵纵使即便纵然哪怕即使只要只有除非不管不论无论无论")
+# CC round-18 P8C：连词黑名单（逗号右侧不得以此起头）
+_COMMA_CHAIN_CONJ_BLACKLIST = (
+    "并且", "而且", "以及", "或者", "还是", "然而", "可是", "但是", "因而", "因此", "所以",
+    "虽然", "尽管", "如果", "即使", "只要", "除非", "不管", "无论",
+    # CC round-19 P9：承接词黑名单——避免切出残句
+    "反而", "反倒", "非但", "不但", "不仅", "不光", "不只", "倒是", "却", "倒", "而",
+    "与", "和", "及", "或", "被", "把", "将",
+)
+# CC round-19 P9：逗号左侧末尾单字若为这些助词/时态标记，右侧不得以上述承接词起头
+# （防止"……时。/……里。/……中。"类残句）
+_COMMA_CHAIN_LEFT_AUX_SINGLE = frozenset({"时", "里", "中", "间", "处", "旁", "后", "前", "边"})
 
 
 def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[str, int]:
     """对单段做零字改写安全断句。
 
-    CC round-12 R2b：
+    CC round-12 R2b + CC round-18 P8B + CC round-18 P8C：
     - 引号内容用占位符替换，防止相邻旁白拼成假长句。
-    - 切分点：既有句内停顿标点（，；、）后紧跟分句边界词（强/弱连接词或代词主语）。
-    - 将那个逗号【原地升级】为句号（替换），不产生『，。』。
-    - 每句最多 2 处；两段各自 >= 8 中文字才切；右向左应用。
+    - Case 1：逗号/顿号 + 强边界词（原有逻辑）。
+    - Case 2：无逗号时，直接匹配强边界词（原有逻辑）。
+    - P8B/C1B：分号 + 枚举连接词（想起/还有/却又…）→ 升级为句号。
+    - P8C C1B-fallback：分号两侧各自 cn≥12 → 升级为句号（放宽连接词要求）。
+    - P8C C1A：通用逗号链均衡切分——左 cn≥12、右 cn≥12、右不以助词/连词起头 → 升级。
+    - 将切分点【原地升级】为句号（不产生『，。』等冗余标点）。
+    - 每句最多 max_splits 处；两段各自 >= 8 中文字才切；右向左应用。
     """
     if not para:
         return para, 0
@@ -245,26 +289,26 @@ def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[st
         sentences.append((last_end, len(body)))
 
     insert_points: list[int] = []  # para offsets where to replace punct → 。
-    insert_shifts: list[int] = []  # how many chars to skip after insertion (1 for comma upgrade, 0 for direct insert)
+    insert_shifts: list[int] = []  # how many chars to skip after insertion (1 for punct upgrade, 0 for direct insert)
     for sent_start, sent_end in sentences:
         sent_body = body[sent_start:sent_end]
         cn_chars = len(_CN_RE.findall(sent_body))
         if cn_chars < LONG_SENTENCE_HARD:
             continue
 
-        # 在句子内部寻找切分点：
-        # 优先：逗号/分号/顿号后紧跟边界词（逗号升级）
-        # 兜底：直接匹配强边界词（无逗号时直接插入句号）
+        # 在句子内部寻找切分点
         inserted_shift = 0  # 累计前面插入导致的偏移
         found = False
+        case1_handled = False  # P4: 追踪 Case 1 是否已处理当前逗号（跨迭代保持）
         for pos in range(sent_start, sent_end - 1):
             # 跳过引号占位符位置
             if body[pos] == chr(0):
                 continue
             ch = body[pos]
-            shift = 0  # 插入后需要跳过的字符数
-            # Case 1: 逗号/分号/顿号 + 边界词 → 升级逗号为句号
-            if ch in _LONG_SENT_SPLIT_PUNCT:
+            shift = 0
+            # Case 1: 逗号/顿号 + 强/弱边界词 → 升级逗号为句号
+            if ch in ('，', '、'):
+                case1_handled = True
                 rest = body[pos + 1:]
                 skip = 0
                 while skip < len(rest) and rest[skip].isspace():
@@ -289,6 +333,76 @@ def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[st
                             inserted_shift += 1
                             found = True
                             break
+            # P8C C1A: 通用逗号链均衡切分——左 cn≥12、右 cn≥12、右侧不以助词/连词起头
+            # 注意：必须是独立的 if（非 elif），因为 Case 1 也可能进入此分支（当 bound_w 为 None）
+            if ch == '，' and case1_handled:
+                remaining_commas = sum(1 for c in body[pos:sent_end] if c == '，')
+                if remaining_commas >= _MIN_REMAINING_COMMAS_FOR_C1A:
+                    left_body = body[sent_start:pos]
+                    right_body = body[pos + 1:]
+                    left_cn = len(_CN_RE.findall(left_body))
+                    right_cn = len(_CN_RE.findall(right_body))
+                    if left_cn >= _MIN_COMMA_CHAIN_LEFT_CN and right_cn >= _MIN_COMMA_CHAIN_RIGHT_CN:
+                        # 检查逗号是否在破折号解释内部（—…—之间）
+                        prev_dash = body[sent_start:pos].rfind('——')
+                        next_dash = body[pos:sent_end].find('——', 1)
+                        in_dash_explain = (prev_dash >= 0 and next_dash > 0 and next_dash > pos)
+                        if not in_dash_explain:
+                            # 检查右侧首字符是否是助词或连词（不应切碎）
+                            right_rest = right_body.lstrip()
+                            right_first = right_rest[0] if right_rest else ''
+                            right_starts_with_aux = (
+                                right_first in _COMMA_CHAIN_AUX_BLACKLIST
+                                and not right_rest[len(right_first):len(right_first)+1]
+                                .startswith(tuple(_COMMA_CHAIN_AUX_COMPOUND_FOLLOWERS))
+                            )
+                            right_starts_with_conj = any(
+                                right_rest.startswith(cwj) for cwj in _COMMA_CHAIN_CONJ_BLACKLIST
+                            )
+                            # CC round-19 P9：逗号左侧末字为"时/里/中"等时，右侧不得以上述承接词起头
+                            left_last_char = left_body[-1] if left_body else ''
+                            left_ends_with_aux = left_last_char in _COMMA_CHAIN_LEFT_AUX_SINGLE
+                            if not right_starts_with_aux and not right_starts_with_conj and not (left_ends_with_aux and right_starts_with_conj):
+                                insert_points.append(body_to_para[pos] + inserted_shift)
+                                insert_shifts.append(1)  # 替换逗号为句号
+                                inserted_shift += 1
+                                found = True
+                                break
+            # P8B/C1B: 分号 + 枚举连接词（想起/还有/却又…）→ 升级为句号
+            elif ch == '；':
+                rest = body[pos + 1:]
+                skip = 0
+                while skip < len(rest) and rest[skip].isspace():
+                    skip += 1
+                rest = rest[skip:]
+                if rest:
+                    # 预先计算左右段汉字数（P8B/C1B 和 P8C C1B-fallback 都需要）
+                    left_body = body[sent_start:pos]
+                    right_body = body[pos + 1:]
+                    left_cn = len(_CN_RE.findall(left_body))
+                    right_cn = len(_CN_RE.findall(right_body))
+                    is_connective = any(rest.startswith(w) for w in _LONG_SENT_SEMICOLON_CONNECTIVES)
+                    is_pronoun = rest[0] in _LONG_SENT_PRONOUN_BOUNDARY
+                    if is_connective or is_pronoun:
+                        if left_cn >= _MIN_SPLIT_SEGMENT_CN and right_cn >= _MIN_SPLIT_SEGMENT_CN:
+                            insert_points.append(body_to_para[pos] + inserted_shift)
+                            insert_shifts.append(1)  # 替换分号为句号
+                            inserted_shift += 1
+                            found = True
+                            break
+                    # P8C C1B-fallback：分号两侧各自 cn≥12，放宽连接词要求
+                    elif left_cn >= _MIN_ENUM_SEMI_CN and right_cn >= _MIN_ENUM_SEMI_CN:
+                        # 检查是否在破折号解释内部（不做拆分）
+                        # 规则：左侧破折号数 >= 右侧破折号数 → 枚举结构，可切；
+                        #       左侧破折号数 < 右侧破折号数 → 解释内部，不切
+                        left_dashes = body[sent_start:pos].count('——')
+                        right_dashes = body[pos+1:sent_end].count('——')
+                        if left_dashes >= right_dashes:
+                            insert_points.append(body_to_para[pos] + inserted_shift)
+                            insert_shifts.append(1)
+                            inserted_shift += 1
+                            found = True
+                            break
             # Case 2: 无逗号时，直接匹配强边界词（仅强边界，不匹配弱边界/代词）
             elif any(body[pos:].startswith(w) for w in _LONG_SENT_STRONG_BOUNDARY):
                 left_body = body[sent_start:pos]
@@ -297,7 +411,7 @@ def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[st
                 right_cn = len(_CN_RE.findall(right_body))
                 if left_cn >= _MIN_SPLIT_SEGMENT_CN and right_cn >= _MIN_SPLIT_SEGMENT_CN:
                     insert_points.append(body_to_para[pos] + inserted_shift)
-                    insert_shifts.append(0)  # 直接在边界词前插入，不跳过字符
+                    insert_shifts.append(0)  # 直接在边界词前插入
                     inserted_shift += 0
                     found = True
                     break
@@ -316,7 +430,12 @@ def _split_para_on_strong_boundaries(para: str, max_splits: int = 2) -> tuple[st
 
 
 def split_long_sentences(text: str, hard: int = LONG_SENTENCE_HARD) -> tuple[str, dict]:
-    """对超长旁白句做零字改写安全断句。引号内豁免，找不到强边界只计数不拆。"""
+    """对超长旁白句做零字改写安全断句。引号内豁免，找不到强边界只计数不拆。
+
+    CC round-18 P8B：迭代切分——单次 _split_para_on_strong_boundaries 可能无法将
+    多处分号/逗号链全部切完（切后左侧仍≥40字），因此对每段重复调用直至稳定。
+    幂等：已切完的文本再次调用返回不变。
+    """
     if not text:
         return text, {"long_sentences_detected": 0, "split_count": 0}
     paras = text.split("\n")
@@ -330,8 +449,14 @@ def split_long_sentences(text: str, hard: int = LONG_SENTENCE_HARD) -> tuple[str
             out_paras.append(para)
             continue
         total_detected += len(long_sents)
-        fixed_para, n_split = _split_para_on_strong_boundaries(para, max_splits=2)
-        total_split += n_split
+        # 迭代切分：每轮最多 max_splits 处，直到无变化或达到迭代上限
+        fixed_para = para
+        for _pass in range(5):  # 最多5轮，防止死循环
+            new_para, n_split = _split_para_on_strong_boundaries(fixed_para, max_splits=3)
+            total_split += n_split
+            if new_para == fixed_para or n_split == 0:
+                break
+            fixed_para = new_para
         out_paras.append(fixed_para)
     return "\n".join(out_paras), {
         "long_sentences_detected": total_detected,
@@ -342,8 +467,13 @@ def split_long_sentences(text: str, hard: int = LONG_SENTENCE_HARD) -> tuple[str
 def _fix_para_long_sentences(para: str, body: str,
                               long_sents: list[dict],
                               hard: int) -> str:
-    """兼容旧接口：委托给 _split_para_on_strong_boundaries。"""
-    fixed, _ = _split_para_on_strong_boundaries(para, max_splits=2)
+    """兼容旧接口：委托给 _split_para_on_strong_boundaries（迭代版本）。"""
+    fixed = para
+    for _ in range(5):
+        new_fixed, n = _split_para_on_strong_boundaries(fixed, max_splits=3)
+        if new_fixed == fixed or n == 0:
+            break
+        fixed = new_fixed
     return fixed
 
 
@@ -501,5 +631,28 @@ def repair_text_punctuation(text: str,
         "residual_unhealthy": residual,
         "long_sentences_detected": ls_stats.get("long_sentences_detected", 0),
         "long_sentences_resolved": ls_stats.get("split_count", 0),
+    }
+
+
+# ============================================================================
+# CC round-13 R1：终稿定稿包装器（确定性，零 LLM）
+# ============================================================================
+
+def finalize_text_long_sentences(text: str) -> tuple[str, dict]:
+    """终稿级长句定稿：对完整 assembled text 执行 split_long_sentences。
+
+    用于 pipeline_orchestrator 的三处接线：首次组装后、E-loop 补丁后、
+    best_novel 选定后。内部直接调用 split_long_sentences（含引号占位符保护、
+    chr(0)/\\n 硬句界、逗号升级等全部 R2b/R2c 逻辑）。
+
+    返回 (定稿后文本, {detected, resolved, residual})，residual 为拆分后
+    仍 >40 字的不可切长句计数（软 issue，不阻断）。
+    """
+    fixed, stats = split_long_sentences(text)
+    residual = len(detect_long_sentences(fixed, hard=LONG_SENTENCE_HARD))
+    return fixed, {
+        "detected": stats.get("long_sentences_detected", 0),
+        "resolved": stats.get("split_count", 0),
+        "residual": residual,
     }
 

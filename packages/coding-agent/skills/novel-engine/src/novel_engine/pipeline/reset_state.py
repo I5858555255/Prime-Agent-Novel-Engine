@@ -27,6 +27,10 @@ def reset_runtime_state(root: Path):
         "runtime/resume_state.json",
         "runtime/last_success_chapter.txt",
         "memory/quality_memory.json",
+        "runtime/event_ledger.jsonl",
+        "runtime/chapter_end_states.jsonl",
+        "runtime/chapter_status.json",
+        "runtime/HALT_REASON.json",
     ):
         p = root / sub
         if p.exists():
@@ -65,6 +69,7 @@ def reset_runtime_state(root: Path):
         "memory/short_term",
         "memory/long_term",
         "memory/world_state",
+        "cache",
     ):
         p = root / sub
         if p.exists():

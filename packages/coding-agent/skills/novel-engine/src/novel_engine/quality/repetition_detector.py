@@ -84,6 +84,20 @@ def detect_length_anomaly(text: str, target: int | None) -> dict:
     return {"anomaly": bool(issues), "issues": issues}
 
 
+def _pair_ascii_quotes(text: str) -> str:
+    """中文出版规范：flash 在对话里会混用半角直引号 " 与 '。统一按出现次序
+    成对归一化为中文双弯引号（独立对话一律 “ ”；嵌套引用极罕见，拉平后仍成对）。"""
+    out = []
+    opened = False
+    for ch in text:
+        if ch == '"' or ch == "'":
+            out.append("”" if opened else "“")
+            opened = not opened
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def purify_novel_for_publish(draft: str, chapter_num: int | None = None) -> str:
     """成品净化：剥离所有脚手架标记，仅保留可发布正文。P0 增强版 + Round8 结构性段落判伪。P1 保留场景边界。"""
     text = draft
@@ -94,12 +108,19 @@ def purify_novel_for_publish(draft: str, chapter_num: int | None = None) -> str:
         def _fix_title(m):
             return f"# 第{chapter_num}章"
         text = re.sub(r"^\s*#\s*第[一二三四五六七八九十\d]+章", _fix_title, text, count=1, flags=re.MULTILINE)
+    # 去除 # 续写 / Markdown 一级标题残留（长章节续写调用偶发泄漏）
+    text = re.sub(r"^\s*#\s*续写\s*$[^\n]*\n*", "", text, flags=re.MULTILINE)
+    # 去除 # 续写 / Markdown 一级标题残留（长章节续写调用偶发泄漏）
+    text = re.sub(r"^\s*#\s*续写\s*$[^\n]*\n*", "", text, flags=re.MULTILINE)
     # 去除 【场景N：...】 标题行（兼容有无空格、全角/半角冒号）
     text = re.sub(r"【场景\s*\d+\s*[:：][^】]*】\s*\n*", "", text)
     # 去除所有含 元指令关键词 的 【...】 块（当前字数、节拍、拍点、本节、小结等）
     text = re.sub(r"【[^】]*?(?:字数|节拍|拍点|当前|本节|小结|场景小结)[^】]*】\s*\n*", "", text)
     # 去除纯指令性短行（如 "场景 1：..." 单独成行）
-    text = re.sub(r"^\s*场景\s*\d+\s*[:：].*$\n*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*(?:场景|Scene)\s*\d+\s*[:：].*$\n*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"(?i)\bscene\s*\d*\s*[:：]?", "", text)
+    text = re.sub(r'"\s*(?:chapter|hook|scene_id|scene_text|blueprints|synopsis|forbidden|checks|pacing|goal|world_state|summary|events|entities)\s*"\s*:\s*', "", text)
+    text = re.sub(r'\{\s*"scene_id"[\s\S]*?\n\}', "", text)
     # 去除 ※ 分隔符（含两侧空白）
     text = re.sub(r"\n?\s*※\s*\n?", "\n\n", text)
     # 去除 --- / **** / *** 等分隔线（纯符号行）
@@ -174,10 +195,17 @@ def purify_novel_for_publish(draft: str, chapter_num: int | None = None) -> str:
                 cleaned_lines.append(f"# 第{raw_num}章{title_part}")
                 seen_first_title = True
             continue
+        # CC round-19 Q3：除我方章节标题外，任何行首 markdown 标题/指令行（如 "# 扩写正文"、
+        # "# 正文"、"# 续写"）一律剥离。纯中文叙事正文不存在合法的行首 "#"，
+        # 出现即 LLM 把脚手架指令原样吐出，故用结构特征而非指令词白名单判定。
+        if line.lstrip().startswith("#"):
+            continue
         cleaned_lines.append(line)
     text = "\n".join(cleaned_lines)
     # 压缩多余空行
     text = re.sub(r"\n{3,}", "\n\n", text)
+    # 中文出版规范：对话中的半角直引号成对归一化为中文弯引号（零 LLM 确定性步骤）
+    text = _pair_ascii_quotes(text)
     # P1 保 hook：若末尾无句读收束，补句号
     stripped = text.strip()
     if stripped and stripped[-1] not in "。！？…）」”":
@@ -190,7 +218,7 @@ def verify_no_scaffolding(text: str) -> list[str]:
     issues = []
     if re.search(r"【[^】]*】", text):
         issues.append("残留【】包裹的指令/标记")
-    for tok in ["※", "（章末钩子", "（注：", "节拍点", "场景小结", "当前字数", "本节拍", "拍点", "（场景目标", "（伏笔"]:
+    for tok in ["# 续写", "※", "（章末钩子", "（注：", "节拍点", "场景小结", "当前字数", "本节拍", "拍点", "（场景目标", "（伏笔"]:
         if tok in text:
             issues.append(f"残留脚手架 token: {tok}")
     # 检查纯加粗指令行残留

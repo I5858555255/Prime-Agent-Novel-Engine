@@ -65,4 +65,46 @@ outcome needs no new discussion.
 | 29 | | | | |
 | 30 | | | | |
 
-**Omission rate:** ___ / 30 = ___% → **PASS / FAIL** (circle one, apply decision rule above).
+**Omission rate:** 2 / 30 = 6.7% — **PASS** (< 10% threshold; see results below).
+
+---
+
+## Pilot results (2026-09-06, batch ch1-10, 30 scenes sampled preferring long/event-dense)
+
+Sample: 30 scenes across ch1-ch10 (length-desc with max 4/chapter + all-chapter guarantee).
+Judged per scene: every key event in scene_text present in beats = PASS; key event missing = omission; beats claim absent from text = exaggeration.
+
+| Batch | Scenes | PASS | Omission | Exaggeration |
+|---|---|---|---|---|
+| 1 (ch1s3, ch2s1/s3/s4/s5, ch3s1/s2/s3, ch4s1/s2) | 10 | 10 | 0 | 0 |
+| 2 (ch4s3/s4, ch5s1/s4, ch6s1/s2/s3, ch7s1/s3, ch8s1) | 10 | 9 | 1 (ch4s3, beats empty) | 0 |
+| 3 (ch8s2x2, ch8s3, ch9s1/s2/s3/s4, ch10s1/s2/s3) | 10 | 9 | 1 (ch8s2-dup len=3103, beats empty) | 0 |
+
+**Omission rate: 2/30 = 6.7% — PASS. Exaggeration rate: 0/30. Overall: 28/30 faithful.**
+
+Key finding: both omissions are EMPTY beats fields, both on retry re-appended scenes
+(ch4 journal ids [1,2,3,4,3,4]; ch8 ids [1,2,3,4,4,1,2] — the duplicated re-appends
+carry no beats). Zero dishonesty detected in 28 reported cases: no invented events,
+no inflated turning points. Failure mode is missing-not-lying, localized to the
+retry path not recomputing beats.
+
+Decision per pre-locked fallback rule: TRUST self-reported beats for cross-chapter
+dedup; run fallback extraction ONLY for beats-empty scenes (first jobs: ch4s3,
+ch8s2-dup). Recommended hotfix (data-completeness bug class): retry re-append must
+preserve/recompute beats instead of writing empty.
+
+## Backfill done (2026-09-06, task ③ complete)
+
+All FIVE empty-beats lines backfilled via extract_beats_fallback (not just the two
+sampled): ch4 scenes 3+4 (retry copies), ch8 scenes 4+1+2 (retry copies). Each
+backfilled beat byte-verified as a verbatim substring of its scene_text, tagged
+"beats_source": "fallback". Zero empty-beats lines remain across all 44 scenes.
+
+Calibration note: model-reported beats are frequently paraphrases, not quotes
+(e.g. ch1s1, ch10s1-3) — verified acceptable: the pilot judged semantic fidelity
+directly (28/28), and paraphrase normalizes wording for dedup use. Verbatim-only
+checks apply to fallback output, never to model output.
+
+Footnote (out of pilot scope, timeline material): ch5s4 says picked up "3 years ago"
+while ch1-2 depict a newborn — beats faithfully reflect the text, so pilot PASS,
+but flagged for StateDB-timeline work. → **PASS / FAIL** (circle one, apply decision rule above).

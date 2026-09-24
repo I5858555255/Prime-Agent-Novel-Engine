@@ -49,7 +49,7 @@ import pytest as _pytest
 from novel_engine.agents.writer_agent import WriterAgent
 
 # Step-3 contract line (must appear verbatim in the scene prompt).
-CONTRACT_LINE = '只输出严格JSON {"scene_id","scene_text","hook","beats"}；scene_text 为纯叙事，禁任何【】括号指令；hook 为完整自然语句，可为空'
+CONTRACT_LINE = '只输出严格JSON {"scene_id","scene_text","hook","beats","beats_covered"}；scene_text 为纯叙事，禁任何【】括号指令；hook 为完整自然语句，可为空'
 
 
 def _strict_json(scene_id=1, hook="远处传来脚步声。"):
@@ -62,6 +62,10 @@ def _strict_json(scene_id=1, hook="远处传来脚步声。"):
 
 class _StubClient:
     """Brief-specified stub: chat_completion returns strict JSON + stamped head model."""
+
+    # Declared bound phase model -> _scene_strict_models() treats the stamped model as
+    # strict without reading on-disk config, keeping these tests provider-independent.
+    models = "deepseek-ai/DeepSeek-V3.2"
 
     def __init__(self, payloads):
         self.payloads = [payloads] if isinstance(payloads, str) else list(payloads)

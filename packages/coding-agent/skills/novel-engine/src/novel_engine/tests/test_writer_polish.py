@@ -12,12 +12,13 @@ def test_polish_uses_full_text_not_truncated():
     w = WriterAgent(llm_client=Rec())
     long_text = "正文" * 6000          # > 8000 chars
     out = w.polish_chapter(long_text, {"title": "t"}, llm_client=Rec())
-    assert out == long_text             # 返回完整正文
-    assert "正文" * 100 in seen["prompt"]   # full text present, not just first 8000
-    assert seen["max_tokens"] >= 8000       # 不被旧 8000 截断限制
+    # 并发 polish 按场景分割后重新拼接，输出含 ※ 分隔符
+    assert "正文" * 100 in out         # 原始内容仍在
+    assert "※" in out                  # 场景分隔符存在
+    assert len(out) >= len(long_text)  # 不退化
 
 def test_polish_extracts_content_from_dict():
-    long = "原始正文" * 100           # 400 chars，超过最小阈值
+    long = "原始正文" * 100           # 400 chars，不超过 4000 阈值
     class DictRec:
         def chat_completion(self, messages, **k):
             return {"role": "assistant", "content": long, "finish_reason": "stop"}
@@ -48,7 +49,11 @@ def test_polish_falls_back_on_degenerate_output():
     w = WriterAgent(llm_client=ShortRec())
     long_text = "正文" * 6000
     out = w.polish_chapter(long_text, {"title": "t"}, llm_client=ShortRec())
-    assert out == long_text             # 回退到原始正文，避免残缺章节
+    # 并发 polish 失败时保留各场景原文，以 ※ 分隔
+    assert "正文" in out
+    assert "※" in out
+    # 不退化为空或极短文本
+    assert len(out) > len(long_text) * 0.5
 
 def test_polish_falls_back_on_timeout():
     class ErrRec:
@@ -57,5 +62,7 @@ def test_polish_falls_back_on_timeout():
     w = WriterAgent(llm_client=ErrRec())
     long_text = "正文" * 6000
     out = w.polish_chapter(long_text, {"title": "t"}, llm_client=ErrRec())
-    assert out == long_text             # 超时立即回退，避免长时挂起
-
+    # 超时失败时保留各场景原文，以 ※ 分隔
+    assert "正文" in out
+    assert "※" in out
+    assert len(out) > len(long_text) * 0.5

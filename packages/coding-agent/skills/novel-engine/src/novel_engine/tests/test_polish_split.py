@@ -12,7 +12,7 @@ def test_split_preserves_scene_count_and_budget():
 
     w = WriterAgent(llm_client=Stub())
     text = "【场景1：村口】\n" + "正" * 2000 + "\n\n※\n\n【场景2：村尾】\n" + "正" * 2000
-    out = w._polish_by_scenes(text, {"chapter_num": 1, "title": "t",
+    out = w._polish_by_scenes_concurrent(text, {"chapter_num": 1, "title": "t",
         "scene_blueprints": [{"scene_num": 1}, {"scene_num": 2}]}, Stub())
     assert out.count("正") > 1500 and out.count("正") > 1500
     assert all(t >= int(2000 / 0.9) for t in calls)

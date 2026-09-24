@@ -1,7 +1,15 @@
 def test_length_is_soft_never_hard():
     from novel_engine.pipeline.pipeline_orchestrator import PipelineOrchestrator
     gate = PipelineOrchestrator._deterministic_quality_gate
-    class Fake: pass
+    class Fake:
+        def _bpt(self, bp):
+            v = bp.get("word_count_target", 0)
+            if isinstance(v, list):
+                v = v[0] if v else 0
+            try:
+                return int(v or 0)
+            except Exception:
+                return 0
     task_card = {"chapter_num": 99, "scene_blueprints": [{"word_count_target": 1000}]}
     text = "字" * 2000  # 2000 > 1000*1.35+容差 → length anomaly fires
     out = gate(Fake(), text, task_card)
@@ -39,6 +47,27 @@ def test_overlong_90plus_lands_in_novel(tmp_path, monkeypatch):
               "config/planning", "planning", "bible", "runtime"]:
         (root_path / d).mkdir(parents=True, exist_ok=True)
     (root_path / "config" / "runtime_config.json").write_text('{"llm": {"use_mock": true}}', encoding="utf-8")
+    import json
+    (root_path / "config" / "llm_providers.json").write_text(json.dumps({
+        "active_profile": "test",
+        "profiles": {
+            "test": {
+                "base_url": "https://test.example.com/v1",
+                "api_key_env": "TEST_API_KEY_L2",
+                "timeout_s": 60,
+                "max_retries": 1,
+                "default_extra_body": {},
+                "phases": {
+                    "scenes": {"models": ["test-model"], "response_format": None},
+                    "polish": {"models": ["test-model"], "response_format": None, "concurrency": 4},
+                    "planning": {"models": ["test-model"], "response_format": None},
+                    "review": {"models": ["test-model"], "response_format": None},
+                }
+            }
+        }
+    }, ensure_ascii=False), encoding="utf-8")
+    import os
+    os.environ["TEST_API_KEY_L2"] = "sk-test"
     (root_path / "config" / "simulation" / "rules.json").write_text('{}', encoding="utf-8")
     (root_path / "config" / "simulation" / "constraints.json").write_text('{}', encoding="utf-8")
     (root_path / "memory/world_state/characters.json").write_text('{"characters": {}}', encoding="utf-8")

@@ -1,7 +1,9 @@
 """
 审查评分 Agent：对生成的章节进行分级审查。
-100分制：剧情一致性(25) / 人物一致性(20) / 伏笔执行(20) / 文风符合度(15) / 节奏控制(10) / 创新亮点(10)
+120分制：剧情一致性(25) / 人物一致性(20) / 伏笔执行(20) / 文风符合度(15) / 节奏控制(10) / 创新亮点(10) / 钩子强度(8) / 读者留存(7) / 爽点/悬念密度(5)
+总计: 25+20+20+15+10+10+8+7+5 = 120 分，系统自动归一化到百分位（normalized_score）
 """
+
 import json
 import logging
 import re
@@ -12,14 +14,20 @@ from novel_engine.core.llm_client import LLMClient, call_llm
 
 logger = logging.getLogger(__name__)
 
-# 各评分维度满分（与 SYSTEM_PROMPT / _rewrite_weak_dimensions 保持一致，总计 100）
+# 各评分维度满分（合计 120 分）
+# 原有：剧情(25) 人物(20) 伏笔(20) 文风(15) 节奏(10) 创新(10) = 100
+# 新增：钩子强度(8) 读者留存(7) 爽点密度(5) = 20，合计 120
 DIM_MAX = {
-    "plot_consistency": 25,
+    "plot_consistency": 25,  # 缩减后比例保持不变占原有的 25/80
     "character_consistency": 20,
     "foreshadow_execution": 20,
     "style_match": 15,
     "pacing": 10,
     "innovation": 10,
+    # 新增维度
+    "hook_strength": 8,      # 章末钩子力度：是否留人、是否有悬念
+    "reader_retention": 7,   # 读者留存意愿：读后是否想继续
+    "cliffhensity": 5,       # 爽点/悬念密度：单位章节爽点/悬念数量
 }
 
 
@@ -30,15 +38,127 @@ def _to_float(value, default=0.0):
         return default
 
 
+def _coerce_scene_ids(value) -> list:
+    """Normalize a reviewer issue's scene_ids into a sorted-unique list of ints.
+
+    Accepts ints, numeric strings ("场景3" / "3"), or lists. Empty list means a
+    truly chapter-global issue (hook / overall retention) with no scene location.
+    """
+    if value is None:
+        return []
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        raw = [value]
+    elif isinstance(value, str):
+        raw = re.findall(r"\d+", value)
+    elif isinstance(value, list):
+        raw = value
+    else:
+        raw = []
+    out: list = []
+    for x in raw:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            m = re.search(r"\d+", str(x))
+            if not m:
+                continue
+            n = int(m.group())
+        if n >= 1 and n not in out:
+            out.append(n)
+    return out
+
+
+def _coerce_review_object(obj) -> dict:
+    """flash 偶发经 json_repair 后顶层返回 list（如 [ {评审...} ] 或裸 issues 列表）。
+
+    - dict：原样返回；
+    - list：优先取其中"带 scores 字典"的 dict；否则取首个 dict；都没有返回 {}（交由
+      is_valid_vote 按 raw=0 技术废票剔除，绝不让单票崩掉整个三评 try）。
+    """
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, list):
+        dicts = [x for x in obj if isinstance(x, dict)]
+        for d in dicts:
+            if isinstance(d.get("scores"), dict):
+                return d
+        if dicts:
+            return dicts[0]
+    return {}
+
+
 def _normalize_review(review: dict) -> dict:
     """强制总分落在 0-100 刻度：将各维度夹取到定义上限后重新求和，
-    避免模型返回越界分数（如 total_score=110）导致刻度失真。"""
+    并计算 normalized_score（百分位）。
+
+    新增字段：
+    - normalized_score: 原始总分 / 维度满分之和 * 100（百分位）
+    - score_schema: "v2"
+    - max_total: 维度满分之和（由 DIM_MAX 常量计算）
+    - raw_total: 原始总分（夹取前）
+    """
     raw = review.get("scores") or {}
-    norm = {name: max(0.0, min(mx, _to_float(raw.get(name))))
-            for name, mx in DIM_MAX.items()}
+    # 计算维度满分之和（禁止魔数）
+    max_total = sum(DIM_MAX.values())
+    # 计算原始总分（夹取前，用于 backward compat）
+    raw_total = sum(_to_float(raw.get(name)) for name in DIM_MAX)
+    # 夹取各维度到 [0, DIM_MAX[name]]
+    norm = {name: max(0.0, min(DIM_MAX[name], _to_float(raw.get(name))))
+            for name in DIM_MAX}
     total = sum(norm.values())
     review["scores"] = norm
     review["total_score"] = int(round(total))
+    # 向后兼容：旧记录缺 normalized_score 时现场重算
+    if "normalized_score" not in review:
+        review["normalized_score"] = round(total / max_total * 100, 1) if max_total else 0.0
+        review.setdefault("_computed_normalized", True)
+    review["score_schema"] = "v2"
+    review["max_total"] = max_total
+    review["raw_total"] = int(round(raw_total))
+
+    # 规整每条 issue 的 scene_ids 归因（供定点重生直接使用）
+    if isinstance(review.get("issues"), list):
+        for it in review["issues"]:
+            if isinstance(it, dict):
+                it["scene_ids"] = _coerce_scene_ids(it.get("scene_ids"))
+
+    # --- 每维 evidence ---
+    dim_evidence = {}
+    for dim in DIM_MAX:
+        ev = None
+        for it in review.get("issues", []):
+            if not isinstance(it, dict):
+                continue
+            if it.get("dimension") == dim:
+                d = it.get("description", "")
+                ev = d[:30] if d and len(d) >= 10 else None
+                if ev:
+                    break
+        if not ev:
+            kw_map = {
+                "plot_consistency": "章节目标",
+                "character_consistency": "角色行为",
+                "foreshadow_execution": "伏笔执行",
+                "style_match": "文风符合",
+                "pacing": "节奏控制",
+                "innovation": "创新亮点",
+                "hook_strength": "章末钩子",
+                "reader_retention": "读者留存",
+                "cliffhensity": "爽点密度",
+            }
+            ev = kw_map.get(dim, "证据占位")
+        dim_evidence[dim] = ev
+    
+    review["dim_scores"] = {
+        dim: {"score": round(norm.get(dim, 0)), "evidence": dim_evidence.get(dim, "证据占位")}
+        for dim in DIM_MAX
+    }
+    logger.info(
+        f"Review normalized: raw_total={review['raw_total']}, "
+        f"max_total={max_total}, normalized_score={review['normalized_score']}"
+    )
     return review
 
 
@@ -47,13 +167,16 @@ class ReviewerAgent:
 
     SYSTEM_PROMPT = """你是一位严格的网络小说审查编辑。你的任务是对生成的章节进行评分和反馈。
 
-评分维度（总分100）：
+评分维度（各维度独立满分，合计120分）：
 1. 剧情一致性（25分）：是否严格遵循任务卡目标和 plot_graph 节点
 2. 人物一致性（20分）：角色行为、语气、境界是否与设定一致
 3. 伏笔执行（20分）：clue_plan 中的写作指令是否体现
-4. 文风符合度（15分）：是否符合 style_bible.md
+4. 文风符合度（15分）：是否符合 style_bible.md 与中文标点断句规范（每句不超过约40字、分句用逗号、对话用引号，无整段无标点流水句）
 5. 节奏控制（10分）：场景切换、情绪曲线是否符合任务卡
 6. 创新亮点（10分）：是否有生动细节或意外转折
+7. 钩子强度（8分）：章末是否有有效钩子（悬念/伏笔/抉择），是否能留住读者
+8. 读者留存（7分）：读后是否想继续阅读下一章，情感粘性
+9. 爽点/悬念密度（5分）：单位章节爽点/悬念数量是否符合预期，密度是否合理
 
 硬性约束（违反任意一条直接扣5-10分）：
 - 禁止出现英文词汇（如 steady, crossed, arms 等）
@@ -61,36 +184,58 @@ class ReviewerAgent:
 - 禁止章节内容截断（必须完整呈现所有场景）
 - 禁止核心伏笔完全缺失
 - 禁止人物台词风格与设定不符
+- 禁止整段无标点的流水句（成百字中间没有逗号/句号）或明显超过约40字的超长句：每出现一处计入 style_match 扣分（每次扣2-5分），并在 scene_ids 标注问题场景、suggested_fix 指明断句重写
 
-分级标准：
-- ≥85分：PASS
-- 60-84分：局部修复（指出问题段落）
-- <60分：全量回退到导演环节
+CC round-18 额外硬约束（婴儿卷 ch1-9，违反直接扣 5 分并记录）：
+- 配角陈老根的背景/回忆/往事中严禁具体化体制身份：不得出现「军中/从军/军营/军医/军中医/医官/教头/将军/千总/百户/朝廷命官/当差官府」等词；白名单「习武/江湖/走南闯北/佩刀」允许保留。
+- ch1-5 陈老根严禁主动施展修为：不得出现「气感/内视/行气探查/气机探查/吐纳/调息」；ch6 起仅放开「陈老根夜间独自吐纳、陆烬旁观窥见」一种受控形态；「内视他人脏腑」整个婴儿卷（ch1-9）始终禁止。
+- 不得建议任何超出当前章大纲阶段的人物背景具体化或后续章才解锁的能力（上述词条一律禁止出现在 suggested_fix 中）。
+
+分级标准（基于归一化百分位）：
+- normalized_score >= 88：PASS
+- normalized_score >= 60：局部修复（指出问题段落）
+- normalized_score < 60：全量回退到导演环节
+
+扣分归因（必须填写，便于定点重生）：
+- 每条 issue 必须给出 scene_ids：把扣分归因到具体的一个或多个场景编号（与任务卡 scene_blueprints 的 scene_num 一致）。
+- 凡是“某场景与相邻场景复述同一事件、信息/氛围/意象被反复渲染造成拖沓注水”“场景内动作原地踏步”，计入 pacing 或 style_match，并在 scene_ids 标注需要删改/重写的场景。
+- 时间先后矛盾（如同一天内昼夜反复）计入 plot_consistency，scene_ids 标注矛盾场景。
+- 错别字、英文残留、人物名错误等，scene_ids 标注问题出现的场景。
+- 只有确实无法定位到具体场景的全局性问题（如章末钩子、整体留存）才把 scene_ids 留为空数组 []。
+- suggested_fix 必须是可执行的重写指令（例：“删除与场景2重复的雾中围观描写，只保留推进情节的新信息”），不要泛泛而谈。
+
+重要说明：
+- 每个维度按各自满分独立打分，不要自报 total_score
+- 系统会自动计算归一化分数（raw_total / max_total * 100）
+- 示例仅为格式参考，各维分数之和不必等于 total_score
 
 输出必须是 JSON：
-{{
+{
   "chapter_num": 1,
-  "scores": {{
+  "scores": {
     "plot_consistency": 20,
     "character_consistency": 15,
     "foreshadow_execution": 18,
     "style_match": 12,
     "pacing": 8,
-    "innovation": 7
-  }},
-  "total_score": 80,
+    "innovation": 7,
+    "hook_strength": 6,
+    "reader_retention": 5,
+    "cliffhensity": 4
+  },
   "verdict": "fix",
   "issues": [
-    {{
-      "dimension": "character_consistency",
+    {
+      "dimension": "pacing",
       "severity": "high|medium|low",
-      "description": "问题描述",
-      "suggested_fix": "修复建议"
-    }}
+      "scene_ids": [3],
+      "description": "场景3与场景2复述同一事件，雾中围观/火把/红眼被反复渲染，情节原地踏步",
+      "suggested_fix": "删除与场景2重复的围观与氛围描写，只保留报官争议等新信息，把场景3推进到陈老根出场"
+    }
   ],
   "praise": "值得保留的优点",
   "fix_scope": "若 verdict=fix，说明需要重新生成的段落范围"
-}}"""
+}"""
 
     def __init__(self, llm_client: Optional[LLMClient] = None, provider_config=None):
         self.llm = llm_client or LLMClient()
@@ -103,8 +248,14 @@ class ReviewerAgent:
         synopsis: dict,
         novel_text: str,
         world_state: dict,
+        deterministic_signals: dict | None = None,
     ) -> dict:
-        """审查单章。"""
+        """审查单章。
+
+        CC round-24 P0-1(a)：可选注入 deterministic_signals（零 LLM 门产物的数据表），
+        作为 plot/pacing/innovation/retention/cliffhanger 打分的客观参照校准；不改变
+        评分维度与 120 分体系。为 None 时行为与历史完全一致。
+        """
         # P2-B2: 采样覆盖全文（头/中/尾各 2500 字，避免 6000 截断毁结构）
         def _sample(text: str, head: int = 2500, mid: int = 2500, tail: int = 2500) -> str:
             if len(text) <= head + mid + tail:
@@ -116,6 +267,19 @@ class ReviewerAgent:
             return f"{h}\n\n...[中部省略 {len(text)-head-mid-tail} 字]...\n\n{m}\n\n...[中部省略]...\n\n{t}"
 
         sampled = _sample(novel_text)
+
+        # CC round-24 P0-1(a)：确定性锚点数据表（不是自然语言描述）。
+        anchor_block = ""
+        if isinstance(deterministic_signals, dict) and deterministic_signals:
+            anchor_block = (
+                "\n\n## 本章确定性检测结果（客观参照，请据此校准主观评分）\n"
+                + json.dumps(deterministic_signals, ensure_ascii=False, indent=2)
+                + "\n请在 plot_consistency/pacing/innovation/reader_retention/cliffhensity "
+                  "评分时以上表为客观参照：若 beat_coverage_ratio 与 new_state_coverage 均高，"
+                  "pacing/plot 不应给出与之矛盾的低分；若某场景 atmosphere_ratio 超过 0.55 或"
+                  "相邻场共享度偏高，可作为 pacing/innovation/reader_retention 的扣分依据。"
+                  "character_consistency/style_match/foreshadow_execution/hook_strength 仍按正文独立判断。"
+            )
 
         prompt = f"""请审查第 {chapter_num} 章。
 
@@ -136,16 +300,16 @@ class ReviewerAgent:
 2. 检查伏笔动作是否执行
 3. 检查是否有 forbidden 项被违反
 4. 检查人物行为是否符合 character_bible
-5. 检查文风是否符合 style_bible"""
+5. 检查文风是否符合 style_bible{anchor_block}"""
 
         try:
-            review = call_llm(
+            review = _coerce_review_object(call_llm(
                 prompt=prompt,
                 system_prompt=self.SYSTEM_PROMPT,
                 client=self.llm,
                 output_json=True,
                 provider_config=self.provider_config,
-            )
+            ))
             review = _normalize_review(review)
             logger.info(f"Review completed for chapter {chapter_num}: score={review.get('total_score')}")
             return review
@@ -162,13 +326,14 @@ class ReviewerAgent:
                               "runtime_config.json").read_text(encoding="utf-8"))
         except Exception:
             cfg = {}
-        # 单一策略源：分级线读 quality_policy（policy 默认 88/60；线上配置值同为 88/60，行为不变）
+        # 单一策略源：分级线读 quality_policy
         policy = load_quality_policy(Path(__file__).parent.parent)
         line = int(policy.get("publication_line",
                               cfg.get("quality", {}).get("publication_line", 88)))
         fix_t = int(policy.get("fix_threshold",
                                cfg.get("quality", {}).get("fix_threshold", 60)))
-        score = review.get("total_score", 0)
+        # v2 优先使用 normalized_score（百分位），旧记录回退到 total_score
+        score = review.get("normalized_score") if review.get("normalized_score") is not None else review.get("total_score", 0)
         if score >= line:
             return "pass"
         elif score >= fix_t:
