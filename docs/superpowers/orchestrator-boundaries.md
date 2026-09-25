@@ -389,3 +389,54 @@ self._reset_call_log()
 3. **delegator 模式陷阱**：`staticmethod(lambda)` 不绑定 `self`，需改用实例方法包装
 4. **路径重复拼接是系统性问题**：`chapters/novel/` 在 5+ 文件中各写一遍，现已统一到 `novel_chapter_path()`
 
+
+---
+
+## 10. Session 完成摘要（续）
+
+### 10.1 额外拆分（P1 Phase 4b 补充）
+
+| 模块 | 新文件 | 行数 | 内容 |
+|---|---|---|---|
+| `pipeline/final_gate.py` | ✅ | 112 | stage6 伏笔覆盖检查 |
+| `pipeline/review_journal.py` | ✅ | 45 | 每章评审持久化 |
+| `pipeline/publish_decision.py` | ✅ | 56 | `decide_can_publish()` 决策函数 |
+| `pipeline/gates.py` | 修改 | +18 | 添加 `_forbidden_violations` |
+| **orchestrator** | **修改** | **+41 行** | 提取 `_commit_chapter()` 方法 |
+
+### 10.2 测试状态
+```
+874 passed, 2 failed (pre-existing), 0 skipped
+```
+
+### 10.3 当前文件规模
+
+| 文件 | 行数 | 说明 |
+|---|---|---|
+| `pipeline_orchestrator.py` | 4516 | 原 5960 行，净减 1444 行 (-24%) |
+| `pipeline/gates.py` | 1410 | 新，13 个门控方法 |
+| `pipeline/final_gate.py` | 112 | 新，stage6 检查 |
+| `pipeline/review_journal.py` | 45 | 新，评审持久化 |
+| `pipeline/publish_decision.py` | 56 | 新，发布决策 |
+| **合计** | **6139** | 净增 179 行（新模块文档+委托开销） |
+
+### 10.4 待继续（需专门 session）
+
+#### P1 Phase 4: 拆分 `generate_single_chapter` god method
+- **当前规模**：约 1080 行（原 1175 行，已移走部分逻辑）
+- **阻塞原因**：方法内部有嵌套的 try/except 结构、fix loop、状态机转换，直接切割会破坏逻辑
+- **建议策略**：
+  1. 先定义清晰的输入/输出契约
+  2. 将 B 类门控调用抽为纯函数
+  3. 将 D 类发布逻辑抽为独立模块（部分已完成）
+  4. 最后重写 A 类状态机编排
+
+#### P1 Phase 3: Remediation 模块拆分
+- **阻塞原因**：深度耦合 `self.llm`, `self.writer`, `self._draft_novel` 等
+- **建议**：等 Phase 4 完成后，建立清晰接口再拆
+
+#### P2: Reviewer severity 硬映射
+- **阻塞条件**：beats pilot dimension→category mapping spec 落地
+- **操作**：在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
+- **建议触发条件**：pilot 覆盖率 > 80% 且 spec 文档化
+
