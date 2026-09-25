@@ -4128,7 +4128,8 @@ class PipelineOrchestrator:
         return fixed
 
     # Gate delegation: _forbidden_violations moved to pipeline/gates.py
-    _forbidden_violations = staticmethod(lambda self, *a, **k: _gates._forbidden_violations(self, *a, **k))
+    def _forbidden_violations(self, novel, review_text=""):
+        return _gates._forbidden_violations(self, novel, review_text)
 
     def _extract_keywords(self, task_card: dict, synopsis: dict) -> list[str]:
         """从任务卡和缩写中提取关键词。"""
