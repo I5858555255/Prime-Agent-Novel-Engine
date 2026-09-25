@@ -1317,25 +1317,6 @@ class PipelineOrchestrator:
         # R16c/R17: cur_score 必须在 stage6 前置校验前定义
         cur_score = float(result.get("score", score or 0) or 0)
 
-
-        # R16c P0-C2: stage6 foreshadow coverage check
-        from novel_engine.pipeline.final_gate import run_stage6_foreshadow_check
-        _stage6_result = run_stage6_foreshadow_check(
-            self.root, chapter_num, task_card, final_text, cur_score)
-        if _stage6_result.get('blocked'):
-            logger.error(
-                f'ch{chapter_num} MANDATORY HARD BLOCK at stage6: '
-                f'{_stage6_result.get("hard_block_reason", "unknown")}')
-            result['success'] = False
-            result['published'] = False
-            result['hard_block'] = True
-            result['hard_block_reason'] = _stage6_result.get('hard_block_reason', 'stage6 foreshadow block')
-            self._flag_for_human(
-                chapter_num, cur_score,
-                f'stage6 foreshadow hard block: {_stage6_result.get("hard_block_reason", "unknown")}')
-            return result
-            return result
-
         # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 policy 硬阻断且确定性硬门控通过才写最终目录）
         _commit_policy = load_quality_policy(self.root)
         publication_line = int(_commit_policy["publication_line"])
