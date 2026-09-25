@@ -1571,6 +1571,8 @@ class PipelineOrchestrator:
                 sm.handle_failure("commit_error", str(e))
                 set_status(self.root, chapter_num, HALTED, reason="commit_error")
                 return result
+            finally:
+                pass
         # Accumulate cost data for this chapter
         from novel_engine.core.call_metrics import snapshot as _snapshot_metrics
         self.cost_tracker.update(_snapshot_metrics())
