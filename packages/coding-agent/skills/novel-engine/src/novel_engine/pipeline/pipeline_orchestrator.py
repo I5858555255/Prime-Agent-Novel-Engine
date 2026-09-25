@@ -1610,7 +1610,6 @@ class PipelineOrchestrator:
             return result
 
         # Accumulate cost data for this chapter
-        # Accumulate cost data for this chapter
         from novel_engine.core.call_metrics import snapshot as _snapshot_metrics
         self.cost_tracker.update(_snapshot_metrics())
 
