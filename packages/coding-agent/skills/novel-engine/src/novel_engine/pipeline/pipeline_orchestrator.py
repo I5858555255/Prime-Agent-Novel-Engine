@@ -1368,7 +1368,7 @@ class PipelineOrchestrator:
                 f'stage6 foreshadow hard block: {_stage6_result.get("hard_block_reason", "unknown")}')
             return result
 
-（id/beats/covered 等）。
+        # CC30（DS Q5）：真机提交前清洗混入正文的英文脚手架字段词（id/beats/covered 等)。
         # 保守：只清带 JSON 上下文/复合词/同分句>=2 的字段词，白名单与普通英文不碰；清洗后
         # 由紧随的 final_det 重跑长度/密度/拉丁/beats 门；整段全字段词->硬块走既有隔离 gap。
         _scaffold_rollback30 = False
