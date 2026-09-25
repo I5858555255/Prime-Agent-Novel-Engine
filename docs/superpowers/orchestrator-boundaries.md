@@ -255,3 +255,89 @@ def novel_chapter_path(root, chapter: int) -> Path:
 - 位置: `pipeline_orchestrator.py` L83-100（`_review_issue_is_blocking`）
 - 触发条件: beats pilot dimension→category mapping spec 落地
 - 操作: 在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
+
+---
+
+## 6. 已完成拆分（续）
+
+### 6.1 Stage6 Foreshadow 检查 ✅
+
+**commit**: `42a9b1fe3`
+
+将 `generate_single_chapter` 内的 stage6 伏笔覆盖检查移至 `pipeline/final_gate.py`:
+
+- `run_stage6_foreshadow_check(root, chapter_num, task_card, final_text, cur_score)` 返回 dict:
+  - `blocked`: 是否硬阻断
+  - `missing_fs_ids`: 注册但未解析的伏笔 ID
+  - `blocked_scenes`: 场景级缺失详情
+- 调用时机：在 `final_text` 净化后、最终门控前执行
+- 阻塞条件：注册伏笔未解析 / 场景级伏笔缺失
+
+### 6.2 Review Journal 持久化 ✅
+
+**commit**: `edd8e82f4`
+
+将每章评审结果追加逻辑移至 `pipeline/review_journal.py`:
+
+- `save_review_journal(root, chapter_num, score, review)` 追加到 `audit/per_chapter_reviews.json`
+- 供滑动窗口质量记忆使用
+
+### 6.3 Forbidden Violations 扫描 ✅
+
+**commit**: `aa43e72f6`
+
+将 `_forbidden_violations` 移至 `pipeline/gates.py`:
+
+- 模块级函数 `_forbidden_violations(orchestrator, novel, review_text)`
+- 委托 `ForbiddenScanner.scan()` 和 `scan_review()`
+- orchestrator 保留实例方法作为委托包装
+
+### 6.4 Cost Tracking 简化 ✅
+
+**commit**: `edd8e82f4`
+
+将手动 token 累加替换为 `call_metrics.snapshot()`:
+
+```python
+# Before: 10+ lines of manual accumulation
+# After:
+from novel_engine.core.call_metrics import snapshot as _snapshot_metrics
+self.cost_tracker.update(_snapshot_metrics())
+self._reset_call_log()
+```
+
+---
+
+## 7. 当前文件规模对比
+
+| 文件 | 原始 | 当前 | 变化 |
+|---|---|---|---|
+| `pipeline_orchestrator.py` | 5960 | 4516 | **-1444 (-24%)** |
+| `pipeline/gates.py` | - | 1410 | +1410 (新) |
+| `pipeline/final_gate.py` | - | 112 | +112 (新) |
+| `pipeline/review_journal.py` | - | 45 | +45 (新) |
+| **合计** | **5960** | **6083** | **+123 (净增量)** |
+
+净增量来自：
+- 新模块的文档字符串和类型标注
+- 委托方法的包装代码
+- `gates.py` 保留了 3 个辅助方法（`_punct_only_repair`, `_repair_paragraphs_punct_parallel`, `_repair_paragraphs_punct_batched`）
+
+---
+
+## 8. 待拆分（按优先级排序）
+
+### Phase 4: 拆分 `generate_single_chapter`（高风险，需专门 session）
+- 当前约 1080 行（原 1285 行，已移走部分逻辑）
+- 内部混杂 A/B/C/D 四类职责
+- **建议**: 先拆 B（门控调用）→ C（修复调用）→ D（发布写入），最后保留 A（状态机编排）
+
+### Phase 3: Remediation 模块拆分（高风险，需专门 session）
+- 方法: `_validate_and_regen_scenes`, `_enforce_mandatory_beats`, `_patch_weak_scenes`, `_cc25_literary_rewrite`, `_rewrite_weak_dimensions`
+- **阻塞原因**: 深度耦合 orchestrator 状态（`self.llm`, `self.writer`, `self._draft_novel`, `self._scene_regen_used`），且方法间互相调用
+- **建议**: 先完成 Phase 4，建立清晰输入/输出契约后再拆
+
+### P2: Reviewer severity 硬映射
+- 位置: `pipeline_orchestrator.py` L83-100（`_review_issue_is_blocking`）
+- 触发条件: beats pilot dimension→category mapping spec 落地
+- 操作: 在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
