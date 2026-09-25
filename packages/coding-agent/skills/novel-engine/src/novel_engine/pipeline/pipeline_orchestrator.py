@@ -1531,6 +1531,24 @@ class PipelineOrchestrator:
                 self._flag_for_human(chapter_num, cur_score, f"below 82: forced draft, score={cur_score}")
                 return result
 
+            self._commit_chapter(
+                chapter_num=chapter_num, task_card=task_card,
+                synopsis=synopsis, world_state=world_state,
+                result=result, score=cur_score, sm=sm,
+            )
+
+
+        # Accumulate cost data for this chapter
+        # Accumulate cost data for this chapter
+        from novel_engine.core.call_metrics import snapshot as _snapshot_metrics
+        self.cost_tracker.update(_snapshot_metrics())
+
+        return result
+
+
+    def _commit_chapter(self, chapter_num, task_card, synopsis, world_state,
+                        result, score, sm):
+        """Submit chapter: checkpoint, events, end_state, session_tree."""
         try:
             # 提取关键词用于索引
             keywords = self._extract_keywords(task_card, synopsis)
@@ -1608,13 +1626,6 @@ class PipelineOrchestrator:
             # Mark chapter as HALTED on commit failure
             set_status(self.root, chapter_num, HALTED, reason="commit_error")
             return result
-
-        # Accumulate cost data for this chapter
-        # Accumulate cost data for this chapter
-        from novel_engine.core.call_metrics import snapshot as _snapshot_metrics
-        self.cost_tracker.update(_snapshot_metrics())
-
-        return result
 
     # ====== Stage Methods (extracted from generate_single_chapter) ======
 
