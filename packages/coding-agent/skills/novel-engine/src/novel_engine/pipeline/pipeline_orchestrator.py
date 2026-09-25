@@ -1311,30 +1311,9 @@ class PipelineOrchestrator:
                     logger.warning(
                         f"Chapter {chapter_num} non-blocking forbidden hits recorded: {violations}")
 
-        # 保存单章审查结果供滑动窗口质量记忆使用
-        review_file = self.root / "audit" / "per_chapter_reviews.json"
-        review_file.parent.mkdir(parents=True, exist_ok=True)
-        if review_file.exists():
-            try:
-                existing = json.loads(review_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, ValueError):
-                existing = {"reviews": []}
-        else:
-            existing = {"reviews": []}
-        existing["reviews"] = [r for r in existing.get("reviews", []) if r.get("chapter_num") != chapter_num]
-        existing["reviews"].append({
-            "chapter_num": chapter_num,
-            "total_score": score,
-            "normalized_score": review.get("normalized_score", score),
-            "max_total": review.get("max_total", sum(DIM_MAX.values())),
-            "score_schema": review.get("score_schema", "v2"),
-            "verdict": verdict,
-            "scores": review.get("scores", {}),
-            "praise": review.get("praise", ""),
-            "issues": review.get("issues", []),
-            "dim_scores": review.get("dim_scores", {}),
-        })
-        review_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Save review journal for sliding-window quality memory
+        from novel_engine.pipeline.review_journal import save_review_journal
+        save_review_journal(self.root, chapter_num, score, review)
         # R16c/R17: cur_score 必须在 stage6 前置校验前定义
         cur_score = float(result.get("score", score or 0) or 0)
 
@@ -1697,29 +1676,9 @@ class PipelineOrchestrator:
             return result
 
         # Accumulate cost data for this chapter
-        call_log = self._call_log()
-        chapter_tokens = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "reasoning_tokens": 0,
-            "total_tokens": 0,
-            "api_calls": len(call_log),
-        }
-        for entry in call_log:
-            chapter_tokens["prompt_tokens"] += entry.get("prompt_tokens", 0)
-            chapter_tokens["completion_tokens"] += entry.get("completion_tokens", 0)
-            chapter_tokens["reasoning_tokens"] += entry.get("reasoning_tokens", 0)
-            chapter_tokens["total_tokens"] += entry.get("total_tokens", 0)
-
-        self.cost_tracker["per_chapter_costs"][chapter_num] = chapter_tokens
-        self.cost_tracker["total_prompt_tokens"] += chapter_tokens["prompt_tokens"]
-        self.cost_tracker["total_completion_tokens"] += chapter_tokens["completion_tokens"]
-        self.cost_tracker["total_reasoning_tokens"] += chapter_tokens["reasoning_tokens"]
-        self.cost_tracker["total_tokens"] += chapter_tokens["total_tokens"]
-        self.cost_tracker["api_calls"] += chapter_tokens["api_calls"]
-
-        # 每章结束后重置调用日志，避免跨章累计污染 per_chapter_costs
-        self._reset_call_log()
+        # Accumulate cost data for this chapter
+        from novel_engine.core.call_metrics import snapshot as _snapshot_metrics
+        self.cost_tracker.update(_snapshot_metrics())
 
         return result
 
@@ -4168,16 +4127,8 @@ class PipelineOrchestrator:
             return novel
         return fixed
 
-    def _forbidden_violations(self, novel, review_text=""):
-        text = getattr(novel, "content", None)
-        if text is None:
-            text = novel if isinstance(novel, str) else str(novel)
-        out = []
-        text = purify_novel_for_publish(text)
-        out.extend(self.forbidden.scan(text))
-        if review_text:
-            out.extend(self.forbidden.scan_review(review_text))
-        return out
+    # Gate delegation: _forbidden_violations moved to pipeline/gates.py
+    _forbidden_violations = staticmethod(lambda self, *a, **k: _gates._forbidden_violations(self, *a, **k))
 
     def _extract_keywords(self, task_card: dict, synopsis: dict) -> list[str]:
         """从任务卡和缩写中提取关键词。"""
