@@ -1427,47 +1427,17 @@ class PipelineOrchestrator:
             result["force_published"] = True
             self._flag_for_human(chapter_num, cur_score, f"force-best to draft: {result.get('note','')} high={high_list} det_hard={det_issues} soft={det_soft}")
             return result
-        else:
-            if force_best and leak_issues:
-                logger.warning(f"Force publish blocked by leak: {leak_issues}")
-            # CC round-14 P0-3：灰带（85-87.9）确定性门全过+无high 已在评审阶段判定放行，直接视为可发布
-            _gray_commit = bool(result.get("gray_band_release")) and cur_score + 1e-9 >= int(
-                _commit_policy.get("soft_publication_line", publication_line - 3))
-            if _gray_commit and not leak_issues and not det_issues and not has_high_issue:
-                can_publish = True
-                verdict = {"publish": True, "reasons": [],
-                           "note": f"gray-band release {cur_score}: deterministic gates passed, no high issue (human spot-check)"}
-                logger.warning(f"Chapter {chapter_num} GRAY-BAND COMMIT score={cur_score} → novel (flagged human spot-read)")
-            else:
-                from novel_engine.pipeline.quality_gate import evaluate_publish
-                verdict = evaluate_publish(score=cur_score, reviewer_issues=review.get("issues", []),
-                                           det_hard=det_issues, leak=leak_issues, violations=violations, policy=_commit_policy,
-                                           dim_scores=review.get("dim_scores"), total_score=cur_score)
-                can_publish = verdict["publish"]
-            # CC28/批D：真机分层自动提交（real-only，mock/离线保持旧 88 线行为保护回归）。
-            # 仅当非提交原因【只剩聚合总分<publication_line】（无硬门/high/泄漏/forbidden/维度地板）
-            # 时，按 CC24 混合分分层：>=85 免审提交，82-85 硬门绿提交+按章号抽检打标，<82 不提交。
-            if (not can_publish) and (not bool((self.config.get("llm") or {}).get("use_mock"))):
-                try:
-                    _block_forbidden28 = bool(violations) and any(
-                        _forbidden_violation_is_blocking(_commit_policy, _v) for _v in violations)
-                    _nonscore_reasons28 = [
-                        _r for _r in (verdict.get("reasons", []) or [])
-                        if not (isinstance(_r, str) and _r.startswith("score<"))]
-                    if (not leak_issues) and (not det_issues) and (not has_high_issue) \
-                            and (not _block_forbidden28) and (not _nonscore_reasons28):
-                        from novel_engine.quality import publish_router as _pr28
-                        _tier28 = _pr28.decide_publish_tier(cur_score, True, chapter_num)
-                        if _tier28.get("auto_submit"):
-                            can_publish = True
-                            result["auto_submit_tier"] = _tier28["tier"]
-                            result["sample_audit_flag"] = bool(_tier28.get("needs_manual_audit"))
-                            logger.warning(
-                                f"Chapter {chapter_num} AUTO-SUBMIT tier={_tier28['tier']} "
-                                f"score={cur_score} hard-green -> novel "
-                                f"(sample_audit={result['sample_audit_flag']})")
-                except Exception as _e28:
-                    logger.warning(f"publish_router override skipped: {_e28}")
+        can_publish, _ = self._decide_publish(
+            chapter_num=chapter_num, task_card=task_card,
+            synopsis=synopsis, world_state=world_state,
+            result=result, score=score, sm=sm,
+            review=review, final_text=final_text,
+            violations=violations, det_issues=det_issues,
+            det_soft=det_soft, high_list=high_list,
+            apply_world_state=apply_world_state,
+            cur_score=cur_score, _commit_policy=_commit_policy,
+        )
+
         if has_high_issue and not can_publish:
             logger.warning(f"Chapter {chapter_num} has high/block issue → force non-publish (score={cur_score} high={high_list})")
         if det_issues and not can_publish:
@@ -1626,6 +1596,66 @@ class PipelineOrchestrator:
             # Mark chapter as HALTED on commit failure
             set_status(self.root, chapter_num, HALTED, reason="commit_error")
             return result
+
+
+    def _decide_publish(self, chapter_num, task_card, synopsis, world_state,
+                        result, score, sm, review, final_text, violations,
+                        det_issues, det_soft, high_list, apply_world_state,
+                        cur_score, _commit_policy):
+        """Decide whether chapter can be published.
+        
+        Returns (can_publish, verdict_dict).
+        """
+        force_best = bool(getattr(self, "_force_publish_best", False))
+        from novel_engine.pipeline.quality_gate import evaluate_publish
+        leak_issues = getattr(self, "_last_leak_issues", [])
+        if force_best and not leak_issues:
+            logger.warning(f"Force-best to draft {cur_score}")
+            self._force_publish_best = False
+            try:
+                draft_path = self.root / "chapters" / "draft" / f"chapter_{chapter_num}.txt"
+                draft_path.parent.mkdir(parents=True, exist_ok=True)
+                draft_path.write_text(self._novel_string(), encoding="utf-8")
+            except Exception as e:
+                logger.error(f"Failed to save force-best draft: {e}")
+            result["score"] = cur_score
+            result["published"] = False
+            result["force_published"] = True
+            return False, {"publish": False}
+        elif force_best:
+            logger.warning(f"Force publish blocked by leak")
+
+        _gray_commit = bool(result.get("gray_band_release")) and cur_score + 1e-9 >= int(
+            _commit_policy.get("soft_publication_line", int(_commit_policy["publication_line"]) - 3))
+        has_high = any(_review_issue_is_blocking(_commit_policy, iss) for iss in (review.get("issues") or []))
+        if _gray_commit and not leak_issues and not det_issues and not has_high:
+            can_publish = True
+            verdict = {"publish": True, "reasons": [],
+                       "note": f"gray-band release {cur_score}"}
+        else:
+            verdict = evaluate_publish(score=cur_score, reviewer_issues=review.get("issues", []),
+                                       det_hard=det_issues, leak=leak_issues, violations=violations,
+                                       policy=_commit_policy, dim_scores=review.get("dim_scores"), total_score=cur_score)
+            can_publish = verdict["publish"]
+
+        if (not can_publish) and (not bool((self.config.get("llm") or {}).get("use_mock"))):
+            try:
+                _block_forbidden28 = bool(violations) and any(
+                    _forbidden_violation_is_blocking(_commit_policy, _v) for _v in violations)
+                _nonscore_reasons28 = [_r for _r in (verdict.get("reasons", []) or [])
+                                       if not (isinstance(_r, str) and _r.startswith("score<"))]
+                if (not leak_issues) and (not det_issues) and not has_high \
+                        and (not _block_forbidden28) and (not _nonscore_reasons28):
+                    from novel_engine.quality import publish_router as _pr28
+                    _tier28 = _pr28.decide_publish_tier(cur_score, True, chapter_num)
+                    if _tier28.get("auto_submit"):
+                        can_publish = True
+                        result["auto_submit_tier"] = _tier28["tier"]
+                        result["sample_audit_flag"] = bool(_tier28.get("needs_manual_audit"))
+            except Exception as _e28:
+                logger.warning(f"publish_router override skipped: {_e28}")
+
+        return can_publish, verdict
 
     # ====== Stage Methods (extracted from generate_single_chapter) ======
 
