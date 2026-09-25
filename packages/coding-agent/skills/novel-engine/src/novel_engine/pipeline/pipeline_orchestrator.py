@@ -1554,60 +1554,23 @@ class PipelineOrchestrator:
                     )
                     self._flag_for_human(chapter_num, result.get("score", 0), "world-state deferred: below min_ch")
 
-            checkpoint = sm.commit_chapter(
-                chapter_num=chapter_num,
-                novel_content=self._novel_string(),
-                synopsis_content=json.dumps(synopsis, ensure_ascii=False),
-                outline_content=json.dumps(task_card, ensure_ascii=False),
-                world_state_snapshot=world_state,
-            )
-            # Mark chapter as committed in status tracking
-            set_status(self.root, chapter_num, COMMITTED, score=cur_score)
-            # CC P0：仅在原子提交成功后追加跨章事件台账（HALT/隔离章不写，失败不回滚已提交章节）。
             try:
-                _n_ev = append_chapter_events(self.root, chapter_num, task_card)
-                logger.info(f"Chapter {chapter_num}: appended {_n_ev} event-ledger entries")
-            except Exception as _le:
-                logger.error(f"event ledger append failed for chapter {chapter_num}: {_le}")
-            # CC round-7 P0-3：持久化章末精确停点，供下一章 director 开场锚点
-            try:
-                append_end_state(self.root, chapter_num, task_card)
-            except Exception as _ee:
-                logger.warning(f"end_state append failed (non-fatal) for ch{chapter_num}: {_ee}")
-
-            # Save commit snapshot in SessionTree
-            try:
-                import hashlib
-                content_bytes = (self._novel_string() + json.dumps(synopsis) + json.dumps(task_card)).encode("utf-8")
-                content_hash = hashlib.sha256(content_bytes).hexdigest()[:16]
-                post_world_state = {
-                    "characters": self.simulator.characters,
-                    "factions": self.simulator.factions,
-                    "power_system": self.simulator.power_system,
-                }
-                self.session_tree.add_commit(
+                self._commit_chapter(
                     chapter_num=chapter_num,
-                    content_hash=content_hash,
-                    world_state_snapshot=post_world_state,
-                    score=result.get("score", score),
-                    branch_name="main"
+                    task_card=task_card,
+                    synopsis=synopsis,
+                    world_state=world_state,
+                    result=result,
+                    score=cur_score,
+                    sm=sm,
                 )
-                self._save_session_tree()
-                logger.info(f"Chapter {chapter_num} node committed to SessionTree.")
+                if not result.get("success", False):
+                    return result
             except Exception as e:
-                logger.error(f"Failed to commit chapter to SessionTree: {e}")
-
-            # success 标记已在质检阶段如实写入，此处不再覆盖，避免掩盖弱章
-            logger.info(f"Chapter {chapter_num} COMMITTED (success={result.get('success')})")
-            # P0 冻结目标：成功发布后清理冻结缓存，下一章重新生成
-            self._frozen_task_cards.pop(chapter_num, None)
-            self._frozen_synopsis.pop(chapter_num, None)
-        except Exception as e:
-            result["errors"].append(f"COMMIT: {e}")
-            sm.handle_failure("commit_error", str(e))
-            # Mark chapter as HALTED on commit failure
-            set_status(self.root, chapter_num, HALTED, reason="commit_error")
-            return result
+                result["errors"].append(f"COMMIT: {e}")
+                sm.handle_failure("commit_error", str(e))
+                set_status(self.root, chapter_num, HALTED, reason="commit_error")
+                return result
 
         # Accumulate cost data for this chapter
         from novel_engine.core.call_metrics import snapshot as _snapshot_metrics
