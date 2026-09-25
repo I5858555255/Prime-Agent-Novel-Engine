@@ -1531,11 +1531,11 @@ class PipelineOrchestrator:
                 self._flag_for_human(chapter_num, cur_score, f"below 82: forced draft, score={cur_score}")
                 return result
 
-            self._commit_chapter(
-                chapter_num=chapter_num, task_card=task_card,
-                synopsis=synopsis, world_state=world_state,
-                result=result, score=cur_score, sm=sm,
-            )
+        self._commit_chapter(
+            chapter_num=chapter_num, task_card=task_card,
+            synopsis=synopsis, world_state=world_state,
+            result=result, score=cur_score, sm=sm,
+        )
 
 
         # Accumulate cost data for this chapter
