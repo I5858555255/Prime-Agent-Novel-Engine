@@ -1351,7 +1351,24 @@ class PipelineOrchestrator:
         from novel_engine.quality.repetition_detector import purify_novel_for_publish as _purify_final
         final_text = _purify_final(final_text, chapter_num=chapter_num)
         self.current_novel = final_text
-        # CC30（DS Q5）：真机提交前清洗混入正文的英文脚手架字段词（id/beats/covered 等）。
+        # R16c P0-C2: stage6 foreshadow coverage check
+        from novel_engine.pipeline.final_gate import run_stage6_foreshadow_check
+        _stage6_result = run_stage6_foreshadow_check(
+            self.root, chapter_num, task_card, final_text, cur_score)
+        if _stage6_result.get('blocked'):
+            logger.error(
+                f'ch{chapter_num} MANDATORY HARD BLOCK at stage6: '
+                f'{_stage6_result.get("hard_block_reason", "unknown")}')
+            result['success'] = False
+            result['published'] = False
+            result['hard_block'] = True
+            result['hard_block_reason'] = _stage6_result.get('hard_block_reason', 'stage6 foreshadow')
+            self._flag_for_human(
+                chapter_num, cur_score,
+                f'stage6 foreshadow hard block: {_stage6_result.get("hard_block_reason", "unknown")}')
+            return result
+
+（id/beats/covered 等）。
         # 保守：只清带 JSON 上下文/复合词/同分句>=2 的字段词，白名单与普通英文不碰；清洗后
         # 由紧随的 final_det 重跑长度/密度/拉丁/beats 门；整段全字段词->硬块走既有隔离 gap。
         _scaffold_rollback30 = False
