@@ -39,6 +39,24 @@ from novel_engine.quality import (
 
 logger = logging.getLogger(__name__)
 
+
+def _forbidden_violations(orchestrator, novel, review_text=""):
+    """Scan novel text for forbidden violations.
+
+    Thin wrapper around ForbiddenScanner that delegates to the gates module.
+    """
+    text = getattr(novel, "content", None)
+    if text is None:
+        text = novel if isinstance(novel, str) else str(novel)
+    from novel_engine.quality.repetition_detector import purify_novel_for_publish
+    text = purify_novel_for_publish(text)
+    out = []
+    out.extend(orchestrator.forbidden.scan(text))
+    if review_text:
+        out.extend(orchestrator.forbidden.scan_review(review_text))
+    return out
+
+
 def _run_continuity_gate(
     self, chapter_num: int, task_card: dict, scenes: list, assembled_text: str
 ) -> str:
