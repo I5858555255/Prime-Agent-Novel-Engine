@@ -5,7 +5,7 @@ import pytest
 from novel_engine.agents.scene_schema import SceneOutput
 from novel_engine.core.errors import ChapterResampleRequiredError
 
-from novel_engine.tests.test_round7_rescue_ladder import (
+from novel_engine.tests.domain_gate_wiring.test_round7_rescue_ladder import (
     _setup_orch, _card, _valid_scene, _Writer,
 )
 

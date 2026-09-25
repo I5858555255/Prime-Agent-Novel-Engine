@@ -7,7 +7,7 @@
 import json
 from pathlib import Path
 
-_CFG = Path(__file__).parents[1] / "config" / "llm_providers.json"
+_CFG = Path(__file__).parents[2] / "config" / "llm_providers.json"
 
 
 def _sf_phases():

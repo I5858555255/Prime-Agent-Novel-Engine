@@ -117,7 +117,7 @@ def test_parse_chapter_tasks_no_trailing_pipe():
 
 def test_parse_chapter_tasks_real_outline_1_300_gap_zero():
     """R2: 真实大纲第一卷 1..300 解析缺口为 0。"""
-    real_path = Path(__file__).parent.parent / "docs" / OUTLINE_FILENAME
+    real_path = Path(__file__).parent.parent.parent / "docs" / OUTLINE_FILENAME
     if not real_path.exists():
         pytest.skip(f"outline not found at {real_path}")
     tasks = parse_chapter_tasks(real_path.read_text(encoding="utf-8"))
@@ -312,7 +312,7 @@ def test_milestone_chapter_outline_injected(tmp_path):
 
 
 def test_offline_demo_ch3_ch4_tasks():
-    real_outline_path = Path(__file__).parent.parent / "docs" / OUTLINE_FILENAME
+    real_outline_path = Path(__file__).parent.parent.parent / "docs" / OUTLINE_FILENAME
     if not real_outline_path.exists():
         pytest.skip(f"outline not found at {real_outline_path}")
     content = real_outline_path.read_text(encoding="utf-8")
@@ -326,7 +326,7 @@ def test_offline_demo_ch3_ch4_tasks():
 
 
 def test_offline_demo_coverage_ch3_fail_on_bad_card():
-    real_outline_path = Path(__file__).parent.parent / "docs" / OUTLINE_FILENAME
+    real_outline_path = Path(__file__).parent.parent.parent / "docs" / OUTLINE_FILENAME
     if not real_outline_path.exists():
         pytest.skip(f"outline not found at {real_outline_path}")
     content = real_outline_path.read_text(encoding="utf-8")

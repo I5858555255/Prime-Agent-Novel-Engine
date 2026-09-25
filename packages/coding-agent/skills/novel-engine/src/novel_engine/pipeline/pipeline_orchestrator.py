@@ -1216,11 +1216,13 @@ class PipelineOrchestrator:
                             apply_world_state = True
                     else:
                         # P0-终态发布：耗尽后仍发布 best 供人审阅（附 note），不重启整章
-                        logger.warning(f"Fix exhausted, publishing best {best_score} < {min_ch} to novel with note (hard gate may still block)")
-                        # 即使 <88 也发布，但不落库世界状态，附 note 供人审
+                        logger.warning(f"Fix exhausted, force-best to draft {best_score} < {min_ch} (never novel/) with note (hard gate may still block)")
+                        # 即使 <88 也发布，但不落库世界状态，附 note 供人审。
+                        # P0-2: 快照 det/high 到 note，避免 future force 无归因证据（backlog 2026-09-06）。
+                        _snapshot_det = list(final_det.get("issues") or [])
                         result["success"] = True
                         result["published"] = True
-                        result["note"] = f"best {best_score} < {min_ch} (hard gate {final_det['issues'] if 'final_det' in locals() else 'unknown'})"
+                        result["note"] = f"best {best_score} < {min_ch} (hard gate {_snapshot_det})"
                         apply_world_state = False
                         # 直接准备落盘 best，不再走 _recover
                         # 将 best 设为当前，便于后续 commit 使用
@@ -5638,7 +5640,7 @@ class PipelineOrchestrator:
                     res = self.generate_single_chapter(ch)
                     if res.get("success"):
                         self.defects.mark_known(ch)
-                        self._mark_chapter_done(ch)
+                        from novel_engine.pipeline.production_runner import save_resume_state; save_resume_state(self.root, [ch])
                         break
         pending = self.defects.pending()
         final_ok = (len(pending) == 0)
@@ -5673,7 +5675,7 @@ class PipelineOrchestrator:
 
         def _done(ch, res):
             if res.get("success"):
-                self._mark_chapter_done(ch)
+                from novel_engine.pipeline.production_runner import save_resume_state; save_resume_state(self.root, [ch])
             return True
 
         self._run_chapters_gated(start_chapter, total_chapters,
@@ -5697,40 +5699,6 @@ class PipelineOrchestrator:
             except Exception:
                 return {}
         return {}
-
-    # ====== Task 11: resume from checkpoint ======
-
-    def _resume_state_path(self):
-        return self.root / self.config.get("autonomy", {}).get(
-            "resume_state_file", "audit/resume_state.json")
-
-    def _mark_chapter_done(self, chapter_num):
-        import json
-        p = self._resume_state_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        done = []
-        if p.exists():
-            try:
-                done = json.loads(p.read_text(encoding="utf-8")).get("done", [])
-            except Exception:
-                done = []
-        if chapter_num not in done:
-            done.append(chapter_num)
-        p.write_text(json.dumps({"done": done}, ensure_ascii=False), encoding="utf-8")
-
-    def resume_from_chapter(self, total_chapters, task_card=None, synopsis=None,
-                            world_state=None):
-        p = self._resume_state_path()
-        done = []
-        if p.exists():
-            try:
-                done = json.loads(p.read_text(encoding="utf-8")).get("done", [])
-            except Exception:
-                done = []
-        start = (max(done) + 1) if done else 1
-        return self.run_full_unattended(total_chapters, task_card=task_card,
-                                        synopsis=synopsis, world_state=world_state,
-                                        start_chapter=start)
 
     def run_medium_test(self, num_chapters: int = 70) -> list[dict]:
         """运行中等规模测试：生成 N 章（含滑动窗口审查）。"""
