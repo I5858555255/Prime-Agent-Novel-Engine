@@ -100,7 +100,7 @@ async def review_chapter(chapter_num: int, project_root=None, use_mock=False):
     """
     orch = _build_orchestrator(project_root, use_mock=use_mock)
     ch = int(chapter_num)
-    novel_path = Path(project_root or ROOT) / "chapters" / "novel" / f"chapter_{ch}.txt"
+    novel_path = novel_chapter_path(project_root or ROOT, ch)
     syn_path = Path(project_root or ROOT) / "chapters" / "synopsis" / f"chapter_{ch}.txt"
     out_path = Path(project_root or ROOT) / "chapters" / "outline" / f"chapter_{ch}.json"
     if not (novel_path.exists() and syn_path.exists() and out_path.exists()):
@@ -167,7 +167,7 @@ async def commit(chapter_num: int, project_root=None):
     """
     ch = int(chapter_num)
     paths = [
-        Path(project_root or ROOT) / "chapters" / "novel" / f"chapter_{ch}.txt",
+        novel_chapter_path(project_root or ROOT, ch),
         Path(project_root or ROOT) / "chapters" / "synopsis" / f"chapter_{ch}.txt",
         Path(project_root or ROOT) / "chapters" / "outline" / f"chapter_{ch}.json",
     ]

@@ -9,6 +9,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
+from novel_engine.core.checkpoint import novel_chapter_path
 
 logger = logging.getLogger("novel_engine.run_utils")
 
@@ -97,7 +98,7 @@ def reset_runtime_state(root: Path):
 def verify_output_files(project_root: Path, results, num_chapters: int):
     """确认每章的 novel / synopsis / outline 文件均已写出。"""
     for i in range(1, min(len(results) + 1, num_chapters + 1)):
-        novel_path = project_root / "chapters" / "novel" / f"chapter_{i}.txt"
+        novel_path = novel_chapter_path(project_root, i)
         synopsis_path = project_root / "chapters" / "synopsis" / f"chapter_{i}.txt"
         outline_path = project_root / "chapters" / "outline" / f"chapter_{i}.json"
 

@@ -30,6 +30,7 @@ from novel_engine.quality.scope_gate import (
 )
 from novel_engine.quality.temporal_continuity import excise_from_text as excise_temporal_violations
 from novel_engine.quality.repetition_detector import purify_novel_for_publish
+from novel_engine.core.checkpoint import novel_chapter_path
 from novel_engine.quality import (
     density_gate, scene_progression_gate, cross_scene_repeat_gate,
     latin_leak_gate, pov_interiority_gate, constraint_compliance_gate,
@@ -1309,7 +1310,7 @@ def _run_boundary_gate(self, chapter_num: int, task_card: dict, scenes: list, as
     self._boundary_hard = []
     if not scenes or int(chapter_num or 0) <= 1:
         return assembled_text
-    prev_path = self.root / "chapters" / "novel" / f"chapter_{chapter_num - 1}.txt"
+    prev_path = novel_chapter_path(self.root, chapter_num - 1)
     if not prev_path.exists():
         return assembled_text
     try:

@@ -15,6 +15,16 @@ logger = logging.getLogger(__name__)
 
 CHECKPOINT_FILE = "runtime/checkpoint.json"
 
+def novel_chapter_path(root, chapter: int) -> Path:
+    """Return the path to a novel chapter .txt file.
+
+    Single source of truth for the chapters/novel/ path layout.
+    Callers that need backup/restore semantics should still build
+    the full path directly; this helper only constructs the target.
+    """
+    return Path(root) / "chapters" / "novel" / f"chapter_{chapter}.txt"
+
+
 
 def _sha256_file(filepath: str | Path) -> str:
     """计算文件SHA256 hash（统一换行符避免平台差异）。"""
@@ -114,7 +124,7 @@ class CheckpointManager:
         if cp is None:
             return False
 
-        novel_path = self.root / "chapters" / "novel" / f"chapter_{chapter}.txt"
+        novel_path = novel_chapter_path(self.root, chapter)
         synopsis_path = self.root / "chapters" / "synopsis" / f"chapter_{chapter}.txt"
         outline_path = self.root / "chapters" / "outline" / f"chapter_{chapter}.json"
 
@@ -178,7 +188,7 @@ class CheckpointManager:
                 return False
 
         # 恢复完成后重新计算并更新hash
-        novel_content = (self.root / "chapters" / "novel" / f"chapter_{chapter}.txt").read_text(encoding="utf-8")
+        novel_content = (novel_chapter_path(self.root, chapter)).read_text(encoding="utf-8")
         synopsis_content = (self.root / "chapters" / "synopsis" / f"chapter_{chapter}.txt").read_text(encoding="utf-8")
         outline_content = (self.root / "chapters" / "outline" / f"chapter_{chapter}.json").read_text(encoding="utf-8")
 
@@ -236,7 +246,7 @@ def create_commit_transaction(
     # 备份文件写入 runtime/backups/，供恢复使用
     backup_dir = root / "runtime" / "backups"
     try:
-        novel_backup = backup_dir / "chapters" / "novel" / f"chapter_{chapter}.txt"
+        novel_backup = novel_chapter_path(backup_dir, chapter)
         synopsis_backup = backup_dir / "chapters" / "synopsis" / f"chapter_{chapter}.txt"
         outline_backup = backup_dir / "chapters" / "outline" / f"chapter_{chapter}.json"
         novel_backup.parent.mkdir(parents=True, exist_ok=True)
@@ -249,7 +259,7 @@ def create_commit_transaction(
         logger.error(f"写入备份失败: {e}")
         raise
     # 正式写入章节文件
-    novel_path = root / "chapters" / "novel" / f"chapter_{chapter}.txt"
+    novel_path = novel_chapter_path(root, chapter)
     synopsis_path = root / "chapters" / "synopsis" / f"chapter_{chapter}.txt"
     outline_path = root / "chapters" / "outline" / f"chapter_{chapter}.json"
     try:

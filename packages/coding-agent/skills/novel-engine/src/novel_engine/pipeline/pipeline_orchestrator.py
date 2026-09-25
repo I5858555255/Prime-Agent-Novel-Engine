@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from novel_engine.core.state_machine import StateMachine, ChapterPhase
-from novel_engine.core.checkpoint import CheckpointManager
+from novel_engine.core.checkpoint import CheckpointManager, novel_chapter_path
 from novel_engine.core.quality_policy import load_quality_policy, is_blocking, derive_scene_targets
 from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.agents.chapter_director import ChapterDirector, merge_thin_scene_blueprints
@@ -2896,7 +2896,7 @@ class PipelineOrchestrator:
         # 跨章结尾结构指纹：与前一章 novel 结尾对比，同构则记 soft 提示
         try:
             _cn = task_card.get("chapter_num") or 0
-            _prev = self.root / "chapters" / "novel" / f"chapter_{_cn - 1}.txt"
+            _prev = novel_chapter_path(self.root, _cn - 1)
             if _prev.exists():
                 _fp_cur = self._structure_fingerprint(purified)
                 _fp_prev = self._structure_fingerprint(_prev.read_text(encoding="utf-8"))
