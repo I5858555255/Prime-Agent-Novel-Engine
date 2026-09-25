@@ -178,3 +178,80 @@ Task-11（commit `1972ab8`）把 `save_resume_state` 迁到 `production_runner.p
 | Task-11 休眠方法 | 已删除（commit `1972ab8`） | ✅ 完成 |
 | force-best log 文案 | 已修复（commit `1972ab8`） | ✅ 完成 |
 | force-note 快照 | 已修复（commit `1972ab8`） | ✅ 完成 |
+
+---
+
+## 4. 已完成拆分（2026-09-25）
+
+### 4.1 Phase 2: 门控方法拆分 ✅
+
+**commit**: `3bae92a`
+
+将 13 个门控/修复方法从 `pipeline_orchestrator.py` 移至 `pipeline/gates.py`:
+
+| 方法 | 原行数 | 状态 |
+|---|---|---|
+| `_run_continuity_gate` | L2931-3031 | ✅ 已移入 gates.py |
+| `_run_scope_gate` | L3032-3156 | ✅ 已移入 gates.py |
+| `_run_density_gate` | L3157-3268 | ✅ 已移入 gates.py |
+| `_run_scene_progression_gate` | L3269-3424 | ✅ 已移入 gates.py |
+| `_run_cross_scene_repeat_gate` | L3425-3507 | ✅ 已移入 gates.py |
+| `_run_latin_leak_gate` | L3548-3599 | ✅ 已移入 gates.py |
+| `_run_pov_interiority_gate` | L3600-3664 | ✅ 已移入 gates.py |
+| `_run_constraint_compliance_gate` | L3665-3723 | ✅ 已移入 gates.py |
+| `_run_punctuation_health_gate` | L3724-3852 | ✅ 已移入 gates.py |
+| `_run_final_precommit_gate` | L3967-4036 | ✅ 已移入 gates.py |
+| `_run_boundary_reprise_gate` | L4037-4097 | ✅ 已移入 gates.py |
+| `_apply_length_floor` | L4098-4187 | ✅ 已移入 gates.py |
+| `_run_boundary_gate` | L4188-4281 | ✅ 已移入 gates.py |
+
+**辅助方法**（同样移入 gates.py）:
+- `_punct_only_repair`（L3509-3547）
+- `_repair_paragraphs_punct_parallel`（L3854-3892）
+- `_repair_paragraphs_punct_batched`（L3894-3965）
+
+**orchestrator 现有 16 行委托块**，使用 lambda + `_gates` 模块引用:
+```python
+_run_continuity_gate = staticmethod(lambda self, *a, **k: _gates._run_continuity_gate(self, *a, **k))
+# ... 15 more
+```
+
+**效果**: orchestrator 从 5960 → 4630 行（-22%），gates.py 1391 行独立可测。
+
+### 4.2 Side C: 共享路径函数 ✅
+
+**commit**: `1aff4efb8`
+
+在 `core/checkpoint.py` 新增 `novel_chapter_path(root, chapter)` 单一真值源:
+```python
+def novel_chapter_path(root, chapter: int) -> Path:
+    return Path(root) / "chapters" / "novel" / f"chapter_{chapter}.txt"
+```
+
+更新了 5 个文件共 9 处调用点:
+- `core/checkpoint.py`: 4 处
+- `agent_api.py`: 2 处
+- `pipeline/gates.py`: 1 处
+- `pipeline/pipeline_orchestrator.py`: 1 处
+- `pipeline/reset_state.py`: 1 处
+
+`web_dashboard.py` 使用目录级路径（`novel_dir`），不涉及文件级拼接，未改动。
+
+---
+
+## 5. 待拆分（按优先级排序）
+
+### Phase 4: 拆分 `generate_single_chapter`（高风险，需专门 session）
+- 当前 318 行 god method（L442-1727 区域，经 gate 拆分后相对位置变化）
+- 内部混杂 A/B/C/D 四类职责
+- **建议**: 先拆 B（门控调用）→ C（修复调用）→ D（发布写入），最后保留 A（状态机编排）
+
+### Phase 3: Remediation 模块拆分（高风险，需专门 session）
+- 方法: `_validate_and_regen_scenes`, `_enforce_mandatory_beats`, `_patch_weak_scenes`, `_cc25_literary_rewrite`, `_rewrite_weak_dimensions`
+- **阻塞原因**: 深度耦合 orchestrator 状态（`self.llm`, `self.writer`, `self._draft_novel`, `self._scene_regen_used`），且方法间互相调用
+- **建议**: 先完成 Phase 4，建立清晰的输入/输出契约后再拆
+
+### P2: Reviewer severity 硬映射
+- 位置: `pipeline_orchestrator.py` L83-100（`_review_issue_is_blocking`）
+- 触发条件: beats pilot dimension→category mapping spec 落地
+- 操作: 在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
