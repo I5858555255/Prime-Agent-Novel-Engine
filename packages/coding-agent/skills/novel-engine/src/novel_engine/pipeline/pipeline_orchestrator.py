@@ -1318,86 +1318,22 @@ class PipelineOrchestrator:
         cur_score = float(result.get("score", score or 0) or 0)
 
 
-        # R16c P0-C2: 阶段6 fail-closed 兜底——final_text 再次跑 foreshadow-only 复检
-        _stage6_mcb = []
-        _stage6_missing_fs_ids: list = []
-        try:
-            from novel_engine.quality.outline_coverage_gate import extract_must_cover_beats as _emb_fn
-            # R17-2 read-time correction：与 _enforce_mandatory_beats 同逻辑，
-            # 保证卡在任何路径下（frozen/direct）都被重新对齐后再做一致性检查。
-            _stage6_reconciled = _emb_fn(task_card)
-            if _stage6_reconciled:
-                task_card["must_cover_beats"] = _stage6_reconciled
-            else:
-                task_card.pop("must_cover_beats", None)
-            _stage6_all = _emb_fn(task_card)
-            _stage6_mcb = [b for b in _stage6_all if b.get("category") == "foreshadow"]
-            # R17-3：stage6 一致性检查——在册伏笔未解析 → 硬阻断
-            _s6_registered = {
-                (fa.get("foreshadow_id") or "").strip()
-                for fa in (task_card.get("foreshadow_actions") or [])
-                if isinstance(fa, dict) and (fa.get("foreshadow_id") or "").strip()
-            }
-            _s6_resolved = {b.get("foreshadow_id", "") for b in _stage6_mcb if b.get("foreshadow_id")}
-            _stage6_missing_fs_ids = sorted(_s6_registered - _s6_resolved)
-        except Exception:
-            pass
-        if _stage6_missing_fs_ids:
+        # R16c P0-C2: stage6 foreshadow coverage check
+        from novel_engine.pipeline.final_gate import run_stage6_foreshadow_check
+        _stage6_result = run_stage6_foreshadow_check(
+            self.root, chapter_num, task_card, final_text, cur_score)
+        if _stage6_result.get('blocked'):
             logger.error(
-                f"ch{chapter_num} MANDATORY HARD BLOCK at stage6: "
-                f"foreshadow_actions present {_s6_registered} but resolved 0 foreshadow beats; "
-                f"missing_ids={_stage6_missing_fs_ids}; score={cur_score} cannot override")
-            try:
-                _qdir6 = self.root / "chapters" / "draft" / "failed" / f"chapter_{chapter_num}"
-                _qdir6.mkdir(parents=True, exist_ok=True)
-                (_qdir6 / "final_gate_reject.txt").write_text(final_text, encoding="utf-8")
-            except Exception as _qe6:
-                logger.error(f"Failed to quarantine stage6 reject ch{chapter_num}: {_qe6}")
-            result["success"] = False
-            result["published"] = False
-            result["hard_block"] = True
-            result["hard_block_reason"] = (
-                f"mandatory foreshadow absent from task card: {_stage6_missing_fs_ids}")
+                f'ch{chapter_num} MANDATORY HARD BLOCK at stage6: '
+                f'{_stage6_result.get("hard_block_reason", "unknown")}')
+            result['success'] = False
+            result['published'] = False
+            result['hard_block'] = True
+            result['hard_block_reason'] = _stage6_result.get('hard_block_reason', 'stage6 foreshadow block')
             self._flag_for_human(
                 chapter_num, cur_score,
-                f"mandatory foreshadow absent from task card: {_stage6_missing_fs_ids}; "
-                f"isolate to draft/failed")
+                f'stage6 foreshadow hard block: {_stage6_result.get("hard_block_reason", "unknown")}')
             return result
-        _stage6_blocked = {}
-        if _stage6_mcb:
-            try:
-                _stage6_journal = {d["scene_id"]: d.get("scene_text", "")
-                                   for d in load_authoritative_scenes(self.root, chapter_num)}
-                if not _stage6_journal:
-                    _stage6_journal = {1: final_text}
-                for _s6sn in sorted(_stage6_journal):
-                    from novel_engine.quality.outline_coverage_gate import check_scene_must_cover_beats as _cscc_fn
-                    _s6ok, _s6miss = _cscc_fn(_stage6_journal[_s6sn], _stage6_mcb, _s6sn)
-                    if not _s6ok and _s6miss:
-                        _stage6_blocked[_s6sn] = _s6miss
-            except Exception as _e6:
-                logger.warning(f"ch{chapter_num} stage6 foreshadow check failed: {_e6}")
-        if _stage6_blocked:
-            logger.error(
-                f"ch{chapter_num} MANDATORY HARD BLOCK at stage6: "
-                f"foreshadow beats still missing in final_text scenes {list(_stage6_blocked.keys())}; "
-                f"score={cur_score} cannot override")
-            try:
-                _qdir6 = self.root / "chapters" / "draft" / "failed" / f"chapter_{chapter_num}"
-                _qdir6.mkdir(parents=True, exist_ok=True)
-                (_qdir6 / "final_gate_reject.txt").write_text(final_text, encoding="utf-8")
-            except Exception as _qe6:
-                logger.error(f"Failed to quarantine stage6 reject ch{chapter_num}: {_qe6}")
-            result["success"] = False
-            result["published"] = False
-            result["hard_block"] = True
-            result["hard_block_reason"] = (
-                f"mandatory foreshadow beats unresolved at final_text: "
-                f"scenes {list(_stage6_blocked.keys())}")
-            self._flag_for_human(
-                chapter_num, cur_score,
-                f"mandatory foreshadow beats unresolved at final_text: "
-                f"scenes {list(_stage6_blocked.keys())}; isolate to draft/failed")
             return result
 
         # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 policy 硬阻断且确定性硬门控通过才写最终目录）
