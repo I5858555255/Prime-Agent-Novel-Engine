@@ -341,3 +341,51 @@ self._reset_call_log()
 - 位置: `pipeline_orchestrator.py` L83-100（`_review_issue_is_blocking`）
 - 触发条件: beats pilot dimension→category mapping spec 落地
 - 操作: 在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
+
+---
+
+## 9. Session 完成摘要（2026-09-25）
+
+### 9.1 完成的拆分
+
+| 模块 | 行数 | 内容 | Commit |
+|---|---|---|---|
+| `pipeline/gates.py` | 1410 | 13 个门控方法 + `_forbidden_violations` | `3bae92a` |
+| `pipeline/final_gate.py` | 112 | stage6 伏笔覆盖检查 | `42a9b1fe3` |
+| `pipeline/review_journal.py` | 45 | 每章评审持久化 | `edd8e82f4` |
+| `core/checkpoint.py` | +18 | `novel_chapter_path()` 共享路径函数 | `1aff4efb8` |
+| **orchestrator 净减** | **-1445 行** | 5960 → 4515 (-24%) | — |
+
+### 9.2 测试状态
+- **874 passed, 2 failed（预存）, 0 skipped**
+- 预存失败：`test_pipeline_incremental_patcher`、`test_same_location_cluster_shared_objects_not_flagged`
+- 零新失败引入
+
+### 9.3 待继续工作
+
+#### P1 Phase 4: 拆分 `generate_single_chapter` god method
+- **当前规模**：~1080 行（原 1175 行，已移走部分逻辑）
+- **阻塞原因**：方法内部混杂 6 个阶段的状态机逻辑 + fix loop + 发布决策，直接切割会破坏状态一致性
+- **建议策略**：
+  1. 先定义清晰的输入/输出契约（各阶段接收什么、返回什么）
+  2. 将 B 类门控调用抽为纯函数（不依赖 self）
+  3. 将 D 类发布逻辑抽为独立模块
+  4. 最后重写 A 类状态机编排
+- **预计耗时**：1-2 sessions
+
+#### P1 Phase 3: Remediation 模块拆分
+- **阻塞原因**：深度耦合 `self.llm`, `self.writer`, `self._draft_novel` 等
+- **建议**：等 Phase 4 完成后，建立清晰接口再拆
+
+#### P2: Reviewer severity 硬映射
+- **阻塞条件**：beats pilot dimension→category mapping spec 落地
+- **操作**：在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
+- **建议触发条件**：pilot 覆盖率 > 80% 且 spec 文档化
+
+### 9.4 关键发现
+
+1. **gate 拆分风险最低**：12 个 `_run_*_gate` 方法命名规整、边界干净，可独立测试
+2. **`generate_single_chapter` 是真正的病灶**：past 30+ rounds 的 patch 绝大多数改的就是这个方法的某个 if 分支
+3. **delegator 模式陷阱**：`staticmethod(lambda)` 不绑定 `self`，需改用实例方法包装
+4. **路径重复拼接是系统性问题**：`chapters/novel/` 在 5+ 文件中各写一遍，现已统一到 `novel_chapter_path()`
+
