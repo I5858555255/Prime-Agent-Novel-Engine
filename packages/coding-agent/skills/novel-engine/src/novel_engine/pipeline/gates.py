@@ -7,6 +7,7 @@ passing self as the first argument where stateful operations are needed
 (_regen_scene_for_id, _flag_for_human, etc.).
 """
 from __future__ import annotations
+from typing import Optional, Callable, Tuple, Any
 
 import logging
 from pathlib import Path
@@ -14,7 +15,7 @@ from pathlib import Path
 from novel_engine.core.errors import SceneUnrecoverableError, ChapterResampleRequiredError, ChapterQualityGapError
 from novel_engine.core.quality_policy import load_quality_policy, is_blocking
 from novel_engine.agents.scene_schema import SceneOutput
-from novel_engine.pipeline.chapter_journal import append_scene
+from novel_engine.pipeline.chapter_journal import append_scene, snapshot_journal
 from novel_engine.pipeline.event_ledger import latest_end_state
 from novel_engine.pipeline.boundary_guard import (
     stage1_score, scene_overlap_scores,
@@ -1492,3 +1493,58 @@ def check_fix_loop_early_stop(
         logger.warning(f"Fix loop no improve for {no_improve} rounds (best {best_score}), early stop")
         return True
     return False
+
+
+
+
+
+# ============================================================================
+# Fix Loop: Best Candidate Tracking (Phase 3.1)
+# ============================================================================
+
+@dataclass
+class BestCandidateState:
+    """Tracks the best candidate across fix loop iterations."""
+    best_score: float
+    best_novel: str
+    best_draft: str
+    best_journal_snapshot: list
+    best_green: Optional[Tuple[float, str, str, list]] = None
+    no_improve: int = 0
+
+
+def track_best_candidate(
+    state: BestCandidateState,
+    score: float,
+    current_novel: str,
+    current_draft: str,
+    deterministic_passed: bool,
+    has_high_issue: bool,
+    snapshot_fn: Callable[[], list],
+) -> BestCandidateState:
+    """Update best candidate tracking after each fix loop iteration."""
+    if score > state.best_score:
+        new_green = None
+        if deterministic_passed and not has_high_issue:
+            new_green = (score, current_novel, current_draft, snapshot_fn())
+        return BestCandidateState(
+            best_score=score,
+            best_novel=current_novel,
+            best_draft=current_draft,
+            best_journal_snapshot=snapshot_fn(),
+            best_green=new_green,
+            no_improve=0,
+        )
+    else:
+        new_green = state.best_green
+        if deterministic_passed and not has_high_issue:
+            if new_green is None or score > new_green[0]:
+                new_green = (score, current_novel, current_draft, snapshot_fn())
+        return BestCandidateState(
+            best_score=state.best_score,
+            best_novel=state.best_novel,
+            best_draft=state.best_draft,
+            best_journal_snapshot=state.best_journal_snapshot,
+            best_green=new_green,
+            no_improve=state.no_improve + 1,
+        )
