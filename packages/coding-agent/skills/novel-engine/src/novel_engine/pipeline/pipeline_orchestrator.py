@@ -722,278 +722,18 @@ class PipelineOrchestrator:
                     frozen = self._frozen_task_cards.get(chapter_num, task_card)
                     _reaction_fix_budget = 1  # CC round-19 P9d: 整章至多1次 reaction 定点修订
                     for _ in range(max_fix):
-                        # R16c P0-B: 每轮 fix 前复检必填伏笔（patch 回写 journal 后，确保重生文本进入当轮评审）
-                        _iter_mand = self._enforce_mandatory_beats(
-                            chapter_num, task_card,
-                            synopsis_text=synopsis.get('synopsis', '') if isinstance(synopsis, dict) else str(synopsis or ''))
-                        if _iter_mand.get('blocked'):
-                            logger.error(
-                                f'ch{chapter_num} MANDATORY HARD BLOCK at fix-loop iter={_}: '
-                                f'foreshadow beats unresolved: {list(_iter_mand.get("missing_fs_ids", []))}')
-                            self._mandatory_blocked = _iter_mand['missing_scenes']
-                            result['success'] = False
-                            result['published'] = False
-                            result['hard_block'] = True
-                            result['hard_block_reason'] = (
-                                f'mandatory foreshadow beats unresolved after fix-loop iter={_}: '
-                                f'{list(_iter_mand.get("missing_fs_ids", []))}')
-                            self._flag_for_human(
-                                chapter_num, 0,
-                                f'mandatory foreshadow beats unresolved after fix loop; isolate to draft/failed')
+                        current, current_draft, best_state, _reaction_fix_budget, _stop = \
+                            self._run_fix_loop_iteration(
+                                chapter_num, task_card, synopsis,
+                                current, current_draft, best_state,
+                                _, min_ch, _soft_line,
+                                world_state, result,
+                                _reaction_fix_budget, frozen)
+                        if _stop:
                             break
-                        self._finalize_current_novel(chapter_num)
-                        # D1 P8D: 无条件刷新 local current 以与 self.current_novel 同源（含 finalize 切分后文本）
-                        current = self.current_novel or current
-                        current_draft = self._draft_novel or current_draft
-                        staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
-                        s = staged["score"]
-                        result["score"] = s
-                        _fix_policy = self._policy
-                        has_high = any(_review_issue_is_blocking(_fix_policy, iss) for iss in (staged["review"].get("issues") or []))
-                        high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:60]}" for iss in (staged["review"].get("issues") or []) if _review_issue_is_blocking(_fix_policy, iss)]
-                        det = self._deterministic_quality_gate(current, task_card)
-                        soft = det.get("soft_issues", [])
-                        _react_hits = det.get("reaction_hits") or []
-                        _react_dir = det.get("reaction_directive") or ""
-                        # CC round-19 P9c/P9d: reaction 命中且预算未耗尽 → 注入合成评审问题，
-                        # 使本轮 _patch_weak_scenes 针对命中场做定点修订，再重跑门/评审。
-                        _reaction_pending = bool(_react_hits) and _reaction_fix_budget > 0
-                        if _reaction_pending and staged.get("review"):
-                            _r_first = _react_hits[0]
-                            _r_scene_ids = _r_first.get("scene_ids", [])
-                            staged["review"].setdefault("issues", []).append({
-                                "dimension": "reaction_consistency",
-                                "severity": "soft",
-                                "scene_ids": _r_scene_ids,
-                                "description": f"[反应一致性] {_r_first.get('desc', '')[:80]}",
-                                "suggested_fix": _react_dir,
-                            })
-                            _reaction_fix_budget -= 1
-                            logger.info(
-                                f"Reaction fix injected ch{chapter_num}: scenes={_r_scene_ids} "
-                                f"budget_left={_reaction_fix_budget}")
-                        best_state = _gates.track_best_candidate(
-                            best_state, s, current, current_draft,
-                            det["passed"], has_high,
-                            lambda: snapshot_journal(self.root, chapter_num))
-                        # CC round-14 P0-3：确定性门全过+无high 时，>=88 正常过；85-87.9 灰带也放行（打标人工抽读）
-                        _gray_ok = (_soft_line <= s < min_ch) and not has_high and det["passed"]
-                        if s >= min_ch:
-                            if not has_high and det["passed"] and not _reaction_pending:
-                                if soft:
-                                    logger.info(f"Score {s} ≥ {min_ch} soft issues (不阻断): {soft}")
-                                break
-                            elif _reaction_pending:
-                                logger.warning(f"Score {s} ≥ {min_ch} but reaction pending fix → continue")
-                            else:
-                                logger.warning(f"Score {s} ≥ {min_ch} but blocked → high={high_list} det_hard={det['issues']} det_soft={soft} → continue fix")
-                        elif _gray_ok and not _reaction_pending:
-                            logger.warning(f"Gray-band release ch{chapter_num}: score {s} in [{_soft_line},{min_ch}) + gates pass + no-high → release to novel (flagged for human spot-check) soft={soft}")
-                            result["gray_band_release"] = True
-                            result["gray_band_score"] = s
-                            _flag_reason = f"gray-band release {s}: deterministic gates passed, no high issue, please spot-read" + ("; reaction consistency 未消解（已尝试定点修订）" if (_react_hits and _reaction_fix_budget == 0) else "")
-                            self._flag_for_human(chapter_num, s, _flag_reason)
-                            break
-                        elif _reaction_pending:
-                            logger.warning(f"Score {s} in gray band but reaction pending fix → continue")
-                        # 3 轮不超 best 即提前终止，避免单章空转 1.5h
-                        if _gates.check_fix_loop_early_stop(_, best_state.no_improve, best_state.best_score):
-                            break
-                        # 优先场景级增量缝合（基于 draft 带标记文本，避免 purified 找不到 marker）
-                        # CC round-25 P0-2：E-loop 逐场定点只处理可场景归因的结构性维度；
-                        # hook/style/innovation 三维从补丁评审中剔除，交给下方整章一次性文学性重写。
-                        try:
-                            from novel_engine.agents.literary_pass import (
-                                strip_literary_from_review as _strip_lit25,
-                                literary_weak as _lit_weak25)
-                            _review_for_patch = _strip_lit25(staged["review"])
-                        except Exception:
-                            _review_for_patch = staged["review"]
-                            _lit_weak25 = lambda _r: False  # noqa: E731
-                        patched_draft = self._patch_weak_scenes(current_draft, _review_for_patch, task_card, synopsis,
-                                                              chapter_num=chapter_num)
-                        _cc25_fixed = False  # CC25：本轮结构补丁或文学性重写任一落地即统一重评审
-                        frozen = self._frozen_task_cards.get(chapter_num, task_card)
-                        if patched_draft is not None and patched_draft != current_draft and len(patched_draft) >= len(current_draft) // 2:
-                            # 缝合后需重新净化并强制字数
-                            patched_purified = purify_novel_for_publish(patched_draft, chapter_num=chapter_num)
-                            # CC round-18 P0-3：fix-loop 采纳评审建议前，对拟新增/修改文本过 canon/阶段约束硬过滤；
-                            # 命中 infant.json hard_block → 拒绝本 patch，改走整章重生/人工标记，禁止静默落稿。
-                            try:
-                                from novel_engine.quality.scope_gate import detect_scope_violations
-                                _prefilter_h = detect_scope_violations(
-                                    patched_purified, int(chapter_num or 0),
-                                    timeline_anchor=None, root=self.root).get("hard", [])
-                                if _prefilter_h:
-                                    _pf_terms = sorted({v.get("term", "") for v in _prefilter_h})
-                                    logger.warning(
-                                        f"ch{chapter_num} fix pre-filter REJECTS patch: "
-                                        f"canon hard_block hits={_pf_terms} -> abort patch, force full rewrite")
-                                    patched_draft = None  # abort: fall through to full rewrite path
-                                else:
-                                    logger.info(f"ch{ch_num} fix pre-filter: 0 hard hits, patch accepted")
-                            except Exception as _pe:
-                                # D3：fail-closed — 异常拒绝 patch，不静默接受
-                                logger.error(
-                                    f"ch{chapter_num} fix pre-filter FATAL: {_pe} -> REJECT patch")
-                                patched_draft = None
-                            # 强制字数（用冻结目标）
-                            total = sum(self._bpt(bp) for bp in (frozen.get("scene_blueprints") or []))
-                            if total > 0:
-                                _pol = self._policy
-                                patched_purified = self._enforce_word_count(
-                                    patched_purified,
-                                    int(total * _pol["min_ratio"]),
-                                    int(total * _pol["max_ratio"] + max(_pol["tolerance_chars"], total * 0.02)))
-                            if patched_draft is not None:
-                                current = patched_purified
-                                current_draft = patched_draft
-                                self.current_novel = current
-                                self._draft_novel = current_draft
-                            # 注：patch 增益已在 _patch_weak_scenes 内回写 journal，
-                            # 此处无需额外同步（journal 即 source of truth）。
-                            # 更新 gate
-                            gate_after = self._deterministic_quality_gate(current, frozen)
-                            self._last_deterministic_issues = gate_after["issues"]
-                            _cc25_fixed = True
-                        # CC round-25 P0-2：结构补丁与文学性重写在同一轮【叠加】执行——
-                        # 结构补丁负责 pacing/retention/plot/cliff 等可场景归因维度（已回写 journal），
-                        # 文学性 pass 紧接着针对 hook/style/innovation 在【最新 journal】上做整章一次性
-                        # 场末/措辞重写；避免"结构补丁一应用就 continue"把三维修复饿死（r30 实测该缺陷）。
-                        _lit_used25 = getattr(self, "_literary_pass_used", None)
-                        if _lit_used25 is None:
-                            _lit_used25 = set()
-                            self._literary_pass_used = _lit_used25
-                        if _lit_weak25(staged["review"]) and chapter_num not in _lit_used25:
-                            _prev_current, _prev_draft = current, current_draft
-                            _lit_res25 = self._cc25_literary_rewrite(
-                                current, staged["review"], task_card, synopsis, chapter_num)
-                            if _lit_res25 is not None:
-                                _lit_used25.add(chapter_num)
-                                current, current_draft = _lit_res25
-                                self.current_novel = current
-                                self._draft_novel = current_draft
-                                # D5：文学重写落稿前过同一 canon/阶段约束硬过滤
-                                try:
-                                    from novel_engine.quality.scope_gate import detect_scope_violations
-                                    _lit_h = detect_scope_violations(
-                                        current, int(chapter_num or 0),
-                                        timeline_anchor=None, root=self.root).get("hard", [])
-                                    if _lit_h:
-                                        _lit_terms = sorted({v.get("term", "") for v in _lit_h})
-                                        logger.warning(
-                                            f"ch{chapter_num} literary pass REJECTS: "
-                                            f"canon hard_block hits={_lit_terms} -> discard rewrite")
-                                        current, current_draft = _prev_current, _prev_draft
-                                        self.current_novel = current
-                                        self._draft_novel = current_draft
-                                    else:
-                                        logger.info(f"ch{chapter_num} literary pass pre-filter: 0 hard hits, accepted")
-                                except Exception as _le:
-                                    logger.warning(f"ch{chapter_num} literary pre-filter error: {_le} -> keep rewrite")
-                                gate_after = self._deterministic_quality_gate(current, frozen)
-                                self._last_deterministic_issues = gate_after["issues"]
-                                _cc25_fixed = True
-                            else:
-                                logger.info(f"ch{chapter_num}: CC25 literary pass produced no gain")
-                        if _cc25_fixed:
-                            continue
-                        # CC round-7 P0-1：整章 rewrite 实测会降分（84.2→65.8），默认下线；
-                        # 只保留 E 场景定点重生，patch 走不通即结束修复循环 → 终态隔离/HALT。
-                        if not self._allow_whole_rewrite:
-                            logger.info(
-                                f"ch{chapter_num}: whole-chapter rewrite disabled "
-                                "(allow_whole_chapter_rewrite=false); end fix loop → terminal routing")
-                            break
-                        rewritten = self._rewrite_weak_dimensions(current, staged["review"])
-                        if not rewritten or len(rewritten) < len(current) // 2:
-                            break
-                        # ── 按场景标记切分，按 scene_id 升序写入 journal，避免 draft/journal 双本本漂移
-                        _scenes = []
-                        # 优先 ※ 分割，其次 【场景N】 两种格式
-                        import re as _re
-                        # 使用 capturing group 的 split：保留标记在结果中，
-                        # parts[0] 为标记前内容（跳过），parts[1] 为标记1，parts[2] 为标记1后文本，parts[3] 为标记2，...
-                        parts = _re.split(r'(※|【场景\d+】)', rewritten)
-                        # 收集所有（标记、文本）对，每个标记后的一段为一个场景
-                        i = 1  # 跳过 parts[0]（标记前内容）
-                        while i + 1 < len(parts):
-                            marker = parts[i].strip()       # 如 "※3" 或 "【场景3】"
-                            text = parts[i + 1].strip()     # 如 "该场景的正文..."
-                            # 从标记中提取 scene_id：※数字 或 【场景N】
-                            m = _re.search(r'※\s*(\d+)|【场景(\d+)\]', marker)
-                            if m:
-                                sid = int(m.group(1) or m.group(2))
-                            else:
-                                # 无标记数字：按出现顺序 1..N 映射（从已有 journal 最大值 + 1 续）
-                                existing = load_scenes(self.root, chapter_num)
-                                sid = (max((s["scene_id"] for s in existing), default=0) + 1) if existing else 1
-                            _scenes.append({"scene_id": sid, "scene_text": text})
-                            i += 2  # 步进到下一个标记
-                        # 若以文本结尾且无最后标记，视为无标记场景（按顺序接续）
-                        if i <= len(parts) - 1:
-                            trailing = parts[i].strip()
-                            if trailing and not _re.match(r'※|【场景\d+]', trailing):
-                                existing = load_scenes(self.root, chapter_num)
-                                sid = (max((s["scene_id"] for s in existing), default=0) + 1) if existing else len(_scenes) + 1
-                                _scenes.append({"scene_id": sid, "scene_text": trailing})
-                        # 写入 journal：upsert 语义（同一 scene_id 只保留最新记录）
-                        # 采用现有 chapter_journal 机制：载入现有，覆写/新增后按 scene_id 升序整文件写入
-                        from novel_engine.pipeline.chapter_journal import append_scene, load_scenes as _load_scenes
-                        existing_scenes = _load_scenes(self.root, chapter_num)
-                        # 建立 id→scene 的快速查找
-                        _by_id = {s["scene_id"]: s for s in existing_scenes}
-                        # 覆写或新增每个 scene
-                        for s in _scenes:
-                            if s["scene_id"] in _by_id:
-                                _by_id[s["scene_id"]]["scene_text"] = s["scene_text"]
-                            else:
-                                existing_scenes.append(s)
-                                _by_id[s["scene_id"]] = s
-                        # 按 scene_id 升序排序后写入（确保顺序确定）
-                        existing_scenes.sort(key=lambda s: s["scene_id"])
-                        journal_path = __import__('pathlib').Path(self.root) / "chapters" / "draft" / f"chapter_{chapter_num}_partial.jsonl"
-                        journal_path.parent.mkdir(parents=True, exist_ok=True)
-                        with open(journal_path, "w", encoding="utf-8") as f:
-                            for s in existing_scenes:
-                                f.write(json.dumps({"scene_id": s["scene_id"], "scene_text": s["scene_text"],
-                                                    "hook": s.get("hook", ""), "beats": list(s.get("beats", []) or []),
-                                                    "entities_json": s.get("entities_json", "")}, ensure_ascii=False) + "\n")
-                        # 5) 从 journal 按 scene_id 升序重新拼接 current（※ 分隔），不再使用 rewritten 原文作为后续引用
-                        ordered = existing_scenes  # 已是升序
-                        current = "※".join([s["scene_text"] for s in ordered])
-                        current_draft = current  # 重写结果同步为 draft
-                        self.current_novel = current
-                        self._draft_novel = current_draft
-                        # P7C：保存含※分隔符的权威分场，供最终门控使用
-                        self._assembled_with_seps = current
-                        # Journal write-back 已在上文完成（upsert 语义），无需额外同步
-                        gate_after = self._deterministic_quality_gate(current, frozen)
-                        self._last_deterministic_issues = gate_after["issues"]
-                    # CC28 批B：优先采纳“硬门全绿”候选；没有任何全绿候选时才退回最高分候选
+                    # CC28 批B：优先采纳"硬门全绿"候选；没有任何全绿候选时才退回最高分候选
                     # （供人审队列），并保持其分数为最终分。
-                    best_score = best_state.best_score
-                    best_novel = best_state.best_novel
-                    best_draft = best_state.best_draft
-                    _best_journal_snapshot = best_state.best_journal_snapshot
-                    if best_state.best_green is not None:
-                        gs = best_state.best_green
-                        if gs[0] < best_state.best_score:
-                            logger.warning(
-                                f"ch{chapter_num}: adopt gate-green candidate {gs[0]} over "
-                                f"higher-score blocked candidate {best_state.best_score}")
-                        best_score, best_novel, best_draft, _best_journal_snapshot = gs
-                    self.current_novel = best_novel
-                    self._draft_novel = best_draft
-                    result["score"] = best_score
-                    # CC28 批B：采纳 best 时把 journal 原子恢复到该候选的事实态快照，
-                    # 必须先于任何后续从 journal 的读取（post-fix topup/终检/组装/发布）。
-                    if restore_journal(self.root, chapter_num, _best_journal_snapshot):
-                        logger.info(f"ch{chapter_num}: journal atomically rolled back to best "
-                                    f"candidate snapshot (score={best_score})")
-                    else:
-                        logger.error(f"ch{chapter_num}: journal rollback to best snapshot FAILED "
-                                     f"(score={best_score}); journal may diverge from chosen text")
+                    best_score, best_novel, best_draft, _best_journal_snapshot = self._select_final_candidate(chapter_num, best_state, result)
                     # CC round-18 P0-3：修订后二次长度门（E-loop“先删后补”可能让成稿缩水）
                     try:
                         from novel_engine.quality.post_fix_length import post_fix_length_decision
@@ -1017,6 +757,7 @@ class PipelineOrchestrator:
                                         best_novel=best_novel,
                                         best_draft=best_draft,
                                         best_journal_snapshot=_best_journal_snapshot,
+                                        best_green=best_state.best_green,  # 保留原best_green状态
                                     )
                                     self.current_novel = best_novel
                                     self._draft_novel = best_draft
@@ -3861,6 +3602,282 @@ class PipelineOrchestrator:
             return None
         logger.info(f"Incremental patch applied for scenes {sorted(target_nums)} (fix_scope={fix_scope!r})")
         return patched
+
+    def _run_fix_loop_iteration(self, chapter_num: int, task_card: dict, synopsis: dict,
+                                 current: str, current_draft: str,
+                                 best_state: "_gates.BestCandidateState",
+                                 iteration: int, min_ch: int, _soft_line: int,
+                                 world_state: dict, result: dict,
+                                 _reaction_fix_budget: int,
+                                 frozen: dict) -> tuple:
+        """Run one iteration of the fix loop.
+
+        Returns (current, current_draft, best_state, _reaction_fix_budget, stop_reason).
+        stop_reason is None to continue, or one of:
+        'hard_block', 'pass', 'gray_band', 'early_stop', 'rewrite_disabled', 'rewrite_empty'.
+        """
+        # R16c P0-B: 每轮 fix 前复检必填伏笔（patch 回写 journal 后，确保重生文本进入当轮评审）
+        _iter_mand = self._enforce_mandatory_beats(
+            chapter_num, task_card,
+            synopsis_text=synopsis.get('synopsis', '') if isinstance(synopsis, dict) else str(synopsis or ''))
+        if _iter_mand.get('blocked'):
+            logger.error(
+                f'ch{chapter_num} MANDATORY HARD BLOCK at fix-loop iter={iteration}: '
+                f'foreshadow beats unresolved: {list(_iter_mand.get("missing_fs_ids", []))}')
+            self._mandatory_blocked = _iter_mand['missing_scenes']
+            result['success'] = False
+            result['published'] = False
+            result['hard_block'] = True
+            result['hard_block_reason'] = (
+                f'mandatory foreshadow beats unresolved after fix-loop iter={iteration}: '
+                f'{list(_iter_mand.get("missing_fs_ids", []))}')
+            self._flag_for_human(
+                chapter_num, 0,
+                f'mandatory foreshadow beats unresolved after fix loop; isolate to draft/failed')
+            return current, current_draft, best_state, _reaction_fix_budget, 'hard_block'
+        self._finalize_current_novel(chapter_num)
+        # D1 P8D: 无条件刷新 local current 以与 self.current_novel 同源（含 finalize 切分后文本）
+        current = self.current_novel or current
+        current_draft = self._draft_novel or current_draft
+        staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
+        s = staged["score"]
+        result["score"] = s
+        _fix_policy = self._policy
+        has_high = any(_review_issue_is_blocking(_fix_policy, iss) for iss in (staged["review"].get("issues") or []))
+        high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:60]}" for iss in (staged["review"].get("issues") or []) if _review_issue_is_blocking(_fix_policy, iss)]
+        det = self._deterministic_quality_gate(current, task_card)
+        soft = det.get("soft_issues", [])
+        _react_hits = det.get("reaction_hits") or []
+        _react_dir = det.get("reaction_directive") or ""
+        # CC round-19 P9c/P9d: reaction 命中且预算未耗尽 → 注入合成评审问题，
+        # 使本轮 _patch_weak_scenes 针对命中场做定点修订，再重跑门/评审。
+        _reaction_pending = bool(_react_hits) and _reaction_fix_budget > 0
+        if _reaction_pending and staged.get("review"):
+            _r_first = _react_hits[0]
+            _r_scene_ids = _r_first.get("scene_ids", [])
+            staged["review"].setdefault("issues", []).append({
+                "dimension": "reaction_consistency",
+                "severity": "soft",
+                "scene_ids": _r_scene_ids,
+                "description": f"[反应一致性] {_r_first.get('desc', '')[:80]}",
+                "suggested_fix": _react_dir,
+            })
+            _reaction_fix_budget -= 1
+            logger.info(
+                f"Reaction fix injected ch{chapter_num}: scenes={_r_scene_ids} "
+                f"budget_left={_reaction_fix_budget}")
+        best_state = _gates.track_best_candidate(
+            best_state, s, current, current_draft,
+            det["passed"], has_high,
+            lambda: snapshot_journal(self.root, chapter_num))
+        # CC round-14 P0-3：确定性门全过+无high 时，>=88 正常过；85-87.9 灰带也放行（打标人工抽读）
+        _gray_ok = (_soft_line <= s < min_ch) and not has_high and det["passed"]
+        if s >= min_ch:
+            if not has_high and det["passed"] and not _reaction_pending:
+                if soft:
+                    logger.info(f"Score {s} ≥ {min_ch} soft issues (不阻断): {soft}")
+                return current, current_draft, best_state, _reaction_fix_budget, 'pass'
+            elif _reaction_pending:
+                logger.warning(f"Score {s} ≥ {min_ch} but reaction pending fix → continue")
+            else:
+                logger.warning(f"Score {s} ≥ {min_ch} but blocked → high={high_list} det_hard={det['issues']} det_soft={soft} → continue fix")
+        elif _gray_ok and not _reaction_pending:
+            logger.warning(f"Gray-band release ch{chapter_num}: score {s} in [{_soft_line},{min_ch}) + gates pass + no-high → release to novel (flagged for human spot-check) soft={soft}")
+            result["gray_band_release"] = True
+            result["gray_band_score"] = s
+            _flag_reason = f"gray-band release {s}: deterministic gates passed, no high issue, please spot-read" + ("; reaction consistency 未消解（已尝试定点修订）" if (_react_hits and _reaction_fix_budget == 0) else "")
+            self._flag_for_human(chapter_num, s, _flag_reason)
+            return current, current_draft, best_state, _reaction_fix_budget, 'gray_band'
+        elif _reaction_pending:
+            logger.warning(f"Score {s} in gray band but reaction pending fix → continue")
+        # 3 轮不超 best 即提前终止，避免单章空转 1.5h
+        if _gates.check_fix_loop_early_stop(iteration, best_state.no_improve, best_state.best_score):
+            return current, current_draft, best_state, _reaction_fix_budget, 'early_stop'
+        # 优先场景级增量缝合（基于 draft 带标记文本，避免 purified 找不到 marker）
+        # CC round-25 P0-2：E-loop 逐场定点只处理可场景归因的结构性维度；
+        # hook/style/innovation 三维从补丁评审中剔除，交给下方整章一次性文学性重写。
+        try:
+            from novel_engine.agents.literary_pass import (
+                strip_literary_from_review as _strip_lit25,
+                literary_weak as _lit_weak25)
+            _review_for_patch = _strip_lit25(staged["review"])
+        except Exception:
+            _review_for_patch = staged["review"]
+            _lit_weak25 = lambda _r: False  # noqa: E731
+        patched_draft = self._patch_weak_scenes(current_draft, _review_for_patch, task_card, synopsis,
+                                              chapter_num=chapter_num)
+        _cc25_fixed = False  # CC25：本轮结构补丁或文学性重写任一落地即统一重评审
+        if patched_draft is not None and patched_draft != current_draft and len(patched_draft) >= len(current_draft) // 2:
+            # 缝合后需重新净化并强制字数
+            patched_purified = purify_novel_for_publish(patched_draft, chapter_num=chapter_num)
+            # CC round-18 P0-3：fix-loop 采纳评审建议前，对拟新增/修改文本过 canon/阶段约束硬过滤；
+            # 命中 infant.json hard_block → 拒绝本 patch，改走整章重生/人工标记，禁止静默落稿。
+            try:
+                from novel_engine.quality.scope_gate import detect_scope_violations
+                _prefilter_h = detect_scope_violations(
+                    patched_purified, int(chapter_num or 0),
+                    timeline_anchor=None, root=self.root).get("hard", [])
+                if _prefilter_h:
+                    _pf_terms = sorted({v.get("term", "") for v in _prefilter_h})
+                    logger.warning(
+                        f"ch{chapter_num} fix pre-filter REJECTS patch: "
+                        f"canon hard_block hits={_pf_terms} -> abort patch, force full rewrite")
+                    patched_draft = None  # abort: fall through to full rewrite path
+                else:
+                    logger.info(f"ch{chapter_num} fix pre-filter: 0 hard hits, patch accepted")
+            except Exception as _pe:
+                # D3：fail-closed — 异常拒绝 patch，不静默接受
+                logger.error(
+                    f"ch{chapter_num} fix pre-filter FATAL: {_pe} -> REJECT patch")
+                patched_draft = None
+            # 强制字数（用冻结目标）
+            total = sum(self._bpt(bp) for bp in (frozen.get("scene_blueprints") or []))
+            if total > 0:
+                _pol = self._policy
+                patched_purified = self._enforce_word_count(
+                    patched_purified,
+                    int(total * _pol["min_ratio"]),
+                    int(total * _pol["max_ratio"] + max(_pol["tolerance_chars"], total * 0.02)))
+            if patched_draft is not None:
+                current = patched_purified
+                current_draft = patched_draft
+                self.current_novel = current
+                self._draft_novel = current_draft
+            # 注：patch 增益已在 _patch_weak_scenes 内回写 journal，
+            # 此处无需额外同步（journal 即 source of truth）。
+            # 更新 gate
+            gate_after = self._deterministic_quality_gate(current, frozen)
+            self._last_deterministic_issues = gate_after["issues"]
+            _cc25_fixed = True
+        # CC round-25 P0-2：结构补丁与文学性重写在同一轮【叠加】执行——
+        # 结构补丁负责 pacing/retention/plot/cliff 等可场景归因维度（已回写 journal），
+        # 文学性 pass 紧接着针对 hook/style/innovation 在【最新 journal】上做整章一次性
+        # 场末/措辞重写；避免"结构补丁一应用就 continue"把三维修复饿死（r30 实测该缺陷）。
+        _lit_used25 = getattr(self, "_literary_pass_used", None)
+        if _lit_used25 is None:
+            _lit_used25 = set()
+            self._literary_pass_used = _lit_used25
+        if _lit_weak25(staged["review"]) and chapter_num not in _lit_used25:
+            _prev_current, _prev_draft = current, current_draft
+            _lit_res25 = self._cc25_literary_rewrite(
+                current, staged["review"], task_card, synopsis, chapter_num)
+            if _lit_res25 is not None:
+                _lit_used25.add(chapter_num)
+                current, current_draft = _lit_res25
+                self.current_novel = current
+                self._draft_novel = current_draft
+                # D5：文学重写落稿前过同一 canon/阶段约束硬过滤
+                try:
+                    from novel_engine.quality.scope_gate import detect_scope_violations
+                    _lit_h = detect_scope_violations(
+                        current, int(chapter_num or 0),
+                        timeline_anchor=None, root=self.root).get("hard", [])
+                    if _lit_h:
+                        _lit_terms = sorted({v.get("term", "") for v in _lit_h})
+                        logger.warning(
+                            f"ch{chapter_num} literary pass REJECTS: "
+                            f"canon hard_block hits={_lit_terms} -> discard rewrite")
+                        current, current_draft = _prev_current, _prev_draft
+                        self.current_novel = current
+                        self._draft_novel = current_draft
+                    else:
+                        logger.info(f"ch{chapter_num} literary pass pre-filter: 0 hard hits, accepted")
+                except Exception as _le:
+                    logger.warning(f"ch{chapter_num} literary pre-filter error: {_le} -> keep rewrite")
+                gate_after = self._deterministic_quality_gate(current, frozen)
+                self._last_deterministic_issues = gate_after["issues"]
+                _cc25_fixed = True
+            else:
+                logger.info(f"ch{chapter_num}: CC25 literary pass produced no gain")
+        if _cc25_fixed:
+            return current, current_draft, best_state, _reaction_fix_budget, None
+        # CC round-7 P0-1：整章 rewrite 实测会降分（84.2→65.8），默认下线；
+        # 只保留 E 场景定点重生，patch 走不通即结束修复循环 → 终态隔离/HALT。
+        if not self._allow_whole_rewrite:
+            logger.info(
+                f"ch{chapter_num}: whole-chapter rewrite disabled "
+                "(allow_whole_chapter_rewrite=false); end fix loop → terminal routing")
+            return current, current_draft, best_state, _reaction_fix_budget, 'rewrite_disabled'
+        rewritten = self._rewrite_weak_dimensions(current, staged["review"])
+        if not rewritten or len(rewritten) < len(current) // 2:
+            return current, current_draft, best_state, _reaction_fix_budget, 'rewrite_empty'
+        # ── 按场景标记切分，按 scene_id 升序写入 journal，避免 draft/journal 双本本漂移
+        _scenes = []
+        # 优先 ※ 分割，其次 【场景N】 两种格式
+        import re as _re
+        parts = _re.split(r'(※|【场景\d+】)', rewritten)
+        i = 1  # 跳过 parts[0]（标记前内容）
+        while i + 1 < len(parts):
+            marker = parts[i].strip()
+            text = parts[i + 1].strip()
+            m = _re.search(r'※\s*(\d+)|【场景(\d+)\]', marker)
+            if m:
+                sid = int(m.group(1) or m.group(2))
+            else:
+                existing = load_scenes(self.root, chapter_num)
+                sid = (max((s["scene_id"] for s in existing), default=0) + 1) if existing else 1
+            _scenes.append({"scene_id": sid, "scene_text": text})
+            i += 2
+        if i <= len(parts) - 1:
+            trailing = parts[i].strip()
+            if trailing and not _re.match(r'※|【场景\d+]', trailing):
+                existing = load_scenes(self.root, chapter_num)
+                sid = (max((s["scene_id"] for s in existing), default=0) + 1) if existing else len(_scenes) + 1
+                _scenes.append({"scene_id": sid, "scene_text": trailing})
+        from novel_engine.pipeline.chapter_journal import append_scene, load_scenes as _load_scenes
+        existing_scenes = _load_scenes(self.root, chapter_num)
+        _by_id = {s["scene_id"]: s for s in existing_scenes}
+        for s in _scenes:
+            if s["scene_id"] in _by_id:
+                _by_id[s["scene_id"]]["scene_text"] = s["scene_text"]
+            else:
+                existing_scenes.append(s)
+                _by_id[s["scene_id"]] = s
+        existing_scenes.sort(key=lambda s: s["scene_id"])
+        journal_path = __import__('pathlib').Path(self.root) / "chapters" / "draft" / f"chapter_{chapter_num}_partial.jsonl"
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(journal_path, "w", encoding="utf-8") as f:
+            for s in existing_scenes:
+                f.write(json.dumps({"scene_id": s["scene_id"], "scene_text": s["scene_text"],
+                                    "hook": s.get("hook", ""), "beats": list(s.get("beats", []) or []),
+                                    "entities_json": s.get("entities_json", "")}, ensure_ascii=False) + "\n")
+        ordered = existing_scenes
+        current = "※".join([s["scene_text"] for s in ordered])
+        current_draft = current
+        self.current_novel = current
+        self._draft_novel = current_draft
+        self._assembled_with_seps = current
+        gate_after = self._deterministic_quality_gate(current, frozen)
+        self._last_deterministic_issues = gate_after["issues"]
+        return current, current_draft, best_state, _reaction_fix_budget, None
+
+
+    def _select_final_candidate(self, chapter_num: int, best_state: "_gates.BestCandidateState", result: dict) -> tuple:
+        """Select final candidate after fix loop completes.
+
+        Returns (best_score, best_novel, best_draft, best_journal_snapshot).
+        """
+        best_score = best_state.best_score
+        best_novel = best_state.best_novel
+        best_draft = best_state.best_draft
+        _best_journal_snapshot = best_state.best_journal_snapshot
+        if best_state.best_green is not None:
+            gs = best_state.best_green
+            if gs[0] < best_state.best_score:
+                logger.warning(
+                    f"ch{chapter_num}: adopt gate-green candidate {gs[0]} over "
+                    f"higher-score blocked candidate {best_state.best_score}")
+            best_score, best_novel, best_draft, _best_journal_snapshot = gs
+        self.current_novel = best_novel
+        self._draft_novel = best_draft
+        result["score"] = best_score
+        if restore_journal(self.root, chapter_num, _best_journal_snapshot):
+            logger.info(f"ch{chapter_num}: journal atomically rolled back to best "
+                        f"candidate snapshot (score={best_score})")
+        else:
+            logger.error(f"ch{chapter_num}: journal rollback to best snapshot FAILED "
+                         f"(score={best_score}); journal may diverge from chosen text")
+        return best_score, best_novel, best_draft, _best_journal_snapshot
 
     def _sync_journal_from_draft(self, chapter_num: int, draft_text: str) -> None:
         """Fix-loop journal write-back for full-rewrite gains.
