@@ -181,9 +181,9 @@ Task-11（commit `1972ab8`）把 `save_resume_state` 迁到 `production_runner.p
 
 ---
 
-## 4. 已完成拆分（2026-09-25）
+## 5. 已完成拆分（2026-09-25）
 
-### 4.1 Phase 2: 门控方法拆分 ✅
+### 5.1 Phase 2: 门控方法拆分 ✅
 
 **commit**: `3bae92a`
 
@@ -218,7 +218,7 @@ _run_continuity_gate = staticmethod(lambda self, *a, **k: _gates._run_continuity
 
 **效果**: orchestrator 从 5960 → 4630 行（-22%），gates.py 1391 行独立可测。
 
-### 4.2 Side C: 共享路径函数 ✅
+### 5.2 Side C: 共享路径函数 ✅
 
 **commit**: `1aff4efb8`
 
@@ -236,25 +236,6 @@ def novel_chapter_path(root, chapter: int) -> Path:
 - `pipeline/reset_state.py`: 1 处
 
 `web_dashboard.py` 使用目录级路径（`novel_dir`），不涉及文件级拼接，未改动。
-
----
-
-## 5. 待拆分（按优先级排序）
-
-### Phase 4: 拆分 `generate_single_chapter`（高风险，需专门 session）
-- 当前 318 行 god method（L442-1727 区域，经 gate 拆分后相对位置变化）
-- 内部混杂 A/B/C/D 四类职责
-- **建议**: 先拆 B（门控调用）→ C（修复调用）→ D（发布写入），最后保留 A（状态机编排）
-
-### Phase 3: Remediation 模块拆分（高风险，需专门 session）
-- 方法: `_validate_and_regen_scenes`, `_enforce_mandatory_beats`, `_patch_weak_scenes`, `_cc25_literary_rewrite`, `_rewrite_weak_dimensions`
-- **阻塞原因**: 深度耦合 orchestrator 状态（`self.llm`, `self.writer`, `self._draft_novel`, `self._scene_regen_used`），且方法间互相调用
-- **建议**: 先完成 Phase 4，建立清晰的输入/输出契约后再拆
-
-### P2: Reviewer severity 硬映射
-- 位置: `pipeline_orchestrator.py` L83-100（`_review_issue_is_blocking`）
-- 触发条件: beats pilot dimension→category mapping spec 落地
-- 操作: 在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
 
 ---
 
@@ -282,17 +263,7 @@ def novel_chapter_path(root, chapter: int) -> Path:
 - `save_review_journal(root, chapter_num, score, review)` 追加到 `audit/per_chapter_reviews.json`
 - 供滑动窗口质量记忆使用
 
-### 6.3 Forbidden Violations 扫描 ✅
-
-**commit**: `aa43e72f6`
-
-将 `_forbidden_violations` 移至 `pipeline/gates.py`:
-
-- 模块级函数 `_forbidden_violations(orchestrator, novel, review_text)`
-- 委托 `ForbiddenScanner.scan()` 和 `scan_review()`
-- orchestrator 保留实例方法作为委托包装
-
-### 6.4 Cost Tracking 简化 ✅
+### 6.3 Cost Tracking 简化 ✅
 
 **commit**: `edd8e82f4`
 
@@ -308,301 +279,275 @@ self._reset_call_log()
 
 ---
 
-## 7. 当前文件规模对比
+## 7. Phase 4b 已完成拆分（2026-09-26）
 
-| 文件 | 原始 | 当前 | 变化 |
-|---|---|---|---|
-| `pipeline_orchestrator.py` | 5960 | 4516 | **-1444 (-24%)** |
-| `pipeline/gates.py` | - | 1410 | +1410 (新) |
-| `pipeline/final_gate.py` | - | 112 | +112 (新) |
-| `pipeline/review_journal.py` | - | 45 | +45 (新) |
-| **合计** | **5960** | **6083** | **+123 (净增量)** |
+### 7.1 `_commit_chapter` 方法提取 ✅
 
-净增量来自：
-- 新模块的文档字符串和类型标注
-- 委托方法的包装代码
-- `gates.py` 保留了 3 个辅助方法（`_punct_only_repair`, `_repair_paragraphs_punct_parallel`, `_repair_paragraphs_punct_batched`）
+**commit**: `eefb54bbc`
+
+从 `generate_single_chapter` 内提取 `_commit_chapter` 方法:
+
+- 方法签名: `_commit_chapter(self, chapter_num, task_card, synopsis, world_state, result)`
+- 功能: 将章节结果持久化到 `chapters/draft/` 和 `chapters/novel/`
+- 原代码位置: L1526-L1607（82 行）
+- 调用点: 在 `generate_single_chapter` 的阶段提交逻辑中调用
+
+### 7.2 `_decide_publish` 方法提取 ✅
+
+**commit**: `b11287cef`
+
+从 `generate_single_chapter` 内提取 `_decide_publish` 方法:
+
+- 方法签名: `_decide_publish(self, chapter_num, task_card, synopsis, world_state, result, score, sm, review, final_text, violations, det_issues, det_soft, high_list, apply_world_state, cur_score, _commit_policy)`
+- 功能: 根据分数和门控结果决定章节是否发布到 `chapters/novel/`
+- 原代码位置: L1608-L1668（61 行）
+- 调用点: 在 `generate_single_chapter` 的最终决策阶段调用
+
+### 7.3 `_policy` 属性缓存 ✅
+
+**commit**: `30efff618`
+
+添加 `_policy` 属性缓存 `load_quality_policy(self.root)` 调用:
+
+- 属性位置: L444-L449
+- 功能: 避免在 `generate_single_chapter` 中重复读取 quality_policy 文件
+- 原调用次数: 23 次（其中 11 次在 `generate_single_chapter` 内）
+- 现行为: 首次访问时缓存，后续复用
 
 ---
 
-## 8. 待拆分（按优先级排序）
+## 8. Phase 4c 已完成拆分（2026-09-26）
 
-### Phase 4: 拆分 `generate_single_chapter`（高风险，需专门 session）
-- 当前约 1080 行（原 1285 行，已移走部分逻辑）
-- 内部混杂 A/B/C/D 四类职责
-- **建议**: 先拆 B（门控调用）→ C（修复调用）→ D（发布写入），最后保留 A（状态机编排）
+### 8.1 Forbidden Gate 评估函数 ✅
 
-### Phase 3: Remediation 模块拆分（高风险，需专门 session）
-- 方法: `_validate_and_regen_scenes`, `_enforce_mandatory_beats`, `_patch_weak_scenes`, `_cc25_literary_rewrite`, `_rewrite_weak_dimensions`
-- **阻塞原因**: 深度耦合 orchestrator 状态（`self.llm`, `self.writer`, `self._draft_novel`, `self._scene_regen_used`），且方法间互相调用
-- **建议**: 先完成 Phase 4，建立清晰输入/输出契约后再拆
+**commit**: `0bf97a0f4`
+
+将 forbidden gate 评估逻辑从 `generate_single_chapter` 内联代码提取为纯函数:
+
+- 新增 `ForbiddenGateResult` dataclass: 返回 `apply_world_state`, `success`, `violations`, `flag_human`, `flag_reason`
+- 新增 `evaluate_forbidden_gate()` 纯函数接收所有依赖作为参数,避免直接修改 `self` 状态
+- 调用点通过返回对象解构结果,消除隐式副作用
+
+```python
+@dataclass
+class ForbiddenGateResult:
+    apply_world_state: bool
+    success: bool
+    violations: list = field(default_factory=list)
+    flag_human: bool = False
+    flag_reason: str = ""
+
+def evaluate_forbidden_gate(
+    chapter_num: int,
+    current_novel: str,
+    review: dict,
+    policy: dict,
+    apply_world_state: bool,
+    forbidden_violations_fn: Callable,
+) -> ForbiddenGateResult:
+    ...
+```
+
+### 8.2 Fix Loop 早期停止检查 ✅
+
+**commit**: `ee6b005bd`
+
+将 fix loop 的早停条件提取为独立函数:
+
+- 新增 `check_fix_loop_early_stop(iteration, no_improve, best_score) -> bool`
+- 当 `no_improve >= 2` 且 `iteration >= 2` 时触发早停
+- 消除了内联的条件判断,便于单元测试
+
+---
+
+## 9. 待拆分（按优先级排序）
+
+### Phase 3: Best Candidate 追踪逻辑（中风险）
+
+**建议提取为 `FixLoopContext` dataclass + `track_best_candidate()` 函数:**
+
+```python
+@dataclass
+class FixLoopContext:
+    best_score: float
+    best_novel: str
+    best_draft: str
+    best_journal_snapshot: list
+    best_green: Optional[tuple]
+    no_improve: int
+```
+
+- **阻塞原因**: 与采纳逻辑(L991+)深度耦合,需同时修改追踪侧和采纳侧
+- **建议顺序**: 
+  1. 先提取 `_track_best_candidate()` 纯函数(仅更新状态,不改采纳)
+  2. 验证后,再重构采纳逻辑使用新数据结构
+  3. 最后考虑是否将主循环整体移入 `remediation/` 模块
+
+### Phase 4: 主修复循环拆分（高风险，需专门 session）
+
+**fix loop 结构 (L723-L1322, 600行):**
+
+```
+fix loop
+├── Initialization (L697-L720)
+│   ├── orig_novel, orig_draft (backup)
+│   ├── pre_fix_score
+│   ├── publication_line, soft_line
+│   ├── max_fix (default 2 rounds)
+│   ├── current, current_draft
+│   ├── best (track highest score candidate)
+│   ├── best_green (track hard-gate-clean candidate)
+│   └── no_improve (stall counter)
+│
+├── Main loop (for _ in range(max_fix))
+│   ├── _enforce_mandatory_beats (pre-check each round)
+│   ├── _stage_review (review)
+│   ├── _deterministic_quality_gate (gate check)
+│   ├── Decision logic
+│   │   ├── s >= min_ch → break (pass)
+│   │   ├── _gray_ok → break (gray band release)
+│   │   └── no_improve >= 2 → break (stall)
+│   │
+│   ├── Remediation path selection
+│   │   ├── _patch_weak_scenes (scene-level incremental repair)
+│   │   ├── _cc25_literary_rewrite (literary rewrite)
+│   │   └── _rewrite_weak_dimensions (full chapter rewrite)
+│   │
+│   └── Gate regression
+│       └── _deterministic_quality_gate (verify)
+│
+└── Finalization (L1280-L1299)
+    ├── Adopt best_green or best
+    ├── Journal atomic rollback
+    ├── Secondary word count gate (_apply_length_floor)
+    └── Atmosphere dedup detection (atmosphere_dedup)
+```
+
+- **风险**: 嵌套 try/except,多处 break,状态回溯(best/best_green/no_improve tracking),journal 原子操作
+- **建议**: 先完成 Phase 3 (Best Candidate 追踪),建立清晰的 `FixLoopContext`/`FixResult` 接口后再动主循环
 
 ### P2: Reviewer severity 硬映射
+
 - 位置: `pipeline_orchestrator.py` L83-100（`_review_issue_is_blocking`）
 - 触发条件: beats pilot dimension→category mapping spec 落地
 - 操作: 在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
 
 ---
 
-## 9. Session 完成摘要（2026-09-25）
+## 10. 当前文件规模对比
 
-### 9.1 完成的拆分
-
-| 模块 | 行数 | 内容 | Commit |
+| 文件 | 原始 | 当前 | 变化 |
 |---|---|---|---|
-| `pipeline/gates.py` | 1410 | 13 个门控方法 + `_forbidden_violations` | `3bae92a` |
-| `pipeline/final_gate.py` | 112 | stage6 伏笔覆盖检查 | `42a9b1fe3` |
-| `pipeline/review_journal.py` | 45 | 每章评审持久化 | `edd8e82f4` |
-| `core/checkpoint.py` | +18 | `novel_chapter_path()` 共享路径函数 | `1aff4efb8` |
-| **orchestrator 净减** | **-1445 行** | 5960 → 4515 (-24%) | — |
+| `pipeline_orchestrator.py` | 5960 | 4566 | **-1394 (-23.4%)** |
+| `pipeline/gates.py` | - | 1494 | +1494 (新) |
+| `pipeline/final_gate.py` | - | 112 | +112 (新) |
+| `pipeline/review_journal.py` | - | 45 | +45 (新) |
+| **合计** | **5960** | **6217** | **+257 (净增量)** |
 
-### 9.2 测试状态
-- **874 passed, 2 failed（预存）, 0 skipped**
-- 预存失败：`test_pipeline_incremental_patcher`、`test_same_location_cluster_shared_objects_not_flagged`
-- 零新失败引入
-
-### 9.3 待继续工作
-
-#### P1 Phase 4: 拆分 `generate_single_chapter` god method
-- **当前规模**：~1080 行（原 1175 行，已移走部分逻辑）
-- **阻塞原因**：方法内部混杂 6 个阶段的状态机逻辑 + fix loop + 发布决策，直接切割会破坏状态一致性
-- **建议策略**：
-  1. 先定义清晰的输入/输出契约（各阶段接收什么、返回什么）
-  2. 将 B 类门控调用抽为纯函数（不依赖 self）
-  3. 将 D 类发布逻辑抽为独立模块
-  4. 最后重写 A 类状态机编排
-- **预计耗时**：1-2 sessions
-
-#### P1 Phase 3: Remediation 模块拆分
-- **阻塞原因**：深度耦合 `self.llm`, `self.writer`, `self._draft_novel` 等
-- **建议**：等 Phase 4 完成后，建立清晰接口再拆
-
-#### P2: Reviewer severity 硬映射
-- **阻塞条件**：beats pilot dimension→category mapping spec 落地
-- **操作**：在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
-- **建议触发条件**：pilot 覆盖率 > 80% 且 spec 文档化
-
-### 9.4 关键发现
-
-1. **gate 拆分风险最低**：12 个 `_run_*_gate` 方法命名规整、边界干净，可独立测试
-2. **`generate_single_chapter` 是真正的病灶**：past 30+ rounds 的 patch 绝大多数改的就是这个方法的某个 if 分支
-3. **delegator 模式陷阱**：`staticmethod(lambda)` 不绑定 `self`，需改用实例方法包装
-4. **路径重复拼接是系统性问题**：`chapters/novel/` 在 5+ 文件中各写一遍，现已统一到 `novel_chapter_path()`
-
+> 净增量来自: 新增 dataclass/函数签名/注释。提取后核心逻辑行数减少,但边界定义增加了代码量。
 
 ---
 
-## 10. Session 完成摘要（续）
+## 11. 测试基线
 
-### 10.1 额外拆分（P1 Phase 4b 补充）
+**测试结果**: 874 passed, 2 pre-existing failures
 
-| 模块 | 新文件 | 行数 | 内容 |
-|---|---|---|---|
-| `pipeline/final_gate.py` | ✅ | 112 | stage6 伏笔覆盖检查 |
-| `pipeline/review_journal.py` | ✅ | 45 | 每章评审持久化 |
-| `pipeline/publish_decision.py` | ✅ | 56 | `decide_can_publish()` 决策函数 |
-| `pipeline/gates.py` | 修改 | +18 | 添加 `_forbidden_violations` |
-| **orchestrator** | **修改** | **+41 行** | 提取 `_commit_chapter()` 方法 |
+**Pre-existing failures**:
+- `test_pipeline_incremental_patcher` - AssertionError
+- `test_same_location_cluster_shared_objects_not_flagged` - gate now detects shared images
 
-### 10.2 测试状态
+**每次提取后验证**: 确保 874 passed, 0 new failures。
+
+---
+
+## 12. Fix Loop 详细分析（Phase 4c 文档）
+
+### 12.1 循环结构
+
 ```
-874 passed, 2 failed (pre-existing), 0 skipped
+for _ in range(max_fix):
+    # 每轮开始前: _enforce_mandatory_beats
+    # 评审: _stage_review
+    # 门控: _deterministic_quality_gate
+    
+    # 决策:
+    # - s >= min_ch → break (pass)
+    # - gray_ok → break (gray band release)
+    # - no_improve >= 2 → break (stall)
+    
+    # 修复路径选择:
+    # - _patch_weak_scenes (scene-level)
+    # - _cc25_literary_rewrite (literary)
+    # - _rewrite_weak_dimensions (full chapter)
 ```
 
-### 10.3 当前文件规模
+### 12.2 状态追踪
 
-| 文件 | 行数 | 说明 |
+| 变量 | 类型 | 用途 |
 |---|---|---|
-| `pipeline_orchestrator.py` | 4516 | 原 5960 行，净减 1444 行 (-24%) |
-| `pipeline/gates.py` | 1410 | 新，13 个门控方法 |
-| `pipeline/final_gate.py` | 112 | 新，stage6 检查 |
-| `pipeline/review_journal.py` | 45 | 新，评审持久化 |
-| `pipeline/publish_decision.py` | 56 | 新，发布决策 |
-| **合计** | **6139** | 净增 179 行（新模块文档+委托开销） |
+| `best` | tuple | (score, novel, draft) - 最高分候选 |
+| `best_green` | tuple | (score, novel, draft, journal_snapshot) - 硬门全绿候选 |
+| `no_improve` | int | 连续未改进轮数 |
+| `_best_journal_snapshot` | list | best 候选的 journal 快照 |
 
-### 10.4 待继续（需专门 session）
+### 12.3 采纳逻辑 (L991+)
 
-#### P1 Phase 4: 拆分 `generate_single_chapter` god method
-- **当前规模**：约 1080 行（原 1175 行，已移走部分逻辑）
-- **阻塞原因**：方法内部有嵌套的 try/except 结构、fix loop、状态机转换，直接切割会破坏逻辑
-- **建议策略**：
-  1. 先定义清晰的输入/输出契约
-  2. 将 B 类门控调用抽为纯函数
-  3. 将 D 类发布逻辑抽为独立模块（部分已完成）
-  4. 最后重写 A 类状态机编排
+```python
+if best_green is not None:
+    best_score, best_novel, best_draft, _best_journal_snapshot = best_green
+    if best_score < best[0]:
+        logger.warning(f"ch{chapter_num}: adopt gate-green candidate {best_score} over higher-score blocked candidate {best[0]}")
+else:
+    best_score, best_novel, best_draft = best
 
-#### P1 Phase 3: Remediation 模块拆分
-- **阻塞原因**：深度耦合 `self.llm`, `self.writer`, `self._draft_novel` 等
-- **建议**：等 Phase 4 完成后，建立清晰接口再拆
+self.current_novel = best_novel
+self._draft_novel = best_draft
+result["score"] = best_score
+# Journal 原子回滚...
+```
 
-#### P2: Reviewer severity 硬映射
-- **阻塞条件**：beats pilot dimension→category mapping spec 落地
-- **操作**：在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
-- **建议触发条件**：pilot 覆盖率 > 80% 且 spec 文档化
+### 12.4 推荐的接口草案
 
+```python
+@dataclass
+class FixResult:
+    """Fix loop 返回值"""
+    success: bool
+    published: bool
+    score: float
+    novel_text: str
+    draft_text: str
+    gray_band_release: bool = False
+    force_published: bool = False
+    note: str = ""
+    severe_shortfall: bool = False
+
+@dataclass  
+class FixLoopContext:
+    """Fix loop 状态追踪"""
+    best_score: float
+    best_novel: str
+    best_draft: str
+    best_journal_snapshot: list
+    best_green: Optional[tuple]
+    no_improve: int
+    
+    def update_best(self, score, novel, draft, journal_snapshot, det_passed, has_high):
+        """更新最佳候选"""
+        ...
+    
+    def should_stop_early(self, iteration):
+        """检查是否应早停"""
+        return self.no_improve >= 2 and iteration >= 2
+```
+
+### 12.5 拆分建议顺序
+
+1. **Phase 3.1**: 提取 `track_best_candidate()` 纯函数（仅状态更新，不改采纳逻辑）
+2. **Phase 3.2**: 验证 `FixLoopContext` 接口是否顺手
+3. **Phase 3.3**: 重构采纳逻辑使用新数据结构
+4. **Phase 4**: 最后考虑主循环整体提取
 
 ---
 
-## 11. P1 Phase 4b 完成摘要（2026-09-26）
-
-### 11.1 本次完成的拆分
-
-| 操作 | Commit | 效果 |
-|------|--------|------|
-| 修复 `_commit_chapter` 调用位置 | `178a0fd54` | 从死代码块移到正确位置 |
-| 提取 `_commit_chapter` 方法 | `eefb54bbc` | 77 行分离，处理 checkpoint/events/session_tree |
-| 提取 `_decide_publish` 方法 | `b11287cef` | 41 行分离，处理 force_best/gray-band/evaluate_publish |
-
-### 11.2 当前文件结构
-
-```
-pipeline_orchestrator.py: 4557 行 (原 5960, -24%)
-├── generate_single_chapter   L443-1518  (~1076 行)
-│   ├── Phase 0-4: 规划→导演→缩写→写作
-│   ├── Phase 4.5: 字数强制
-│   ├── Phase 5: 评审 + fix loop (~700 行)
-│   └── Phase 6: 提交前检查
-├── _commit_chapter          L1519-1600  (82 行) ✅ 新
-├── _decide_publish          L1601-1661  (61 行) ✅ 新
-└── _stage_*                 L1662+      (已提取的方法)
-```
-
-### 11.3 测试状态
-
-```
-874 passed, 2 failed (pre-existing), 0 skipped
-```
-
-预存失败（与本次改动无关）：
-- `test_pipeline_incremental_patcher`
-- `test_same_location_cluster_shared_objects_not_flagged`
-
-### 11.4 待继续工作（需专门 session）
-
-#### P1 Phase 4c: 拆分 `generate_single_chapter` fix loop
-- **当前规模**：~1076 行（原 ~1178 行）
-- **阻塞部分**：fix loop (~700 行，L690-L1400)
-  - 混合评审→修复→重试逻辑
-  - 深度耦合 `_patch_weak_scenes`, `_cc25_literary_rewrite`, `_rewrite_weak_dimensions`
-- **建议**：等 Phase 3 remediation 模块拆分建立接口契约后再处理
-
-#### P1 Phase 3: Remediation 模块拆分
-- **阻塞方法**：`_validate_and_regen_scenes`, `_enforce_mandatory_beats`, `_patch_weak_scenes`, `_cc25_literary_rewrite`, `_rewrite_weak_dimensions`
-- **阻塞原因**：深度耦合 `self.llm`, `self.writer`, `self._draft_novel`
-- **建议**：先完成 Phase 4，建立清晰接口再拆
-
-#### P2: Reviewer severity 硬映射
-- **位置**：`pipeline_orchestrator.py` L84-100（`_review_issue_is_blocking`）
-- **触发条件**：beats pilot dimension→category mapping spec 落地
-- **操作**：在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
-
-### 11.5 关键经验
-
-1. **缩进陷阱**：提取方法时，调用点缩进必须与周围代码一致，否则可能静默进入错误控制流
-2. **变量作用域**：被提取的方法需要显式传递所有依赖变量（如 `apply_world_state`, `cur_score`），不能依赖闭包
-3. **安全策略**：每次提取后必须立即运行完整测试套件，发现回归立即回滚
-
----
-
-## 12. P1 Phase 4c: Fix Loop Analysis (2026-09-26)
-
-### 12.1 现状
-
-`generate_single_chapter` 的 fix loop 位于 **L697-L1280**（~583 行），是拆分风险最高的部分。
-
-### 12.2 核心结构
-
-```
-fix loop (L697-L1280)
-├── 初始化状态
-│   ├── orig_novel, orig_draft (备份)
-│   ├── pre_fix_score
-│   ├── publication_line, soft_line
-│   ├── max_fix (默认 2 轮)
-│   ├── current, current_draft
-│   ├── best (追踪最高分候选)
-│   ├── best_green (追踪硬门全绿候选)
-│   └── no_improve (停滞计数器)
-│
-├── 主循环 (for _ in range(max_fix))
-│   ├── _enforce_mandatory_beats (每轮前置检查)
-│   ├── _stage_review (评审)
-│   ├── _deterministic_quality_gate (门控)
-│   ├── 决策逻辑
-│   │   ├── s >= min_ch → break (通过)
-│   │   ├── _gray_ok → break (灰带放行)
-│   │   └── no_improve >= 2 → break (停滞)
-│   │
-│   ├── 修复路径选择
-│   │   ├── _patch_weak_scenes (场景级增量缝合)
-│   │   ├── _cc25_literary_rewrite (文学性重写)
-│   │   └── _rewrite_weak_dimensions (整章重写)
-│   │
-│   └── 门控回归
-│       └── _deterministic_quality_gate (验证)
-│
-└── 终态处理
-    ├── 采纳 best_green 或 best
-    ├── journal 原子回滚
-    ├── 二次字数门 (_apply_length_floor)
-    └── 氛围去重检测 (atmosphere_dedup)
-```
-
-### 12.3 耦合分析
-
-**外部依赖（需线程通过接口）：**
-
-| 方法 | 行数 | 依赖 |
-|------|------|------|
-| `_patch_weak_scenes` | L3609-3850 | `self.writer`, `self._draft_novel`, journal |
-| `_cc25_literary_rewrite` | L3851-3930 | `self.writer`, `self._draft_novel` |
-| `_rewrite_weak_dimensions` | L3931-4007 | `self.writer`, `self._draft_novel` |
-| `_enforce_mandatory_beats` | L3299-3608 | `self._draft_novel`, journal |
-
-**内部状态（需显式传递）：**
-- `self.current_novel` / `self._draft_novel`
-- `self._frozen_task_cards`
-- `self._literary_pass_used`
-- `_last_deterministic_issues`
-- journal 文件操作
-
-### 12.4 推荐策略
-
-**不建议直接提取**，原因：
-1. 583 行与外部状态深度交织
-2. 多次 break 和状态回滚逻辑
-3. journal 原子操作需要保持事务性
-
-**建议方案：**
-1. **先完成 Phase 3**（remediation 模块），建立清晰的输入/输出契约
-2. **定义接口**：
-   ```python
-   class FixLoopContext:
-       novel: str
-       draft: str
-       review: dict
-       task_card: dict
-       journal_snapshot: str
-       
-   class FixResult:
-       novel: str
-       score: float
-       success: bool
-       best_novel: str
-       best_score: float
-       forced_publish: bool
-   ```
-3. **分阶段提取**：
-   - Step 1: 提取决策逻辑（评分→分支选择）
-   - Step 2: 提取修复路径选择（patch/rewrite）
-   - Step 3: 提取终态处理（best 采纳）
-
-**预计耗时：** 2-3 sessions
-
-### 12.5 备选方案
-
-如果 Phase 4c 风险过高，可考虑：
-1. **保留现状**，只添加文档说明 fix loop 职责
-2. **部分提取**：将 `best` 追踪逻辑提取为 `_track_best_candidate()`
-3. **委托模式**：将 fix loop 委托给独立的 `FixOrchestrator` 类（需要重构接口）
-
+*文档最后更新: 2026-09-26*
