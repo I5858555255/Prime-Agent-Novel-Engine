@@ -930,7 +930,7 @@ class PipelineOrchestrator:
                     except Exception as _ade:
                         logger.warning(f"ch{chapter_num} atmosphere dedup skipped: {_ade}")
                     _final_pol_g = self._policy
-                    _final_high_g = any(_review_issue_is_blocking(_final_pol_g, iss) for iss in (staged["review"].get("issues") or []))
+                    _final_high_g = any(_review_issue_is_blocking(_final_pol_g, iss) for iss in (review.get("issues") or []))
                     _soft_line = int(_final_pol_g.get("soft_publication_line", min_ch - 3))
                     _gray_final = (_soft_line <= best_score < min_ch) and not _final_high_g and _final_det_g["passed"]
                     if _gray_final:
@@ -943,7 +943,7 @@ class PipelineOrchestrator:
                         # P7D：scene_texts 与 best_novel 同源（见上方 _scene_texts_for_gate 计算）
                         final_det = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card), scene_texts=_scene_texts_for_gate)
                         _final_policy = self._policy
-                        final_high = any(_review_issue_is_blocking(_final_policy, iss) for iss in (staged["review"].get("issues") or []))
+                        final_high = any(_review_issue_is_blocking(_final_policy, iss) for iss in (review.get("issues") or []))
                         if (final_high or not final_det["passed"]) and not _gray_final:
                             logger.warning(f"Best score {best_score} ≥ {min_ch} but hard gate still blocked: high={final_high} det={final_det['issues']} → force publish best with note")
                             result["success"] = True
