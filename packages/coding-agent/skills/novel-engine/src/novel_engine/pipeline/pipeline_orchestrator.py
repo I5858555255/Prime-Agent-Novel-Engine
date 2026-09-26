@@ -440,6 +440,13 @@ class PipelineOrchestrator:
             self.director.db.import_from_json()
         self._db_source_mtime = max_mtime
 
+    @property
+    def _policy(self):
+        """Cached quality policy for this run."""
+        if not hasattr(self, '_cached_policy'):
+            self._cached_policy = load_quality_policy(self.root)
+        return self._cached_policy
+
     def generate_single_chapter(self, chapter_num: int) -> dict:
         """
         生成单章的完整流水线。
@@ -600,7 +607,7 @@ class PipelineOrchestrator:
         try:
             # P1-目标全局常量：顶配网文章节 7000-8000 为优，不再每章 LLM 生成目标
             # 单一策略源：目标字数读 quality_policy（默认 7500，与旧常量同值）
-            _qp = load_quality_policy(self.root)
+            _qp = self._policy
             GLOBAL_CONSTANT = int(_qp["chapter_target_chars"])
             if not hasattr(self, "_global_target") or self._global_target is None:
                 self._global_target = GLOBAL_CONSTANT
@@ -690,8 +697,8 @@ class PipelineOrchestrator:
                 orig_novel = self.current_novel
                 orig_draft = getattr(self, "_draft_novel", orig_novel)
                 pre_fix_score = score
-                publication_line = int(load_quality_policy(self.root)["publication_line"])
-                _soft_line = int(load_quality_policy(self.root).get("soft_publication_line", publication_line - 3))
+                publication_line = int(self._policy["publication_line"])
+                _soft_line = int(self._policy.get("soft_publication_line", publication_line - 3))
                 min_ch = publication_line
                 # CC E 包：整章级 fix 最多 2 轮；单场景定点重生另有每场景 ≤2 次独立预算
                 max_fix = int(self.config.get("pipeline", {}).get("max_chapter_fix_rounds", 2))
@@ -740,7 +747,7 @@ class PipelineOrchestrator:
                         staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
                         s = staged["score"]
                         result["score"] = s
-                        _fix_policy = load_quality_policy(self.root)
+                        _fix_policy = self._policy
                         has_high = any(_review_issue_is_blocking(_fix_policy, iss) for iss in (staged["review"].get("issues") or []))
                         high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:60]}" for iss in (staged["review"].get("issues") or []) if _review_issue_is_blocking(_fix_policy, iss)]
                         det = self._deterministic_quality_gate(current, task_card)
@@ -849,7 +856,7 @@ class PipelineOrchestrator:
                             # 强制字数（用冻结目标）
                             total = sum(self._bpt(bp) for bp in (frozen.get("scene_blueprints") or []))
                             if total > 0:
-                                _pol = load_quality_policy(self.root)
+                                _pol = self._policy
                                 patched_purified = self._enforce_word_count(
                                     patched_purified,
                                     int(total * _pol["min_ratio"]),
@@ -1003,7 +1010,7 @@ class PipelineOrchestrator:
                     # CC round-18 P0-3：修订后二次长度门（E-loop“先删后补”可能让成稿缩水）
                     try:
                         from novel_engine.quality.post_fix_length import post_fix_length_decision
-                        _wp18 = load_quality_policy(self.root)
+                        _wp18 = self._policy
                         _soft_floor18 = int(_wp18["chapter_target_chars"] * _wp18["min_ratio"])
                         _len18 = post_fix_length_decision(len(best_novel or ""), soft_floor=_soft_floor18)
                         if _len18["status"] == "needs_topup" and not (self.config.get("llm") or {}).get("use_mock"):
@@ -1143,7 +1150,7 @@ class PipelineOrchestrator:
                                             ) if violations is not None else bool(_forbidden)
                                             # 字数守限
                                             _new_total_cn = sum(cn_chars(s) for s in _candidate_scenes)
-                                            _qp = load_quality_policy(self.root)
+                                            _qp = self._policy
                                             _bpt_total = sum(self._bpt(bp) for bp in _bps) or 0
                                             _topup_min = int(_bpt_total * _qp["min_ratio"]) if _bpt_total else 6800
                                             _ok_len = (
@@ -1189,7 +1196,7 @@ class PipelineOrchestrator:
                                     logger.warning(f"ch{chapter_num} atmosphere repolish failed: {_ae3}")
                     except Exception as _ade:
                         logger.warning(f"ch{chapter_num} atmosphere dedup skipped: {_ade}")
-                    _final_pol_g = load_quality_policy(self.root)
+                    _final_pol_g = self._policy
                     _final_high_g = any(_review_issue_is_blocking(_final_pol_g, iss) for iss in (staged["review"].get("issues") or []))
                     _soft_line = int(_final_pol_g.get("soft_publication_line", min_ch - 3))
                     _gray_final = (_soft_line <= best_score < min_ch) and not _final_high_g and _final_det_g["passed"]
@@ -1202,7 +1209,7 @@ class PipelineOrchestrator:
                         # 最终仍需校验硬门控；若仍硬阻断则强制发布 best 供人审阅（附 note），不跳过章节
                         # P7D：scene_texts 与 best_novel 同源（见上方 _scene_texts_for_gate 计算）
                         final_det = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card), scene_texts=_scene_texts_for_gate)
-                        _final_policy = load_quality_policy(self.root)
+                        _final_policy = self._policy
                         final_high = any(_review_issue_is_blocking(_final_policy, iss) for iss in (staged["review"].get("issues") or []))
                         if (final_high or not final_det["passed"]) and not _gray_final:
                             logger.warning(f"Best score {best_score} ≥ {min_ch} but hard gate still blocked: high={final_high} det={final_det['issues']} → force publish best with note")
@@ -1293,7 +1300,7 @@ class PipelineOrchestrator:
         # as a defect (non-hard hits are noted and would otherwise abort a run).
         violations: list[dict] = []
         if apply_world_state:
-            _gate_policy = load_quality_policy(self.root)
+            _gate_policy = self._policy
             violations = self._forbidden_violations(self.current_novel, review)
             if violations:
                 for v in violations:
@@ -1318,7 +1325,7 @@ class PipelineOrchestrator:
         cur_score = float(result.get("score", score or 0) or 0)
 
         # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 policy 硬阻断且确定性硬门控通过才写最终目录）
-        _commit_policy = load_quality_policy(self.root)
+        _commit_policy = self._policy
         publication_line = int(_commit_policy["publication_line"])
         has_high_issue = any(_review_issue_is_blocking(_commit_policy, iss) for iss in (review.get("issues") or []))
         high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:50]}" for iss in (review.get("issues") or []) if _review_issue_is_blocking(_commit_policy, iss)]
@@ -3523,7 +3530,7 @@ class PipelineOrchestrator:
                             _bps = task_card.get("scene_blueprints") or []
                             _total = sum(self._bpt(bp) for bp in _bps) or None
                             if _total and _total > 0:
-                                _qp = load_quality_policy(self.root)
+                                _qp = self._policy
                                 _purified = self._enforce_word_count(
                                     _purified,
                                     int(_total * _qp["min_ratio"]),
@@ -3633,7 +3640,7 @@ class PipelineOrchestrator:
                 bps = task_card.get("scene_blueprints") or []
                 total = sum(self._bpt(bp) for bp in bps) or None
                 if total and total > 0:
-                    _qp = load_quality_policy(self.root)
+                    _qp = self._policy
                     purified = self._enforce_word_count(
                         purified,
                         int(total * _qp["min_ratio"]),
@@ -3945,7 +3952,7 @@ class PipelineOrchestrator:
         frozen = self._frozen_task_cards.get(chapter_num, task_card)
         total = sum(self._bpt(bp) for bp in (frozen.get("scene_blueprints") or []))
         if total > 0:
-            _pol = load_quality_policy(self.root)
+            _pol = self._policy
             cand = self._enforce_word_count(
                 cand,
                 int(total * _pol["min_ratio"]),
