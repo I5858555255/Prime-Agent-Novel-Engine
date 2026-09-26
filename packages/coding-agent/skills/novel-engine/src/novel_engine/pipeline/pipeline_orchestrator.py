@@ -2607,23 +2607,56 @@ class PipelineOrchestrator:
 
 
     # Gate delegation: all gate logic moved to pipeline/gates.py
-    # Import at class body level so methods can reference via self.*
-    _run_continuity_gate = staticmethod(lambda self, *a, **k: _gates._run_continuity_gate(self, *a, **k))
-    _run_scope_gate = staticmethod(lambda self, *a, **k: _gates._run_scope_gate(self, *a, **k))
-    _run_density_gate = staticmethod(lambda self, *a, **k: _gates._run_density_gate(self, *a, **k))
-    _run_scene_progression_gate = staticmethod(lambda self, *a, **k: _gates._run_scene_progression_gate(self, *a, **k))
-    _run_cross_scene_repeat_gate = staticmethod(lambda self, *a, **k: _gates._run_cross_scene_repeat_gate(self, *a, **k))
-    _run_latin_leak_gate = staticmethod(lambda self, *a, **k: _gates._run_latin_leak_gate(self, *a, **k))
-    _run_pov_interiority_gate = staticmethod(lambda self, *a, **k: _gates._run_pov_interiority_gate(self, *a, **k))
-    _run_constraint_compliance_gate = staticmethod(lambda self, *a, **k: _gates._run_constraint_compliance_gate(self, *a, **k))
-    _run_punctuation_health_gate = staticmethod(lambda self, *a, **k: _gates._run_punctuation_health_gate(self, *a, **k))
-    _run_final_precommit_gate = staticmethod(lambda self, *a, **k: _gates._run_final_precommit_gate(self, *a, **k))
-    _run_boundary_reprise_gate = staticmethod(lambda self, *a, **k: _gates._run_boundary_reprise_gate(self, *a, **k))
-    _run_boundary_gate = staticmethod(lambda self, *a, **k: _gates._run_boundary_gate(self, *a, **k))
-    _apply_length_floor = staticmethod(lambda self, *a, **k: _gates._apply_length_floor(self, *a, **k))
-    _punct_only_repair = staticmethod(lambda self, *a, **k: _gates._punct_only_repair(self, *a, **k))
-    _repair_paragraphs_punct_parallel = staticmethod(lambda self, *a, **k: _gates._repair_paragraphs_punct_parallel(self, *a, **k))
-    _repair_paragraphs_punct_batched = staticmethod(lambda self, *a, **k: _gates._repair_paragraphs_punct_batched(self, *a, **k))
+    # Using proper instance methods to preserve automatic self-binding
+
+    def _run_continuity_gate(self, *a, **k):
+        return _gates._run_continuity_gate(self, *a, **k)
+
+    def _run_scope_gate(self, *a, **k):
+        return _gates._run_scope_gate(self, *a, **k)
+
+    def _run_density_gate(self, *a, **k):
+        return _gates._run_density_gate(self, *a, **k)
+
+    def _run_scene_progression_gate(self, *a, **k):
+        return _gates._run_scene_progression_gate(self, *a, **k)
+
+    def _run_cross_scene_repeat_gate(self, *a, **k):
+        return _gates._run_cross_scene_repeat_gate(self, *a, **k)
+
+    def _run_latin_leak_gate(self, *a, **k):
+        return _gates._run_latin_leak_gate(self, *a, **k)
+
+    def _run_pov_interiority_gate(self, *a, **k):
+        return _gates._run_pov_interiority_gate(self, *a, **k)
+
+    def _run_constraint_compliance_gate(self, *a, **k):
+        return _gates._run_constraint_compliance_gate(self, *a, **k)
+
+    def _run_punctuation_health_gate(self, *a, **k):
+        return _gates._run_punctuation_health_gate(self, *a, **k)
+
+    def _run_final_precommit_gate(self, *a, **k):
+        return _gates._run_final_precommit_gate(self, *a, **k)
+
+    def _run_boundary_reprise_gate(self, *a, **k):
+        return _gates._run_boundary_reprise_gate(self, *a, **k)
+
+    def _run_boundary_gate(self, *a, **k):
+        return _gates._run_boundary_gate(self, *a, **k)
+
+    def _apply_length_floor(self, *a, **k):
+        return _gates._apply_length_floor(self, *a, **k)
+
+    def _punct_only_repair(self, *a, **k):
+        return _gates._punct_only_repair(self, *a, **k)
+
+    def _repair_paragraphs_punct_parallel(self, *a, **k):
+        return _gates._repair_paragraphs_punct_parallel(self, *a, **k)
+
+    def _repair_paragraphs_punct_batched(self, *a, **k):
+        return _gates._repair_paragraphs_punct_batched(self, *a, **k)
+
 
     def _finalize_current_novel(self, chapter_num: int) -> str:
         """CC round-18 P8C/P8D：对 current_novel 跑一次 finalize，返回切后字符串。
