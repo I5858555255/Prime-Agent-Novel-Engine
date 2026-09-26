@@ -704,13 +704,15 @@ class PipelineOrchestrator:
                 max_fix = int(self.config.get("pipeline", {}).get("max_chapter_fix_rounds", 2))
                 current = orig_novel
                 current_draft = orig_draft
-                best = (pre_fix_score, current, current_draft)
                 # CC28 批B：把初始候选（修复前）与当前 journal 事实态绑定。各轮修复都会就地
                 # 覆写 journal；最终采纳 best 时必须把 journal 一并原子回滚到该快照，否则
                 # 字符串层回滚了、journal 仍是劣化轮的内容，后续从 journal 组装/发布即成劣稿。
-                _best_journal_snapshot = snapshot_journal(self.root, chapter_num)
-                # CC28 批B：硬门全绿候选 (score, novel, draft, journal_snapshot)，无则 None。
-                best_green = None
+                best_state = _gates.BestCandidateState(
+                    best_score=pre_fix_score,
+                    best_novel=orig_novel,
+                    best_draft=orig_draft,
+                    best_journal_snapshot=snapshot_journal(self.root, chapter_num),
+                )
                 det_issues_pre = getattr(self, "_last_deterministic_issues", [])
                 if det_issues_pre:
                     logger.warning(f"Deterministic gate has issues pre-fix: {det_issues_pre} → force patch/rewrite")
@@ -718,7 +720,6 @@ class PipelineOrchestrator:
                     # frozen 任务卡在 patch / rewrite 两条分支都会用到，循环外无条件绑定，
                     # 避免定点修复返回 None 改走 rewrite 分支时 frozen 未绑定引发 UnboundLocalError
                     frozen = self._frozen_task_cards.get(chapter_num, task_card)
-                    no_improve = 0
                     _reaction_fix_budget = 1  # CC round-19 P9d: 整章至多1次 reaction 定点修订
                     for _ in range(max_fix):
                         # R16c P0-B: 每轮 fix 前复检必填伏笔（patch 回写 journal 后，确保重生文本进入当轮评审）
@@ -772,21 +773,10 @@ class PipelineOrchestrator:
                                 f"Reaction fix injected ch{chapter_num}: scenes={_r_scene_ids} "
                                 f"budget_left={_reaction_fix_budget}")
                             no_improve = 0  # 本轮有主动修订，不计入停滞
-                        prev_best = best[0]
-                        if s > best[0]:
-                            best = (s, current, current_draft)
-                            # 当前分数 s 评审的是 current，其内容正是上一轮修复回写后的 journal；
-                            # 此刻捕获 journal 即把“最佳候选”与其事实态绑定。
-                            _best_journal_snapshot = snapshot_journal(self.root, chapter_num)
-                            no_improve = 0
-                        else:
-                            no_improve += 1
-                        # CC28 批B：单独追踪“确定性硬门全绿且无 high”的候选。采纳时优先于
-                        # 分更高但带硬伤的候选（r41 曾出现更高分稿带 latin_leak 被终检阻断）。
-                        if det["passed"] and not has_high:
-                            if best_green is None or s > best_green[0]:
-                                best_green = (s, current, current_draft,
-                                              snapshot_journal(self.root, chapter_num))
+                        best_state = _gates.track_best_candidate(
+                            best_state, s, current, current_draft,
+                            det["passed"], has_high,
+                            lambda: snapshot_journal(self.root, chapter_num))
                         # CC round-14 P0-3：确定性门全过+无high 时，>=88 正常过；85-87.9 灰带也放行（打标人工抽读）
                         _gray_ok = (_soft_line <= s < min_ch) and not has_high and det["passed"]
                         if s >= min_ch:
@@ -808,13 +798,8 @@ class PipelineOrchestrator:
                         elif _reaction_pending:
                             logger.warning(f"Score {s} in gray band but reaction pending fix → continue")
                         # 3 轮不超 best 即提前终止，避免单章空转 1.5h
-                        from novel_engine.pipeline.gates import check_fix_loop_early_stop
-                        if check_fix_loop_early_stop(_, no_improve, best[0]):
+                        if _gates.check_fix_loop_early_stop(_, best_state.no_improve, best_state.best_score):
                             break
-                        if _ > 0 and s <= prev_best:
-                            # 保留原逻辑作为兜底
-                            if no_improve >= 1:
-                                break
                         # 优先场景级增量缝合（基于 draft 带标记文本，避免 purified 找不到 marker）
                         # CC round-25 P0-2：E-loop 逐场定点只处理可场景归因的结构性维度；
                         # hook/style/innovation 三维从补丁评审中剔除，交给下方整章一次性文学性重写。
@@ -988,14 +973,17 @@ class PipelineOrchestrator:
                         self._last_deterministic_issues = gate_after["issues"]
                     # CC28 批B：优先采纳“硬门全绿”候选；没有任何全绿候选时才退回最高分候选
                     # （供人审队列），并保持其分数为最终分。
-                    if best_green is not None:
-                        best_score, best_novel, best_draft, _best_journal_snapshot = best_green
-                        if best_score < best[0]:
+                    best_score = best_state.best_score
+                    best_novel = best_state.best_novel
+                    best_draft = best_state.best_draft
+                    _best_journal_snapshot = best_state.best_journal_snapshot
+                    if best_state.best_green is not None:
+                        gs = best_state.best_green
+                        if gs[0] < best_state.best_score:
                             logger.warning(
-                                f"ch{chapter_num}: adopt gate-green candidate {best_score} over "
-                                f"higher-score blocked candidate {best[0]}")
-                    else:
-                        best_score, best_novel, best_draft = best
+                                f"ch{chapter_num}: adopt gate-green candidate {gs[0]} over "
+                                f"higher-score blocked candidate {best_state.best_score}")
+                        best_score, best_novel, best_draft, _best_journal_snapshot = gs
                     self.current_novel = best_novel
                     self._draft_novel = best_draft
                     result["score"] = best_score
@@ -1025,7 +1013,12 @@ class PipelineOrchestrator:
                                 if _to18 and _to18 != best_novel and len(_to18) > len(best_novel):
                                     best_novel = _to18
                                     best_draft = _to18
-                                    best = (best_score, best_novel, best_draft)
+                                    best_state = _gates.BestCandidateState(
+                                        best_score=best_score,
+                                        best_novel=best_novel,
+                                        best_draft=best_draft,
+                                        best_journal_snapshot=_best_journal_snapshot,
+                                    )
                                     self.current_novel = best_novel
                                     self._draft_novel = best_draft
                                     logger.info(f"Post-fix topup ch{chapter_num}: -> {len(best_novel)} chars")
