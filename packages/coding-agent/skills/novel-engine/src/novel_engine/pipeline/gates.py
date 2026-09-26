@@ -1408,3 +1408,68 @@ def _run_boundary_gate(self, chapter_num: int, task_card: dict, scenes: list, as
         logger.info(f"Boundary resolved after scene {sid} regen {st2}")
     return purified2
 
+
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+
+@dataclass
+class ForbiddenGateResult:
+    """Result of evaluating the forbidden gate."""
+    apply_world_state: bool
+    success: bool
+    violations: list = field(default_factory=list)
+    flag_human: bool = False
+    flag_reason: str = ""
+
+
+def evaluate_forbidden_gate(
+    chapter_num: int,
+    current_novel: str,
+    review: dict,
+    policy: dict,
+    apply_world_state: bool,
+    forbidden_violations_fn: Callable,
+) -> ForbiddenGateResult:
+    """Evaluate the forbidden gate and return structured result.
+    
+    This is a pure function that does NOT mutate self directly.
+    Callers must handle side effects (defects.add, flag_for_human, result updates).
+    """
+    violations: list = []
+    if not apply_world_state:
+        return ForbiddenGateResult(
+            apply_world_state=True,
+            success=True,
+            violations=[],
+        )
+    
+    violations = forbidden_violations_fn(current_novel, review)
+    if not violations:
+        return ForbiddenGateResult(
+            apply_world_state=True,
+            success=True,
+            violations=[],
+        )
+    
+    # Log non-blocking hits
+    blocking = [v for v in violations 
+                if _forbidden_violation_is_blocking(policy, v)]
+    
+    if blocking:
+        return ForbiddenGateResult(
+            apply_world_state=False,
+            success=False,
+            violations=violations,
+            flag_human=True,
+            flag_reason="forbidden violation",
+        )
+    else:
+        # Non-blocking: just record, don't fail
+        return ForbiddenGateResult(
+            apply_world_state=True,
+            success=True,
+            violations=violations,
+        )
+
+

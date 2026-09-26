@@ -1295,28 +1295,30 @@ class PipelineOrchestrator:
             sm.handle_failure("review_error", str(e))
             return result
 
-        # Task 9: forbidden gate — never silently publish a forbidden violation.
-        # Only BLOCK on policy-hard categories (forbidden_block); record everything
-        # as a defect (non-hard hits are noted and would otherwise abort a run).
-        violations: list[dict] = []
-        if apply_world_state:
-            _gate_policy = self._policy
-            violations = self._forbidden_violations(self.current_novel, review)
-            if violations:
-                for v in violations:
-                    self.defects.add(chapter_num, "forbidden_violation",
-                                     f"{v.get('name')}:{v.get('match')}")
-                blocking = [v for v in violations
-                            if _forbidden_violation_is_blocking(_gate_policy, v)]
-                if blocking:
-                    logger.error(f"Chapter {chapter_num} FAILED forbidden gate (blocking): {blocking}")
-                    apply_world_state = False
-                    result["success"] = False
-                    result["forbidden_violations"] = violations
-                    self._flag_for_human(chapter_num, result.get("score", 0), "forbidden violation")
-                else:
-                    logger.warning(
-                        f"Chapter {chapter_num} non-blocking forbidden hits recorded: {violations}")
+        # Task 9: forbidden gate — evaluate via gates.py pure function
+        from novel_engine.pipeline.gates import evaluate_forbidden_gate
+        _fg_result = evaluate_forbidden_gate(
+            chapter_num,
+            self.current_novel,
+            review,
+            self._policy,
+            apply_world_state,
+            self._forbidden_violations,
+        )
+        apply_world_state = _fg_result.apply_world_state
+        violations = _fg_result.violations
+        if violations:
+            for v in violations:
+                self.defects.add(chapter_num, "forbidden_violation",
+                                 f"{v.get('name')}:{v.get('match')}")
+            if not _fg_result.success:
+                result["success"] = False
+                result["forbidden_violations"] = _fg_result.violations
+                if _fg_result.flag_human:
+                    self._flag_for_human(chapter_num, result.get("score", 0), _fg_result.flag_reason or "forbidden violation")
+            else:
+                logger.warning(
+                    f"Chapter {chapter_num} non-blocking forbidden hits recorded: {[_v.get('name') for _v in _fg_result.violations]}")
 
         # Save review journal for sliding-window quality memory
         from novel_engine.pipeline.review_journal import save_review_journal
