@@ -772,7 +772,6 @@ class PipelineOrchestrator:
                             logger.info(
                                 f"Reaction fix injected ch{chapter_num}: scenes={_r_scene_ids} "
                                 f"budget_left={_reaction_fix_budget}")
-                            no_improve = 0  # 本轮有主动修订，不计入停滞
                         best_state = _gates.track_best_candidate(
                             best_state, s, current, current_draft,
                             det["passed"], has_high,
