@@ -551,3 +551,41 @@ class FixLoopContext:
 ---
 
 *文档最后更新: 2026-09-26*
+
+
+---
+
+## 13. 教训：提取方法/拆模块到 gates.py 的委托写法与全量验证（2026-09-27）
+
+### 13.1 事件
+
+提交 `3bae92a8d` 将 13 个 gate 方法提取到 `pipeline/gates.py` 后，在 orchestrator 类体内用以下委托写法（16 处：12 gate + `_apply_length_floor` + 3 个标点修复）：
+
+```python
+_run_continuity_gate = staticmethod(lambda self, *a, **k: _gates._run_continuity_gate(self, *a, **k))
+```
+
+`staticmethod()` 关闭 Python 自动实例绑定。调用点仍按普通实例方法调用（`self._run_continuity_gate(_bn, task_card, _scenes_list, purified)`），实际执行时第一个实参顶替 lambda 的 `self`，后续参数集体错位一位，末参（如 `assembled_text`）丢失：
+
+```
+_Gates._run_continuity_gate() missing 1 required positional argument: 'assembled_text'
+```
+
+有 try/except 包裹的委托（如 `_run_boundary_gate`）静默跳过、只打 warning——表现为"日志正常、实际未把关"。
+
+### 13.2 修复
+
+去掉 `staticmethod()` 外壳，改用普通实例方法（保留自动 self 绑定）：
+
+```python
+def _run_continuity_gate(self, *a, **k):
+    return _gates._run_continuity_gate(self, *a, **k)
+```
+
+修复提交：`f23292e5a`。修复后全量测试从 34 failed 回到 **874 passed / 2 failed**（基线）。
+
+### 13.3 流程教训（强制要求）
+
+1. **"提取方法/拆 gate 到模块"类改动，提交前必须跑全量测试套件**（从 `packages/coding-agent/skills/novel-engine/src` 执行 `python -m pytest novel_engine/tests/ -q`）。本次回归分布在 8+ 个测试文件，只跑新增/相关测试会完全漏掉。
+2. **禁止** `staticmethod(lambda self, *a, **k: ...)` 委托写法——关闭实例绑定易踩参数错位陷阱。
+3. 委托到模块函数一律用普通方法定义（见 13.2）。
