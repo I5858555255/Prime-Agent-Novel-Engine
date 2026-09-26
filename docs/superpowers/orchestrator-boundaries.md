@@ -501,3 +501,108 @@ pipeline_orchestrator.py: 4557 行 (原 5960, -24%)
 1. **缩进陷阱**：提取方法时，调用点缩进必须与周围代码一致，否则可能静默进入错误控制流
 2. **变量作用域**：被提取的方法需要显式传递所有依赖变量（如 `apply_world_state`, `cur_score`），不能依赖闭包
 3. **安全策略**：每次提取后必须立即运行完整测试套件，发现回归立即回滚
+
+---
+
+## 12. P1 Phase 4c: Fix Loop Analysis (2026-09-26)
+
+### 12.1 现状
+
+`generate_single_chapter` 的 fix loop 位于 **L697-L1280**（~583 行），是拆分风险最高的部分。
+
+### 12.2 核心结构
+
+```
+fix loop (L697-L1280)
+├── 初始化状态
+│   ├── orig_novel, orig_draft (备份)
+│   ├── pre_fix_score
+│   ├── publication_line, soft_line
+│   ├── max_fix (默认 2 轮)
+│   ├── current, current_draft
+│   ├── best (追踪最高分候选)
+│   ├── best_green (追踪硬门全绿候选)
+│   └── no_improve (停滞计数器)
+│
+├── 主循环 (for _ in range(max_fix))
+│   ├── _enforce_mandatory_beats (每轮前置检查)
+│   ├── _stage_review (评审)
+│   ├── _deterministic_quality_gate (门控)
+│   ├── 决策逻辑
+│   │   ├── s >= min_ch → break (通过)
+│   │   ├── _gray_ok → break (灰带放行)
+│   │   └── no_improve >= 2 → break (停滞)
+│   │
+│   ├── 修复路径选择
+│   │   ├── _patch_weak_scenes (场景级增量缝合)
+│   │   ├── _cc25_literary_rewrite (文学性重写)
+│   │   └── _rewrite_weak_dimensions (整章重写)
+│   │
+│   └── 门控回归
+│       └── _deterministic_quality_gate (验证)
+│
+└── 终态处理
+    ├── 采纳 best_green 或 best
+    ├── journal 原子回滚
+    ├── 二次字数门 (_apply_length_floor)
+    └── 氛围去重检测 (atmosphere_dedup)
+```
+
+### 12.3 耦合分析
+
+**外部依赖（需线程通过接口）：**
+
+| 方法 | 行数 | 依赖 |
+|------|------|------|
+| `_patch_weak_scenes` | L3609-3850 | `self.writer`, `self._draft_novel`, journal |
+| `_cc25_literary_rewrite` | L3851-3930 | `self.writer`, `self._draft_novel` |
+| `_rewrite_weak_dimensions` | L3931-4007 | `self.writer`, `self._draft_novel` |
+| `_enforce_mandatory_beats` | L3299-3608 | `self._draft_novel`, journal |
+
+**内部状态（需显式传递）：**
+- `self.current_novel` / `self._draft_novel`
+- `self._frozen_task_cards`
+- `self._literary_pass_used`
+- `_last_deterministic_issues`
+- journal 文件操作
+
+### 12.4 推荐策略
+
+**不建议直接提取**，原因：
+1. 583 行与外部状态深度交织
+2. 多次 break 和状态回滚逻辑
+3. journal 原子操作需要保持事务性
+
+**建议方案：**
+1. **先完成 Phase 3**（remediation 模块），建立清晰的输入/输出契约
+2. **定义接口**：
+   ```python
+   class FixLoopContext:
+       novel: str
+       draft: str
+       review: dict
+       task_card: dict
+       journal_snapshot: str
+       
+   class FixResult:
+       novel: str
+       score: float
+       success: bool
+       best_novel: str
+       best_score: float
+       forced_publish: bool
+   ```
+3. **分阶段提取**：
+   - Step 1: 提取决策逻辑（评分→分支选择）
+   - Step 2: 提取修复路径选择（patch/rewrite）
+   - Step 3: 提取终态处理（best 采纳）
+
+**预计耗时：** 2-3 sessions
+
+### 12.5 备选方案
+
+如果 Phase 4c 风险过高，可考虑：
+1. **保留现状**，只添加文档说明 fix loop 职责
+2. **部分提取**：将 `best` 追踪逻辑提取为 `_track_best_candidate()`
+3. **委托模式**：将 fix loop 委托给独立的 `FixOrchestrator` 类（需要重构接口）
+
