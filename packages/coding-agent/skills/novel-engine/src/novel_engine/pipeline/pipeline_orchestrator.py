@@ -808,8 +808,8 @@ class PipelineOrchestrator:
                         elif _reaction_pending:
                             logger.warning(f"Score {s} in gray band but reaction pending fix → continue")
                         # 3 轮不超 best 即提前终止，避免单章空转 1.5h
-                        if no_improve >= 2 and _ >= 2:
-                            logger.warning(f"Fix loop no improve for {no_improve} rounds (best {best[0]}), early stop")
+                        from novel_engine.pipeline.gates import check_fix_loop_early_stop
+                        if check_fix_loop_early_stop(_, no_improve, best[0]):
                             break
                         if _ > 0 and s <= prev_best:
                             # 保留原逻辑作为兜底

@@ -1473,3 +1473,22 @@ def evaluate_forbidden_gate(
         )
 
 
+
+
+# ============================================================================
+# Fix Loop: Early Stop Condition (Phase 3.1)
+# ============================================================================
+
+def check_fix_loop_early_stop(
+    iteration: int,
+    no_improve: int,
+    best_score: float,
+) -> bool:
+    """Check if fix loop should stop early due to no improvement.
+    
+    Returns True if should break, False if should continue.
+    """
+    if no_improve >= 2 and iteration >= 2:
+        logger.warning(f"Fix loop no improve for {no_improve} rounds (best {best_score}), early stop")
+        return True
+    return False
