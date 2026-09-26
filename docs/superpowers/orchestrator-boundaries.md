@@ -440,3 +440,64 @@ self._reset_call_log()
 - **操作**：在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
 - **建议触发条件**：pilot 覆盖率 > 80% 且 spec 文档化
 
+
+---
+
+## 11. P1 Phase 4b 完成摘要（2026-09-26）
+
+### 11.1 本次完成的拆分
+
+| 操作 | Commit | 效果 |
+|------|--------|------|
+| 修复 `_commit_chapter` 调用位置 | `178a0fd54` | 从死代码块移到正确位置 |
+| 提取 `_commit_chapter` 方法 | `eefb54bbc` | 77 行分离，处理 checkpoint/events/session_tree |
+| 提取 `_decide_publish` 方法 | `b11287cef` | 41 行分离，处理 force_best/gray-band/evaluate_publish |
+
+### 11.2 当前文件结构
+
+```
+pipeline_orchestrator.py: 4557 行 (原 5960, -24%)
+├── generate_single_chapter   L443-1518  (~1076 行)
+│   ├── Phase 0-4: 规划→导演→缩写→写作
+│   ├── Phase 4.5: 字数强制
+│   ├── Phase 5: 评审 + fix loop (~700 行)
+│   └── Phase 6: 提交前检查
+├── _commit_chapter          L1519-1600  (82 行) ✅ 新
+├── _decide_publish          L1601-1661  (61 行) ✅ 新
+└── _stage_*                 L1662+      (已提取的方法)
+```
+
+### 11.3 测试状态
+
+```
+874 passed, 2 failed (pre-existing), 0 skipped
+```
+
+预存失败（与本次改动无关）：
+- `test_pipeline_incremental_patcher`
+- `test_same_location_cluster_shared_objects_not_flagged`
+
+### 11.4 待继续工作（需专门 session）
+
+#### P1 Phase 4c: 拆分 `generate_single_chapter` fix loop
+- **当前规模**：~1076 行（原 ~1178 行）
+- **阻塞部分**：fix loop (~700 行，L690-L1400)
+  - 混合评审→修复→重试逻辑
+  - 深度耦合 `_patch_weak_scenes`, `_cc25_literary_rewrite`, `_rewrite_weak_dimensions`
+- **建议**：等 Phase 3 remediation 模块拆分建立接口契约后再处理
+
+#### P1 Phase 3: Remediation 模块拆分
+- **阻塞方法**：`_validate_and_regen_scenes`, `_enforce_mandatory_beats`, `_patch_weak_scenes`, `_cc25_literary_rewrite`, `_rewrite_weak_dimensions`
+- **阻塞原因**：深度耦合 `self.llm`, `self.writer`, `self._draft_novel`
+- **建议**：先完成 Phase 4，建立清晰接口再拆
+
+#### P2: Reviewer severity 硬映射
+- **位置**：`pipeline_orchestrator.py` L84-100（`_review_issue_is_blocking`）
+- **触发条件**：beats pilot dimension→category mapping spec 落地
+- **操作**：在 `quality_policy.DEFAULT_POLICY["severity_map"]` 加 9 条映射
+
+### 11.5 关键经验
+
+1. **缩进陷阱**：提取方法时，调用点缩进必须与周围代码一致，否则可能静默进入错误控制流
+2. **变量作用域**：被提取的方法需要显式传递所有依赖变量（如 `apply_world_state`, `cur_score`），不能依赖闭包
+3. **安全策略**：每次提取后必须立即运行完整测试套件，发现回归立即回滚
