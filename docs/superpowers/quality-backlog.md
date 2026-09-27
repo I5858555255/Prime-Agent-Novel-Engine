@@ -16,11 +16,18 @@ Incoming reports use this format:
 
 ## 2026-09-05 — reviewer blocking signal is advisory-only (deferred, not done)
 - Suspected module: pipeline/pipeline_orchestrator.py (_review_issue_is_blocking), pipeline/quality_gate.py (evaluate_publish)
-- **Status**: Still deferred. Verified root cause: reviewer issues carry `dimension` (9 values from `DIM_MAX`) + `severity` (high/medium/low), **zero `category` field**. Policy `severity_map` has none of those 9 dimensions → every check returns `False` → advisory-only by construction.
-- Deferred to: **beats pilot dimension→category mapping spec** (not just pilot completion — the *spec* that says which dimension maps to which policy category).
-- Trigger: when a concrete mapping like `hook_strength → hook_missing`, `pacing → beat_repetition_thematic`, etc. is documented (even tentatively). Then land in `quality_policy.DEFAULT_POLICY["severity_map"]`.
-- **Do NOT** map all reviewer-high to hard — that collapses the 3-level severity signal into a binary one and breaks the remediation loop's prioritization.
-- Notes: the fix is 9 lines in `quality_policy.py` once the spec lands. Do not touch before then.
+- **Resolved**: 2026-09-27. Added 9 dimension→category mappings to `quality_policy.DEFAULT_POLICY["severity_map"]`:
+  - `plot_consistency` → hard (core plot issues block)
+  - `foreshadow_execution` → hard (missed foreshadow beats block)
+  - `character_consistency` → note (character issues shown as repetition)
+  - `style_match` → note (style issues shown as repetition)
+  - `pacing` → note (affects length/flow)
+  - `innovation` → note (weak hooks)
+  - `hook_strength` → note (maps to hook_missing)
+  - `reader_retention` → note (tied to pacing/length)
+  - `cliffhensity` → note (affects pacing)
+- Trigger met: beats pilot PASSED (6.7% omission < 10% threshold), concrete mapping documented above.
+- Notes: preserves 3-level severity signal — only plot/foreshadow are hard; others remain note to avoid collapsing into binary.
 
 ## 2026-09-06 — force-best log wording vs actual behavior
 - Suspected module: pipeline/pipeline_orchestrator.py (force-best log line, L1219)

@@ -22,6 +22,16 @@ DEFAULT_POLICY = {
         "length_deviation": "note",
         "beat_repetition_thematic": "note",
         "hook_missing": "note",
+        # CC round-31: reviewer dimension→category mapping (beats pilot PASSED, 6.7% omission)
+        "plot_consistency": "hard",        # 25pts: core plot not following task card
+        "foreshadow_execution": "hard",    # 20pts: missed foreshadow beats break structure
+        "character_consistency": "note",   # 20pts: character issues show as repetition
+        "style_match": "note",             # 15pts: style issues = repetitive/wrong style
+        "pacing": "note",                  # 10pts: pacing affects length/flow
+        "innovation": "note",              # 10pts: lack of innovation = weak hooks
+        "hook_strength": "note",           # 8pts: direct mapping to hook_missing
+        "reader_retention": "note",        # 7pts: retention tied to pacing/length
+        "cliffhensity": "note",            # 5pts: cliffhanger density affects pacing
     },
 }
 
