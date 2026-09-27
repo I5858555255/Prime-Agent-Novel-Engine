@@ -8,6 +8,7 @@ readme = "SKILL.md"
 [tool.poetry.dependencies]
 python = "^3.12"
 httpx = "^0.28.1"
+jieba = ">=0.42"
 json-repair = "^0.63.1"
 
 [build-system]

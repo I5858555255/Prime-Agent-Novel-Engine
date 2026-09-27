@@ -885,3 +885,88 @@ def test_p7d_orchestrator_integration_gate_with_str_scene_texts(tmp_path):
     assert result['passed'] is False, f'真实 ch5 应有硬伤阻断, got passed={result["passed"]}, issues={issues_list}'
     assert any('[跨场危机]' in iss for iss in issues_list), \
         f'应包含跨场危机命中，got issues={issues_list}'
+def test_p0_force_best_else_branch_final_det_not_unbound(tmp_path):
+    """回归：force-best else 分支（best_score < min_ch，非 gray_final）中
+    final_det 必须已赋值，不再因 UnboundLocalError 被外层 except 静默吞掉。
+    见 pipeline_orchestrator.py L941 前移修复。"""
+    import json
+    import os
+    from novel_engine.pipeline.pipeline_orchestrator import PipelineOrchestrator
+
+    (tmp_path / 'config').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'config' / 'runtime_config.json').write_text(
+        json.dumps({'llm': {'use_mock': True}, 'review_llm': {'use_mock': True},
+                    'fallback_llm': {'use_mock': True}, 'chapter_target_chars': 7500}),
+        encoding='utf-8')
+    (tmp_path / 'config' / 'llm_providers.json').write_text(
+        json.dumps({'active_profile': 'test', 'profiles': {'test': {
+            'base_url': 'https://test.example.com/v1', 'api_key_env': 'TEST_KEY_FB',
+            'timeout_s': 60, 'max_retries': 1, 'default_extra_body': {},
+            'phases': {'scenes': {'models': ['test-model'], 'response_format': None},
+                        'polish': {'models': ['test-model'], 'response_format': None, 'concurrency': 4},
+                        'planning': {'models': ['test-model'], 'response_format': None},
+                        'review': {'models': ['test-model'], 'response_format': None}}}}}),
+        encoding='utf-8')
+    (tmp_path / 'config' / 'forbidden.json').write_text('{}', encoding='utf-8')
+    (tmp_path / 'config' / 'quality_policy.json').write_text(
+        json.dumps({'publication_line': 88, 'soft_publication_line': 85,
+                     'min_ratio': 0.85, 'max_ratio': 1.2, 'tolerance_chars': 500}),
+        encoding='utf-8')
+    os.environ['TEST_KEY_FB'] = 'sk-test-fb'
+
+    orch = PipelineOrchestrator(project_root=str(tmp_path))
+    orch._scene_regen_used = {}
+
+    # 不含※分隔符的短文 → _scene_texts_for_gate = None
+    short_text = '陈老根在屋里坐着，听着外面的风声。\n\n夜深了，村里很安静。'
+    task_card = {
+        'chapter_num': 1,
+        'core_goal': '测试目标',
+        'scene_blueprints': [{'scene_num': 1, 'one_line_summary': '场景1'}],
+        'chapter_events': []
+    }
+
+    # 直接设置属性绕过 LLM 调用
+    orch._frozen_task_cards = {1: task_card}
+    orch._frozen_synopsis = {1: {'synopsis': '测试大纲'}}
+    orch._stage_world_sim = lambda cn: {}
+    orch._stage_directing = lambda cn, ws, bypass_cache=None: task_card
+    orch._stage_synopsis = lambda tc: {'synopsis': '测试大纲'}
+    orch._stage_write = lambda tc, syn: short_text
+    orch._ensure_chinese = lambda n: n
+    orch._finalize_current_novel = lambda cn: None
+
+    # mock review: verdict='fix'，score=80（< min_ch=88，且不在 gray band 85-88 因为 <85）
+    def _mock_review(chapter_num, task_card, synopsis, current, world_state=None):
+        return {
+            'review': {'chapter_num': chapter_num, 'scores': {'plot_consistency': 20, 'character_consistency': 18,
+                                                              'foreshadow_execution': 18, 'style_match': 12,
+                                                              'pacing': 10, 'innovation': 14},
+                       'total_score': 80, 'verdict': 'fix', 'issues': [], 'fix_scope': ''},
+            'score': 80.0, 'verdict': 'fix', 'review_unstable': False
+        }
+    orch._stage_review = _mock_review
+
+    # mock _select_final_candidate: 返回 score=80（低于 min_ch），触发 else 分支
+    def _mock_select(chapter_num, best_state, result):
+        return (80, short_text, short_text, {})
+    orch._select_final_candidate = _mock_select
+
+    # mock _deterministic_quality_gate: passed=False（确保 _gray_final=False）
+    def _mock_det(text, tc, scene_texts=None):
+        return {'passed': False, 'issues': ['测试issue']}
+    orch._deterministic_quality_gate = _mock_det
+
+    result = orch.generate_single_chapter(1)
+
+    # 断言：不抛异常，else 分支正确执行
+    assert result['success'] is True, f"expected success, got {result}"
+    # force-best 路径：published=False（不入 novel/），但 force_published=True（进 draft/）
+    assert result.get('force_published') is True, f"expected force_published=True, got {result}"
+    assert result['success'] is True, f"expected success, got {result}"
+    assert 'note' in result, f"expected 'note' in result for force-best path, got keys={list(result.keys())}"
+    note = result['note']
+    # note 应包含 det 快照信息
+    assert 'det=' in note or 'hard gate' in note or 'best' in note.lower(),         f"note should reference det snapshot, got: {note!r}"
+    # 不是 gray_band（score 80 < soft_line 85）
+    assert result.get('gray_band_release') is not True,         "should NOT be gray_band (score 80 < soft_line 85)"

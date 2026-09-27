@@ -938,10 +938,13 @@ class PipelineOrchestrator:
                         result["gray_band_release"] = True
                         result["gray_band_score"] = best_score
                         self._flag_for_human(chapter_num, best_score, f"gray-band final release {best_score}: spot-read required" + ("; reaction consistency 未消解（已尝试定点修订）" if (_final_det_g.get("reaction_hits") and _reaction_fix_budget == 0) else ""))
+                    # Hoisted out of the if-branch: ensure final_det is always bound
+                    # for the else path (force-best when best_score < min_ch and not gray_final).
+                    # Previously UnboundLocalError was silently swallowed by the outer except.
+                    final_det = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card), scene_texts=_scene_texts_for_gate)
                     if best_score >= min_ch or _gray_final:
                         # 最终仍需校验硬门控；若仍硬阻断则强制发布 best 供人审阅（附 note），不跳过章节
                         # P7D：scene_texts 与 best_novel 同源（见上方 _scene_texts_for_gate 计算）
-                        final_det = self._deterministic_quality_gate(best_novel, self._frozen_task_cards.get(chapter_num, task_card), scene_texts=_scene_texts_for_gate)
                         _final_policy = self._policy
                         final_high = any(_review_issue_is_blocking(_final_policy, iss) for iss in (review.get("issues") or []))
                         if (final_high or not final_det["passed"]) and not _gray_final:
