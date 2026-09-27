@@ -3675,6 +3675,35 @@ class PipelineOrchestrator:
         # D1 P8D: 无条件刷新 local current 以与 self.current_novel 同源（含 finalize 切分后文本）
         current = self.current_novel or current
         current_draft = self._draft_novel or current_draft
+        # Delegate to extracted B and C methods
+        current, current_draft, best_state, _reaction_fix_budget, stop_reason, staged = self._decide_fix_loop_outcome(
+            chapter_num, task_card, synopsis, current, current_draft,
+            best_state, iteration, min_ch, _soft_line,
+            world_state, result, _reaction_fix_budget)
+        if stop_reason is not None:
+            return current, current_draft, best_state, _reaction_fix_budget, stop_reason
+        current, current_draft, best_state, _reaction_fix_budget, stop_reason = self._dispatch_remediation(
+            chapter_num, task_card, synopsis, current, current_draft,
+            best_state, _reaction_fix_budget, frozen, staged)
+        if stop_reason is not None:
+            return current, current_draft, best_state, _reaction_fix_budget, stop_reason
+        return current, current_draft, best_state, _reaction_fix_budget, None
+
+
+
+    def _decide_fix_loop_outcome(
+        self, chapter_num: int, task_card: dict, synopsis: dict,
+        current: str, current_draft: str,
+        best_state: "_gates.BestCandidateState",
+        iteration: int, min_ch: int, _soft_line: int,
+        world_state: dict, result: dict,
+        _reaction_fix_budget: int,
+    ) -> tuple:
+        """B-type: evaluate review/gate results and decide pass/gray/early-stop.
+
+        Returns (current, current_draft, best_state, _reaction_fix_budget, stop_reason)
+        where stop_reason is 'pass', 'gray_band', 'early_stop', or None to continue.
+        """
         staged = self._stage_review(chapter_num, task_card, synopsis, current, world_state)
         s = staged["score"]
         result["score"] = s
@@ -3712,7 +3741,7 @@ class PipelineOrchestrator:
             if not has_high and det["passed"] and not _reaction_pending:
                 if soft:
                     logger.info(f"Score {s} ≥ {min_ch} soft issues (不阻断): {soft}")
-                return current, current_draft, best_state, _reaction_fix_budget, 'pass'
+                return current, current_draft, best_state, _reaction_fix_budget, 'pass', staged
             elif _reaction_pending:
                 logger.warning(f"Score {s} ≥ {min_ch} but reaction pending fix → continue")
             else:
@@ -3723,12 +3752,27 @@ class PipelineOrchestrator:
             result["gray_band_score"] = s
             _flag_reason = f"gray-band release {s}: deterministic gates passed, no high issue, please spot-read" + ("; reaction consistency 未消解（已尝试定点修订）" if (_react_hits and _reaction_fix_budget == 0) else "")
             self._flag_for_human(chapter_num, s, _flag_reason)
-            return current, current_draft, best_state, _reaction_fix_budget, 'gray_band'
+            return current, current_draft, best_state, _reaction_fix_budget, 'gray_band', staged
         elif _reaction_pending:
             logger.warning(f"Score {s} in gray band but reaction pending fix → continue")
         # 3 轮不超 best 即提前终止，避免单章空转 1.5h
         if _gates.check_fix_loop_early_stop(iteration, best_state.no_improve, best_state.best_score):
-            return current, current_draft, best_state, _reaction_fix_budget, 'early_stop'
+            return current, current_draft, best_state, _reaction_fix_budget, 'early_stop', staged
+        # Return None to signal: continue to remediation dispatch
+        return current, current_draft, best_state, _reaction_fix_budget, None, staged
+
+    def _dispatch_remediation(
+        self, chapter_num: int, task_card: dict, synopsis: dict,
+        current: str, current_draft: str,
+        best_state: "_gates.BestCandidateState",
+        _reaction_fix_budget: int,
+        frozen: dict,
+        staged: dict,
+    ) -> tuple:
+        """C-type: dispatch remediation (patch/rewrite) based on review outcome.
+
+        Returns (current, current_draft, best_state, _reaction_fix_budget, stop_reason).
+        """
         # 优先场景级增量缝合（基于 draft 带标记文本，避免 purified 找不到 marker）
         # CC round-25 P0-2：E-loop 逐场定点只处理可场景归因的结构性维度；
         # hook/style/innovation 三维从补丁评审中剔除，交给下方整章一次性文学性重写。
