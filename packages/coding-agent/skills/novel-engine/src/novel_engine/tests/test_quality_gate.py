@@ -24,6 +24,45 @@ def test_dimension_fallback_matches_orchestrator_log():
     assert r["publish"] is False
     assert _review_issue_is_blocking(DEFAULT_POLICY, issue) is True
 
+
+def test_reviewer_dimensions_blocking_behavior():
+    # Verify new dimension→category mappings in severity_map
+    from novel_engine.pipeline.pipeline_orchestrator import _review_issue_is_blocking
+    from novel_engine.core.quality_policy import DEFAULT_POLICY
+
+    # Hard dimensions should block
+    hard_issues = [
+        {"dimension": "plot_consistency", "severity": "high"},
+        {"dimension": "foreshadow_execution", "severity": "medium"},
+    ]
+    for issue in hard_issues:
+        assert _review_issue_is_blocking(DEFAULT_POLICY, issue) is True
+
+    # Note dimensions should NOT block
+    note_issues = [
+        {"dimension": "character_consistency", "severity": "high"},
+        {"dimension": "style_match", "severity": "high"},
+        {"dimension": "pacing", "severity": "high"},
+        {"dimension": "innovation", "severity": "high"},
+        {"dimension": "hook_strength", "severity": "high"},
+        {"dimension": "reader_retention", "severity": "high"},
+        {"dimension": "cliffhensity", "severity": "high"},
+    ]
+    for issue in note_issues:
+        assert _review_issue_is_blocking(DEFAULT_POLICY, issue) is False
+
+def test_evaluate_publish_with_hard_dimension():
+    # plot_consistency=hard should veto publish even at high score
+    issue = {"dimension": "plot_consistency", "severity": "high", "description": "plot drift"}
+    r = evaluate_publish(score=90, reviewer_issues=[issue], det_hard=[], leak=[], violations=[], policy=DEFAULT_POLICY)
+    assert r["publish"] is False
+
+def test_evaluate_publish_with_note_dimension():
+    # character_consistency=note should NOT veto publish at high score
+    issue = {"dimension": "character_consistency", "severity": "high", "description": "character issue"}
+    r = evaluate_publish(score=90, reviewer_issues=[issue], det_hard=[], leak=[], violations=[], policy=DEFAULT_POLICY)
+    assert r["publish"] is True
+
 def test_forced_draft_rate_recorded_not_enforced(tmp_path):
     from novel_engine.pipeline.production_runner import summarize_batch
     rep = summarize_batch([{"published": True}, {"published": False, "draft": True}] * 5)
