@@ -37,3 +37,14 @@ Incoming reports use this format:
 - Suspected module: pipeline/pipeline_orchestrator.py (force-best note, L1220-1225)
 - **Resolved**: 2026-09-25, commit `1972ab8`. Added `_snapshot_det = list(final_det.get("issues") or [])` and updated note to reference snapshot instead of conditional `"unknown"`.
 - Notes: prevents future force-bests from having no attribution evidence for which hard/det issues were present.
+
+## 2026-09-28 — severity-gated blocking: low-severity hard-dimension issues no longer block publish
+- Suspected module: pipeline/pipeline_orchestrator.py (_review_issue_is_blocking), pipeline/quality_gate.py (evaluate_publish)
+- **Resolved**: 2026-09-28. `_review_issue_is_blocking` now returns `(blocking, advisory_high)` tuple. Hard-dimension issues (plot_consistency, foreshadow_execution) only block when severity is `high` or `medium`; `low` severity on hard dimensions is advisory only. Note-dimension issues never block but `high` severity generates `advisory_high` signal.
+- Shadow comparison (scripts/audit_trend_severity.py on per_chapter_reviews.json, 5 chapters):
+  - Old rule blocked 3/5 chapters (3 blocking issues); new rule blocks 1/5 chapters (1 blocking issue)
+  - 2 chapters unblocked: Ch1 (`foreshadow_execution/low` → advisory), Ch3 (`foreshadow_execution/low` → advisory)
+  - 1 advisory_high tracked: Ch1 `style_match/high`
+  - Estimated forced_draft_rate drop: 60.0% → 20.0%
+- Tests added: `test_hard_dimension_low_severity_not_blocking`, `test_note_dimension_high_severity_advisory_only`, `test_category_takes_priority_over_dimension`, `test_mixed_issues_blocking_and_advisory`, `test_evaluate_publish_with_note_high_dimension_allows_pass`
+- Test result: 15 passed, 0 failed (up from 10 passed)

@@ -148,9 +148,16 @@ def evaluate_publish(*, score=None, reviewer_issues=None, det_hard=None, leak=No
     # --- 第一步：硬性拦截（最高优先级）---
     if reviewer_issues:
         for issue in reviewer_issues:
-            if is_blocking(policy, issue.get("category") or issue.get("dimension") or issue.get("severity", "")):
-                reasons.append(f"reviewer_issue_blocking:{issue.get('category') or issue.get('dimension')}")
-                publish = False
+            cat = issue.get("category") or issue.get("dimension")
+            sev = issue.get("severity", "").lower()
+            if is_blocking(policy, cat):
+                # Hard dimension: only block on high/medium severity
+                if sev in ("high", "medium"):
+                    reasons.append(f"reviewer_issue_blocking:{cat}")
+                    publish = False
+            elif sev == "high":
+                # Note dimension + high severity → advisory only, do not block
+                pass
 
     if det_hard:
         for item in det_hard:

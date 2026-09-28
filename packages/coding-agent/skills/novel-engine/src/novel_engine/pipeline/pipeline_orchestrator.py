@@ -81,14 +81,23 @@ from novel_engine.quality.repetition_detector import (
 logger = logging.getLogger(__name__)
 
 
-def _review_issue_is_blocking(policy: dict, issue: dict) -> bool:
-    # NOTE(advisory-only): reviewer issues carry dimension/severity, not policy categories — dead-until-mapped pending beats-pilot dimension→category mapping (see quality-backlog.md).
-    """评审 issue 是否阻断：只读 policy severity_map，以 issue 自身维度为类别。
+def _review_issue_is_blocking(policy: dict, issue: dict) -> tuple[bool, bool]:
+    # Severity-gated blocking: hard-dimension issues only block when severity is
+    # high or medium; low-severity issues on hard dimensions are advisory only.
+    # Note-dimension issues never block but high severity generates advisory_high signal.
+    # Category field takes priority over dimension when present.
+    is_hard_dim = issue.get("category") or issue.get("dimension")
+    sev = issue.get("severity", "").lower()
 
-    生产者（reviewer severity 标签）暂不改；比较点按类别查表。
-    回退顺序与 quality_gate.evaluate_publish 一致：category → dimension → severity。
-    """
-    return is_blocking(policy, issue.get("category") or issue.get("dimension") or issue.get("severity", ""))
+    if is_blocking(policy, is_hard_dim):
+        # Hard dimension: block only for high/medium severity
+        return sev in ("high", "medium"), False
+
+    # Note dimension or unmapped: check if severity is high for advisory tracking
+    if sev == "high":
+        return False, True
+
+    return False, False
 
 
 def _forbidden_violation_is_blocking(policy: dict, violation: dict) -> bool:
@@ -930,7 +939,7 @@ class PipelineOrchestrator:
                     except Exception as _ade:
                         logger.warning(f"ch{chapter_num} atmosphere dedup skipped: {_ade}")
                     _final_pol_g = self._policy
-                    _final_high_g = any(_review_issue_is_blocking(_final_pol_g, iss) for iss in (review.get("issues") or []))
+                    _final_high_g = any(b for b, _ in (_review_issue_is_blocking(_final_pol_g, iss) for iss in (review.get("issues") or [])))
                     _soft_line = int(_final_pol_g.get("soft_publication_line", min_ch - 3))
                     _gray_final = (_soft_line <= best_score < min_ch) and not _final_high_g and _final_det_g["passed"]
                     if _gray_final:
@@ -946,7 +955,7 @@ class PipelineOrchestrator:
                         # 最终仍需校验硬门控；若仍硬阻断则强制发布 best 供人审阅（附 note），不跳过章节
                         # P7D：scene_texts 与 best_novel 同源（见上方 _scene_texts_for_gate 计算）
                         _final_policy = self._policy
-                        final_high = any(_review_issue_is_blocking(_final_policy, iss) for iss in (review.get("issues") or []))
+                        final_high = any(b for b, _ in (_review_issue_is_blocking(_final_policy, iss) for iss in (review.get("issues") or [])))
                         if (final_high or not final_det["passed"]) and not _gray_final:
                             logger.warning(f"Best score {best_score} ≥ {min_ch} but hard gate still blocked: high={final_high} det={final_det['issues']} → force publish best with note")
                             result["success"] = True
@@ -1065,8 +1074,8 @@ class PipelineOrchestrator:
         # 阶段6：提交（P0-A2 加闸：仅 publication_line 以上且无 policy 硬阻断且确定性硬门控通过才写最终目录）
         _commit_policy = self._policy
         publication_line = int(_commit_policy["publication_line"])
-        has_high_issue = any(_review_issue_is_blocking(_commit_policy, iss) for iss in (review.get("issues") or []))
-        high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:50]}" for iss in (review.get("issues") or []) if _review_issue_is_blocking(_commit_policy, iss)]
+        has_high_issue = any(b for b, _ in (_review_issue_is_blocking(_commit_policy, iss) for iss in (review.get("issues") or [])))
+        high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:50]}" for iss in (review.get("issues") or []) if _review_issue_is_blocking(_commit_policy, iss)[0]]
         # _last_deterministic_issues 仅含 hard，soft 另取
         det_issues = getattr(self, "_last_deterministic_issues", [])
         det_soft = getattr(self, "_last_deterministic_soft", [])
@@ -1372,7 +1381,7 @@ class PipelineOrchestrator:
 
         _gray_commit = bool(result.get("gray_band_release")) and cur_score + 1e-9 >= int(
             _commit_policy.get("soft_publication_line", int(_commit_policy["publication_line"]) - 3))
-        has_high = any(_review_issue_is_blocking(_commit_policy, iss) for iss in (review.get("issues") or []))
+        has_high = any(b for b, _ in (_review_issue_is_blocking(_commit_policy, iss) for iss in (review.get("issues") or [])))
         if _gray_commit and not leak_issues and not det_issues and not has_high:
             can_publish = True
             verdict = {"publish": True, "reasons": [],
@@ -3708,8 +3717,8 @@ class PipelineOrchestrator:
         s = staged["score"]
         result["score"] = s
         _fix_policy = self._policy
-        has_high = any(_review_issue_is_blocking(_fix_policy, iss) for iss in (staged["review"].get("issues") or []))
-        high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:60]}" for iss in (staged["review"].get("issues") or []) if _review_issue_is_blocking(_fix_policy, iss)]
+        has_high = any(b for b, _ in (_review_issue_is_blocking(_fix_policy, iss) for iss in (staged["review"].get("issues") or [])))
+        high_list = [f"{iss.get('dimension')}/{iss.get('severity')}:{iss.get('description','')[:60]}" for iss in (staged["review"].get("issues") or []) if _review_issue_is_blocking(_fix_policy, iss)[0]]
         det = self._deterministic_quality_gate(current, task_card)
         soft = det.get("soft_issues", [])
         _react_hits = det.get("reaction_hits") or []
