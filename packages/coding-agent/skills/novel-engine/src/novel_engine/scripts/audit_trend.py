@@ -29,10 +29,12 @@ def _load_json(path: Path) -> list[dict]:
         return []
     if isinstance(raw, list):
         return raw
-    if isinstance(raw, dict) and "chapters" in raw:
-        return raw["chapters"]
+    if isinstance(raw, dict):
+        for key in ("chapters", "reviews"):
+            val = raw.get(key)
+            if isinstance(val, list):
+                return val
     return []
-
 
 def _extract_round(path: Path | None) -> int | None:
     """Guess the round number from file path or name."""
