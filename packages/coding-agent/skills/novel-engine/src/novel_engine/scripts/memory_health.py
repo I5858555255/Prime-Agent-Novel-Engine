@@ -343,17 +343,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Memory health check for novel-engine (read-only)"
     )
-    parser.add_argument("--root", default=None, help="Project root (default: cwd)")
+    parser.add_argument("--root", default=None, help="Project root (default: DATA_DIR)")
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Return exit code without printing the report",
     )
     args = parser.parse_args(argv)
-    root = Path(args.root) if args.root else Path.cwd()
-    report_text, code = run(root)
-    if not args.dry_run:
-        print(report_text)
     root = Path(args.root) if args.root else DATA_DIR
     report_text, code = run(root)
     if not args.dry_run:

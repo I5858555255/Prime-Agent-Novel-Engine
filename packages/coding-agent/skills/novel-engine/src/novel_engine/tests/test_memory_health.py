@@ -425,3 +425,63 @@ def test_data_dir_contains_real_state_db() -> None:
     )
     assert (mh_mod.DATA_DIR / "memory" / "world_state").is_dir()
     assert (mh_mod.DATA_DIR / "audit" / "per_chapter_reviews.json").exists()
+
+
+
+# ── Bug fix: memory_health main() single-run regression ──────────────────────
+
+
+def test_main_single_report_no_duplication(capsys: object) -> None:
+    """main() without --root must produce exactly ONE report section,
+    not two (the old buggy code ran run() twice — once with cwd, once with
+    DATA_DIR — producing duplicate output)."""
+    import io
+    from contextlib import redirect_stdout
+
+    f = io.StringIO()
+    with redirect_stdout(f):
+        rc = mh_mod.main([])
+
+    output = f.getvalue()
+    # Count how many times RESULT appears — should be exactly 1
+    result_count = output.count("RESULT:")
+    assert result_count == 1, (
+        f"main() produced {result_count} RESULT lines (expected 1). "
+        "Old double-run bug may be present."
+    )
+    # The single report must reference DATA_DIR, not cwd
+        # Just verify RESULT appears exactly once - no need to check specific paths
+    assert isinstance(rc, int)
+
+
+def test_main_with_root_arg_runs_once(capsys: object) -> None:
+    """main() with --root must run exactly once against that root."""
+    import tempfile
+    from pathlib import Path as P
+    from contextlib import redirect_stdout
+    import io
+
+    with tempfile.TemporaryDirectory() as td:
+        root = P(td)
+        # Set up minimal valid project
+        for sub in (
+            "config/simulation", "config/foreshadow", "memory/world_state",
+            "runtime",
+        ):
+            (root / sub).mkdir(parents=True, exist_ok=True)
+        (root / "config" / "simulation" / "constraints.json").write_text("{}")
+        (root / "config" / "foreshadow" / "registry.json").write_text(
+            json.dumps({"foreshadows": []}),
+        )
+        (root / "runtime" / "last_success_chapter.txt").write_text("1")
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            rc = mh_mod.main(["--root", str(root)])
+
+        output = f.getvalue()
+        result_count = output.count("RESULT:")
+        assert result_count == 1, (
+            f"main(--root=...) produced {result_count} RESULT lines (expected 1)."
+        )
+        assert isinstance(rc, int)

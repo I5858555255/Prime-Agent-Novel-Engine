@@ -22,6 +22,24 @@ logger = logging.getLogger("novel_engine.agent_api")
 ROOT = Path(__file__).parent  # src/novel_engine
 
 
+
+def _is_empty_characters_json(path: Path) -> bool:
+    """Check if characters.json exists but has no valid character entries."""
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False
+        chars = data.get("characters", {})
+        if not isinstance(chars, dict):
+            return True
+        return len(chars) == 0
+    except (json.JSONDecodeError, OSError):
+        return True
+
+
+
 def _load_env_if_present():
     """Load a local .env into os.environ (Prime-Agent does not do this for us).
 
@@ -67,7 +85,7 @@ async def init_state(config_path=None, reset=False, project_root=None):
         reset_runtime_state(Path(project_root or ROOT))
     orch = _build_orchestrator(project_root)
     char_path = Path(project_root or ROOT) / "memory" / "world_state" / "characters.json"
-    if not char_path.exists():
+    if not char_path.exists() or _is_empty_characters_json(char_path):
         from novel_engine.pipeline.init_state import init_characters
         init_characters(Path(project_root or ROOT))
     return {
