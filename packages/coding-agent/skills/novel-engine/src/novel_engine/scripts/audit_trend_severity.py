@@ -67,7 +67,7 @@ def analyze_review(review: dict, policy: dict) -> dict:
     new_blocking = []
     new_advisory = []
 
-    root = Path(__file__).parent.parent / "audit"
+    for iss in issues:
         dim = iss.get("dimension", "unknown")
         sev = iss.get("severity", "unknown")
         cat = iss.get("category")
@@ -102,7 +102,7 @@ def analyze_review(review: dict, policy: dict) -> dict:
 
 
 def main():
-    root = Path(__file__).parent.parent.parent / "audit"
+    root = Path(__file__).parent.parent.parent.parent / "src" / "novel_engine" / "audit"
     path = root / "per_chapter_reviews.json"
 
     if not path.exists():

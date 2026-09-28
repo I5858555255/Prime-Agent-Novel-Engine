@@ -12,6 +12,20 @@ from novel_engine.agents.reviewer_agent import DIM_MAX
 
 logger = logging.getLogger(__name__)
 
+# Mirror of DEFAULT_POLICY severity_map from quality_policy.py, used here
+# to avoid importing pipeline_orchestrator (which pulls in httpx/LLMClient).
+_ADVISORY_MAP = {
+    "leak_scaffolding": "hard", "truncation": "hard",
+    "verbatim_duplication": "hard", "forbidden_block": "hard",
+    "scene_missing": "hard", "plot_consistency": "hard",
+    "foreshadow_execution": "hard",
+    "length_deviation": "note", "beat_repetition_thematic": "note",
+    "hook_missing": "note", "character_consistency": "note",
+    "style_match": "note", "pacing": "note", "innovation": "note",
+    "hook_strength": "note", "reader_retention": "note",
+    "cliffhensity": "note",
+}
+
 
 def save_review_journal(root, chapter_num: int, score: float, review: dict) -> Path:
     """Append one chapter's review to per_chapter_reviews.json.
@@ -28,6 +42,12 @@ def save_review_journal(root, chapter_num: int, score: float, review: dict) -> P
     else:
         existing = {'reviews': []}
     existing['reviews'] = [r for r in existing.get('reviews', []) if r.get('chapter_num') != chapter_num]
+    # Count note-dimension issues with severity=high (advisory_high signal).
+    _advisory_high_count = sum(
+        1 for iss in (review.get('issues') or [])
+        if _ADVISORY_MAP.get(iss.get('category') or iss.get('dimension'), 'note') == 'note'
+        and iss.get('severity', '').lower() == 'high'
+    )
     existing['reviews'].append({
         'chapter_num': chapter_num,
         'total_score': score,
@@ -39,7 +59,7 @@ def save_review_journal(root, chapter_num: int, score: float, review: dict) -> P
         'praise': review.get('praise', ''),
         'issues': review.get('issues', []),
         'dim_scores': review.get('dim_scores', {}),
+        'advisory_high_count': _advisory_high_count,
     })
     review_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8')
     return review_file
-
