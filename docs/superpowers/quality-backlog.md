@@ -27,7 +27,7 @@ Incoming reports use this format:
   - `reader_retention` → note (tied to pacing/length)
   - `cliffhensity` → note (affects pacing)
 - Trigger met: beats pilot PASSED (2/30 = 6.7% omission < 10% threshold; docs/superpowers/beats-pilot-30.md, 2026-09-06 batch ch1-10, 3 batches x 10 scenes; exaggeration 0/30). Concrete mapping documented above.
-- Notes: preserves 3-level severity signal — only plot/foreshadow are hard; others remain note to avoid collapsing into binary.
+- Notes: Mapping based on domain judgment; beats pilot only demonstrates model self-reported beats omission rate (6.7%) — not directly correlated with reviewer severity. Post-launch will re-evaluate with Task A shadow comparison data.
 
 ## 2026-09-06 — force-best log wording vs actual behavior
 - Suspected module: pipeline/pipeline_orchestrator.py (force-best log line, L1219)

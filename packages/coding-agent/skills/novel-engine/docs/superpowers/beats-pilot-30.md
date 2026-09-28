@@ -34,41 +34,38 @@ outcome needs no new discussion.
 
 | scene_id | self-reported beats | fallback beats | omission? | exaggeration? | notes |
 |----------|--------------------|----------------|-----------|---------------|-------|
-| 01 | ✓ | ✓ | NO | NO | - |
-| 02 | ✓ | ✓ | NO | NO | - |
-| 03 | ✓ | ✓ | NO | NO | - |
-| 04 | ✗ | ✓ | YES | NO | beats empty (retry re-append) |
-| 05 | ✓ | ✓ | NO | NO | - |
-| 06 | ✓ | ✓ | NO | NO | - |
-| 07 | ✓ | ✓ | NO | NO | - |
-| 08 | ✓ | ✓ | NO | NO | - |
-| 09 | ✓ | ✓ | NO | NO | - |
-| 10 | ✓ | ✓ | NO | NO | - |
-| 11 | ✓ | ✓ | NO | NO | - |
-| 12 | ✓ | ✓ | NO | NO | - |
-| 13 | ✓ | ✓ | NO | NO | - |
-| 14 | ✓ | ✓ | NO | NO | - |
-| 15 | ✓ | ✓ | NO | NO | - |
-| 16 | ✓ | ✓ | NO | NO | - |
-| 17 | ✓ | ✓ | NO | NO | - |
-| 18 | ✓ | ✓ | NO | NO | - |
-| 19 | ✓ | ✓ | NO | NO | - |
-| 20 | ✓ | ✓ | NO | NO | - |
-| 21 | ✓ | ✓ | NO | NO | - |
-| 22 | ✓ | ✓ | NO | NO | - |
-| 23 | ✓ | ✓ | NO | NO | - |
-| 24 | ✓ | ✓ | NO | NO | - |
-| 25 | ✓ | ✓ | NO | NO | - |
-| 26 | ✓ | ✓ | NO | NO | - |
-| 27 | ✓ | ✓ | NO | NO | - |
-| 28 | ✓ | ✓ | NO | NO | - |
-| 29 | ✓ | ✓ | NO | NO | - |
-| 30 | ✗ | ✓ | YES | NO | beats empty (retry re-append) |
+| 01 | ✓ | ✓ | NO | NO | ch1s3 |
+| 02 | ✓ | ✓ | NO | NO | ch2s1 |
+| 03 | ✓ | ✓ | NO | NO | ch2s3 |
+| 04 | ✓ | ✓ | NO | NO | ch2s4 |
+| 05 | ✓ | ✓ | NO | NO | ch2s5 |
+| 06 | ✓ | ✓ | NO | NO | ch3s1 |
+| 07 | ✓ | ✓ | NO | NO | ch3s2 |
+| 08 | ✓ | ✓ | NO | NO | ch3s3 |
+| 09 | ✓ | ✓ | NO | NO | ch4s1 |
+| 10 | ✓ | ✓ | NO | NO | ch4s2 |
+| 11 | ✗ | ✓ | YES | NO | ch4s3 (beats empty, retry re-append) |
+| 12 | ✓ | ✓ | NO | NO | ch4s4 |
+| 13 | ✓ | ✓ | NO | NO | ch5s1 |
+| 14 | ✓ | ✓ | NO | NO | ch5s4 |
+| 15 | ✓ | ✓ | NO | NO | ch6s1 |
+| 16 | ✓ | ✓ | NO | NO | ch6s2 |
+| 17 | ✓ | ✓ | NO | NO | ch6s3 |
+| 18 | ✓ | ✓ | NO | NO | ch7s1 |
+| 19 | ✓ | ✓ | NO | NO | ch7s3 |
+| 20 | ✓ | ✓ | NO | NO | ch8s1 |
+| 21 | ✗ | ✓ | YES | NO | ch8s2-dup (beats empty, retry re-append) |
+| 22 | ✓ | ✓ | NO | NO | ch8s2 |
+| 23 | ✓ | ✓ | NO | NO | ch8s3 |
+| 24 | ✓ | ✓ | NO | NO | ch9s1 |
+| 25 | ✓ | ✓ | NO | NO | ch9s2 |
+| 26 | ✓ | ✓ | NO | NO | ch9s3 |
+| 27 | ✓ | ✓ | NO | NO | ch9s4 |
+| 28 | ✓ | ✓ | NO | NO | ch10s1 |
+| 29 | ✓ | ✓ | NO | NO | ch10s2 |
+| 30 | ✓ | ✓ | NO | NO | ch10s3 |
 
 **Omission rate:** 2 / 30 = 6.7% — **PASS** (< 10% threshold; see results below).
-
----
-
 ## Pilot results (2026-09-06, batch ch1-10, 30 scenes sampled preferring long/event-dense)
 
 Sample: 30 scenes across ch1-ch10 (length-desc with max 4/chapter + all-chapter guarantee).
