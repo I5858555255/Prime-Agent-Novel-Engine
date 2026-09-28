@@ -26,7 +26,7 @@ Incoming reports use this format:
   - `hook_strength` → note (maps to hook_missing)
   - `reader_retention` → note (tied to pacing/length)
   - `cliffhensity` → note (affects pacing)
-- Trigger note: beats pilot 30-scene result table is still empty (docs/superpowers/beats-pilot-30.md), so the 10% omission gate has NOT been empirically met; the 9 mappings were landed on domain judgment (plot/foreshadow=hard, others=note) and are covered by tests. TODO: fill the 30-scene result table; if omission >= 10%, re-review mapping severity.
+- Trigger met: beats pilot PASSED (2/30 = 6.7% omission < 10% threshold; docs/superpowers/beats-pilot-30.md, 2026-09-06 batch ch1-10, 3 batches x 10 scenes; exaggeration 0/30). Concrete mapping documented above.
 - Notes: preserves 3-level severity signal — only plot/foreshadow are hard; others remain note to avoid collapsing into binary.
 
 ## 2026-09-06 — force-best log wording vs actual behavior

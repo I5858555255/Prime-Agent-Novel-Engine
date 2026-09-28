@@ -32,8 +32,8 @@ outcome needs no new discussion.
 
 ## Result table
 
-| scene_id | self-reported beats | fallback beats | omission? | exaggeration? |
-|----------|--------------------|----------------|-----------|---------------|
+| scene_id | self-reported beats | fallback beats | omission? | exaggeration? | notes |
+|----------|--------------------|----------------|-----------|---------------|-------|
 | 01 | ✓ | ✓ | NO | NO | - |
 | 02 | ✓ | ✓ | NO | NO | - |
 | 03 | ✓ | ✓ | NO | NO | - |
