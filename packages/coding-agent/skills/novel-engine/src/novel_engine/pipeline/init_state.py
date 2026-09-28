@@ -6,7 +6,6 @@ init_state.py — 初始化 characters.json 和 relationships 数据
 确保 StateDB 和 WorldSimulator 有确定的事实基础。
 """
 import json
-import re
 from pathlib import Path
 
 
@@ -154,6 +153,14 @@ def init_characters(root: Path) -> dict:
 
     print(f"Initialized {len(characters['characters'])} characters to {output_path}")
     print(f"Initialized {len(rel_data['relationships'])} relationships to {rel_output_path}")
+    try:
+        from novel_engine.engine.db import StateDB
+        db_dir = root / "runtime"
+        db_dir.mkdir(parents=True, exist_ok=True)
+        db = StateDB(db_path=str(db_dir / "state.db"), project_root=root)
+        db.import_from_json()
+    except Exception as _e:
+        print(f"WARNING: failed to sync StateDB on init: {_e}")
     return characters
 
 

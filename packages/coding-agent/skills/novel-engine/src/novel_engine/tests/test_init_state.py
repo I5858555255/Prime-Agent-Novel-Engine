@@ -188,3 +188,32 @@ class TestInitStateEmptySeeding:
 
         data = json.loads((ws / "characters.json").read_text(encoding="utf-8"))
         assert len(data.get("characters", {})) == 8
+
+    @pytest.mark.allow_network
+    def test_seeds_state_db_on_init(self, tmp_path: Path) -> None:
+        """After init_characters, state.db has characters and relationships rows."""
+        _setup_project_root(tmp_path)
+        ws = tmp_path / "memory" / "world_state"
+        (ws / "characters.json").write_text("{}", encoding="utf-8")
+
+        _run_init_state(str(tmp_path))
+
+        db_path = tmp_path / "runtime" / "state.db"
+        assert db_path.exists()
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM characters")
+        char_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM relationships")
+        rel_count = cur.fetchone()[0]
+        conn.close()
+        assert char_count == 8, f"Expected 8 characters in StateDB, got {char_count}"
+        assert rel_count == 6, f"Expected 6 relationships in StateDB, got {rel_count}"
+        # Verify a known Chinese name is present
+        conn2 = sqlite3.connect(str(db_path))
+        conn2.row_factory = sqlite3.Row
+        row = conn2.execute("SELECT name FROM characters WHERE id=?", ("C001",)).fetchone()
+        conn2.close()
+        assert row is not None and row["name"] == "陆烬"

@@ -2,6 +2,7 @@
 """Tests for fact_changes audit ledger."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -172,3 +173,48 @@ def test_change_without_old_value(tmp_path: Path) -> None:
     e = get_changes(tmp_path, chapter=1)[0]
     assert e["old_value"] is None
     assert e["new_value"] == {"chapter": 1, "event": "battle"}
+
+def test_normalize_target_by_name_resolves_to_id(tmp_path: Path) -> None:
+    """When target is a character name and the type is entity-bearing,
+    record_change writes the resolved ID instead of the name."""
+    # Set up characters.json with C001 named 陆烬
+    chars = {"characters": {"C001": {"name": "陆烬", "realm": "凡人体质"}}}
+    ws = tmp_path / "memory" / "world_state"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "characters.json").write_text(json.dumps(chars), encoding="utf-8")
+    (ws / "factions.json").write_text(json.dumps({"factions": {}}), encoding="utf-8")
+
+    cid = record_change(
+        tmp_path, chapter=5, change_type="character_realm",
+        target="陆烬", old_value=None, new_value="炼气期", status="applied",
+    )
+    entries = load_entries(tmp_path)
+    assert len(entries) == 1
+    assert entries[0]["target"] == "C001", f"Expected C001, got {entries[0]["target"]!r}"
+    assert entries[0]["change_id"] == cid
+
+
+def test_normalize_target_id_unchanged(tmp_path: Path) -> None:
+    """When target is already an ID, record_change leaves it as-is."""
+    chars = {"characters": {"C001": {"name": "陆烬"}}}
+    ws = tmp_path / "memory" / "world_state"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "characters.json").write_text(json.dumps(chars), encoding="utf-8")
+    (ws / "factions.json").write_text(json.dumps({"factions": {}}), encoding="utf-8")
+
+    record_change(
+        tmp_path, chapter=5, change_type="character_realm",
+        target="C001", old_value=None, new_value="炼气期", status="applied",
+    )
+    entries = load_entries(tmp_path)
+    assert entries[0]["target"] == "C001"
+
+
+def test_normalize_target_non_entity_type_no_resolution(tmp_path: Path) -> None:
+    """Non-entity change types skip normalization."""
+    record_change(
+        tmp_path, chapter=5, change_type="plot_note",
+        target="某段剧情", old_value=None, new_value="new note", status="applied",
+    )
+    entries = load_entries(tmp_path)
+    assert entries[0]["target"] == "某段剧情"

@@ -485,3 +485,39 @@ def test_main_with_root_arg_runs_once(capsys: object) -> None:
             f"main(--root=...) produced {result_count} RESULT lines (expected 1)."
         )
         assert isinstance(rc, int)
+
+def test_dangling_reference_with_character_name_not_flagged(tmp_path: Path) -> None:
+    """fact_change targeting a character by name (not ID) is not flagged when the name exists in DB."""
+    _make_db(tmp_path, {
+        "C001": {"name": "陆烬", "realm": "凡人体质"},
+    })
+    _write_last_chapter(tmp_path, 5)
+    _write_fact_changes(tmp_path, [
+        {"change_id": "ch5-0001", "chapter": 5, "type": "character_realm",
+         "target": "陆烬", "old_value": None, "new_value": "炼气期",
+         "source": "agent", "gate_result": "passed", "status": "applied",
+         "ts": "2026-01-01T00:00:00+00:00"},
+    ])
+
+    report, rc = mh_mod.run(tmp_path)
+    assert rc == 0
+    assert "DANGLING_REF" not in report
+    assert "陆烬" not in report
+
+
+def test_dangling_reference_with_faction_name_not_flagged(tmp_path: Path) -> None:
+    """fact_change targeting a faction by name is not flagged when the name exists in DB."""
+    _make_db(tmp_path, {"C001": {"name": "陆烬"}}, factions={
+        "F001": {"name": "大乾皇朝"},
+    })
+    _write_last_chapter(tmp_path, 5)
+    _write_fact_changes(tmp_path, [
+        {"change_id": "ch5-0001", "chapter": 5, "type": "faction",
+         "target": "大乾皇朝", "old_value": None, "new_value": "active",
+         "source": "agent", "gate_result": "passed", "status": "applied",
+         "ts": "2026-01-01T00:00:00+00:00"},
+    ])
+
+    report, rc = mh_mod.run(tmp_path)
+    assert rc == 0
+    assert "DANGLING_REF" not in report

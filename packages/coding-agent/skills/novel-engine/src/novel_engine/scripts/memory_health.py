@@ -217,10 +217,18 @@ def _check_dangling_references(db: sqlite3.Connection, fact_entries: list[dict])
     """
     problems: list[str] = []
     db_cur = db.cursor()
-    db_cur.execute("SELECT id FROM characters")
-    known_chars: set[str] = {row["id"] for row in db_cur.fetchall()}
-    db_cur.execute("SELECT id FROM factions")
-    known_factions: set[str] = {row["id"] for row in db_cur.fetchall()}
+    db_cur.execute("SELECT id, name FROM characters")
+    known_chars: set[str] = set()
+    for row in db_cur.fetchall():
+        known_chars.add(row["id"])
+        if row["name"]:
+            known_chars.add(row["name"])
+    db_cur.execute("SELECT id, name FROM factions")
+    known_factions: set[str] = set()
+    for row in db_cur.fetchall():
+        known_factions.add(row["id"])
+        if row["name"]:
+            known_factions.add(row["name"])
 
     db_cur.execute("SELECT char_from, char_to, relation_type FROM relationships")
     for row in db_cur.fetchall():

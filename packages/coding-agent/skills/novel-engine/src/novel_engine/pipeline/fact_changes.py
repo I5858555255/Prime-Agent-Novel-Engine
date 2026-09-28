@@ -29,6 +29,9 @@ from typing import Optional
 
 LEDGER_REL = Path("runtime") / "fact_changes.jsonl"
 
+# Entity-bearing change types whose target must resolve to an entity ID.
+_ENTITY_CHANGE_TYPES = frozenset({"character", "realm", "location", "faction"})
+
 
 def ledger_path(root: str | Path) -> Path:
     return Path(root) / LEDGER_REL
@@ -74,6 +77,36 @@ def _make_change_id(chapter: int, seq: int) -> str:
     return f"ch{chapter}-{seq:04d}"
 
 
+def _normalize_target(root: str | Path, target: str, change_type: str) -> str:
+    """If target is a character/faction name (not an ID), resolve to its ID.
+
+    Reads characters.json / factions.json from world_state; falls back gracefully.
+    Only applies when change_type denotes an entity ref.
+    """
+    if not target or change_type not in _ENTITY_CHANGE_TYPES and not change_type.startswith(("character_", "faction_")):
+        return target
+    # Already looks like an ID (e.g. C001) — leave as-is
+    if target.startswith(("C", "F")) and len(target) <= 6:
+        return target
+    try:
+        ws = Path(root) / "memory" / "world_state"
+        chars_path = ws / "characters.json"
+        if chars_path.exists():
+            data = json.loads(chars_path.read_text(encoding="utf-8"))
+            for cid, cdata in data.get("characters", {}).items():
+                if cdata.get("name", "") == target:
+                    return cid
+        factions_path = ws / "factions.json"
+        if factions_path.exists():
+            data = json.loads(factions_path.read_text(encoding="utf-8"))
+            for fid, fdata in data.get("factions", {}).items():
+                if fdata.get("name", "") == target:
+                    return fid
+    except Exception:
+        pass
+    return target
+
+
 def record_change(
     root: str | Path,
     *,
@@ -114,7 +147,7 @@ def record_change(
         "change_id": change_id,
         "chapter": int(chapter),
         "type": change_type,
-        "target": target,
+        "target": _normalize_target(root, target, change_type),
         "old_value": old_value,
         "new_value": new_value,
         "source": source,
