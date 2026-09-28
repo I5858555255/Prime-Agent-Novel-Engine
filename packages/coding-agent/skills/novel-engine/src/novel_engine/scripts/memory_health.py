@@ -31,11 +31,16 @@ from novel_engine.scripts.audit_trend import build_trend  # noqa: E402
 
 # ── Paths (relative to project root) ─────────────────────────────────────────
 
+# DATA_DIR: real data lives in the novel_engine package dir (runtime/, memory/,
+# config/, audit/). Scripts run from any cwd; run() stays root-relative so
+# tests can inject tmp_path. main() defaults root to DATA_DIR when --root absent.
+_DATA_DIR = Path(__file__).resolve().parent.parent
 DB_REL = Path("runtime") / "state.db"
 WORLD_STATE_DIR = Path("memory") / "world_state"
 FORESHADOW_REGISTRY_REL = Path("config") / "foreshadow" / "registry.json"
 FACT_CHANGES_REL = Path("runtime") / "fact_changes.jsonl"
 LAST_CHAPTER_FILE = Path("runtime") / "last_success_chapter.txt"
+DATA_DIR = _DATA_DIR
 
 # Fields compared between StateDB characters and world_state/characters.json.
 _CHAR_FIELDS = ("name", "realm", "location", "description")
@@ -349,8 +354,10 @@ def main(argv: list[str] | None = None) -> int:
     report_text, code = run(root)
     if not args.dry_run:
         print(report_text)
+    root = Path(args.root) if args.root else DATA_DIR
+    report_text, code = run(root)
+    if not args.dry_run:
+        print(report_text)
     return code
-
-
 if __name__ == "__main__":
     sys.exit(main())

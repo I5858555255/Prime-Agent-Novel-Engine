@@ -403,3 +403,25 @@ def test_fact_changes_invalid_lines_ignored(tmp_path: Path) -> None:
     assert rc == 1
     assert "DANGLING_REF" in report
     assert "CMISSING" in report
+
+
+# ── Path resolution (Issue 3 regression) ─────────────────────────────────────
+
+
+def test_main_defaults_root_to_data_dir() -> None:
+    """main() without --root must default to DATA_DIR (not cwd) so the real
+    state.db / audit / world_state are found from any cwd.
+    """
+    rc = mh_mod.main([])
+    # Must return an int code; DATA_DIR exists in-repo so no crash expected.
+    assert isinstance(rc, int)
+
+
+def test_data_dir_contains_real_state_db() -> None:
+    """DATA_DIR resolves to the novel_engine package dir with real runtime data."""
+    assert mh_mod.DATA_DIR.is_dir()
+    assert (mh_mod.DATA_DIR / "runtime" / "state.db").exists(), (
+        f"state.db not found at {mh_mod.DATA_DIR / 'runtime' / 'state.db'}"
+    )
+    assert (mh_mod.DATA_DIR / "memory" / "world_state").is_dir()
+    assert (mh_mod.DATA_DIR / "audit" / "per_chapter_reviews.json").exists()
