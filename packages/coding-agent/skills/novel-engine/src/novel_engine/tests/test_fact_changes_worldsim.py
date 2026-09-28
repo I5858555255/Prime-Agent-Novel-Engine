@@ -67,7 +67,7 @@ def test_apply_pending_changes_no_change_no_record(tmp_path: Path) -> None:
 
 
 def test_apply_pending_changes_target_not_in_state(tmp_path: Path) -> None:
-    """Change targeting unknown character still records but doesn't modify state."""
+    """Change targeting unknown character is rejected and recorded as rejected."""
     sim = _make_sim(tmp_path)
     changes = [{"type": "character_realm", "target": "unknown", "new_value": "X"}]
     result = sim.apply_pending_changes(changes, chapter=1)
@@ -75,10 +75,11 @@ def test_apply_pending_changes_target_not_in_state(tmp_path: Path) -> None:
     # No modification since target doesn't exist
     assert result is False
     
-    # Still records the attempted change
+    # Records the rejected change
     entries = get_changes(sim.root, chapter=1)
     assert len(entries) == 1
-    assert entries[0]["status"] == "applied"
+    assert entries[0]["status"] == "rejected"
+    assert entries[0]["gate_result"] == "rejected"
 
 
 def test_apply_pending_changes_character_location(tmp_path: Path) -> None:

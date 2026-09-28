@@ -9,6 +9,7 @@ from typing import Optional
 
 from novel_engine.engine.db import StateDB
 from novel_engine.pipeline.fact_changes import record_change
+from novel_engine.pipeline.change_validation import validate_changes
 
 logger = logging.getLogger(__name__)
 
@@ -155,22 +156,56 @@ class WorldSimulator:
 
         return state
 
-    def apply_pending_changes(self, pending_changes: list[dict], chapter: int = 0, source: str = "director") -> bool:
+    def apply_pending_changes(self, pending_changes: list[dict], chapter: int = 0, source: str = "director", flag_for_human=None) -> bool:
         """
         将审查通过的状态变更应用到 world_state。
         pending_changes 来自缩写生成的状态变更提案。
-        Records each mutation to the fact_changes audit ledger.
+        Runs deterministic pre-validation before each change; rejected changes
+        are logged to the fact_changes ledger (status=rejected) and do not modify state.
         """
         modified = False
-        seq = 0
 
-        for change in pending_changes:
+        try:
+            validation_results = validate_changes(
+                pending_changes,
+                characters=self.characters,
+                root=self.root,
+                flag_for_human=flag_for_human,
+            )
+        except Exception as _val_err:
+            logger.warning(f"change_validation failed (non-fatal): {_val_err}")
+            validation_results = [(c, "passed", None) for c in pending_changes]
+
+        for change, verdict, reason in validation_results:
             change_type = change.get("type")
             target = change.get("target")
             new_value = change.get("new_value")
-
             old_value = None
 
+            # Hard violation or entity-not-found: reject without applying
+            if verdict == "rejected":
+                try:
+                    record_change(
+                        self.root,
+                        chapter=chapter,
+                        change_type=change_type or "unknown",
+                        target=str(target or ""),
+                        old_value=old_value,
+                        new_value=new_value,
+                        source=source,
+                        gate_result="rejected",
+                        status="rejected",
+                    )
+                except Exception as _fc_err:
+                    logger.warning(f"fact_changes rejected write failed (non-fatal): {_fc_err}")
+                logger.warning(f"[change_validation] rejected: {reason}")
+                continue
+
+            # Soft warning: log but still apply
+            if verdict == "soft_warn" and reason:
+                logger.warning(f"[change_validation] soft violation: {reason}")
+
+            # Apply the change (original logic)
             if change_type == "character_realm" and target in self.characters.get("characters", {}):
                 old_value = self.characters["characters"][target].get("realm")
                 self.characters["characters"][target]["realm"] = new_value
@@ -206,7 +241,6 @@ class WorldSimulator:
                 new_value = event
 
             # Record to fact_changes ledger (fire-and-forget, non-fatal)
-            seq += 1
             try:
                 record_change(
                     self.root,
