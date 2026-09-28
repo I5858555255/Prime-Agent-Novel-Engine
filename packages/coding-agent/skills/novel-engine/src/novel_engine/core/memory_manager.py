@@ -8,6 +8,8 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
+from novel_engine.pipeline.fact_changes import record_change
+
 logger = logging.getLogger(__name__)
 
 
@@ -157,14 +159,29 @@ class MemoryManager:
             self._save_json(self.root / "memory" / "world_state" / f"{key}.json", value)
 
     def add_pending_change(self, change: dict):
-        """添加待提交的状态变更。"""
+        """添加待提交的状态变更，同步写入 fact_changes 台账（status=pending）。"""
         pending_file = self.root / "memory" / "world_state" / "pending" / "pending_changes.json"
         data = self._load_json(pending_file)
         data.setdefault("pending_changes", []).append(change)
         self._save_json(pending_file, data)
+        # Also record to fact_changes audit ledger so the full lifecycle is tracked
+        try:
+            record_change(
+                self.root,
+                chapter=0,
+                change_type=change.get("type", "unknown"),
+                target=str(change.get("target", "")),
+                old_value=change.get("old_value"),
+                new_value=change.get("new_value"),
+                source=change.get("source", "director"),
+                gate_result="pending",
+                status="pending",
+            )
+        except Exception as _fc_err:
+            logger.warning(f"fact_changes pending write failed (non-fatal): {_fc_err}")
 
     def commit_pending_changes(self, changes: list[dict]):
-        """提交通过审查的状态变更。"""
+        """提交通过审查的状态变更，清除 pending 文件中的对应项。"""
         pending_file = self.root / "memory" / "world_state" / "pending" / "pending_changes.json"
         data = self._load_json(pending_file)
         data["pending_changes"] = [

@@ -118,7 +118,7 @@ def test_commit_path_with_state_changes_applies_world_state(tmp_path: Path) -> N
     orch = _make_orch(tmp_path)
     applied = {"changes": []}
 
-    def _record_apply(changes):
+    def _record_apply(changes, chapter=0, source="director"):
         applied["changes"] = list(changes)
         return True
 

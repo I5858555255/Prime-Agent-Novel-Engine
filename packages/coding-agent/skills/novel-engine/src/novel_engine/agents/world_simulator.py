@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from novel_engine.engine.db import StateDB
+from novel_engine.pipeline.fact_changes import record_change
 
 logger = logging.getLogger(__name__)
 
@@ -154,34 +155,44 @@ class WorldSimulator:
 
         return state
 
-    def apply_pending_changes(self, pending_changes: list[dict]) -> bool:
+    def apply_pending_changes(self, pending_changes: list[dict], chapter: int = 0, source: str = "director") -> bool:
         """
         将审查通过的状态变更应用到 world_state。
         pending_changes 来自缩写生成的状态变更提案。
+        Records each mutation to the fact_changes audit ledger.
         """
         modified = False
+        seq = 0
 
         for change in pending_changes:
             change_type = change.get("type")
             target = change.get("target")
+            new_value = change.get("new_value")
+
+            old_value = None
 
             if change_type == "character_realm" and target in self.characters.get("characters", {}):
-                self.characters["characters"][target]["realm"] = change.get("new_value")
+                old_value = self.characters["characters"][target].get("realm")
+                self.characters["characters"][target]["realm"] = new_value
                 modified = True
-                logger.info(f"Applied realm change: {target} → {change.get('new_value')}")
+                logger.info(f"Applied realm change: {target} → {new_value}")
 
             elif change_type == "character_location" and target in self.characters.get("characters", {}):
-                self.characters["characters"][target]["location"] = change.get("new_value")
+                old_value = self.characters["characters"][target].get("location")
+                self.characters["characters"][target]["location"] = new_value
                 modified = True
 
             elif change_type == "relationship_update":
                 rel_id = change.get("relationship_id")
                 if rel_id and "-" in rel_id:
                     char_id, rel_key = rel_id.split("-", 1)
-                    self.characters.setdefault("characters", {}).setdefault(
-                        char_id, {}
-                    ).setdefault("relationships", {})[rel_key] = change.get("new_value")
+                    chars = self.characters.setdefault("characters", {})
+                    rels = chars.setdefault(char_id, {}).setdefault("relationships", {})
+                    old_value = rels.get(rel_key)
+                    rels[rel_key] = new_value
                     modified = True
+                    # Use relationship_id as target for audit trail
+                    target = rel_id
 
             elif change_type == "timeline_event":
                 event = {
@@ -191,6 +202,25 @@ class WorldSimulator:
                 }
                 self.power_system.setdefault("breakthrough_history", []).append(event)
                 modified = True
+                old_value = None
+                new_value = event
+
+            # Record to fact_changes ledger (fire-and-forget, non-fatal)
+            seq += 1
+            try:
+                record_change(
+                    self.root,
+                    chapter=chapter,
+                    change_type=change_type or "unknown",
+                    target=str(target or ""),
+                    old_value=old_value,
+                    new_value=new_value,
+                    source=source,
+                    gate_result="passed",
+                    status="applied",
+                )
+            except Exception as _fc_err:
+                logger.warning(f"fact_changes write failed (non-fatal): {_fc_err}")
 
         if modified:
             self._save_characters()

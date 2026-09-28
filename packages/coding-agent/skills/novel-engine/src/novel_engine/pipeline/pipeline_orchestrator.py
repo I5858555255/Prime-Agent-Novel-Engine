@@ -32,6 +32,7 @@ from novel_engine.pipeline.event_ledger import (
     append_chapter_events, recent_event_block,
     append_end_state, latest_end_state, end_state_anchor_block,
 )
+from novel_engine.pipeline.fact_changes import record_change
 from novel_engine.pipeline.boundary_guard import (
     stage1_score, scene_overlap_scores,
     build_stage2_prompt, parse_stage2_verdict,
@@ -1290,11 +1291,28 @@ class PipelineOrchestrator:
 
             # 正式提交状态变更（已通过发布门，安全落库）
             pending_changes = synopsis.get("state_changes", [])
+            source = getattr(self, "_current_synopsis_source", "director")
             if pending_changes:
                 if apply_world_state:
-                    self.simulator.apply_pending_changes(pending_changes)
+                    self.simulator.apply_pending_changes(pending_changes, chapter=chapter_num, source=source)
                     self.memory.commit_pending_changes(pending_changes)
                 else:
+                    # Deferred path: record fact_changes with status=deferred
+                    for _i, _chg in enumerate(pending_changes):
+                        try:
+                            record_change(
+                                self.root,
+                                chapter=chapter_num,
+                                change_type=_chg.get("type", "unknown"),
+                                target=str(_chg.get("target", "")),
+                                old_value=_chg.get("old_value"),
+                                new_value=_chg.get("new_value"),
+                                source=source,
+                                gate_result="deferred",
+                                status="deferred",
+                            )
+                        except Exception as _fc_defer:
+                            logger.warning(f"fact_changes deferred write failed (non-fatal): {_fc_defer}")
                     logger.warning(
                         f"Chapter {chapter_num} 世界状态变更已暂缓"
                         f"(score={result.get('score')} < min_ch)，未应用到世界模拟器，留待人工复核/返工。"
@@ -1642,6 +1660,7 @@ class PipelineOrchestrator:
         for change in synopsis.get("state_changes", []):
             self.memory.add_pending_change(change)
         source = "task_card" if (merge and isinstance(raw, str) and len(raw.strip()) >= 50) else ("deterministic_fallback" if merge else "agent")
+        self._current_synopsis_source = source
         logger.info(f"Synopsis ready for chapter {task_card.get('chapter_num', 0)} (source={source})")
         return synopsis
 
