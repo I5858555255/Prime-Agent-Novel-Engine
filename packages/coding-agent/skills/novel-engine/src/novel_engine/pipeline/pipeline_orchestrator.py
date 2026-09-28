@@ -853,7 +853,7 @@ class PipelineOrchestrator:
                                             _ns = self.writer.generate_scene(
                                                 task_card, _bp,
                                                 synopsis.get("synopsis", "") if isinstance(synopsis, dict) else "",
-                                                prev=_prev,
+                                                previous_context=_prev,
                                                 fix_directive=_dir,
                                             )
                                             if _ns is None:
@@ -3294,7 +3294,7 @@ class PipelineOrchestrator:
                     try:
                         _ns = self.writer.generate_scene(
                             task_card, _bp, synopsis_text,
-                            prev=self._novel_string()[-600:] if len(self._novel_string()) > 600 else "",
+                            previous_context=self._novel_string()[-600:] if len(self._novel_string()) > 600 else "",
                             fix_directive=_dir,
                         )
                         if _ns is not None:
@@ -3396,7 +3396,7 @@ class PipelineOrchestrator:
             try:
                 ns = self.writer.generate_scene(
                     task_card, bp, synopsis_text,
-                    prev=self._novel_string()[-600:] if len(self._novel_string()) > 600 else "",
+                    previous_context=self._novel_string()[-600:] if len(self._novel_string()) > 600 else "",
                     fix_directive=directive,
                 )
                 if ns is None:
