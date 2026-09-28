@@ -81,3 +81,40 @@ _delegate = lambda self, *a, **k: _module._function(self, *a, **k)  # 依然有�
 ## 日期
 
 2026-09-27
+## P0 未定义名修复（拆分引入）
+
+### 问题
+
+2026-09-28 拆分 pipeline_orchestrator.py 后引入 12 处 undefined name，全部为 P0 阻塞：
+
+| 文件 | 行 | 未定义名 | 修复 |
+|---|---|---|---|
+| pipeline_orchestrator.py | 667-668 | `current` / `current_draft` | 在 if 块前初始化镜像变量 |
+| pipeline_orchestrator.py | 865 | `_len` | 笔误改为 `len` |
+| pipeline_orchestrator.py | 890/892 | `violations` | 在 atm dedup 块前初始化为 `None` |
+| pipeline_orchestrator.py | 1289 | `apply_world_state` | 加入 `_commit_chapter` 参数 |
+| pipeline_orchestrator.py | 1307 | `cur_score` | 改为签名参数 `score` |
+| agent_api.py | 103, 170 | `novel_chapter_path` | 补 import |
+| gates.py | 1262, 1291 | `call_llm` | 补 import |
+| gates.py | 1286, 1294 | `find_self_repetition` | 补 import |
+| gates.py | 1458 | `_forbidden_violation_is_blocking` | 迁移到 quality_policy.py |
+| llm_client.py | 681, 739, 867 | `record_call` | 补 from .call_metrics import |
+| llm_client.py | 1027 | `ProviderConfig` | TYPE_CHECKING 守卫，避免循环导入 |
+
+### 门禁
+
+提交前必须通过以下检查：
+
+```bash
+cd packages/coding-agent/skills/novel-engine && \
+python scripts/check_static.py && \
+"D:/Program Files/Python312/python.exe" -m pytest src/novel_engine/tests -q
+```
+
+`check_static.py` 对 novel_engine 非 tests 目录运行 pyflakes，出现 `undefined name` 即退出码非 0。
+
+### 防回归测试
+
+新增 `tests/test_commit_path.py`，覆盖：
+- T1：正常提交路径 → COMMITTED + event_ledger + end_state 各追加一条
+- T2：含 state_changes 的 synopsis → apply_pending_changes 生效

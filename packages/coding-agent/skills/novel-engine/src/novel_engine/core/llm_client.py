@@ -11,12 +11,16 @@ import time
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from novel_engine.core.llm_provider import ProviderConfig
 
 import httpx
 
 from .rate_limiter import RateLimitError
 from .errors import TransientLLMError, PermanentLLMError, ConfigFatalError
+from .call_metrics import record_call
 
 logger = logging.getLogger(__name__)
 

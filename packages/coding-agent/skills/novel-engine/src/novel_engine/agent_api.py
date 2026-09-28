@@ -15,6 +15,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from novel_engine.core.checkpoint import novel_chapter_path
 
 logger = logging.getLogger("novel_engine.agent_api")
 

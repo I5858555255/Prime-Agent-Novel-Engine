@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 
 from novel_engine.core.errors import SceneUnrecoverableError, ChapterResampleRequiredError, ChapterQualityGapError
-from novel_engine.core.quality_policy import load_quality_policy, is_blocking
+from novel_engine.core.quality_policy import load_quality_policy, is_blocking, _forbidden_violation_is_blocking
 from novel_engine.agents.scene_schema import SceneOutput
 from novel_engine.pipeline.chapter_journal import append_scene, snapshot_journal
 from novel_engine.pipeline.event_ledger import latest_end_state
@@ -38,6 +38,8 @@ from novel_engine.quality import (
     punctuation_health, boundary_reprise_gate, final_precommit_gate,
 )
 
+from novel_engine.core.llm_client import call_llm
+from novel_engine.quality.degeneration import find_self_repetition
 logger = logging.getLogger(__name__)
 
 

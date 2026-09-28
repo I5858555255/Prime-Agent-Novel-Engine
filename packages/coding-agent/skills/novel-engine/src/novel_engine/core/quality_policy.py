@@ -66,3 +66,9 @@ def derive_scene_targets(chapter_target: int, scene_count: int,
 
 def is_blocking(policy: dict, category: str) -> bool:
     return policy.get("severity_map", {}).get(category) == "hard"
+
+
+def _forbidden_violation_is_blocking(policy: dict, violation: dict) -> bool:
+    """违禁命中是否阻断：只读 policy severity_map，命中即属 forbidden_block 类别。
+"""
+    return is_blocking(policy, violation.get("category", "forbidden_block"))

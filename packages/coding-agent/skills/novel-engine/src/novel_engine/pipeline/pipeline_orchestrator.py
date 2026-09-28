@@ -662,7 +662,10 @@ class PipelineOrchestrator:
             return result
         self._mandatory_blocked = _pre_mand.get('missing_scenes') or {}
         # R16c P0-B: 当 _enforce_mandatory_beats 本轮重生后，将自刷新到局部变量，
-        # 使当轮 _stage_review 评的是含注入的新文本（无重生时二者相同，幂等）。
+        # R16c P0-B: initialize mirrors up-front to avoid UnboundLocalError
+        # when enforced branch runs but caller never enters fix-loop below.
+        current = self.current_novel
+        current_draft = getattr(self, "_draft_novel", current)
         if _pre_mand.get('enforced') and not _pre_mand.get('blocked'):
             current = self.current_novel or current
             current_draft = self._draft_novel or current_draft
@@ -830,6 +833,8 @@ class PipelineOrchestrator:
                                     _base_issues = set(_final_det_g.get("issues") or [])
                                     _base_passed = _final_det_g.get("passed", True)
                                     _sep_char = chr(0x203B)
+                                    # Pre-bind violations: empty until forbidden gate runs.
+                                    violations = None
                                     for hit in _atm_hits:
                                         if _repolished_count >= _max_repolish:
                                             break
@@ -862,7 +867,7 @@ class PipelineOrchestrator:
                                             _candidate_scenes = _split(_candidate_text)
                                             # 场数与※数不变
                                             if len(_candidate_scenes) != len(_atm_scenes):
-                                                logger.warning(f"ch{chapter_num} atm repolish scene{_sid}: scene count changed {_len(_candidate_scenes)}!={len(_atm_scenes)} -> rollback")
+                                                logger.warning(f"ch{chapter_num} atm repolish scene{_sid}: scene count changed {len(_candidate_scenes)}!={len(_atm_scenes)} -> rollback")
                                                 continue
                                             # 全章候选门回归（与最终门同口径）
                                             _cand_gate = self._deterministic_quality_gate(
@@ -1258,7 +1263,7 @@ class PipelineOrchestrator:
         self._commit_chapter(
             chapter_num=chapter_num, task_card=task_card,
             synopsis=synopsis, world_state=world_state,
-            result=result, score=cur_score, sm=sm,
+            result=result, score=cur_score, sm=sm, apply_world_state=apply_world_state,
         )
 
 
@@ -1271,7 +1276,7 @@ class PipelineOrchestrator:
 
 
     def _commit_chapter(self, chapter_num, task_card, synopsis, world_state,
-                        result, score, sm):
+                        result, score, sm, apply_world_state=False):
         """Submit chapter: checkpoint, events, end_state, session_tree."""
         try:
             # 提取关键词用于索引
@@ -1304,7 +1309,7 @@ class PipelineOrchestrator:
                 world_state_snapshot=world_state,
             )
             # Mark chapter as committed in status tracking
-            set_status(self.root, chapter_num, COMMITTED, score=cur_score)
+            set_status(self.root, chapter_num, COMMITTED, score=score)
             # CC P0：仅在原子提交成功后追加跨章事件台账（HALT/隔离章不写，失败不回滚已提交章节）。
             try:
                 _n_ev = append_chapter_events(self.root, chapter_num, task_card)
