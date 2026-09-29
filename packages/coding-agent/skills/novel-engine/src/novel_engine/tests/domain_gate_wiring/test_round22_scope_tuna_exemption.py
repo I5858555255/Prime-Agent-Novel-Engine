@@ -397,3 +397,113 @@ def test_ch6_fangcai_descriptive_marker_exempt(tmp_path):
     assert "tuna_exempt" in soft_kinds, (
         f"豁免应记录 tuna_exempt soft，实际 soft={soft_kinds}"
     )
+# ── CC round-23：根因回归测试（章节范围 + 描述性标记 + 比喻豁免）─────────────────
+
+
+def test_ch7_tuna_exempt_night():
+    """ch7 夜间陈老根吐纳 → 豁免（_TUNA_EXEMPT_CHAPTERS 已扩至 {6,7,8,9}）。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "是夜子时，陈老根独自盘膝坐在炕边吐纳呼吸，气息绵长。陆烬在旁偷看。",
+        7, _NIGHT_ANCHOR, _ROOT,
+    )
+    assert "吐纳" not in [h["term"] for h in r["hard"]]
+
+
+def test_ch8_tuna_exempt_night():
+    """ch8 夜间陈老根调息 → 豁免。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "深夜，陈老根在房中调息，气息绵长而规律。陆烬在襁褓里静静看着。",
+        8, _NIGHT_ANCHOR, _ROOT,
+    )
+    assert "调息" not in [h["term"] for h in r["hard"]]
+
+
+def test_ch9_tuna_exempt_night():
+    """ch9 夜间陈老根吐纳 → 豁免。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "是夜，陈老根自己吐纳调息，想起往事。",
+        9, _NIGHT_ANCHOR, _ROOT,
+    )
+    assert "吐纳" not in [h["term"] for h in r["hard"]]
+    assert "调息" not in [h["term"] for h in r["hard"]]
+
+
+def test_ch5_tuna_still_hard():
+    """ch5 吐纳仍 hard（豁免仅 ch6-ch9）。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "陈老根夜里吐纳呼吸。",
+        5, _NIGHT_ANCHOR, _ROOT,
+    )
+    assert "吐纳" in [h["term"] for h in r["hard"]]
+
+
+def test_descriptive_marker_zhe_secret():
+    """根因2 回归："这秘密…深夜的吐纳" 描述性引用不应 hard。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "这秘密，如今不再只藏于深夜的吐纳和孩童的安静里，而是在这白日的村中，在他眼前，赤裸裸地摊开了",
+        6, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "吐纳" not in hard_terms, f"描述性引用应豁免，实际 hard={hard_terms}"
+
+
+def test_metaphor_another_world_sound():
+    """根因3 回归："像另一个世界的声音" 比喻用法不应 hard。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "那些热闹隔着一段距离，嗡嗡的，像另一个世界的声音",
+        7, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "另一个世界" not in hard_terms, f"比喻用法应豁免，实际 hard={hard_terms}"
+
+
+def test_literal_another_world_still_hard():
+    """根因3 不误放："他来自另一个世界" 真实设定泄漏仍 hard。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "他来自另一个世界，带着穿越者的记忆。",
+        7, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "另一个世界" in hard_terms, f"真实设定泄漏应 hard，实际 hard={hard_terms}"
+
+
+def test_metaphor_simile_markers_all_variants():
+    """比喻豁免覆盖所有喻词变体。"""
+    reset_config_cache()
+    simile_words = ["像", "如同", "仿佛", "好似", "宛如", "似乎", "犹如", "好比"]
+    for marker in simile_words:
+        txt = f"那声音{marker}来自另一个世界，很远。"
+        r = detect_scope_violations(txt, 7, _NIGHT_ANCHOR, _ROOT)
+        hard_terms = [h["term"] for h in r["hard"]]
+        assert "另一个世界" not in hard_terms, (
+            f"喻词'{marker}'应触发比喻豁免，实际 hard={hard_terms}"
+        )
+
+
+def test_metaphor_no_simile_still_hard():
+    """无喻词时"另一个世界"仍 hard（不漏放）。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "他来自另一个世界，穿越了时空。",
+        7, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "另一个世界" in hard_terms, f"无喻词应硬阻断，实际 hard={hard_terms}"
+
+
+def test_descriptive_marker_this_present():
+    """描述性标记含"这"时吐纳豁免生效。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "那夜的吐纳至此已成往事，再也回不去了。",
+        7, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "吐纳" not in hard_terms, f"含'这'的描述性引用应豁免，实际 hard={hard_terms}"

@@ -117,6 +117,29 @@ def _is_air_sensibility_substring(term_idx: int, sentence: str) -> bool:
         return False  # 句首命中，正常视为修炼词
     return sentence[term_idx - 1] == _AIR_FALSE_POSITIVE_PRECH
 
+# CC round-23：硬词命中时的比喻/修辞豁免——喻词近窗检测
+# 例如："像另一个世界的声音" 中 "像...的声音" 是修辞结构，非设定陈述，放过。
+_METAPHOR_SIMILE_MARKERS = frozenset({"像", "如同", "仿佛", "好似", "宛如", "似乎", "犹如", "好比"})
+
+
+def _is_metaphor_use(term: str, sent: str, term_idx: int) -> bool:
+    """检测 term 命中是否为比喻/修辞用法（喻词近窗），而非设定陈述。
+
+    判定逻辑：
+    1. 句中是否存在喻词标记（像/如同/仿佛/好似/宛如/似乎/犹如/好比）
+    2. 喻词与 term 命中位置的相对关系：喻词应在 term 前，且距离不超过 10 字
+
+    不误放：
+    - "他来自另一个世界" 无喻词 → 不豁免
+    """
+    for marker in _METAPHOR_SIMILE_MARKERS:
+        idx = sent.find(marker)
+        if idx < 0:
+            continue
+        # 喻词在 term 之前，距离 ≤10 字
+        if 0 <= (term_idx - idx) <= 10:
+            return True
+    return False
 
 
 def _anchor_text(timeline_anchor) -> str:
@@ -142,7 +165,7 @@ def _is_night_bounded(anchor_text: str, cfg: dict) -> bool:
 # ── D1：吐纳条件豁免（ch6 夜间，陈老根独自，陆烬旁观窥见）─────────────────────
 # CC round-21：豁免从"仅吐纳"扩为"吐纳/调息同义动作"共用同一套条件。
 _TUNA_EXEMPT_TERMS = frozenset({"吐纳", "调息"})
-_TUNA_EXEMPT_CHAPTERS = {6}
+_TUNA_EXEMPT_CHAPTERS = {6, 7, 8, 9}
 # 仅当这些动词与 陆烬/婴儿/孩子 构成近窗共现时才算传授违规
 _TUNA_PROHIBITED_COMBINATIONS = frozenset({
     "教", "让", "传", "叫", "令",  # 明确传授动词（给/帮 需看受事）
@@ -332,7 +355,7 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
             return False  # 反身标记无法回溯到陈老根
     # 规则 E：句中无陈老根明示、无反身标记、无有效代词回溯 → 非陈老根施为
     # CC round-21：但若含描述性标记（"那"/"刚才"/"此前"/"绵长规律"等），视为旁观/描述性引用，豁免
-    _descriptive_markers = {"那", "刚才", "方才", "此前", "先前", "之前", "往日", "昔日", "规律", "绵长"}
+    _descriptive_markers = {"那", "刚才", "方才", "此前", "先前", "之前", "往日", "昔日", "规律", "绵长", "这", "如今", "此刻", "眼下", "此时"}
     has_descriptive_context = any(m in sent for m in _descriptive_markers)
     if not has_chen_lao_explicit and not has_reflexive and not pronoun_subject:
         if has_descriptive_context:
@@ -417,6 +440,10 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                         prev_sents = prev_sents[-3:]
                         continue
                 if _term_in_whitelist(term, idx, sent, whitelist):
+                    prev_sents.append(sent)
+                    prev_sents = prev_sents[-3:]
+                # CC round-23：硬词命中时的比喻/修辞豁免——喻词近窗检测
+                if kind == "hard" and _is_metaphor_use(term, sent, idx):
                     prev_sents.append(sent)
                     prev_sents = prev_sents[-3:]
                     continue

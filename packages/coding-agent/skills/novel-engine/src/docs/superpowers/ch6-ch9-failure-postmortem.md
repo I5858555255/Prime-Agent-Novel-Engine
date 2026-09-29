@@ -83,3 +83,44 @@ scene3 的 `吐纳` 是通过 `_regen_scene_for_id`（不带 `prev=`）调用的
 ---
 
 *生成时间：2026-09-29*
+
+
+## Round 2: Third-Iteration Failure (ch6/7/9, score=86.0/77.95/86.8)
+
+### Phenomenon
+Canon scope gate: hard block on ch6/ch7/ch9 with scores 86.0/77.95/86.8.
+
+### Root Causes (3 identified)
+
+**Root Cause 1: Exempt chapter range not implemented per design**
+infant.json _comment states ch6 onwards should allow controlled form. But _TUNA_EXEMPT_CHAPTERS = {6} only exempted ch6. Fixed to {6, 7, 8, 9}.
+
+**Root Cause 2: Missing demonstrative marker "ini" in descriptive references**
+Sentence "This secret..." blocked because _descriptive_markers lacked "ini" and similar markers. Added: ini, now,此刻,眼下,此时.
+
+**Root Cause 3: No metaphor/rhetorical exemption for hard_block terms**
+Sentence "like sounds from another world" blocked because "another world" is used metaphorically. Added _is_metaphor_use() with simile triggers (like/as if/seem/etc).
+
+### Regression Tests Added (10 tests, all PASS)
+- test_ch7_tuna_exempt_night
+- test_ch8_tuna_exempt_night  
+- test_ch9_tuna_exempt_night
+- test_ch5_tuna_still_hard
+- test_descriptive_marker_zhe_secret
+- test_metaphor_another_world_sound
+- test_literal_another_world_still_hard
+- test_metaphor_simile_markers_all_variants
+- test_metaphor_no_simile_still_hard
+- test_descriptive_marker_this_present
+
+### Files Changed
+- novel_engine/quality/scope_gate.py: +34 lines
+- novel_engine/tests/domain_gate_wiring/test_round22_scope_tuna_exemption.py: +110 lines
+
+### Verification
+Full suite: 1003 passed, 2 pre-existing failures (unrelated to scope_gate changes).
+Both pre-existing failures confirmed on clean HEAD via git stash test.
+
+---
+
+*Updated: 2026-09-29 (Round 2 findings)*
