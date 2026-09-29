@@ -589,3 +589,20 @@ def _run_continuity_gate(self, *a, **k):
 1. **"提取方法/拆 gate 到模块"类改动，提交前必须跑全量测试套件**（从 `packages/coding-agent/skills/novel-engine/src` 执行 `python -m pytest novel_engine/tests/ -q`）。本次回归分布在 8+ 个测试文件，只跑新增/相关测试会完全漏掉。
 2. **禁止** `staticmethod(lambda self, *a, **k: ...)` 委托写法——关闭实例绑定易踩参数错位陷阱。
 3. 委托到模块函数一律用普通方法定义（见 13.2）。
+
+### 13.4 新增规则：测试依赖真实生成产物的替代方案（2026-09-29）
+
+**背景**：远端全新 clone 环境下，依赖本地真实生成产物（`chapters/novel/chapter_N.txt`、`runtime/state.db`、`audit/per_chapter_reviews.json`）的测试会失败。
+
+**规则**：新增或修改测试若需真实生成产物做回归验证，必须同时提供最小合成 fixture 兜底，禁止依赖"本地恰好跑过真实生成"。具体做法：
+1. 在 `novel_engine/tests/fixtures_real_data.py` 提供结构化合成数据（synthetic chapter text、最小 state.db schema、最小 per_chapter_reviews.json 结构）。
+2. 测试函数优先使用 `tmp_path` 写入合成数据，而非从生产路径读取。
+3. 若被测逻辑需要真实文件路径（如 `load_authoritative_scenes(root, ch)`），将 root 参数注入为 `tmp_path` 下的临时目录，由测试负责初始化对应目录结构。
+
+**已改造**：
+- `test_d2_ch4_real_text_regression`（test_round18_gates_wiring.py）：改用 `CHAPTER_4_SYNTHETIC`
+- `test_p7b_polarity_ch1_ch2_ch3_clean`（test_round18_gates_wiring.py）：改用合成章节文本
+- `test_p7d_crisis_scene_texts_str_ch4_clean`（test_round18_gates_wiring.py）：改用合成章节文本
+- `test_ch5_real_text_no_contradiction_after_rebase`（test_round19_reaction_consistency.py）：`_ch5_text()` 改用 `CHAPTER_5_SYNTHETIC`
+- `test_ch5_real_text_no_false_positive_on_ch1_to_ch4`（test_round19_reaction_consistency.py）：改用 `CHAPTER_4_SYNTHETIC`
+- `test_data_dir_contains_real_state_db` → 重命名为 `test_data_dir_resolves_to_package_root`，仅验证 DATA_DIR 解析逻辑，不再断言运行时产物存在

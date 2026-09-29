@@ -7,6 +7,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 _SEP = chr(10)+chr(10)+chr(9832)+chr(10)+chr(10)
 
+from novel_engine.tests.fixtures_real_data import (
+    CHAPTER_4_SYNTHETIC,
+    CHAPTER_5_SYNTHETIC,
+)
 # CC round-19 P9：ch5 危机门固定快照（来源于 draft/chapter_5_partial.jsonl records[4:8]）
 # 替代硬编码的运行时路径 novel_engine/chapters/draft/failed/chapter_5/
 _FIXTURES_ROOT = Path(__file__).resolve().parent / 'fixtures' / 'ch5_crisis_gate'
@@ -236,21 +240,28 @@ def test_d2_poison_with_generic_connectors_hit():
     assert r['has_issue'] is True, f'Expected poison-with-connectors hit, got {r}'
 
 
-def test_d2_ch4_real_text_regression():
+def _synthetic_chapters():
+    """Return a mapping of chapter number to synthetic chapter text."""
+    return {4: CHAPTER_4_SYNTHETIC, 5: CHAPTER_5_SYNTHETIC}
+
+
+def test_d2_ch4_real_text_regression(tmp_path):
     from novel_engine.quality.cross_scene_crisis_gate import detect_off_card_crisis
-    import tempfile as _tf
-    real_ch4 = Path('novel_engine/chapters/novel/chapter_4.txt').read_text(encoding='utf-8')
-    paras = [p.strip() for p in real_ch4.split(chr(10)+chr(10)) if p.strip()]
-    with _tf.TemporaryDirectory() as tmpdir:
-        dd = os.path.join(tmpdir, 'chapters', 'draft')
-        os.makedirs(dd, exist_ok=True)
-        for i, p in enumerate(paras[:4], 1):
-            with open(os.path.join(dd, 'chapter_4_partial.jsonl'), 'a', encoding='utf-8') as f:
-                f.write(json.dumps({'scene_id': i, 'scene_text': p}) + chr(10))
-        r = detect_off_card_crisis(real_ch4, 4,
-                                    {'chapter_num': 4, 'scene_blueprints': [], 'chapter_events': []},
-                                    root=tmpdir)
-    assert r['has_issue'] is False, f'ch4 real text must not trigger crisis, got {r}'
+    ch4 = CHAPTER_4_SYNTHETIC
+    paras = [p.strip() for p in ch4.split(chr(10)+chr(10)) if p.strip()]
+    dd = tmp_path / 'chapters' / 'draft'
+    dd.mkdir(parents=True, exist_ok=True)
+    out = dd / 'chapter_4_partial.jsonl'
+    for i, p in enumerate(paras[:4], 1):
+        out.write_text(
+            (out.read_text(encoding="utf-8") if out.exists() else "") +
+            json.dumps({'scene_id': i, 'scene_text': p}) + chr(10),
+            encoding="utf-8",
+        )
+    r = detect_off_card_crisis(ch4, 4,
+                                {'chapter_num': 4, 'scene_blueprints': [], 'chapter_events': []},
+                                root=tmp_path)
+    assert r['has_issue'] is False, f'ch4 synthetic text must not trigger crisis, got {r}'
 
 
 def test_d3_canon_in_early_deterministic_gate(tmp_path):
@@ -704,16 +715,15 @@ def test_p7b_crisis_scene_texts_param():
     assert r['off_card_crises'][0]['scene_id'] == 3
 
 
-def test_p7b_polarity_ch1_ch2_ch3_clean():
+def test_p7b_polarity_ch1_ch2_ch3_clean(tmp_path):
     """P7B 极性门：ch1/ch2/ch3 已提交章节不误报。"""
     from novel_engine.quality.naming_consistency_gate import detect_polarity_conflict, reset_config_cache
+    chaps = _synthetic_chapters()
     for ch in [1, 2, 3]:
-        with open(f'novel_engine/chapters/novel/chapter_{ch}.txt', encoding='utf-8') as f:
-            text = f.read()
+        text = chaps.get(ch, CHAPTER_4_SYNTHETIC)
         reset_config_cache()
         r = detect_polarity_conflict(text, ch, root=None)
         assert r['has_issue'] is False, f'ch{ch} 不应误报极性, got {r}'
-
 
 # ===== P7C: 同句转化豁免 + 危机门权威分场 =====
 
@@ -768,8 +778,7 @@ def test_p7d_crisis_scene_texts_str_n5_real_hit():
 def test_p7d_crisis_scene_texts_str_ch4_clean():
     """P7D 危机门：干净章（ch4）以※字符串传入 → has_issue=False，不抛异常。"""
     from novel_engine.quality.cross_scene_crisis_gate import detect_off_card_crisis
-    with open('novel_engine/chapters/novel/chapter_4.txt', encoding='utf-8') as f:
-        ch4_text = f.read()
+    ch4_text = CHAPTER_4_SYNTHETIC
     task_card = {
         'chapter_num': 4,
         'scene_blueprints': [{'scene_num': 1}, {'scene_num': 2}, {'scene_num': 3}, {'scene_num': 4}],

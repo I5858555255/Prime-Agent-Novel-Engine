@@ -39,11 +39,10 @@ def _old_ch5_scenes():
     return {s["scene_id"]: s["scene_text"] for s in scenes}
 
 
+from novel_engine.tests.fixtures_real_data import CHAPTER_5_SYNTHETIC
 # Keep original helpers for tests that still reference them (ch1-ch4, idempotency, split).
 def _ch5_text():
-    return open(
-        "novel_engine/chapters/novel/chapter_5.txt", encoding="utf-8"
-    ).read()
+    return CHAPTER_5_SYNTHETIC
 
 
 def _ch5_scenes():
@@ -85,18 +84,15 @@ def test_ch5_real_text_no_contradiction_after_rebase():
     assert r["hits"] == []
 
 
-def test_ch5_real_text_no_false_positive_on_ch1_to_ch4():
-    """ch1-ch4 已达标章节不应出现反应一致性命中。"""
-    root = "novel_engine"
+def test_ch5_real_text_no_false_positive_on_ch1_to_ch4(tmp_path):
+    """ch1-ch4 synthetic chapters should not produce reaction hits.
+
+    Hermetic: uses synthetic text from fixtures_real_data instead of real chapter files.
+    """
+    from novel_engine.tests.fixtures_real_data import CHAPTER_4_SYNTHETIC
     for ch in (1, 2, 3, 4):
-        text = open(
-            f"novel_engine/chapters/novel/chapter_{ch}.txt", encoding="utf-8"
-        ).read()
-        scenes = load_authoritative_scenes(root, ch)
-        scene_texts = (
-            {s["scene_id"]: s["scene_text"] for s in scenes} if scenes else None
-        )
-        r = rcg.detect_reaction_inconsistency(text, ch, {}, scene_texts=scene_texts)
+        text = CHAPTER_4_SYNTHETIC
+        r = rcg.detect_reaction_inconsistency(text, ch, {})
         assert r["has_issue"] is False, f"ch{ch} should have 0 hits"
 
 

@@ -408,7 +408,7 @@ def test_fact_changes_invalid_lines_ignored(tmp_path: Path) -> None:
 # ── Path resolution (Issue 3 regression) ─────────────────────────────────────
 
 
-def test_main_defaults_root_to_data_dir() -> None:
+def test_main_defaults_root_to_data_dir(capsys) -> None:
     """main() without --root must default to DATA_DIR (not cwd) so the real
     state.db / audit / world_state are found from any cwd.
     """
@@ -417,14 +417,16 @@ def test_main_defaults_root_to_data_dir() -> None:
     assert isinstance(rc, int)
 
 
-def test_data_dir_contains_real_state_db() -> None:
-    """DATA_DIR resolves to the novel_engine package dir with real runtime data."""
+def test_data_dir_resolves_to_package_root() -> None:
+    """DATA_DIR resolves to the novel_engine package dir.
+
+    Hermetic: verifies the directory-resolution logic only. No assertions on
+    runtime artefacts (state.db / per_chapter_reviews.json) since those are
+    only present after a real generation run.
+    """
     assert mh_mod.DATA_DIR.is_dir()
-    assert (mh_mod.DATA_DIR / "runtime" / "state.db").exists(), (
-        f"state.db not found at {mh_mod.DATA_DIR / 'runtime' / 'state.db'}"
-    )
-    assert (mh_mod.DATA_DIR / "memory" / "world_state").is_dir()
-    assert (mh_mod.DATA_DIR / "audit" / "per_chapter_reviews.json").exists()
+    assert (mh_mod.DATA_DIR / "config").is_dir()
+    assert (mh_mod.DATA_DIR / "core").is_dir()
 
 
 
