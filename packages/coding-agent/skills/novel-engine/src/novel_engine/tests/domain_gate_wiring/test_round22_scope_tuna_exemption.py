@@ -669,3 +669,39 @@ def test_ch6_teach_give_hypothetical_soft():
     assert not _has_teach_violation(
         "若是传授给他，让他学着调整呼吸，学着在吸入那无处不在的浊气时，多少过滤掉一丝最令人难受的杂质，或许……就能让他好过一些。"
     ), "未然传…给不应走既成第一优先"
+
+
+# ── CC round-26：ch6 第六轮真实卡句——「昨夜」夜锚缺口（夜间描写词表不完整）──
+def test_ch6_yesterday_night_anchor_exempt():
+    """昨夜盘坐调息属夜锚语境，应豁免夜锚要求。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "昨夜盘坐调息的人，此刻只是个寻常农人。",
+        6, None, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "调息" not in hard_terms, f"昨夜应豁免，实际 hard={hard_terms}"
+
+
+def test_ch6_nightfall_anchor_exempt():
+    """夜锚句（含上下文回溯陈老根）应豁免。"""
+    reset_config_cache()
+    cases = [
+        "陈老根回到院里，四下寂静。夜幕垂下，他在院里盘坐调息。",
+        "暮色四合，院中吐纳声隐约可闻，是陈老根照例的晚课。",
+    ]
+    for s in cases:
+        r = detect_scope_violations(s, 6, None, _ROOT)
+        hard_terms = [h["term"] for h in r["hard"]]
+        assert not hard_terms, f"夜锚句不应 hard: {s} -> {hard_terms}"
+
+
+def test_ch6_yesterday_night_descriptive_exempt():
+    """昨夜盘坐调息的人是叙述性引用（主语泛称'人'），应豁免。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "昨夜盘坐调息的人，此刻只是个寻常农人。",
+        6, None, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert not hard_terms, f"昨夜叙述句不应 hard: {hard_terms}"

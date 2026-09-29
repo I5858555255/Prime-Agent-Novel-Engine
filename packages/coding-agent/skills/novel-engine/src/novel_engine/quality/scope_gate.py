@@ -380,7 +380,9 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
     # 规则 E：句中无陈老根明示、无反身标记、无有效代词回溯 → 非陈老根施为
     # CC round-21：但若含描述性标记（"那"/"刚才"/"此前"/"绵长规律"等），视为旁观/描述性引用，豁免
     _descriptive_markers = {"那", "刚才", "方才", "此前", "先前", "之前", "往日", "昔日", "规律", "绵长", "这", "如今", "此刻", "眼下", "此时"}
-    has_descriptive_context = any(m in sent for m in _descriptive_markers)
+    # CC round-26：夜锚词（昨夜/夜幕/夜色等）本身即描述性时间语境——
+    # "昨夜盘坐调息的人"是叙述性引用，非传授/施为，应豁免。
+    has_descriptive_context = any(m in sent for m in _descriptive_markers) or any(m in sent for m in night_anchors)
     if not has_chen_lao_explicit and not has_reflexive and not pronoun_subject:
         if has_descriptive_context:
             pass  # 描述性引用，豁免
