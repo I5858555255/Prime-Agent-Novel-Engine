@@ -259,7 +259,8 @@ def _has_teach_violation(s: str) -> bool:
                          "怎会", "岂能", "难道不", "莫非",
                          "记得", "想起", "回想", "回忆", "浮现", "脑海中", "记起",
                          "意味着", "思虑", "心想", "盘算", "思忖", "并非",
-                         "按了下去", "压下去", "打消", "作罢", "算了", "搁下", "收了起来"}
+                         "按了下去", "压下去", "打消", "作罢", "算了", "搁下", "收了起来",
+                         "若是", "假如", "倘若", "要是", "如果", "设想", "盘算", "打算"}
     is_question = any(mk in s for mk in _reversed_context_markers)
     is_hesitant = any(mk in s for mk in _hesitant_markers)
     is_question_end = s.endswith("？") and ("传授" in s or "教" in s or "传" in s)
