@@ -332,7 +332,7 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
             return False  # 反身标记无法回溯到陈老根
     # 规则 E：句中无陈老根明示、无反身标记、无有效代词回溯 → 非陈老根施为
     # CC round-21：但若含描述性标记（"那"/"刚才"/"此前"/"绵长规律"等），视为旁观/描述性引用，豁免
-    _descriptive_markers = {"那", "刚才", "此前", "先前", "之前", "往日", "昔日", "规律", "绵长"}
+    _descriptive_markers = {"那", "刚才", "方才", "此前", "先前", "之前", "往日", "昔日", "规律", "绵长"}
     has_descriptive_context = any(m in sent for m in _descriptive_markers)
     if not has_chen_lao_explicit and not has_reflexive and not pronoun_subject:
         if has_descriptive_context:
@@ -576,10 +576,23 @@ def scope_fix_directive(hard: list[dict]) -> str:
     dawns = sorted({v["term"] for v in hard if v["kind"] == "dawn_overrun"})
     lines = ["本场景违反了任务卡的范围/时间硬约束，必须按以下要求重写（保留本场景原有 beats 与篇幅，只做删除/收束，不改变已发生事件与人物）："]
     if leaks:
+        # 收集每句含禁词的完整原句，供 LLM 精确替换（防重生后仍保留禁词）
+        violation_sentences = sorted({
+            v["sentence"] for v in hard
+            if v.get("kind") in ("hard_leak", "negated_hard") and v.get("sentence")
+        })
+        sentence_parts = []
+        for sent in violation_sentences:
+            if len(sent) > 80:
+                sent = sent[:80] + "\u2026"
+            sentence_parts.append(f"  \u539f\u53e5\uff1a\u300c{sent}\u300d")
+        sentences_block = "\n".join(sentence_parts) if sentence_parts else ""
         lines.append(
             "删除一切提前泄漏后期设定、或任务卡未规划的超自然内容，正文严禁出现以下词或同义概念："
             + "、".join(leaks) + "。不得新增守护者/神秘声音对话、修炼体系、门派仙门、"
-            "魂魄印记/跨界等任何体系化解释；悬念只能用环境与意象隐晦呈现，不做直白说明。")
+            "魂魄印记/跨界等任何体系化解释；悬念只能用环境与意象隐晦呈现，不做直白说明。"
+            + (f"\n【必须精确替换的违禁句子】按上述要求重写以下句子，保留原意但去除禁词：\n{sentences_block}"
+               if sentences_block else ""))
     if dawns:
         lines.append(
             "本章时间严格限定在当夜时间锚之内，叙事本身严禁写到天明。删除包含“"

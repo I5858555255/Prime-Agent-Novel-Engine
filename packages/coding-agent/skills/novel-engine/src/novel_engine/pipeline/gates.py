@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Optional, Callable, Tuple, Any
 
 import logging
+import re
 from pathlib import Path
 
 from novel_engine.core.errors import SceneUnrecoverableError, ChapterResampleRequiredError, ChapterQualityGapError
@@ -243,13 +244,44 @@ def _run_scope_gate(self, chapter_num: int, task_card: dict, scenes: list, assem
             cur_scene.scene_text = excised
             logger.info(f"Scope dawn excised ch{chapter_num} scene{sid}: {len(removed)} sentence(s)")
 
-        recheck = detect_scope_violations(cur_scene.scene_text or "", chapter_num, anchor_, self.root, extra)
-        leak_left = [v for v in recheck.get("hard", []) if v.get("kind") != "dawn_overrun"]
-        dawn_left = [v for v in recheck.get("hard", []) if v.get("kind") == "dawn_overrun"]
-        if leak_left:
+        # 重生后仍含禁词时，先确定性字符串替换兜底（LLM 改不动时不直接判重排）
+        _cur_text = cur_scene.scene_text or ""
+        _deterministically_replaced = False
+        _recheck = detect_scope_violations(_cur_text, chapter_num, anchor_, self.root, extra)
+        _leak_left = [v for v in _recheck.get("hard", []) if v.get("kind") != "dawn_overrun"]
+        dawn_left = [v for v in _recheck.get("hard", []) if v.get("kind") == "dawn_overrun"]
+        if _leak_left:
+            for _v in _leak_left:
+                _term = _v.get("term", "")
+                _orig_sent = _v.get("sentence", "")
+                if _term and _orig_sent and _orig_sent in _cur_text:
+                    _escaped = re.escape(_orig_sent)
+                    # 替换目标不能是 hard_block 中的词（如婴儿的调息也禁），用无害替代词
+                    _repls = {
+                        "吐纳": "调整呼吸",
+                        "调息": "调整呼吸",
+                        "气感": "体内异样",
+                        "内视": "内观",
+                        "行气探查": "感知气息",
+                        "气机探查": "感知气息",
+                    }
+                    _replacement = _repls.get(_term, _term + "（已删除）")
+                    _new_text = re.sub(_escaped, _replacement, _cur_text)
+                    if _new_text != _cur_text:
+                        cur_scene.scene_text = _new_text
+                        _cur_text = _new_text
+                        _deterministically_replaced = True
+                        logger.info(
+                            f"Scope deterministic replace ch{chapter_num} scene{sid}: "
+                            f"'{_term}' -> '{_replacement}' in {_v.get('sentence','')[:60]}")
+            if _deterministically_replaced:
+                _recheck = detect_scope_violations(_cur_text, chapter_num, anchor_, self.root, extra)
+                _leak_left = [v for v in _recheck.get("hard", []) if v.get("kind") != "dawn_overrun"]
+                dawn_left = [v for v in _recheck.get("hard", []) if v.get("kind") == "dawn_overrun"]
+        if _leak_left:
             logger.warning(
                 f"Scope leak persists scene{sid} after regen "
-                f"{[(v.get('kind'), v.get('term')) for v in leak_left]} -> replan")
+                f"{[(v.get('kind'), v.get('term')) for v in _leak_left]} -> replan")
             still_bad.append(sid)
             continue
         if dawn_left:
