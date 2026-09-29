@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from novel_engine.core.state_machine import StateMachine, ChapterPhase
-from novel_engine.core.checkpoint import CheckpointManager, novel_chapter_path
+from novel_engine.core.checkpoint import CheckpointManager, create_draft_checkpoint, novel_chapter_path
 from novel_engine.core.quality_policy import load_quality_policy, is_blocking, derive_scene_targets
 from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.agents.chapter_director import ChapterDirector, merge_thin_scene_blueprints
@@ -1179,7 +1179,7 @@ class PipelineOrchestrator:
                 draft_path = self.root / "chapters" / "draft" / f"chapter_{chapter_num}.txt"
                 draft_path.parent.mkdir(parents=True, exist_ok=True)
                 draft_path.write_text(self._novel_string(), encoding="utf-8")
-                logger.warning(f"Chapter {chapter_num} force-best saved to draft/{draft_path.name} (never novel/) high={high_list} det_hard={det_issues} soft={det_soft}")
+                create_draft_checkpoint(self.checkpoint_mgr, self.root, chapter_num, self._novel_string())
             except Exception as e:
                 logger.error(f"Failed to save force-best draft for chapter {chapter_num}: {e}")
             result["score"] = cur_score

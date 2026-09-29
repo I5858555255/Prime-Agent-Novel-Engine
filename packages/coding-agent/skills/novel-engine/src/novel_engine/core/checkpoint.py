@@ -99,6 +99,41 @@ class CheckpointManager:
         logger.info(f"Checkpoint created for chapter {chapter}")
         return checkpoint_entry
 
+    def create_draft_checkpoint(
+        self,
+        chapter: int,
+        draft_content: str,
+    ) -> dict:
+        """
+        为 force-best 章节创建轻量 checkpoint 条目。
+        只记录 draft 文件 hash，不写 novel/synopsis/outline。
+        complete=True 使 run_volume --resume 跳过该章。
+        verify_integrity 对 force_best_draft 条目检查 draft/ 而非 novel/。
+        """
+        draft_path = self.root / "chapters" / "draft" / f"chapter_{chapter}.txt"
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        draft_path.write_text(draft_content, encoding="utf-8")
+        draft_hash = _sha256_file(draft_path)
+
+        checkpoint_entry = {
+            "chapter": chapter,
+            "novel_hash": draft_hash,
+            "synopsis_hash": "",
+            "outline_hash": "",
+            "world_state_hash": "",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "complete": True,
+            "mode": "force_best_draft",
+        }
+
+        cp_data = self.load()
+        cp_data["checkpoints"].append(checkpoint_entry)
+        cp_data["last_complete"] = chapter
+        self.save(cp_data)
+
+        logger.info(f"Draft checkpoint created for chapter {chapter} (force_best_draft)")
+        return checkpoint_entry
+
     def get_latest_checkpoint(self) -> Optional[dict]:
         """获取最新完整checkpoint。"""
         cp_data = self.load()
@@ -123,6 +158,18 @@ class CheckpointManager:
         cp = self.get_checkpoint_by_chapter(chapter)
         if cp is None:
             return False
+
+        # force_best_draft 条目：只校验 draft/ 文件，跳过 novel/ 检查
+        if cp.get("mode") == "force_best_draft":
+            draft_path = self.root / "chapters" / "draft" / f"chapter_{chapter}.txt"
+            if not draft_path.exists():
+                logger.warning(f"文件缺失: {draft_path}")
+                return False
+            actual_hash = _sha256_file(draft_path)
+            if actual_hash != cp["novel_hash"]:
+                logger.warning(f"文件hash不匹配 [draft]: {draft_path}")
+                return False
+            return True
 
         novel_path = novel_chapter_path(self.root, chapter)
         synopsis_path = self.root / "chapters" / "synopsis" / f"chapter_{chapter}.txt"
@@ -215,6 +262,19 @@ class CheckpointManager:
             cp for cp in cp_data["checkpoints"] if cp["chapter"] >= chapter
         ]
         self.save(cp_data)
+
+
+def create_draft_checkpoint(
+    manager: CheckpointManager,
+    project_root: str | Path,
+    chapter: int,
+    draft_content: str,
+) -> dict:
+    """
+    模块级辅助：为 force-best 章节写 draft checkpoint（不写 novel/）。
+    委托给 CheckpointManager.create_draft_checkpoint。
+    """
+    return manager.create_draft_checkpoint(chapter=chapter, draft_content=draft_content)
 
 
 def create_commit_transaction(
