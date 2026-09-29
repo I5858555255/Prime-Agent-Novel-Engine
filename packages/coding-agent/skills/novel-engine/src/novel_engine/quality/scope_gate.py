@@ -344,7 +344,7 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
         # 陈老根往事中的吐纳不是当下场景违规；仅当句内无婴儿施为才豁免
         # （baby 相关由 GapA 兜底），传授红线由 _has_teach_violation 独立把关。
         _recall_markers = {"彼时", "那时", "当年", "往日", "昔日", "曾经", "曾", "记忆", "回忆",
-                          "忆起", "被遗忘", "多年", "往事", "从前", "早年间", "恍若", "依稀", "仿佛记得"}
+                          "忆起", "被遗忘", "多年", "往事", "从前", "早年间", "早年", "恍若", "依稀", "仿佛记得"}
         if not baby_agent and any(m in sent for m in _recall_markers):
             return True
         return False
