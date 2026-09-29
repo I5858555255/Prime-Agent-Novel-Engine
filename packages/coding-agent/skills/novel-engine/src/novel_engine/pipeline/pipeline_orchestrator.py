@@ -2264,8 +2264,15 @@ class PipelineOrchestrator:
                     "确认无遗漏后再据此把 scene_text 逐拍演足；严禁跳过列点或只回一两句正文就提前收尾。"
                 )
             elif it.startswith("high_freq_repeat"):
+                # CC round-26f：把具体重复子串写进指令，LLM 才知道要改哪里
+                import re as _re
+                _m = _re.search(r"high_freq_repeat: ('[^']*'|\"[^\"]*\") x(\d+)", it)
+                _sub = _m.group(1) if _m else "某一句式"
+                _cnt = _m.group(2) if _m else "3"
                 out.append(
-                    "上一稿出现整句重复或 JSON 代码残留。本次用不重复的新鲜表达写纯叙事正文，"
+                    f"上一稿出现句式重复：{_sub} 反复出现 {_cnt} 次（8字以上片段命中高频重复门）。"
+                    "本次必须把这些重复句逐一改写：同一句法/开头连续使用不得超过两次，"
+                    "用不同的动作、环境细节或视角展开替代原样复用；严禁整句原样复制。"
                     "scene_text 内严禁出现引号键名、换行缩进的 JSON 结构或 ``` 代码围栏。"
                 )
             elif it.startswith("placeholder"):
