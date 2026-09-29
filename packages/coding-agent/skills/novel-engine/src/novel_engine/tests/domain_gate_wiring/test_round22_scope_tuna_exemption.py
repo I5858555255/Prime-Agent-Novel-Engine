@@ -626,3 +626,46 @@ def test_red_line_fangfa_desc_with_baby_still_hard():
     assert "吐纳" in hard_terms, (
         f"婴儿施为应 hard，实际 hard={hard_terms}"
     )
+
+# ── CC round-25：ch6 第五轮真实卡句——传授设想/放弃/功法跨句 + polarity 未然 ────
+def test_ch6_teach_hypothetical_soft():
+    """未然设想（若是…或许）的传授判定应降为 soft。"""
+    reset_config_cache()
+    assert not _has_teach_violation(
+        "若是传授给他，让他学着调整呼吸，学着在吸入那无处不在的浊气时，多少过滤掉一丝最令人难受的杂质，或许……就能让他好过一些。"
+    ), "未然设想中的传授不应 hard"
+
+
+def test_ch6_teach_abandoned_soft():
+    """放弃传授（念头被按了下去）应降为 soft。"""
+    reset_config_cache()
+    assert not _has_teach_violation(
+        "传授呼吸法的念头，被他自己亲手按了下去，沉入心底某个角落。"
+    ), "放弃的传授念头不应 hard"
+
+
+def test_ch6_teach_definite_with_hypothetical_still_hard():
+    """含假设词但既成传授仍 hard——不误放。"""
+    reset_config_cache()
+    assert _has_teach_violation(
+        "他权衡再三，最终将呼吸之法传给了陆烬——尽管心中或许仍有犹豫。"
+    ), "既成传授即使含或许也必须 hard"
+
+
+def test_ch6_fangfa_cross_sentence_exempt():
+    """功法评价跨句指代（前句含法门）应豁免夜锚要求。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "那法门没什么移山填海的神通。最大的用处，就是能在吐纳间，将吸入体内的驳杂之气稍作梳理，化去其中最为伤身的部分，勉强温养内腑。",
+        6, None, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "吐纳" not in hard_terms, f"跨句功法评价应豁免，实际 hard={hard_terms}"
+
+
+def test_ch6_teach_give_hypothetical_soft():
+    """跨字传…给+未然标记（若是传授给他）不得走既成第一优先。"""
+    reset_config_cache()
+    assert not _has_teach_violation(
+        "若是传授给他，让他学着调整呼吸，学着在吸入那无处不在的浊气时，多少过滤掉一丝最令人难受的杂质，或许……就能让他好过一些。"
+    ), "未然传…给不应走既成第一优先"

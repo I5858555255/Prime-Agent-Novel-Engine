@@ -263,6 +263,11 @@ def _check_attraction_event(
     has_gaze_subject = any(s in sentence for s in {"目光", "视线", "眼"})
     if has_gaze_subject and not has_baby_subject:
         return False, ""
+    # CC round-25：未然/设想语境排除——"若是传授…让他学着…或许"是陈老根设想
+    # （处理浊气的方案），非婴儿既成的纳取/渴求事件，不得判为吸引。
+    _HYPOTHETICAL_MARKERS = frozenset({"若是", "假如", "倘若", "要是", "如果", "或许", "也许", "设想", "盘算", "打算", "计划"})
+    if any(m in sentence for m in _HYPOTHETICAL_MARKERS):
+        return False, ""
     for label, pat in _ATTRACT_INTAKE_PATTERNS:
         m = pat.search(sentence)
         if m:

@@ -230,29 +230,36 @@ def _has_teach_violation(s: str) -> bool:
         ctx = s[max(0, rv_idx - 8):rv_idx + 20]
         if any(co in ctx for co in _CULTIVATION_OBJECTS):
             return True
-    # 跨字模式：传...给 / 教...给（如"传呼吸之法给陆烬"）——距离≤15 才判既成，
-    # CC round-23b：避免"传授法门…分享给了这个孩子"式远距误配（给=分享对象非受事）
-    if "传" in s and "给" in s:
-        c_idx = s.find("传")
-        g_idx = s.find("给")
-        if g_idx > c_idx and g_idx - c_idx <= 15:
-            span = s[c_idx:g_idx + 20]
-            if any(co in span for co in _CULTIVATION_OBJECTS):
-                return True
-    if "教" in s and "给" in s:
-        j_idx = s.find("教")
-        g_idx = s.find("给")
-        if g_idx > j_idx and g_idx - j_idx <= 15:
-            span = s[j_idx:g_idx + 20]
-            if any(co in span for co in _CULTIVATION_OBJECTS):
-                return True
+    # CC round-25：未然/假设语境（若是/假如/倘若/如果/或许/也许）优先排除——
+    # "若是传授给他…让他学着调整呼吸…或许"是设想而非既成传授，不得走第一优先。
+    _HYPOTHETICAL = frozenset({"若是", "假如", "倘若", "要是", "如果", "或许", "也许", "设想", "盘算", "打算"})
+    if any(m in s for m in _HYPOTHETICAL):
+        pass  # 未然语境：跳过既成判定，交给第二/三优先（犹豫降级）
+    else:
+        # 跨字模式：传...给 / 教...给（如"传呼吸之法给陆烬"）——距离≤15 才判既成，
+        # CC round-23b：避免"传授法门…分享给了这个孩子"式远距误配（给=分享对象非受事）
+        if "传" in s and "给" in s:
+            c_idx = s.find("传")
+            g_idx = s.find("给")
+            if g_idx > c_idx and g_idx - c_idx <= 15:
+                span = s[c_idx:g_idx + 20]
+                if any(co in span for co in _CULTIVATION_OBJECTS):
+                    return True
+        if "教" in s and "给" in s:
+            j_idx = s.find("教")
+            g_idx = s.find("给")
+            if g_idx > j_idx and g_idx - j_idx <= 15:
+                span = s[j_idx:g_idx + 20]
+                if any(co in span for co in _CULTIVATION_OBJECTS):
+                    return True
     # ── 第二优先：反诘/犹豫·未然语境降为非违规（仅当无既成传授事实时生效）──────
     _reversed_context_markers = {"如何", "怎会", "岂能", "怎", "难道", "岂不是"}
     _hesitant_markers = {"权衡", "犹豫", "暂不", "尚未", "没敢", "不敢", "怕是", "或许",
                          "该不该", "要不要", "还是", "也许", "恐怕", "谈何容易", "未必", "会不会",
                          "怎会", "岂能", "难道不", "莫非",
                          "记得", "想起", "回想", "回忆", "浮现", "脑海中", "记起",
-                         "意味着", "思虑", "心想", "盘算", "思忖", "并非"}
+                         "意味着", "思虑", "心想", "盘算", "思忖", "并非",
+                         "按了下去", "压下去", "打消", "作罢", "算了", "搁下", "收了起来"}
     is_question = any(mk in s for mk in _reversed_context_markers)
     is_hesitant = any(mk in s for mk in _hesitant_markers)
     is_question_end = s.endswith("？") and ("传授" in s or "教" in s or "传" in s)
@@ -307,7 +314,12 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
     # CC round-21：婴儿施为检测（统一处理，含 GapA 修复）
     baby_agent = any(m in sent for m in _TUNA_BABY_AGENT_MARKERS)
     # CC round-24：功法/法门描述句豁免——句中含功法名词且无婴儿施为，无需夜锚
-    fangfa_subject = any(m in sent for m in _FANGFA_DESC_MARKERS)
+    fangfa_subject = any(m in sent for m in _FANGFA_DESC_MARKERS) or (
+        not baby_agent
+        and prev_sents
+        and any(m in " ".join(prev_sents[-3:]) for m in _FANGFA_DESC_MARKERS)
+        and not any(m in sent for m in _TUNA_BABY_AGENT_MARKERS)
+    )  # CC round-25：前 3 句含功法名词视为法门评价延续
     if fangfa_subject and not baby_agent:
         return True  # 功法描述句豁免，不要求夜锚
     # 夜锚：句内或上下文最近 3 句内出现夜间标记；或 chapter-level night_bounded
