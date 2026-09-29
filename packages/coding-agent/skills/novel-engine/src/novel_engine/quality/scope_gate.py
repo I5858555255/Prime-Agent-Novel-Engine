@@ -262,10 +262,17 @@ def _has_teach_violation(s: str) -> bool:
                          "按了下去", "压下去", "打消", "作罢", "算了", "搁下", "收了起来",
                          "若是", "假如", "倘若", "要是", "如果", "设想", "盘算", "打算"}
     is_question = any(mk in s for mk in _reversed_context_markers)
-    is_hesitant = any(mk in s for mk in _hesitant_markers)
-    is_question_end = s.endswith("？") and ("传授" in s or "教" in s or "传" in s)
+    # CC round-26c：心思/念头/想法=未实施的心理活动（"传授呼吸法的心思，在胸腔里反复翻腾"）
+    _mental_nouns = {"心思", "念头", "想法", "心念", "动念", "念想"}
+    is_hesitant = any(mk in s for mk in _hesitant_markers) or any(m in s for m in _mental_nouns)
+    is_question_end = s.endswith("？") and ("传授" in s or "教" in s or "传" in s)  # 全角问号
     if (is_question or is_hesitant or is_question_end) and ("传授" in s or "教" in s or "传" in s):
-        return False  # 反诘/犹豫 → soft，非硬违规
+        # 已实施防误放：心思降级仅限未实施；付诸行动/已传授则仍走第三优先 hard
+        _enacted_markers = {"付诸", "教了", "传了", "传给了", "教给了", "授给了", "开始教", "已经教", "遂教", "便教", "就教", "当真教", "终于教"}
+        if any(m in s for m in _enacted_markers):
+            pass  # 已实施，不降级
+        else:
+            return False  # 反诘/犹豫/心理活动 → soft，非硬违规
     # ── 第三：其他传授语义词 + 修炼宾语近窗 → hard ───────────────────────────
     for tv in _TEACH_VERBS:
         if tv not in s:

@@ -733,3 +733,20 @@ def test_ch6_recall_with_baby_still_hard():
     r = detect_scope_violations("彼时，陆烬也曾学着吐纳起来。", 6, None, _ROOT)
     hard_terms = [h["term"] for h in r["hard"]]
     assert hard_terms, "婴儿施为的回忆句必须 hard"
+
+
+# ── CC round-26c：ch6 第八轮真实卡句——「传授呼吸法的心思…反复翻腾」心理活动降级 ──
+def test_ch6_teach_intention_mental_soft():
+    """传授心思/念头翻腾=未实施心理活动，应 soft。"""
+    reset_config_cache()
+    r = detect_scope_violations("传授呼吸法的心思，在胸腔里反复翻腾。", 6, None, _ROOT)
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert not hard_terms, f"心思翻腾应 soft，实际 hard={hard_terms}"
+
+
+def test_ch6_teach_intention_enacted_still_hard():
+    """心思已付诸行动（教了）→ 仍 hard，防误放。"""
+    reset_config_cache()
+    r = detect_scope_violations("他把传授呼吸法的心思付诸行动，教了陆烬吐纳。", 6, None, _ROOT)
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert hard_terms, "已实施的传授必须 hard"
