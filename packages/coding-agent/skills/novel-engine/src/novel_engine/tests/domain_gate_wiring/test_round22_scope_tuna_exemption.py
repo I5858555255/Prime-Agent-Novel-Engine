@@ -556,3 +556,73 @@ def test_teach_give_near_span_still_hard():
     assert _has_teach_violation(
         "他并非传授呼吸法给陆烬——已经传了。"
     ), "含'并非'但既成传授短语仍 hard"
+
+# ── CC round-24：ch6 四连败根因回归测试（夜锚缺口 + 功法描述句豁免）─────────────────
+
+
+def test_ch6_fangfa_desc_exempt_night_anchor_gap():
+    """根因1 回归：功法/法门描述句不应要求夜锚。
+
+    场景原文（第四轮草稿卡句）：
+        "那法门没什么移山填海的神通，最大的用处，就是能在吐纳间，
+         将吸入体内的驳杂之气稍作梳理，化去其中最为伤身的部分，勉强温养内腑。"
+
+    该句主语是"那法门"，无人物施为，纯属功法评价，语义上不需要夜锚。
+    修复前：因无夜锚标记被 hard block。
+    修复后：含"法门"等功法名词且无婴儿施为 → 直接豁免。
+    """
+    reset_config_cache()
+    # 不传 night_bounded，模拟 runtime 中 in_world_datetime 为空的场景
+    r = detect_scope_violations(
+        "那法门没什么移山填海的神通，最大的用处，就是能在吐纳间，"
+        "将吸入体内的驳杂之气稍作梳理，化去其中最为伤身的部分，勉强温养内腑。",
+        6, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    soft_kinds = [s["kind"] for s in r["soft"]]
+    assert "吐纳" not in hard_terms, (
+        f"功法描述句应豁免，实际 hard={hard_terms}"
+    )
+    assert "tuna_exempt" in soft_kinds, (
+        f"功法描述句应记录 tuna_exempt soft，实际 soft={soft_kinds}"
+    )
+
+
+def test_ch6_yueguang_tiaoxi_exempt_night_anchor_expanded():
+    """根因2 回归：含"月光"等自然夜间描写的句子应通过夜锚检测。
+
+    场景原文（第四轮草稿卡句）：
+        "那时他坐在几乎相同的位置，正借着朦胧月光做着某种极其隐秘的调息。"
+
+    该句含"月光"，属于自然夜间语境描写，语义上明确为夜间。
+    修复前：infant.json 的 night_anchor_markers 不含"月光"，导致 has_night=False → hard。
+    修复后：night_anchor_markers 已扩充包含"月光"等词 → has_night=True → 豁免。
+    """
+    reset_config_cache()
+    r = detect_scope_violations(
+        "那时他坐在几乎相同的位置，正借着朦胧月光做着某种极其隐秘的调息。",
+        6, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    soft_kinds = [s["kind"] for s in r["soft"]]
+    assert "调息" not in hard_terms, (
+        f"月光夜锚句应豁免，实际 hard={hard_terms}"
+    )
+    assert "tuna_exempt" in soft_kinds, (
+        f"月光夜锚句应记录 tuna_exempt soft，实际 soft={soft_kinds}"
+    )
+
+
+def test_red_line_fangfa_desc_with_baby_still_hard():
+    """不误放：功法描述句中若含婴儿施为信号，仍应 hard。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "那法门没什么大用，但陆烬在吐纳间强行修炼，气息紊乱。"
+        + "x" * 500,
+        6, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    # 含婴儿词"陆烬"+ 吐纳，即使有"法门"也不应豁免
+    assert "吐纳" in hard_terms, (
+        f"婴儿施为应 hard，实际 hard={hard_terms}"
+    )

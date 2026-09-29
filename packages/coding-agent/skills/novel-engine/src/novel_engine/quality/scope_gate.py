@@ -196,6 +196,8 @@ _TUNA_TEACH_PHRASES = frozenset({
     "叫陆烬", "叫婴儿", "叫孩子", "叫娃",
     "让陆烬", "让婴儿", "让孩子", "让娃",
 })
+# CC round-24：功法/法门描述句豁免——不要求夜锚（法门评价句无夜间语境）
+_FANGFA_DESC_MARKERS = frozenset({"法门", "功法", "口诀", "呼吸法", "修炼法", "内功", "心法", "秘法"})
 
 
 # ── P6-1：传授违规检测（模块级，供独立扫描调用）────────────────────────────
@@ -302,14 +304,20 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
     night_anchors = (cfg or {}).get("night_anchor_markers", [])
     # 夜锚：句内或上下文最近 3 句内出现夜间标记；或 chapter-level night_bounded
     context_text = sent
+    # CC round-21：婴儿施为检测（统一处理，含 GapA 修复）
+    baby_agent = any(m in sent for m in _TUNA_BABY_AGENT_MARKERS)
+    # CC round-24：功法/法门描述句豁免——句中含功法名词且无婴儿施为，无需夜锚
+    fangfa_subject = any(m in sent for m in _FANGFA_DESC_MARKERS)
+    if fangfa_subject and not baby_agent:
+        return True  # 功法描述句豁免，不要求夜锚
+    # 夜锚：句内或上下文最近 3 句内出现夜间标记；或 chapter-level night_bounded
+    context_text = sent
     if prev_sents:
         context_text = " ".join(prev_sents[-3:]) + " " + sent
     has_night = any(a in context_text for a in night_anchors) or night_bounded
     if not has_night:
         return False
 
-    # CC round-21：婴儿施为检测（统一处理，含 GapA 修复）
-    baby_agent = any(m in sent for m in _TUNA_BABY_AGENT_MARKERS)
     # 提前计算 has_reflexive，避免 walrus 运算符在条件不成立时不赋值导致 NameError
     has_reflexive = any(m in sent for m in _TUNA_REFLEXIVE_MARKERS)
     # GapA：婴儿主体词（陆烬/婴儿/孩子/娃/襁褓等）与 吐纳/调息 共现时，
