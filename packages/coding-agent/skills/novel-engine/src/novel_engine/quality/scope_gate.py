@@ -329,6 +329,13 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
         context_text = " ".join(prev_sents[-3:]) + " " + sent
     has_night = any(a in context_text for a in night_anchors) or night_bounded
     if not has_night:
+        # CC round-26：回忆/追忆叙述（彼时/当年/被遗忘多年）无夜间场景约束——
+        # 陈老根往事中的吐纳不是当下场景违规；仅当句内无婴儿施为才豁免
+        # （baby 相关由 GapA 兜底），传授红线由 _has_teach_violation 独立把关。
+        _recall_markers = {"彼时", "那时", "当年", "往日", "昔日", "曾经", "曾", "记忆", "回忆",
+                          "忆起", "被遗忘", "多年", "往事", "从前", "早年间", "恍若", "依稀", "仿佛记得"}
+        if not baby_agent and any(m in sent for m in _recall_markers):
+            return True
         return False
 
     # 提前计算 has_reflexive，避免 walrus 运算符在条件不成立时不赋值导致 NameError
@@ -378,16 +385,15 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
         if _TUNA_PROTAGONIST not in recent_context:
             return False  # 反身标记无法回溯到陈老根
     # 规则 E：句中无陈老根明示、无反身标记、无有效代词回溯 → 非陈老根施为
-    # CC round-21：但若含描述性标记（"那"/"刚才"/"此前"/"绵长规律"等），视为旁观/描述性引用，豁免
-    _descriptive_markers = {"那", "刚才", "方才", "此前", "先前", "之前", "往日", "昔日", "规律", "绵长", "这", "如今", "此刻", "眼下", "此时"}
-    # CC round-26：夜锚词（昨夜/夜幕/夜色等）本身即描述性时间语境——
-    # "昨夜盘坐调息的人"是叙述性引用，非传授/施为，应豁免。
-    has_descriptive_context = any(m in sent for m in _descriptive_markers) or any(m in sent for m in night_anchors)
+    # CC round-26：核心语义——婴儿篇禁令=婴儿不得修炼/被传授。
+    # 只要句内无婴儿施为（baby_agent 已在 GapA 兜底拦截），无论主语是谁
+    # （彼时回忆、昨夜叙述、路人叙述、成人修炼），一律豁免；
+    # 传授红线由 _has_teach_violation 独立把关，不在此重复拦截。
     if not has_chen_lao_explicit and not has_reflexive and not pronoun_subject:
-        if has_descriptive_context:
-            pass  # 描述性引用，豁免
+        if not baby_agent:
+            pass  # 非婴儿施为的叙述/回忆/成人修炼 → 豁免
         else:
-            return False  # 非陈老根施为 → hard
+            return False  # 婴儿相关且无法确认合法旁观 → hard（GapA 已先行拦截，此处兜底）
 
     # P4-2/P5-2/P6-1：教授形态判定
     if _has_teach_violation(sent):

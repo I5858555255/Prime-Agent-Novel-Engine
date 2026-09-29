@@ -705,3 +705,31 @@ def test_ch6_yesterday_night_descriptive_exempt():
     )
     hard_terms = [h["term"] for h in r["hard"]]
     assert not hard_terms, f"昨夜叙述句不应 hard: {hard_terms}"
+
+
+# ── CC round-26b：ch6 第七轮真实卡句——「彼时…被刻意遗忘多年」回忆语境豁免 ──
+def test_ch6_recall_flashback_exempt():
+    """回忆/追忆叙述（彼时/被遗忘多年）无夜间约束，应豁免。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "彼时，他正沉浸于某种被刻意遗忘多年的吐纳节奏之中，胸膛微微起伏，吸纳着常人难以察觉的气息。",
+        6, None, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "吐纳" not in hard_terms, f"回忆句应豁免，实际 hard={hard_terms}"
+
+
+def test_ch6_daytime_tuna_still_hard():
+    """白天无夜锚的当下吐纳仍 hard——回忆豁免不放开白天泄漏。"""
+    reset_config_cache()
+    r = detect_scope_violations("陈老根白天在院子里吐纳。", 6, None, _ROOT)
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "吐纳" in hard_terms, "白天吐纳不应豁免"
+
+
+def test_ch6_recall_with_baby_still_hard():
+    """回忆中婴儿吐纳仍 hard（回忆豁免不覆盖婴儿红线）。"""
+    reset_config_cache()
+    r = detect_scope_violations("彼时，陆烬也曾学着吐纳起来。", 6, None, _ROOT)
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert hard_terms, "婴儿施为的回忆句必须 hard"
