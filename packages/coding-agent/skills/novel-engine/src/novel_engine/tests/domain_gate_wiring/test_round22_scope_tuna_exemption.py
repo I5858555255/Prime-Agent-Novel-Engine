@@ -750,3 +750,36 @@ def test_ch6_teach_intention_enacted_still_hard():
     r = detect_scope_violations("他把传授呼吸法的心思付诸行动，教了陆烬吐纳。", 6, None, _ROOT)
     hard_terms = [h["term"] for h in r["hard"]]
     assert hard_terms, "已实施的传授必须 hard"
+
+
+# ── CC round-26d：ch6 第九轮真实卡句——经脉/灵根/仙门合法语境（议论/担心/假设）+ 传功受事 ──
+def test_ch6_contextual_hardword_exempt():
+    """担心/假设/议论语境中的经脉/灵根/仙门应降 soft。"""
+    reset_config_cache()
+    cases = [
+        "这种人，要么早早被纳入仙门道观，要么……便在这污浊世道里无声无息地夭折。",
+        "他从未想过传授他人，一来是怕所托非人，二来是深知这东西的凶险——若无正确引导，贸然尝试引气，极易被浊气反噬，轻则经脉受损，重则神智癫狂。",
+        "若是寻常父母，得知自家孩儿有此禀赋，怕是欣喜若狂，千方百计也要寻个门路，送孩子去测灵根，拜仙门，求个鲤鱼跃龙门的前程。",
+    ]
+    for s in cases:
+        r = detect_scope_violations(s, 6, None, _ROOT)
+        hard_terms = [h["term"] for h in r["hard"]]
+        assert not hard_terms, f"合法语境不应 hard: {s[:30]} -> {hard_terms}"
+
+
+def test_ch6_teach_verb_baby_recipient_hard():
+    """传授动词+婴儿受事（传功给陆烬/修士趁夜传功）仍 hard。"""
+    reset_config_cache()
+    for s in ["修士传功给陆烬。", "婴儿经脉受损，修士趁夜传功。"]:
+        r = detect_scope_violations(s, 6, None, _ROOT)
+        hard_terms = [h["term"] for h in r["hard"]]
+        assert hard_terms, f"婴儿受事的传授必须 hard: {s}"
+
+
+def test_ch6_teach_negated_soft():
+    """否定传授（并未/从未传功）应 soft。"""
+    reset_config_cache()
+    for s in ["婴儿在旁，陈老根并未传功。", "他从未想过传授他人。"]:
+        r = detect_scope_violations(s, 6, None, _ROOT)
+        hard_terms = [h["term"] for h in r["hard"]]
+        assert not hard_terms, f"否定传授不应 hard: {s} -> {hard_terms}"

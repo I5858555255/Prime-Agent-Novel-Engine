@@ -279,7 +279,11 @@ def _has_teach_violation(s: str) -> bool:
             continue
         tv_idx = s.find(tv)
         ctx = s[max(0, tv_idx - 6):tv_idx + 18]
-        if any(co in ctx for co in _CULTIVATION_OBJECTS):
+        # CC round-26d：否定传授（并未/没有传功）→ soft
+        if any(neg in s[max(0, tv_idx - 3):tv_idx] for neg in ("并未", "没有", "不曾", "从未", "未", "不")):
+            continue
+        # CC round-26d：传授动词+修炼宾语 或 +全句婴儿受事（"传功给陆烬"/"修士趁夜传功"）均 hard
+        if any(co in ctx for co in _CULTIVATION_OBJECTS) or any(b in s for b in _TUNA_BABY_AGENT_MARKERS):
             return True
     # 裸"教"+修炼宾语近窗 → hard
     if "教" in s:
@@ -494,7 +498,12 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                     break
                 # CC round-21：反诘/疑问语境（如何/怎会/岂能）也降级为 soft
                 _rhetorical_markers = {"如何", "怎会", "岂能", "怎", "难道", "岂不是", "谈何容易",
-                                "稍有不慎", "切忌", "万万不可", "不可强行", "强行不得"}
+                                "稍有不慎", "切忌", "万万不可", "不可强行", "强行不得",
+                                # CC round-26d：担心/劝阻（怕…经脉受损、浊气反噬）、
+                                # 假设/未然（若是…测灵根拜仙门）、议论列举（要么…要么…）
+                                "怕", "生怕", "唯恐", "凶险", "受损", "反噬", "伤及", "摧残", "担忧",
+                                "若是", "假如", "倘若", "要是", "如果", "万一", "假设",
+                                "要么", "有人", "有人会", "或许有"}
                 if any(mk in sent for mk in _rhetorical_markers):
                     soft.append({"kind": "negated_" + kind, "term": term,
                                  "sentence": sent[:120]})
