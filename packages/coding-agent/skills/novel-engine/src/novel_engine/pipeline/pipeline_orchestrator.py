@@ -1476,12 +1476,47 @@ class PipelineOrchestrator:
                             f"{len(_bps0)} -> {len(_bps1)}")
             card["scene_blueprints"] = _bps1
             _normalize_blueprint_beats(card)
+            # CC round-26h：infant 章节大纲洗词——导演生成的 beat/core_goal
+            # 若含修炼体系词（吐纳/口诀/呼吸法等），正文必然越界（scope/timeline gate
+            # 对婴儿篇禁写），统一替换为中性词，从源头切断每轮重写撞词。
+            try:
+                _agency = str(card.get("protagonist_agency_level") or "")
+                if _agency.startswith("infant"):
+                    _card_scrub_infant_words(card)
+            except Exception:
+                logger.warning(f"ch{chapter_num} infant beat scrub skipped", exc_info=True)
             try:
                 from novel_engine.agents.craft_elements import ensure_scene_craft_elements
                 ensure_scene_craft_elements(card)
             except Exception:
                 pass
             return card
+
+        def _card_scrub_infant_words(card: dict) -> None:
+            """把 infant 章节大纲中的修炼体系提示词替换为中性词，避免诱发正文越界。"""
+            _wm = {"吐纳": "吐息", "口诀": "那套步骤", "呼吸法": "呼吸节奏",
+                    "调息": "平稳呼吸", "功法": "那套动作", "法门": "那套做法",
+                    "修炼": "练习", "行气": "呼吸", "内功": "那套功夫"}
+            def _sc(t: str) -> str:
+                for _k, _v in _wm.items():
+                    t = t.replace(_k, _v)
+                return t
+            for _k in ("core_goal", "chapter_hook"):
+                if isinstance(card.get(_k), str):
+                    card[_k] = _sc(card[_k])
+            for _bp in card.get("scene_blueprints") or []:
+                for _k2, _v2 in list(_bp.items()):
+                    if isinstance(_v2, str):
+                        _bp[_k2] = _sc(_v2)
+                    elif isinstance(_v2, list):
+                        _bp[_k2] = [_sc(x) if isinstance(x, str) else x for x in _v2]
+                    elif isinstance(_v2, dict):
+                        _bp[_k2] = {_kk: (_sc(_vv) if isinstance(_vv, str) else _vv)
+                                    for _kk, _vv in _v2.items()}
+            for _k3 in ("must_cover_beats", "chapter_events", "foreshadow_actions",
+                        "foreshadow_execution", "state_changes"):
+                if isinstance(card.get(_k3), list):
+                    card[_k3] = [_sc(x) if isinstance(x, str) else x for x in card[_k3]]
 
         def _is_volume_opening(ch: int) -> bool:
             try:
