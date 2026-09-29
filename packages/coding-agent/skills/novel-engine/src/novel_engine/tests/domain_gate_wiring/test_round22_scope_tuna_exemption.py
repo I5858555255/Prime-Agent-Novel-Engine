@@ -13,13 +13,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import pytest
 
-from novel_engine.quality import scope_gate as sg
 from novel_engine.quality.scope_gate import (
     detect_scope_violations,
     reset_config_cache,
-    _has_teach_violation,
     _is_air_sensibility_substring,
 )
 
@@ -362,3 +359,41 @@ def test_gap_c_isolated_single_sentence_exempt():
     hard_terms = [h["term"] for h in r["hard"]]
     assert "吐纳" not in hard_terms, f"孤立单句应豁免，实际 hard={hard_terms}"
     assert "调息" not in hard_terms, f"孤立单句应豁免，实际 hard={hard_terms}"
+def test_ch6_fangcai_descriptive_marker_exempt(tmp_path):
+    """Ch6 根因回归：含"方才"的描述性引用句不应被 hard block。
+
+    场景原文（修复前触发 score=85 快速失败）：
+        "方才吐纳被打断，他心中一凛。"
+    "方才"在修复前不在 _descriptive_markers 集合中，导致该句无法匹配
+    描述性引用豁免路径（has_descriptive_context=False），进而硬词"吐纳"
+    被误报为 hard_leak。修复后"方才"已加入 _descriptive_markers，
+    应豁免。
+    """
+    # 创建临时配置，包含吐纳/调息等禁词
+    cfg = {
+        'arc': 'infant', 'chapters': [1, 9],
+        'hard_block': ['魂魄印记', '跨界', '守护者', '吐纳', '调息', '气感', '内视', '行气探查', '气机探查'],
+        'soft_warn': ['修炼', '境界'],
+        'night_anchor_markers': ['子时', '当夜', '数时辰'],
+        'negation_markers': ['不是', '并非'],
+        'idiom_whitelist': ['魂飞魄散'],
+        'dawn_markers': ['天亮', '鱼肚白'],
+        'future_markers': ['等', '等到', '再说'],
+    }
+    (tmp_path / 'config' / 'leak_terms').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'config' / 'leak_terms' / 'infant.json').write_text(
+        json.dumps(cfg, ensure_ascii=False), encoding='utf-8')
+    reset_config_cache()
+    
+    txt = "方才吐纳被打断，他心中一凛。"
+    r = detect_scope_violations(txt, 6, _NIGHT_ANCHOR, tmp_path)
+    hard_terms = [h["term"] for h in r["hard"]]
+    soft_kinds = [h["kind"] for h in r["soft"]]
+    # "方才"触发描述性引用豁免 → 不应硬阻断
+    assert "吐纳" not in hard_terms, (
+        f"方才描述性引用应豁免，实际 hard={hard_terms}, soft={soft_kinds}"
+    )
+    # 豁免句应记录为 tuna_exempt soft（而非漏检）
+    assert "tuna_exempt" in soft_kinds, (
+        f"豁免应记录 tuna_exempt soft，实际 soft={soft_kinds}"
+    )
