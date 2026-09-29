@@ -228,18 +228,19 @@ def _has_teach_violation(s: str) -> bool:
         ctx = s[max(0, rv_idx - 8):rv_idx + 20]
         if any(co in ctx for co in _CULTIVATION_OBJECTS):
             return True
-    # 跨字模式：传...给 / 教...给（如"传呼吸之法给陆烬"）
+    # 跨字模式：传...给 / 教...给（如"传呼吸之法给陆烬"）——距离≤15 才判既成，
+    # CC round-23b：避免"传授法门…分享给了这个孩子"式远距误配（给=分享对象非受事）
     if "传" in s and "给" in s:
         c_idx = s.find("传")
         g_idx = s.find("给")
-        if g_idx > c_idx:
+        if g_idx > c_idx and g_idx - c_idx <= 15:
             span = s[c_idx:g_idx + 20]
             if any(co in span for co in _CULTIVATION_OBJECTS):
                 return True
     if "教" in s and "给" in s:
         j_idx = s.find("教")
         g_idx = s.find("给")
-        if g_idx > j_idx:
+        if g_idx > j_idx and g_idx - j_idx <= 15:
             span = s[j_idx:g_idx + 20]
             if any(co in span for co in _CULTIVATION_OBJECTS):
                 return True
@@ -247,7 +248,9 @@ def _has_teach_violation(s: str) -> bool:
     _reversed_context_markers = {"如何", "怎会", "岂能", "怎", "难道", "岂不是"}
     _hesitant_markers = {"权衡", "犹豫", "暂不", "尚未", "没敢", "不敢", "怕是", "或许",
                          "该不该", "要不要", "还是", "也许", "恐怕", "谈何容易", "未必", "会不会",
-                         "怎会", "岂能", "难道不", "莫非"}
+                         "怎会", "岂能", "难道不", "莫非",
+                         "记得", "想起", "回想", "回忆", "浮现", "脑海中", "记起",
+                         "意味着", "思虑", "心想", "盘算", "思忖", "并非"}
     is_question = any(mk in s for mk in _reversed_context_markers)
     is_hesitant = any(mk in s for mk in _hesitant_markers)
     is_question_end = s.endswith("？") and ("传授" in s or "教" in s or "传" in s)
@@ -454,7 +457,8 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                     prev_sents = prev_sents[-3:]
                     break
                 # CC round-21：反诘/疑问语境（如何/怎会/岂能）也降级为 soft
-                _rhetorical_markers = {"如何", "怎会", "岂能", "怎", "难道", "岂不是", "谈何容易"}
+                _rhetorical_markers = {"如何", "怎会", "岂能", "怎", "难道", "岂不是", "谈何容易",
+                                "稍有不慎", "切忌", "万万不可", "不可强行", "强行不得"}
                 if any(mk in sent for mk in _rhetorical_markers):
                     soft.append({"kind": "negated_" + kind, "term": term,
                                  "sentence": sent[:120]})

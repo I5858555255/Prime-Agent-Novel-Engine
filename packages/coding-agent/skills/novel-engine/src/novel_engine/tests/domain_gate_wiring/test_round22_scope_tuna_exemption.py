@@ -18,6 +18,7 @@ from novel_engine.quality.scope_gate import (
     detect_scope_violations,
     reset_config_cache,
     _is_air_sensibility_substring,
+    _has_teach_violation,
 )
 
 
@@ -507,3 +508,51 @@ def test_descriptive_marker_this_present():
     )
     hard_terms = [h["term"] for h in r["hard"]]
     assert "吐纳" not in hard_terms, f"含'这'的描述性引用应豁免，实际 hard={hard_terms}"
+# ── CC round-23b：真实运行第 3 轮发现的语境降级缺口 ────────────────────────────
+def test_ch9_recollection_teach_soft():
+    """回忆语境（教导已发生、此刻回想浮现）的传授判定应降为 soft。"""
+    reset_config_cache()
+    assert not _has_teach_violation(
+        "白天那棵古树下的教导，那些缓慢悠长的呼吸节奏，此刻在陆烬脑中清晰浮现。"
+    ), "回忆中的教导（非实时传授）不应 hard"
+
+
+def test_ch6_contemplation_teach_soft():
+    """思虑语境（意味着/并非——内心权衡而非实授）的传授判定应降为 soft。"""
+    reset_config_cache()
+    assert not _has_teach_violation(
+        "传授法门，意味着他不再仅仅是一个沉默的养父，意味着他将自己过往的一角秘密，分享给了这个捡来的孩子。"
+    ), "思虑中的传授不应 hard"
+    assert not _has_teach_violation(
+        "呼吸法的传授，并非口头讲述那般简单。"
+    ), "判断句中的传授不应 hard"
+
+
+def test_ch6_warning_qiyin_ru_ti_soft():
+    """劝阻/警告语境（若要强行…稍有不慎…）的硬词命中应降为 soft。"""
+    reset_config_cache()
+    r = detect_scope_violations(
+        "若要强行引气入体，以婴儿脆弱的经脉，稍有不慎，便是摧残而非帮助。",
+        6, _NIGHT_ANCHOR, _ROOT,
+    )
+    hard_terms = [h["term"] for h in r["hard"]]
+    assert "引气入体" not in hard_terms, f"劝阻语境的引气入体应降 soft，实际 hard={hard_terms}"
+
+
+def test_teach_give_far_span_not_hard():
+    """跨字'传…给'距离超限（给=分享对象非受事）不得判既成传授。"""
+    reset_config_cache()
+    assert not _has_teach_violation(
+        "传授法门，意味着他将自己过往的一角秘密，分享给了这个捡来的孩子。"
+    ), "远距'传…给'（给为分享对象）不应 hard"
+
+
+def test_teach_give_near_span_still_hard():
+    """跨字'传…给'近距（受事）仍 hard——不误放。"""
+    reset_config_cache()
+    assert _has_teach_violation(
+        "他传呼吸之法给陆烬，教他吐纳。"
+    ), "近距既成传授必须 hard"
+    assert _has_teach_violation(
+        "他并非传授呼吸法给陆烬——已经传了。"
+    ), "含'并非'但既成传授短语仍 hard"
