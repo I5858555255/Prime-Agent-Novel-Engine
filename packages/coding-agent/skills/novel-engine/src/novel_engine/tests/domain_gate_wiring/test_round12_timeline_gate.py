@@ -79,3 +79,21 @@ def test_thought_mention_not_flagged():
     assert detect_timeline_jump("回忆起昨夜迷雾中的脚步声。", anchor) is None
     assert detect_timeline_jump("原来昨夜绿光闪过之时陆烬在襁褓中发出了微光。", anchor) is None
     assert detect_timeline_jump("心里想着昨夜那诡异的绿光，脚步加快了。", anchor) is None
+
+
+# ── CC round-26e：寿命/命运表述（活到成年/活不到成年）非时间跳跃 ──
+def test_lifespan_expression_exempt():
+    """担心婴儿夭折的寿命表述（活不到成年）不判时间越界。"""
+    from novel_engine.quality.timeline_gate import detect_timeline_jump
+    anchor = {"max_time_progression": "从深夜到次日傍晚", "forbidden_markers": ["成年", "五岁那年"]}
+    assert detect_timeline_jump("难道就眼睁睁看着这孩子在浊气侵蚀下，病痛缠身，或许活不到成年。", anchor, 6) is None
+    assert detect_timeline_jump("把这孩子养大，让他像个普通村童一样活到成年，已是难事。", anchor, 6) is None
+    assert detect_timeline_jump("活到成年，已经是莫大的奢望。", anchor, 6) is None
+
+
+def test_adult_jump_still_hard():
+    """真实顺向成长跳跃（成年之后）仍硬拦。"""
+    from novel_engine.quality.timeline_gate import detect_timeline_jump
+    anchor = {"max_time_progression": "从深夜到次日傍晚", "forbidden_markers": ["成年", "五岁那年"]}
+    assert detect_timeline_jump("成年之后，他离开了村子。", anchor, 6) is not None
+    assert detect_timeline_jump("五岁那年，他拜入宗门。", anchor, 6) is not None

@@ -168,6 +168,10 @@ def detect_timeline_jump(
             # CC round-14 R1：空间地点短语不得当时间越界拦截
             if _is_spatial_marker(m):
                 continue
+            # CC round-26e：寿命/命运表述（或许活不到成年/活到成年已是难事）不是
+            # 时间跳跃——陈老根担心婴儿夭折的当前心理，非成年之后的顺向成长叙述
+            if m == "成年" and re.search(r"活[不到至过满]{0,3}[^。！？]{0,8}成年", masked_text):
+                continue
             # CC round-12 R1：回溯性时间词 —— 仅在重演 cue 同句才判
             if m in _BACK_REF_MARKERS:
                 pos = masked_text.find(m)
@@ -185,6 +189,9 @@ def detect_timeline_jump(
         for rx in _GENERIC_RE:
             m = rx.search(text)
             if m:
+                # CC round-26e：寿命/命运表述（活不到成年/活到成年）非时间跳跃，跳过
+                if m.group(0) == "成年" and re.search(r"活[不到至过满]{0,3}[^。！？]{0,8}成年", text):
+                    continue
                 return f"[时间线越界] 本章时间跨度限于\"{span or '开篇短时段'}\"，却出现越界叙述\"{m.group(0)}\""
     return None
 
