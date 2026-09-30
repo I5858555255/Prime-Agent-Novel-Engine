@@ -2318,12 +2318,39 @@ class PipelineOrchestrator:
                 _m2 = _re.search(r"\[canon硬词\] (.+?)：(.+)$", it)
                 _term = _m2.group(1) if _m2 else "修炼术语"
                 _sent = (_m2.group(2) if _m2 else "")[:60]
-                out.append(
+                directive = (
                     f"上一稿出现婴儿篇禁写修炼术语「{_term}」：{_sent}。"
                     "本章为婴儿视角场景，严禁出现修炼体系词汇（吐纳/调息/引气/气感/经脉/丹田/灵根/仙门/武者/传功/传授呼吸法）。"
                     "如需描写婴儿呼吸异常，请只用普通生理词汇（呼吸节奏/气息/鼻息），用动作和环境细节侧面呈现；"
                     "如需交代成年人物往事/思虑，请用平凡日常语言，不出现任何修炼术语。"
                 )
+                # CC round-27：如果命中词属于 concept_unlocks 且未解锁，补充解锁上下文
+                from novel_engine.quality.scope_gate import _build_term_to_concept_map, reset_concept_cache
+                reset_concept_cache()
+                concept_map = _build_term_to_concept_map(self.root)
+                concept_ids = set()
+                for t in _re.findall(r"\[canon硬词\] (.+?)：", it):
+                    cid = concept_map.get(t)
+                    if cid:
+                        concept_ids.add(cid)
+                if concept_ids:
+                    try:
+                        from novel_engine.engine.db import StateDB
+                        if not hasattr(self, '_concept_db') or self._concept_db is None:
+                            self._concept_db = StateDB(project_root=self.root)
+                        concept_parts = []
+                        for cid in sorted(concept_ids):
+                            info = self._concept_db.get_concept_info(cid)
+                            if info:
+                                terms_str = "、".join(info["terms"][:8])
+                                concept_parts.append(
+                                    f"概念「{cid}」（含 {terms_str}）将在 ch{info['unlocked_at_chapter']} 由「{info['unlocked_by']}」解锁；"
+                                    f"若 applies_to_character≠'*' 则仅限该角色相关叙述可出现。"
+                                )
+                        directive += "\n".join(concept_parts)
+                    except Exception:
+                        pass
+                out.append(directive)
             elif it.startswith("truncated"):
                 out.append(
                     "上一稿在句子中途被截断、没有完整收尾（末尾不是句号/问号/感叹号/省略号）。"

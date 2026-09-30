@@ -22,6 +22,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+
+# concept_unlocks：term → concept_id 映射，由 detect_scope_violations 按需构建缓存
+_TERM_TO_CONCEPT_CACHE: dict[str, str] | None = None
+_CONCEPT_MAP_DB: Any = None
+
+
+def reset_concept_cache() -> None:
+    global _TERM_TO_CONCEPT_CACHE, _CONCEPT_MAP_DB
+    _TERM_TO_CONCEPT_CACHE = None
+    _CONCEPT_MAP_DB = None
 
 _CFG_CACHE: list[dict] | None = None
 
@@ -42,6 +53,9 @@ def load_arc_configs(root) -> list[dict]:
         for p in sorted(d.glob("*.json")):
             try:
                 obj = json.loads(p.read_text(encoding="utf-8"))
+                # concept_unlocks.json is metadata-only; skip it here to avoid shadowing arc configs
+                if p.name == 'concept_unlocks.json':
+                    continue
                 if isinstance(obj, dict):
                     cfgs.append(obj)
             except Exception:
@@ -432,6 +446,55 @@ def _extract_card_hard_terms(task_card: dict) -> list[str]:
     return terms
 
 
+
+
+def _build_term_to_concept_map(root) -> dict[str, str]:
+    """Build a term→concept_id lookup from concept_unlocks.json."""
+    global _TERM_TO_CONCEPT_CACHE
+    if _TERM_TO_CONCEPT_CACHE is not None:
+        return _TERM_TO_CONCEPT_CACHE
+    mapping: dict[str, str] = {}
+    concept_path = Path(root) / "config" / "leak_terms" / "concept_unlocks.json"
+    if concept_path.exists():
+        try:
+            data = json.loads(concept_path.read_text(encoding="utf-8"))
+            for cu in data.get("concepts", []):
+                for term in cu.get("terms", []):
+                    if isinstance(term, str) and term.strip():
+                        mapping[term.strip()] = cu["concept_id"]
+        except Exception:
+            pass
+    _TERM_TO_CONCEPT_CACHE = mapping
+    return mapping
+
+
+def _is_concept_unlocked_for_chapter(term: str, chapter_num: int, root) -> bool | None:
+    """Check if the concept owning this term is unlocked for the current chapter.
+
+    Only checks chapter_num; applies_to_character filtering is handled by
+    existing exemption logic (_tuna_exempt_sentence, etc.).
+    """
+    mapping = _build_term_to_concept_map(root)
+    concept_id = mapping.get(term)
+    if concept_id is None:
+        return None  # term not tracked by concept_unlocks — fall through to legacy behavior
+    try:
+        from novel_engine.engine.db import StateDB
+        global _CONCEPT_MAP_DB
+        if _CONCEPT_MAP_DB is None:
+            _CONCEPT_MAP_DB = StateDB(project_root=root)
+        row = _CONCEPT_MAP_DB.execute_custom_query(
+            "SELECT unlocked_at_chapter FROM concept_unlocks WHERE concept_id = ?",
+            (concept_id,)
+        )
+        if not row:
+            return False
+        return int(row[0]["unlocked_at_chapter"]) <= chapter_num
+    except Exception:
+        # DB unavailable — conservative: treat as blocked
+        return False
+
+
 def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, root,
                             extra_hard_terms: list[str] | None = None) -> dict:
     """返回 {"hard": [ {kind,term,sentence} ], "soft": [ ... ]}。
@@ -467,6 +530,13 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
 
     def _scan_terms(terms, kind):
         for term in terms:
+            # concept_unlocks 检查：对无细粒度豁免的术语，概念已解锁则放行。
+            # 有专用豁免逻辑的术语（如 吐纳/调息）仍走原有逻辑。
+            if term not in _TUNA_EXEMPT_TERMS:
+                is_unlocked = _is_concept_unlocked_for_chapter(term, chapter_num, root)
+                if is_unlocked is True:
+                    continue
+            
             # CC round-21：每个禁词独立维护前 3 句上下文，互不污染
             prev_sents: list[str] = []
             for sent in sents:

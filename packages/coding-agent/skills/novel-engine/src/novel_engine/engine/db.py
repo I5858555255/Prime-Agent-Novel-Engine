@@ -92,6 +92,16 @@ class StateDB:
             )
         """)
 
+        # 6. 概念解锁表：按"概念"粒度控制设定泄漏，替代纯关键词黑名单
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS concept_unlocks (
+                concept_id TEXT PRIMARY KEY,
+                unlocked_at_chapter INTEGER NOT NULL,
+                unlocked_by TEXT DEFAULT '',
+                applies_to_character TEXT DEFAULT '*',
+                terms TEXT NOT NULL
+            )
+        """)
         self.conn.commit()
 
     def import_from_json(self):
@@ -272,3 +282,37 @@ class StateDB:
                 self.conn.close()
             except Exception:
                 pass
+
+    def is_concept_unlocked(self, concept_id: str, chapter_num: int, character: str = "*") -> bool:
+        """Check if a concept is unlocked for the given chapter and character."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT unlocked_at_chapter, applies_to_character FROM concept_unlocks WHERE concept_id = ?",
+            (concept_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False
+        if int(row["unlocked_at_chapter"]) > chapter_num:
+            return False
+        if row["applies_to_character"] not in ("*", character):
+            return False
+        return True
+
+    def get_concept_info(self, concept_id: str) -> dict | None:
+        """Return concept metadata including terms and unlock conditions."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT concept_id, unlocked_at_chapter, unlocked_by, applies_to_character, terms FROM concept_unlocks WHERE concept_id = ?",
+            (concept_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "concept_id": row["concept_id"],
+            "unlocked_at_chapter": row["unlocked_at_chapter"],
+            "unlocked_by": row["unlocked_by"],
+            "applies_to_character": row["applies_to_character"],
+            "terms": json.loads(row["terms"]),
+        }
