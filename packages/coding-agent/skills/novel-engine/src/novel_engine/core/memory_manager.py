@@ -118,6 +118,41 @@ class MemoryManager:
         scored.sort(key=lambda x: (-x[0], -x[1]))
         return [entry for _, _, entry in scored[:limit]]
 
+    def weighted_retrieve(self, keywords: list[str], current_chapter: int | None = None,
+                          limit: int = 10, enabled: bool = False,
+                          base_weight: float = 2.0, decay: float = 0.2,
+                          entity_bonus: float = 1.0) -> list[dict]:
+        """Weighted keyword retrieval (CC round-27d, off by default).
+
+        Score = match_count * base_weight - decay * |current_chapter - ch|
+                + entity_bonus * (1 if the query looks entity-rich else 0).
+
+        When enabled=False (default) this behaves exactly like
+        retrieve_by_keywords — a drop-in, opt-in upgrade path so behaviour
+        never changes until a caller flips the switch after offline eval.
+        """
+        if not enabled:
+            return self.retrieve_by_keywords(keywords, limit=limit)
+        index_file = self.root / "memory" / "long_term" / "chapter_index.json"
+        data = self._load_json(index_file)
+        entries = data.get("entries", {})
+        kw_set = set(keywords)
+        entity_rich = len([k for k in keywords if len(k) >= 2]) >= 2
+        scored = []
+        for chapter_str, entry in entries.items():
+            entry_keywords = set(entry.get("keywords", []))
+            match_count = len(entry_keywords & kw_set)
+            if match_count <= 0:
+                continue
+            ch = int(chapter_str)
+            distance = abs(ch - current_chapter) if current_chapter is not None else 0
+            score = match_count * base_weight - decay * distance
+            if entity_rich:
+                score += entity_bonus
+            scored.append((score, ch, entry))
+        scored.sort(key=lambda x: (-x[0], -x[1]))
+        return [e for _, _, e in scored[:limit]]
+
     def hybrid_retrieve(self, query: str, keywords: list[str] | None = None, limit: int = 8) -> list[dict]:
         """混合召回：关键词精确 + 轻量语义（子串/BM25），用于隐含关系/伏笔的补充召回。"""
         kw_hits = self.retrieve_by_keywords(keywords or [query], limit=limit)

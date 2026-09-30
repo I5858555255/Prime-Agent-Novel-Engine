@@ -1,4 +1,4 @@
-"""MemoryRetriever — chapter-level consistency checker (P0-2).
+"""DEPRECATED — MemoryRetriever — chapter-level consistency checker (P0-2).
 
 Reads the chapter journal (with entities_json injected by P0-1) and the
 plot_graph.json node list to produce:
@@ -15,13 +15,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-NOVEL_ROOT = Path(
-    r"D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine"
-)
+NOVEL_ROOT = Path(__file__).resolve().parents[1]
 
-CHAPTERS_DIR = NOVEL_ROOT / "src" / "novel_engine" / "chapters"
+CHAPTERS_DIR = NOVEL_ROOT / "chapters"
 # Fixed: correct path to plot_graph.json (was duplicated path before)
-PLOT_GRAPH_PATH = NOVEL_ROOT / "src" / "novel_engine" / "config" / "planning" / "plot_graph.json"
+PLOT_GRAPH_PATH = NOVEL_ROOT / "config" / "planning" / "plot_graph.json"
 
 # Module-level candidate list, loaded once at import (CJK 2-6 char phrases only)
 _PLOT_ENTITY_CANDIDATES = None
