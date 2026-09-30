@@ -468,11 +468,15 @@ def _build_term_to_concept_map(root) -> dict[str, str]:
     return mapping
 
 
-def _is_concept_unlocked_for_chapter(term: str, chapter_num: int, root) -> bool | None:
+def _is_concept_unlocked_for_chapter(term: str, chapter_num: int, root,
+                                    sentence: str | None = None) -> bool | None:
     """Check if the concept owning this term is unlocked for the current chapter.
 
-    Only checks chapter_num; applies_to_character filtering is handled by
-    existing exemption logic (_tuna_exempt_sentence, etc.).
+    Chapter-level unlock is the first criterion. When the concept declares an
+    applies_to_character (not "*"), the sentence must explicitly reference that
+    character for the concept to release the term; otherwise the gate returns
+    None and falls through to legacy behavior, so character-specific leakage
+    (e.g. the baby sensing qi) stays blocked while "陈老根吐纳" is legal from ch6.
     """
     mapping = _build_term_to_concept_map(root)
     concept_id = mapping.get(term)
@@ -484,12 +488,19 @@ def _is_concept_unlocked_for_chapter(term: str, chapter_num: int, root) -> bool 
         if _CONCEPT_MAP_DB is None:
             _CONCEPT_MAP_DB = StateDB(project_root=root)
         row = _CONCEPT_MAP_DB.execute_custom_query(
-            "SELECT unlocked_at_chapter FROM concept_unlocks WHERE concept_id = ?",
+            "SELECT unlocked_at_chapter, applies_to_character FROM concept_unlocks WHERE concept_id = ?",
             (concept_id,)
         )
         if not row:
             return False
-        return int(row[0]["unlocked_at_chapter"]) <= chapter_num
+        if int(row[0]["unlocked_at_chapter"]) > chapter_num:
+            return False
+        applies_to = str(row[0].get("applies_to_character") or "*")
+        if applies_to == "*" or not sentence:
+            return True
+        if applies_to in sentence:
+            return True
+        return None  # 该句主体非解锁角色 —— 交给 legacy 判定（保持既有拦截）
     except Exception:
         # DB unavailable — conservative: treat as blocked
         return False
@@ -545,6 +556,14 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                     prev_sents.append(sent)
                     prev_sents = prev_sents[-3:]
                     continue
+                # CC round-27：concept_unlocks 逐句判定——概念已解锁且（若限定
+                # 角色）句中显式出现解锁角色 → 该句放行（不做 hard）。
+                if term not in _TUNA_EXEMPT_TERMS:
+                    _cu = _is_concept_unlocked_for_chapter(term, chapter_num, root, sent)
+                    if _cu is True:
+                        prev_sents.append(sent)
+                        prev_sents = prev_sents[-3:]
+                        continue
                 # CC round-21：子串误伤防护——"空气感"等普通构词不命中"气感"
                 if kind == "hard" and term == "气感":
                     from novel_engine.quality import scope_gate as _sg_mod
