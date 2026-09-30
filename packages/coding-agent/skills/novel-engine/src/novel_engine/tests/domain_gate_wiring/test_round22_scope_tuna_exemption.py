@@ -231,7 +231,7 @@ def test_red_line_lu_jin_positive_neishi():
 
 
 def test_red_line_daytime_tuna():
-    """非夜场景（次日）陈老根吐纳 → hard。"""
+    """非夜场景（次日）陈老根吐纳 → 概念解锁后放行（round-27c）。"""
     reset_config_cache()
     day_anchor = {"chapter_start_marker": "次日", "max_time_progression": "白昼"}
     r = detect_scope_violations(
@@ -239,7 +239,7 @@ def test_red_line_daytime_tuna():
         + "x" * 500,
         6, day_anchor, _ROOT,
     )
-    assert "吐纳" in [h["term"] for h in r["hard"]]
+    assert "吐纳" not in [h["term"] for h in r["hard"]]  # cultivation_system ch6 解锁
 
 
 def test_red_line_ch5_tuna():
@@ -720,11 +720,11 @@ def test_ch6_recall_flashback_exempt():
 
 
 def test_ch6_daytime_tuna_still_hard():
-    """白天无夜锚的当下吐纳仍 hard——回忆豁免不放开白天泄漏。"""
+    """白天无夜锚的当下吐纳 → concept 解锁后放行（round-27c 替代夜锚要求）。"""
     reset_config_cache()
     r = detect_scope_violations("陈老根白天在院子里吐纳。", 6, None, _ROOT)
     hard_terms = [h["term"] for h in r["hard"]]
-    assert "吐纳" in hard_terms, "白天吐纳不应豁免"
+    assert "吐纳" not in hard_terms, "ch6 起陈老根吐纳由 concept_unlocks 放行"
 
 
 def test_ch6_recall_with_baby_still_hard():

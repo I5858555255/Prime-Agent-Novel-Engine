@@ -25,14 +25,15 @@ from pathlib import Path
 from typing import Any
 
 # concept_unlocks：term → concept_id 映射，由 detect_scope_violations 按需构建缓存
-_TERM_TO_CONCEPT_CACHE: dict[str, str] | None = None
-_CONCEPT_MAP_DB: Any = None
+# 按 root 缓存的 term→concept 映射与 StateDB：不同项目根（含测试 tmp_path）互不污染
+_TERM_TO_CONCEPT_CACHE: dict[str, dict[str, str]] = {}
+_CONCEPT_MAP_DB: dict[str, Any] = {}
 
 
 def reset_concept_cache() -> None:
     global _TERM_TO_CONCEPT_CACHE, _CONCEPT_MAP_DB
-    _TERM_TO_CONCEPT_CACHE = None
-    _CONCEPT_MAP_DB = None
+    _TERM_TO_CONCEPT_CACHE = {}
+    _CONCEPT_MAP_DB = {}
 
 _CFG_CACHE: list[dict] | None = None
 
@@ -40,6 +41,9 @@ _CFG_CACHE: list[dict] | None = None
 def reset_config_cache() -> None:
     global _CFG_CACHE
     _CFG_CACHE = None
+    # CC round-27c：旧测试依赖本函数清理配置缓存；概念缓存一并清掉
+    _TERM_TO_CONCEPT_CACHE.clear()
+    _CONCEPT_MAP_DB.clear()
 
 
 def load_arc_configs(root) -> list[dict]:
@@ -319,7 +323,8 @@ def _has_teach_violation(s: str) -> bool:
 
 def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
                           prev_sents: list[str] | None = None,
-                          night_bounded: bool = False) -> bool:
+                          night_bounded: bool = False,
+                          root=None) -> bool:
     """吐纳/调息句是否满足条件豁免（仅 ch6 夜间、陈老根为施为主体、无传授语义）。
 
     CC round-21 扩展：
@@ -339,6 +344,18 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
     context_text = sent
     # CC round-21：婴儿施为检测（统一处理，含 GapA 修复）
     baby_agent = any(m in sent for m in _TUNA_BABY_AGENT_MARKERS)
+    # CC round-27c：concept_unlocks 优先——吐纳/调息所属概念（cultivation_system）
+    # 在 ch6 起解锁，且句中显式出现解锁角色（陈老根）时直接放行；
+    # 放在婴儿红线之后：句含婴儿施为（陆烬/婴儿+吐纳）时无论句中是否出现
+    # 陈老根名字（如"学陈老根的样子"）都先判 hard，避免误放行。
+    # 这替代对 _TUNA_EXEMPT_CHAPTERS 写死章节集的依赖（该集合保留为兜底）。
+    if root is not None and not baby_agent:
+        for _t in _TUNA_EXEMPT_TERMS:
+            if _t in sent:
+                _cu = _is_concept_unlocked_for_chapter(_t, ch_num, root, sent)
+                if _cu is True:
+                    return True
+                break
     # CC round-24：功法/法门描述句豁免——句中含功法名词且无婴儿施为，无需夜锚
     fangfa_subject = any(m in sent for m in _FANGFA_DESC_MARKERS) or (
         not baby_agent
@@ -429,11 +446,12 @@ def _tuna_exempt_sentence(sent: str, ch_num: int, cfg: dict | None,
 
 def _is_tuna_hard_violation(term: str, sent: str, ch_num: int, cfg: dict | None,
                              prev_sents: list[str] | None = None,
-                             night_bounded: bool = False) -> bool:
+                             night_bounded: bool = False,
+                             root=None) -> bool:
     """吐纳/调息词命中是否为真正硬违规（豁免外均 hard）。"""
     if term not in _TUNA_EXEMPT_TERMS:
         return True
-    return not _tuna_exempt_sentence(sent, ch_num, cfg, prev_sents, night_bounded)
+    return not _tuna_exempt_sentence(sent, ch_num, cfg, prev_sents, night_bounded, root=root)
 
 
 def _extract_card_hard_terms(task_card: dict) -> list[str]:
@@ -451,8 +469,9 @@ def _extract_card_hard_terms(task_card: dict) -> list[str]:
 def _build_term_to_concept_map(root) -> dict[str, str]:
     """Build a term→concept_id lookup from concept_unlocks.json."""
     global _TERM_TO_CONCEPT_CACHE
-    if _TERM_TO_CONCEPT_CACHE is not None:
-        return _TERM_TO_CONCEPT_CACHE
+    _key = str(root)
+    if _key in _TERM_TO_CONCEPT_CACHE:
+        return _TERM_TO_CONCEPT_CACHE[_key]
     mapping: dict[str, str] = {}
     concept_path = Path(root) / "config" / "leak_terms" / "concept_unlocks.json"
     if concept_path.exists():
@@ -464,7 +483,7 @@ def _build_term_to_concept_map(root) -> dict[str, str]:
                         mapping[term.strip()] = cu["concept_id"]
         except Exception:
             pass
-    _TERM_TO_CONCEPT_CACHE = mapping
+    _TERM_TO_CONCEPT_CACHE[_key] = mapping
     return mapping
 
 
@@ -485,9 +504,12 @@ def _is_concept_unlocked_for_chapter(term: str, chapter_num: int, root,
     try:
         from novel_engine.engine.db import StateDB
         global _CONCEPT_MAP_DB
-        if _CONCEPT_MAP_DB is None:
-            _CONCEPT_MAP_DB = StateDB(project_root=root)
-        row = _CONCEPT_MAP_DB.execute_custom_query(
+        _db_key = str(root)
+        _db = _CONCEPT_MAP_DB.get(_db_key)
+        if _db is None:
+            _db = StateDB(project_root=root)
+            _CONCEPT_MAP_DB[_db_key] = _db
+        row = _db.execute_custom_query(
             "SELECT unlocked_at_chapter, applies_to_character FROM concept_unlocks WHERE concept_id = ?",
             (concept_id,)
         )
@@ -602,7 +624,7 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                 # D1/P4-1/P4-2：吐纳/调息 ch6 夜间陈老根独自豁免（含跨句代词回溯）
                 if kind == "hard" and term in _TUNA_EXEMPT_TERMS:
                     if not _is_tuna_hard_violation(term, sent, chapter_num, cfg, prev_sents,
-                                                  night_bounded=night_bounded):
+                                                  night_bounded=night_bounded, root=root):
                         soft.append({"kind": "tuna_exempt", "term": term,
                                      "sentence": sent[:120]})
                     else:
