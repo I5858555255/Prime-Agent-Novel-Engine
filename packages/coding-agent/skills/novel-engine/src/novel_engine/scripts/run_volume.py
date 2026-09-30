@@ -107,9 +107,12 @@ def _check_api_connectivity(logger: logging.Logger) -> None:
         logger.info("API connectivity probe returned HTTP %s.", status)
 
 
-def _get_committed_chapters(logger: logging.Logger) -> set[int]:
-    """Return the set of already committed chapter numbers from checkpoint."""
-    cp_mgr = CheckpointManager(str(ROOT))
+def _get_committed_chapters(logger: logging.Logger, root: Path | None = None) -> set[int]:
+    """Return the set of already committed chapter numbers from checkpoint.
+
+    root may be injected for hermetic tests; defaults to the production ROOT.
+    """
+    cp_mgr = CheckpointManager(str(root or ROOT))
     data = cp_mgr.load()
     committed: set[int] = set()
     for entry in data.get("checkpoints", []):

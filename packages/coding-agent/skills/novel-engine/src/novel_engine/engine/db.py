@@ -180,6 +180,25 @@ class StateDB:
             except Exception as e:
                 logger.error(f"Import relationships failed: {e}")
 
+        # 导入概念解锁配置（concept_unlocks：按概念控制设定泄漏）
+        concept_path = self.root / "config" / "leak_terms" / "concept_unlocks.json"
+        if concept_path.exists():
+            try:
+                cu_data = json.loads(concept_path.read_text(encoding="utf-8"))
+                for cu in cu_data.get("concepts", []):
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO concept_unlocks (concept_id, unlocked_at_chapter, unlocked_by, applies_to_character, terms)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (
+                        cu.get("concept_id", ""),
+                        int(cu.get("unlocked_at_chapter", 0)),
+                        cu.get("unlocked_by", ""),
+                        cu.get("applies_to_character", "*"),
+                        json.dumps(cu.get("terms", []), ensure_ascii=False),
+                    ))
+            except Exception as e:
+                logger.error(f"Import concept_unlocks failed: {e}")
+
         self.conn.commit()
 
     # ====== 确定性精确状态查询 API ======

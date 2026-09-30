@@ -2276,8 +2276,7 @@ class PipelineOrchestrator:
         except Exception as _e3b0:
             logger.warning(f"adjacent reprise gate skipped: {_e3b0}")
 
-    @staticmethod
-    def _scene_issues_to_directives(issues, target, need_beats: int = 0):
+    def _scene_issues_to_directives(self, issues, target, need_beats: int = 0):
         """Turn terse validator diagnostics into constructive, model-facing repair directives."""
         import re as _re
         out = []

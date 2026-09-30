@@ -59,7 +59,7 @@ def test_force_best_draft_checkpoint_skips_resume(tmp_path):
     )
 
     logger = logging.getLogger("test_force_best")
-    committed = _get_committed_chapters(logger)
+    committed = _get_committed_chapters(logger, root=root)
     assert 1 in committed
     assert 3 in committed
 
