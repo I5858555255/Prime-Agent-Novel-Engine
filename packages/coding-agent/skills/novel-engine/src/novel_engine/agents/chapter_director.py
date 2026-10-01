@@ -501,6 +501,25 @@ class ChapterDirector:
             else:
                 self._bible_cache[key] = ""
 
+    @staticmethod
+    def _extract_forbidden_list(intent_text: str) -> list:
+        """从作者意图段的 forbidden 块提取禁止事项列表（YAML 风格 '- "..."' 行）。"""
+        if not intent_text:
+            return []
+        forbidden = []
+        collecting = False
+        for line in intent_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('forbidden:'):
+                collecting = True
+                continue
+            if collecting:
+                if stripped.startswith('- '):
+                    forbidden.append(stripped[2:].strip().strip('"').strip("'"))
+                elif stripped and not stripped.startswith('#'):
+                    collecting = False  # 下一个键（note/theme 等）即列表结束
+        return forbidden
+
     def _load_json(self, path: Path) -> dict:
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
@@ -827,6 +846,8 @@ class ChapterDirector:
             'keyword_history': keyword_history,
             'volume_outline': volume_outline,
             'author_intent': author_intent,
+            # A 路线：当前卷 forbidden 列表（独立提取，避免长文截断切掉禁止项）
+            'forbidden_list': self._extract_forbidden_list(author_intent),
             # T3: 细纲逐章任务（最高优先级硬约束）
             'chapter_outline_task': _chapter_outline_task,
             'adjacent_tasks': _adjacent_tasks,
@@ -898,6 +919,7 @@ class ChapterDirector:
             f"- 人物：{context['bible']['character'][:300]}\n"
             f"- 文风：{context['bible']['style'][:200]}\n"
             f"- 本卷大纲：{context.get('volume_outline', '')[:800]}\n"
+            f"- 本卷禁止事项：{json.dumps(context.get('forbidden_list') or [], ensure_ascii=False)}\n"
             f"- 动态硬约束：{context.get('dynamic_constraints', '无')}\n"
             f"{prior_events_block}\n\n"
             f"{_render_outline_mandate(context)}\n\n"
@@ -963,6 +985,7 @@ class ChapterDirector:
         prompt = (
             f'基于以下场景骨架，补充每个场景的重字段。必须保持场景数量不变。\n\n'
             f'## 场景骨架\n{scenes_json}\n\n'
+            f'## 本卷禁止事项（场景内容不得违反）：{json.dumps(context.get("forbidden_list") or [], ensure_ascii=False)}\n'
             f'{_render_outline_mandate(context)}\n\n'
             '## 输出 JSON（只含 scene_blueprints 数组，追加以下字段到每个场景）：\n'
             '{\n'
@@ -1052,7 +1075,8 @@ class ChapterDirector:
             '## 上下文\n'
             f"- 章节号：{chapter_num}\n"
             f"- 活跃约束：{context['constraints'][:400]}\n"
-            f"- 本卷作者意图：{context.get('author_intent', '')[:300]}\n"
+            f"- 本卷作者意图：{context.get('author_intent', '')[:1000]}\n"
+            f"- 本卷禁止事项：{json.dumps(context.get('forbidden_list') or [], ensure_ascii=False)}\n"
             f'- 动态硬约束：{context.get("dynamic_constraints", "无")}\n'
             f'{prior_events_block}\n\n'
             f'{_render_outline_mandate(context)}\n\n'
