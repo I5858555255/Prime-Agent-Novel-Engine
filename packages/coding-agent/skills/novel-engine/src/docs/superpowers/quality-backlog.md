@@ -202,3 +202,33 @@ each different failure mode).
 **Overall A-route verification**: ch12/15/16 COMMITTED (87.3/88.7/86.2),
 checkpoint 19/20. Remaining: ch11 (87.2 draft) + later volumes' mojibake
 (separate task).
+
+## ch11 third rerun — 20/20 achieved (2026-10-01 18:10-18:28)
+
+ch11 COMMITTED in 1072s, score=81.0, hard gate [] (alias/canon/leak items all
+absent), checkpoint complete:true, mode=force_best_draft (same as ch6/7/9/13/
+14/17/18/19/20). Product at chapters/draft/chapter_11.txt (30KB). **20/20
+chapters complete.**
+
+**Evidence-level note (important, do not conflate)**: this run passed via the
+PREVENTION path (A-route prompt constraints + forbidden injection → director
+never wrote alias/canon hard items), NOT via the det-repair mechanism. The
+log shows zero "det fulltext fix" invocations. `_det_fulltext_fix` therefore
+has code-level correctness + 2 synthetic regression tests only; it has NOT
+yet been exercised on real LLM-produced hard items in a live run. Its
+evidence level is "implemented, untested in production" — distinct from
+mechanisms validated on real data (e.g. concept_unlocks on ch6-9). Real-scene
+validation is deferred to ch21+ natural triggers (or a future deliberate
+hard-item injection test). Do not report it as production-verified.
+
+**Pipeline state**: 1-5/8/10/12/15/16 normal commits; 6/7/9/11/13/14/17/18/19/20
+force_best_draft. Latest commit 1b2a56ad5. Full suite 1 failed/1050 passed
+(known pre-existing), pyflakes 0 undefined name, remote single branch
+feat/stability-quality.
+
+**Next (blocked on creative direction)**: ch21+ outline needed. Suggested
+pre-work: (a) decide A/B handling of 陆烬呼吸法 line (candidate node ~ch60
+陈老根展露武艺); (b) run concept_audit.py on planned key sentences against
+martial_identity@15 / guardian_identity@20 locks (neither lock has been
+genuinely hit in ch1-20 real runs — verify unlock timing matches intended
+reveal pacing before writing ch21+).
