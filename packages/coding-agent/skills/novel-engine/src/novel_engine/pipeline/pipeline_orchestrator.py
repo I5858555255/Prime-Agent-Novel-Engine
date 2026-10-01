@@ -3941,6 +3941,25 @@ class PipelineOrchestrator:
             gate_after = self._deterministic_quality_gate(current, frozen)
             self._last_deterministic_issues = gate_after["issues"]
             _cc25_fixed = True
+        # CC33: det 硬项全文级定点修复（称谓/canon 残留/泄漏——无 scene_ids 无法走 patch）
+        _det_hard_now = [x for x in (getattr(self, "_last_deterministic_issues", []) or [])
+                         if isinstance(x, str) and x.startswith(("[称谓]", "[canon", "[泄漏]"))]
+        _det_fu = getattr(self, "_det_fulltext_used", None)
+        if _det_fu is None:
+            _det_fu = set()
+            self._det_fulltext_used = _det_fu
+        if _det_hard_now and chapter_num not in _det_fu:
+            _det_res = self._det_fulltext_fix(current, _det_hard_now, chapter_num, frozen)
+            if _det_res is not None:
+                _det_fu.add(chapter_num)
+                current, current_draft = _det_res
+                self.current_novel = current
+                self._draft_novel = current_draft
+                gate_after = self._deterministic_quality_gate(current, frozen)
+                self._last_deterministic_issues = gate_after["issues"]
+                _cc25_fixed = True
+                logger.info(
+                    f"ch{chapter_num} det fulltext fix applied ({len(_det_hard_now)} hard items)")
         # CC round-25 P0-2：结构补丁与文学性重写在同一轮【叠加】执行——
         # 结构补丁负责 pacing/retention/plot/cliff 等可场景归因维度（已回写 journal），
         # 文学性 pass 紧接着针对 hook/style/innovation 在【最新 journal】上做整章一次性
@@ -4098,6 +4117,103 @@ class PipelineOrchestrator:
                                                       "hook": "", "beats": extract_beats_fallback(text)})
             except Exception as je:
                 logger.warning(f"Journal write-back failed for chapter {chapter_num} scene {sid}: {je}")
+
+    def _det_fulltext_fix(self, current: str, det_issues: list[str],
+                          chapter_num: int, task_card: dict):
+        """CC33: det 硬项全文级定点修复（称谓锚点/canon 残留/泄漏）。
+
+        det 硬项（字符串，无 scene_ids）无法走 _patch_weak_scenes 的场景级路径；
+        此处构造针对性的全文级修复指令，一次 LLM 调用产出锚点替换编辑
+        （复用 literary_pass 的解析/应用），应用后重跑 det gate，门过才采纳
+        （journal 不动）。返回 (purified, draft_with_markers) 或 None。
+        """
+        try:
+            if (self.config.get("llm") or {}).get("use_mock"):
+                return None
+        except Exception:
+            pass
+        from novel_engine.agents import literary_pass as _lp33
+        try:
+            _auth33 = load_authoritative_scenes(self.root, chapter_num)
+        except Exception as _e33:
+            logger.warning(f"det fulltext fix abort: load scenes ch{chapter_num}: {_e33}")
+            return None
+        texts33 = {int(d["scene_id"]): (d.get("scene_text", "") or "") for d in _auth33}
+        if not texts33:
+            return None
+        ordered33 = sorted(texts33)
+        reqs33: list[str] = []
+        for _d33 in det_issues:
+            if not isinstance(_d33, str):
+                continue
+            if _d33.startswith("[称谓]"):
+                reqs33.append(
+                    "叙述中同一角色多称谓无锚点裸切（如陆烬/李淳）。请在首次出现处补充"
+                    "同指锚点（如“本名…，转生后名…”），并统一主用名。")
+            elif _d33.startswith("[canon"):
+                _s33 = _d33.split("：", 1)[-1][:80]
+                reqs33.append(
+                    f"文中出现 canon 硬词/修炼样式泄漏：{_s33}。删除或改写成不含修炼意象的"
+                    "合规表述（不得出现静坐吐纳/引气/气感/气流流转/暖意灌注等）。")
+            elif _d33.startswith("[泄漏]"):
+                _s33 = _d33.split("]", 1)[-1][:80]
+                reqs33.append(f"文中出现脚手架/英文字段泄漏：{_s33}。清除该表述。")
+            else:
+                reqs33.append(str(_d33)[:120])
+        if not reqs33:
+            return None
+        _body33 = "\n\n".join(f"【场景{sid}】\n{texts33[sid]}" for sid in ordered33)
+        _fix_req33 = "；".join(reqs33)
+        prompt33 = (
+            "以下是章节正文（按场景编号给出）。请针对以下确定性硬伤做最小锚点替换：\n"
+            f"{_fix_req33}\n"
+            "输出 JSON：{\"edits\":[{\"scene_id\":N,\"op\":\"replace_span\","
+            "anchor\":\"原文短语\",\"replacement\":\"新文本（至少8字，以句号结尾）\"}]}。\n"
+            "只做必要修改，不要重写整章。")
+        user33 = f"场景文本：\n{_body33}\n\n修复要求：\n{prompt33}"
+        try:
+            resp33 = self.polish_router.chat_completion(
+                [{"role": "system",
+                  "content": "你是严谨的文字编辑，只做最小定点修改，保持文风。输出严格 JSON。"},
+                 {"role": "user", "content": user33}],
+                temperature=0.4, max_tokens=4096)
+        except Exception as _e33r:
+            logger.warning(f"det fulltext fix request failed ch{chapter_num}: {_e33r}")
+            return None
+        raw33 = resp33.get("content", "") if isinstance(resp33, dict) else str(resp33)
+        edits33 = _lp33.parse_literary_edits(raw33)
+        if not edits33:
+            logger.info(
+                f"det fulltext fix ch{chapter_num}: no valid edits; raw head: "
+                f"{(raw33 or '')[:300]!r}")
+            return None
+        new33, applied33, notes33 = _lp33.apply_literary_edits(texts33, edits33)
+        if not applied33:
+            logger.info(f"det fulltext fix ch{chapter_num}: 0 edits applied: {notes33}")
+            return None
+        rebuilt33 = "\n\n※\n\n".join(new33[k] for k in ordered33)
+        try:
+            cand33 = purify_novel_for_publish(rebuilt33, chapter_num=chapter_num)
+        except Exception:
+            cand33 = rebuilt33
+        frozen33 = self._frozen_task_cards.get(chapter_num, task_card)
+        total33 = sum(self._bpt(bp) for bp in (frozen33.get("scene_blueprints") or []))
+        if total33 > 0:
+            _pol33 = self._policy
+            cand33 = self._enforce_word_count(
+                cand33,
+                int(total33 * _pol33["min_ratio"]),
+                int(total33 * _pol33["max_ratio"] + max(_pol33["tolerance_chars"], total33 * 0.02)))
+        gate33 = self._deterministic_quality_gate(cand33, frozen33)
+        if not gate33.get("passed"):
+            logger.warning(
+                f"det fulltext fix ch{chapter_num} rejected: deterministic gates fail "
+                f"{gate33.get('issues')} (journal untouched)")
+            return None
+        logger.info(
+            f"det fulltext fix ch{chapter_num}: applied {len(edits33)} edits, "
+            f"gate passed ({gate33.get('issues', [])[:3]})")
+        return cand33, rebuilt33
 
     def _cc25_literary_rewrite(self, current: str, review: dict, task_card: dict,
                                synopsis: dict, chapter_num: int):
