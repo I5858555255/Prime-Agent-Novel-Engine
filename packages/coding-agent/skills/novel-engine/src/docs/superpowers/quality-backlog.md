@@ -166,3 +166,39 @@ rule (abnormal term + infant reaction) fully preserved for beats WITH
 abnormal terms. Verified: 4-case unit sim (implicit-pass / no-keyword-fail /
 tight-pass / tight-fail) + full suite 1 failed/1048 passed (known pre-existing)
 + pyflakes 0 undefined name.
+
+## ch11 second rerun (2026-10-01 16:04-16:23)
+
+Progress: F001 mandatory-beat hard block RESOLVED (implicit-foreshadow weak
+check worked — no MANDATORY HARD BLOCK this run; passed boundary/stage2,
+entered fix loop). Failed at force-best 87.2 < 88 with exact det snapshot
+(attribution enhancement paid off — note carries both items):
+1. `[称谓] 同一角色"陆烬"在叙述中无锚点裸切称谓 ['陆烬','李淳']` — alias
+   consistency det (CC28 3c, zero-LLM): identity-reveal chapter uses both
+   names without a same-reference anchor (e.g. "本名李淳，转生后名陆烬").
+2. `[canon硬词] 吐纳：养父教他那一套晚上坐着调整呼吸、让身体微微发热的动作之后。`
+   — 陆烬-side 呼吸法 description, cultivation_system locked for 陆烬
+   (A-route boundary: "晚上坐着调整呼吸" is 静坐吐纳-style → correctly hard).
+
+**Mechanism gap (tracked, NOT fixed this round)**: deterministic hard items
+(称谓/leak 残留) are detected but never injected into the fix-loop remediation
+directives. `_patch_weak_scenes` only consumes review issues WITH scene_ids
+(L3571 `if not sids: continue`; L3615 return None if no scene attribution;
+L3618 >2 scenes → None). Full-chapter det items (称谓) and unattributed det
+items (canon residual) therefore never receive targeted repair; rewrite path
+also bases its directive on review issues only. Fixing this needs: (a)
+deterministic gate emitting scene_ids on issues where attributable, (b)
+patch/rewrite directive consuming det-hard detail (e.g. dimension=
+"deterministic_hard"), (c) a full-chapter path for anchor-type items. Deferred
+as a dedicated mechanism task with acceptance = rerun ch11 to COMMITTED.
+
+**ch11 status**: high-score draft published (force-best to draft, 87.2,
+chapters/draft/chapter_11.txt + partial jsonl) pending human review. Manual
+fix is small (add one same-reference anchor sentence; excise one
+呼吸法-style sentence). No further rerun scheduled until the det-directive
+mechanism task lands — repeated blind reruns are low-value (4 runs so far,
+each different failure mode).
+
+**Overall A-route verification**: ch12/15/16 COMMITTED (87.3/88.7/86.2),
+checkpoint 19/20. Remaining: ch11 (87.2 draft) + later volumes' mojibake
+(separate task).
