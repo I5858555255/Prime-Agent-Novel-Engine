@@ -140,3 +140,29 @@ nodes[17-44] descriptions (~24 unique bad chars, e.g. 碎Ƭ→碎片, 组֯→�
 沈֪΢→沈知微, ѡ择→选择, ɢ→真?, ҹ→趁, ָ责→指责, 平А→平安, 封װ→封装,
 ԭ核→原核, 八Ԫ→八元). Recovery needs per-word context confirmation; not
 blocking stage-1 reruns (only affects ch317+ generation quality).
+
+## A-route rerun result + ch11 root cause (2026-10-01)
+
+Rerun (run_volume_20261001T052016Z.log, 13:20-14:37, ~77min): ch12/15/16 all
+COMMITTED (87.3 / 88.7 / 86.2), only ch11 FAILED. **A-route director
+constraint verified effective**: ch12/15 scope-leak 吐纳 was repaired in 1
+targeted regen each and released (previously exhausted fix loop and failed);
+ch16 pipeline ran cleanly (previous failure was fix-loop abort + pre-fix
+high/det).
+
+ch11 root cause (deterministic, 3/3 retries): MANDATORY HARD BLOCK "foreshadow
+beats unresolved" — the F001 mandatory beat "猎户赵老四讲述传说时，陈老根恰好路过
+并沉默驻足片刻" is an implicit-hint foreshadow with NO abnormal-object term
+(浊气/瘴气/气感 etc.). outline_coverage_gate R15-1 tightened rule (infant-arc
+specific: beat must contain abnormal-object word AND scene must show infant
+reaction near subject) was misapplied to a normal implicit foreshadow →
+`no_abnormal_object_in_beat` always failed; 1 targeted-regen budget exhausted
+then MANDATORY HARD BLOCK, same at pre-review on retries.
+
+Fix (committed with this record): outline_coverage_gate `_check_foreshadow_coverage`
+relaxes to keyword-weak check when beat has no abnormal-object terms
+(implicit foreshadow: any jieba term present in scene_text = covered). Tight
+rule (abnormal term + infant reaction) fully preserved for beats WITH
+abnormal terms. Verified: 4-case unit sim (implicit-pass / no-keyword-fail /
+tight-pass / tight-fail) + full suite 1 failed/1048 passed (known pre-existing)
++ pyflakes 0 undefined name.

@@ -558,7 +558,13 @@ def _check_foreshadow_coverage(scene_text: str, beat_text: str) -> tuple[bool, s
     infant_reaction_from_beat = [t for t in terms if t in _INFANT_REACTION_WORDS]
 
     # 条件1：beat 中必须含有异常对象词，且 scene_text 中存在
+    # 2026-10-01 放宽：隐晦提示类伏笔（beat 不含异常物件词，如"讲述传说+陈老根路过"）
+    # 不适用 R15-1 婴儿篇收紧规则——退回关键词弱校验：beat 分词后任一核心词在场景中出现
+    # 即视为覆盖（防止 no_abnormal_object_in_beat 把普通隐晦伏笔打成硬块）。
     if not abnormal_hits:
+        implicit_hits = [t for t in terms if t in (scene_text or "")]
+        if implicit_hits:
+            return True, f"implicit_foreshadow keywords={implicit_hits[:3]}"
         return False, "no_abnormal_object_in_beat"
     has_abnormal = any(ao in (scene_text or "") for ao in abnormal_hits)
     if not has_abnormal:
