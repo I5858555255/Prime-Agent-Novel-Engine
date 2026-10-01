@@ -43,3 +43,60 @@ arc it changes no interception behavior (verified old-vs-new byte-level).
 Also note legacy behavior: some hard_block terms (e.g. 丹田 in a bare
 sentence) are not blocked by the legacy path either; that is pre-existing
 behavior, not a round-27 regression.
+
+## 20-chapter real-generation test (2026-10-01)
+
+Run: `run_volume --chapters 20 --resume` (real LLM, ~5.8h). 1-10 were already
+COMMITTED; chapters 11-20 were generated, of which **6 COMMITTED / 4 FAILED**.
+
+| ch | result | score | terminal cause |
+|----|--------|-------|----------------|
+| 11 | FAILED | 71.4 | scope_hard_leak 吐纳 (陆烬练呼吸法, subject not 陈老根 → concept lock + infant red-line) |
+| 12 | FAILED | 83.25 | scope_hard_leak 吐纳 (same pattern, "他昨日夜里静坐…陈老根教的呼吸节奏") |
+| 13 | COMMITTED | 89.9 | force-publish (det clean, plot_consistency advisory only) |
+| 14 | COMMITTED | 79.2 | force-best (hard gate []) |
+| 15 | FAILED | 88.4 | scope_hard_leak 吐纳 + naming conflict (活井/枯井 co-occur) |
+| 16 | FAILED | 89.4 | non-scope (draft has 0 hard terms; high score; terminal det/reviewer hard block) |
+| 17 | COMMITTED | 86.0 | — |
+| 18 | COMMITTED | 84.7 | — |
+| 19 | COMMITTED | 79.7 | — |
+| 20 | COMMITTED | 82.1 | — |
+
+Checkpoint after run: 16/20 COMMITTED (1-10 + 13/14/17/18/19/20).
+
+### Findings
+
+1. **concept_unlocks works as designed within infant arc (ch1-10)** — ch6 陈老根
+   吐纳 releases without night anchor; infant agent (陆烬) remains hard. No
+   regression vs pre-concept behavior.
+2. **ch11+ exposes the intended-but-unconfigured tier**: director keeps
+   generating "陆烬练呼吸法" scenes (continuation of the ch9 呼吸法残篇 plot),
+   but cultivation_system unlocks 陈老根 only (applies_to=陈老根, ch6).
+   Any sentence whose subject is 陆烬 ("他/我…陈老根教的呼吸节奏") hits the
+   infant red line → hard block → fix loop exhausts → FINAL GATE BLOCK. The
+   gate is correct per design; the plot momentum is the friction. Chapters
+   where the plot moves off cultivation (13/14/17-20) pass at 75% (6/8).
+3. **Transition chapters (ch15/16) are multi-gate hot spots**: timeline jump
+   ("长大了"), POV interiority excise, naming consistency (活井/枯井), density
+   — several gates fire at once; ch16 failed at 89.4 without any scope term.
+4. **fact_changes ledger carries one dangling reference**: target
+   'C001(陆烬)' (character_realm, unknown_ch) not found in characters/factions
+   — memory_health HARD. Pre-existing normalize gap (the d5fcb8817 normalize
+   covers most targets; this entry predates/escapes it).
+5. API instability observed (multiple "peer closed connection" retries,
+   handled by existing retry).
+
+### Recommended next steps (design decision, not yet implemented)
+
+- **Concept unlock for 陆烬 practicing**: either unlock cultivation_system for
+  陆烬 at a chosen chapter (e.g. after the ch15 growth transition), or exempt
+  "陈老根教的那套呼吸法" as a taught-method (child practicing the taught
+  method is not cultivation display). Requires storyline owner decision on
+  when 陆烬 may visibly cultivate.
+- **Quarantine review**: inspect draft/needs_human artifacts of ch11/12/15/16
+  to confirm whether any should be salvaged (ch15/16 scores 88-89 are
+  close to the 88 threshold; a relaxed/unlocked rule could recover them).
+- **normalize fact_changes target** for 'C001(陆烬)' style IDs in the
+  fact_changes writer.
+- Re-run with unlocked policy once the 陆烬-unlock decision is made; track
+  forced-draft rate change as the phase-4 weighted-retrieve eval baseline.
