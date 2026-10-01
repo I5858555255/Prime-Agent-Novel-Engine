@@ -100,3 +100,43 @@ Checkpoint after run: 16/20 COMMITTED (1-10 + 13/14/17/18/19/20).
   fact_changes writer.
 - Re-run with unlocked policy once the 陆烬-unlock decision is made; track
   forced-draft rate change as the phase-4 weighted-retrieve eval baseline.
+
+## A-route decision: stage-1 cultivation-action ban (2026-10-01)
+
+**Decision (storyline owner, confirmed by user)**: stage 1 (ch1-316) 陆烬 must
+NOT appear in any cultivation-style action (静坐吐纳/引气/气流流转/暖意灌注/气感).
+呼吸法 may only be practiced/mentioned by 陈老根; 陆烬 at most watches or is
+told the result. Route B (allow 陆烬 "强身健体呼吸法" without cultivation
+imagery) is deferred; it may only start after concrete positive/negative
+example sentences are defined as acceptance criteria.
+
+**Implemented**:
+- `bible/author_intent.md` V01 forbidden extended with the explicit
+  cultivation-action ban (bible is the setting source; director reads it).
+- `chapter_director.py`: `_extract_forbidden_list()` parses the current-volume
+  forbidden block; `forbidden_list` is injected into all three director prompts
+  (skeleton/craft/metadata). Previously skeleton/craft had NO author_intent and
+  metadata truncated at 300 chars (V01 is 328 chars → last forbidden line cut).
+
+**ch16 root cause (separate from ch11/12/15)**: ch16 was NOT a scope leak
+(draft has 0 hard terms). Evidence: no `final_gate_reject.txt` for ch16; draft
+published at 00:17:40 (same timestamp as END); success=False with empty errors;
+not in failed/ dir. Path: fix loop aborted by exception (likely API
+"peer closed connection", observed repeatedly this run) → pre-fix text kept
+(pre_fix_score=89.4 ≥ 88) → `_decide_publish` returns False because the pre-fix
+text still carries review high or deterministic hard items → L1215 "score>=88
+dim-gate blocked" branch: draft + pending_human_review + success=False.
+The precise high/det items were not persisted (stdout-side warnings only);
+attribution enhanced: human_review_note now includes high_list/det_issues, and
+run_volume END line now prints note → next run will capture exact cause.
+
+**Mojibake status (planning JSONs)**: the f43b6ad73 "fix mojibake" commit was
+incomplete — systematic mojibake affected many fields. This round fixed all
+stage-1-relevant fields: plot_graph nodes ch1/2/5/9/17/43/50 clean, volumes V01
+outline/description clean, plus 筑基突破/太上养魂经/太虚仙门 and ~30 more words.
+Remaining (NOT stage-1, tracked for a separate recovery task): volumes.json
+volumes[4-9] core_conflicts/climax_description (~10 spots), plot_graph
+nodes[17-44] descriptions (~24 unique bad chars, e.g. 碎Ƭ→碎片, 组֯→组织,
+沈֪΢→沈知微, ѡ择→选择, ɢ→真?, ҹ→趁, ָ责→指责, 平А→平安, 封װ→封装,
+ԭ核→原核, 八Ԫ→八元). Recovery needs per-word context confirmation; not
+blocking stage-1 reruns (only affects ch317+ generation quality).

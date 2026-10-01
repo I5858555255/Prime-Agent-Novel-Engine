@@ -1227,7 +1227,8 @@ class PipelineOrchestrator:
                 result["published"] = False
                 result["score"] = cur_score
                 result["pending_human_review"] = True
-                result["human_review_note"] = f"score={cur_score}>=88 dim-gate blocked, saved draft pending human review"
+                result["human_review_note"] = (f"score={cur_score}>=88 dim-gate blocked (high={high_list} "\
+                                       f"det_hard={det_issues} det_soft={det_soft}), saved draft pending human review")
                 return result
             elif 82 <= cur_score < 88:
                 # 82-87：人工复核队列 - 落 draft 并标记，early return 不进入 novel/ 提交

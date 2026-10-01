@@ -5,7 +5,7 @@
       "type": "main_plot",
       "volume": "V01",
       "chapter_target": 1,
-      "description": "神魂跨界，陆烬以婴儿形态降生雾隐村外迷雾边Ե，异象引发村民恐慌",
+      "description": "神魂跨界，陆烬以婴儿形态降生雾隐村外迷雾边缘，异象引发村民恐慌",
       "depends_on": [],
       "required_characters": [
         "C001"
@@ -28,7 +28,7 @@
         "C001",
         "C002"
       ],
-      "emotional_tone": "̽索",
+      "emotional_tone": "探索",
       "foreshadow_links": []
     },
     {
@@ -61,7 +61,7 @@
         "C001",
         "C002"
       ],
-      "emotional_tone": "̽索",
+      "emotional_tone": "探索",
       "foreshadow_links": [
         "F002"
       ]
@@ -89,7 +89,7 @@
       "type": "foreshadow",
       "volume": "V01",
       "chapter_target": 43,
-      "description": "陆烬体内呼吸法运תʱ与迷雾方向隐隐共鸣，他自己Ҳδ察觉",
+      "description": "陆烬体内呼吸法运转时与迷雾方向隐隐共鸣，他自己也未曾察觉",
       "depends_on": [
         "N004"
       ],
@@ -106,7 +106,7 @@
       "type": "main_plot",
       "volume": "V01",
       "chapter_target": 50,
-      "description": "阶段收束：迷雾异动被村人察觉加剧，陆烬立誓ҪŪ清自己的来历",
+      "description": "阶段收束：迷雾异动被村人察觉加剧，陆烬立誓要弄清自己的来历",
       "depends_on": [
         "N005",
         "N006"
@@ -125,7 +125,7 @@
       "type": "character_development",
       "volume": "V01",
       "chapter_target": 60,
-      "description": "陆烬旁观陈老根出手镇ѹ村中ɧ乱，չ¶超出武道范畴的深藏武艺",
+      "description": "陆烬旁观陈老根出手镇压村中骚乱，展现超出武道范畴的深藏武艺",
       "depends_on": [
         "N007"
       ],
@@ -141,7 +141,7 @@
       "type": "main_plot",
       "volume": "V01",
       "chapter_target": 68,
-      "description": "宵СҹϮ雾隐村，陈老根与陆烬合力抵御，陆烬首次实战",
+      "description": "宵小趁夜潜入雾隐村，陈老根与陆烬合力抵御，陆烬首次实战",
       "depends_on": [
         "N008"
       ],
@@ -157,7 +157,7 @@
       "type": "world_expansion",
       "volume": "V01",
       "chapter_target": 74,
-      "description": "陆烬独立诊断出瘟疫Դͷ与浊气异变有关",
+      "description": "陆烬独立诊断出瘟疫源头与浊气异变有关",
       "depends_on": [
         "N009"
       ],
@@ -174,7 +174,7 @@
       "type": "side_plot",
       "volume": "V01",
       "chapter_target": 79,
-      "description": "有长老提议将陆烬送往迷雾禁区'验֤'其身份，陈老根强Ӳ反对引发冲ͻ",
+      "description": "有长老提议将陆烬送往迷雾禁区'验证'其身份，陈老根强烈反对引发冲突",
       "depends_on": [
         "N010"
       ],
@@ -190,14 +190,14 @@
       "type": "side_plot",
       "volume": "V01",
       "chapter_target": 90,
-      "description": "Ѳ查队武官对陆烬体质产生兴Ȥ，离ȥǰ留下县城武馆招收弟子的线索",
+      "description": "巡查队武官对陆烬体质产生兴趣，离去前留下县城武馆招收弟子的线索",
       "depends_on": [
         "N011"
       ],
       "required_characters": [
         "C001"
       ],
-      "emotional_tone": "̽索",
+      "emotional_tone": "探索",
       "foreshadow_links": []
     },
     {
@@ -205,14 +205,14 @@
       "type": "side_plot",
       "volume": "V01",
       "chapter_target": 98,
-      "description": "陆烬;中救助һ名受伤旅人，埋下人脉伏笔",
+      "description": "陆烬;中救助一名受伤旅人，埋下人脉伏笔",
       "depends_on": [
         "N012"
       ],
       "required_characters": [
         "C001"
       ],
-      "emotional_tone": "̽索",
+      "emotional_tone": "探索",
       "foreshadow_links": []
     },
     {
@@ -220,7 +220,7 @@
       "type": "main_plot",
       "volume": "V01",
       "chapter_target": 100,
-      "description": "阶段收束：陆烬正式̤入大Ǭ皇朝体系，雾隐村生活落Ļ",
+      "description": "阶段收束：陆烬正式踏入大乾皇朝体系，雾隐村生活落幕",
       "depends_on": [
         "N012",
         "N013"
@@ -236,7 +236,7 @@
       "type": "main_plot",
       "volume": "V01",
       "chapter_target": 316,
-      "description": "陆烬首次亲眼Ŀ睹修ʿ手段，ȷ认'不属于凡人的力量'真实存在，决心Ѱ·而入",
+      "description": "陆烬首次亲眼目睹修士手段，确认'不属于凡人的力量'真实存在，决心寻路而入",
       "depends_on": [
         "N014"
       ],
@@ -251,7 +251,7 @@
       "type": "foreshadow",
       "volume": "V02",
       "chapter_target": 489,
-      "description": "陆烬回雾隐村，沈无涯以采购ҩ材之名出现，交付ɢ修界对迷雾禁区的传闻卷",
+      "description": "陆烬回雾隐村，沈无涯以采购药材之名出现，交付修真界对迷雾禁区的传闻卷",
       "depends_on": [
         "N015"
       ],
@@ -266,7 +266,7 @@
       "type": "foreshadow",
       "volume": "V02",
       "chapter_target": 567,
-      "description": "陆烬意ʶ到皇室ÿ次'交易'实ΪǬ武帝刻意设计的亏本交易，赎罪真相浮现",
+      "description": "陆烬意识到皇室每次'交易'实为乾武帝刻意设计的亏本交易，赎罪真相浮现",
       "depends_on": [
         "N015"
       ],
@@ -284,7 +284,7 @@
       "type": "foreshadow",
       "volume": "V02",
       "chapter_target": 621,
-      "description": "秘ʹ嘱托陆烬留意人皇鼎碎Ƭ相关古籍记载，以'旧书商'Ϊ暗语联络",
+      "description": "秘使嘱托陆烬留意人皇鼎碎Ƭ相关古籍记载，以'旧书商'Ϊ暗语联络",
       "depends_on": [
         "N017"
       ],
@@ -301,7 +301,7 @@
       "type": "main_plot",
       "volume": "V02",
       "chapter_target": 652,
-      "description": "陆烬因Ե际会接触云隐坊市，ȷ认仙门测试机会",
+      "description": "陆烬因缘际会接触云隐坊市，确认仙门测试机会",
       "depends_on": [
         "N018"
       ],
@@ -316,7 +316,7 @@
       "type": "foreshadow",
       "volume": "V03",
       "chapter_target": 702,
-      "description": "陆烬第һ次听到摄魂阁的Ӱ子——组֯暗中收买'神魂特异者'",
+      "description": "陆烬第一次听到摄魂阁的寻子——组֯暗中收买'神魂特异者'",
       "depends_on": [
         "N019"
       ],
@@ -342,7 +342,7 @@
         "C003",
         "C004"
       ],
-      "emotional_tone": "̽索",
+      "emotional_tone": "探索",
       "foreshadow_links": []
     },
     {
@@ -382,7 +382,7 @@
       "type": "foreshadow",
       "volume": "V03",
       "chapter_target": 848,
-      "description": "陆烬看到'以魂Ϊ引，假托飞升'的残破笔记，人造飞升概念第һ次暴¶",
+      "description": "陆烬看到'以魂Ϊ引，假托飞升'的残破笔记，人造飞升概念第一次暴露",
       "depends_on": [
         "N020"
       ],
@@ -399,7 +399,7 @@
       "type": "main_plot",
       "volume": "V03",
       "chapter_target": 988,
-      "description": "陆烬筑基ͻ破，正式获得《̫上养魂经》残卷",
+      "description": "陆烬筑基突破，正式获得《太上养魂经》残卷",
       "depends_on": [
         "N023",
         "N024"
@@ -418,7 +418,7 @@
       "type": "foreshadow",
       "volume": "V04",
       "chapter_target": 918,
-      "description": "苏问魂͸¶摄魂阁'不ֹ猎魂，他们在造神或造门'",
+      "description": "苏问魂揭露摄魂阁'不只猎魂，他们在造神或造门'",
       "depends_on": [
         "N025"
       ],
@@ -436,7 +436,7 @@
       "type": "character_development",
       "volume": "V04",
       "chapter_target": 1128,
-      "description": "陆烬与荒β信任建立完成三步验֤，荒β˵出妖族世代的Թ言",
+      "description": "陆烬与荒尾信任建立完成三步验证，荒尾说出妖族世代的预言",
       "depends_on": [
         "N025"
       ],
@@ -467,7 +467,7 @@
       "type": "foreshadow",
       "volume": "V04",
       "chapter_target": 1290,
-      "description": "陆烬以人皇古玉催动护盾力抗Ѫڤ教长老，事后ü心钝ʹ，首次意ʶ到古玉代价",
+      "description": "陆烬以人皇古玉催动护盾力抗Ѫڤ教长老，事后痛心钝痛，首次意识到古玉代价",
       "depends_on": [
         "N018"
       ],
@@ -484,7 +484,7 @@
       "type": "main_plot",
       "volume": "V04",
       "chapter_target": 1422,
-      "description": "金丹ͻ破，首次ֱ面仙门刻意隐瞒凡人修仙的真相һ角",
+      "description": "金丹突破，首次直面仙门刻意隐瞒凡人修仙的真相一角",
       "depends_on": [
         "N026",
         "N029"
@@ -515,7 +515,7 @@
       "type": "character_development",
       "volume": "V05",
       "chapter_target": 1580,
-      "description": "沈֪΢˽下质疑渐进改革·线，陆烬回Ӧ'让人道取代仙门成Ϊ新秩序'",
+      "description": "沈知微私下质疑渐进改革路线，陆烬回Ӧ'让人道取代仙门成Ϊ新秩序'",
       "depends_on": [
         "N031"
       ],
@@ -531,7 +531,7 @@
       "type": "main_plot",
       "volume": "V05",
       "chapter_target": 1843,
-      "description": "陆烬ȷ认'人道'并非仙门的低阶替代Ʒ，而是独立于成仙之外的另һ条大道",
+      "description": "陆烬确认'人道'并非仙门的低阶替代Ʒ，而是独立于成仙之外的另一条大道",
       "depends_on": [
         "N032"
       ],
@@ -548,7 +548,7 @@
       "type": "foreshadow",
       "volume": "V06",
       "chapter_target": 2011,
-      "description": "心ħ幻境中李淳ָ责陆烬'借壳而活'，两个自己开始相互质疑",
+      "description": "心魔幻境中李淳ָ责陆烬'借壳而活'，两个自己开始相互质疑",
       "depends_on": [
         "N033"
       ],
@@ -565,7 +565,7 @@
       "type": "main_plot",
       "volume": "V06",
       "chapter_target": 2157,
-      "description": "陆烬顿悟'从李淳走向陆烬'的·径本身就是完整的，心ħ消ɢ",
+      "description": "陆烬顿悟'从李淳走向陆烬'的路径本身就是完整的，心魔消ɢ",
       "depends_on": [
         "N034"
       ],
@@ -583,7 +583,7 @@
       "type": "main_plot",
       "volume": "V06",
       "chapter_target": 2200,
-      "description": "陆烬化神ͻ破，主动ѡ择ֱ面天道布局而非被动接受命运",
+      "description": "陆烬化神突破，主动ѡ择ֱ面天道布局而非被动接受命运",
       "depends_on": [
         "N035"
       ],
@@ -598,7 +598,7 @@
       "type": "foreshadow",
       "volume": "V07",
       "chapter_target": 2413,
-      "description": "陆烬揭出α回音机制铁֤：所有ƽ安信均Ϊͬһ人按ģ板抄д",
+      "description": "陆烬揭出α回音机制铁证：所有ƽ安信均Ϊ同一人按ģ板抄直",
       "depends_on": [
         "N036"
       ],
@@ -615,7 +615,7 @@
       "type": "main_plot",
       "volume": "V07",
       "chapter_target": 2478,
-      "description": "陆烬布下古玉结界，沈֪΢、上官烈、柳̤歌三才护魂阵坐镇，神魂离体进入墟界",
+      "description": "陆烬布下古玉结界，沈֪΢、上官烈、柳踏歌三才护魂阵坐镇，神魂离体进入墟界",
       "depends_on": [
         "N037"
       ],
@@ -648,7 +648,7 @@
       "type": "foreshadow",
       "volume": "V08",
       "chapter_target": 2499,
-      "description": "上官鸿̹白体内藏̫初议会ʱ代残脉，被仙门旧部暂缓提取",
+      "description": "上官鸿̹白体内藏太初议会时代残脉，被仙门旧部暂缓提取",
       "depends_on": [
         "N039"
       ],
@@ -665,7 +665,7 @@
       "type": "foreshadow",
       "volume": "V08",
       "chapter_target": 2738,
-      "description": "铁面ִ政官͸¶传国玉玺是共守派带出的核心封װ体，落入大Ǭ皇室之手",
+      "description": "铁面ִ政官揭现传国玉玺是共守派带出的核心封װ体，落入大乾皇室之手",
       "depends_on": [
         "N040"
       ],
@@ -683,7 +683,7 @@
       "type": "side_plot",
       "volume": "V08",
       "chapter_target": 2803,
-      "description": "柳̤歌察觉求和派联络Ա行动异常，陆烬决定'持续观察、定向Ͷ放'",
+      "description": "柳踏歌察觉求和派联络Ա行动异常，陆烬决定'持续观察、定向Ͷ放'",
       "depends_on": [
         "N041"
       ],
@@ -699,7 +699,7 @@
       "type": "main_plot",
       "volume": "V08",
       "chapter_target": 3000,
-      "description": "陆烬ȷ认自己是人道体系在当代的Ψһ完整继承可能",
+      "description": "陆烬确认自己是人道体系在当代的Ψ一完整继承可能",
       "depends_on": [
         "N042"
       ],
@@ -714,7 +714,7 @@
       "type": "side_plot",
       "volume": "V09",
       "chapter_target": 3025,
-      "description": "Ǭ武帝与陆烬就鼎碎Ƭ纪念碑方案达成共ʶ，Ǭ武帝亲自奠基",
+      "description": "乾武帝与陆烬就鼎碎Ƭ纪念碑方案达成共识，乾武帝亲自奠基",
       "depends_on": [
         "N043"
       ],
@@ -732,7 +732,7 @@
       "type": "foreshadow",
       "volume": "V09",
       "chapter_target": 3324,
-      "description": "̫初议会反对派文献揭ʾԭ核Ϊ'七极环绕，һԪ居中'的八Ԫ之体",
+      "description": "太初议会反对派文献揭示ԭ核Ϊ'七极环绕，一Ԫ居中'的八Ԫ之体",
       "depends_on": [
         "N044"
       ],
@@ -749,7 +749,7 @@
       "type": "main_plot",
       "volume": "V09",
       "chapter_target": 3400,
-      "description": "陆烬以人道之力击破仙门对'成仙资格'的¢断叙事",
+      "description": "陆烬以人道之力击破仙门对'成仙资格'的垄断叙事",
       "depends_on": [
         "N045"
       ],

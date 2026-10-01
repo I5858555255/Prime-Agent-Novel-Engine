@@ -142,8 +142,9 @@ async def _run_one(chapter_num: int, logger: logging.Logger) -> dict:
     ok = result.get("success", False)
     status = "COMMITTED" if ok else "FAILED"
     logger.info(
-        "=== END chapter %d [%s] in %.1fs (score=%s) ===",
+        "=== END chapter %d [%s] in %.1fs (score=%s) note=%s ===",
         chapter_num, status, elapsed, result.get("score"),
+        result.get("note") or result.get("human_review_note") or result.get("final_gate_violations") or "",
     )
     if not ok:
         logger.error("chapter %d errors: %s", chapter_num, result.get("errors"))
