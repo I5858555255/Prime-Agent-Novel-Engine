@@ -271,7 +271,8 @@ def _has_teach_violation(s: str) -> bool:
                 if any(co in span for co in _CULTIVATION_OBJECTS):
                     return True
     # ── 第二优先：反诘/犹豫·未然语境降为非违规（仅当无既成传授事实时生效）──────
-    _reversed_context_markers = {"如何", "怎会", "岂能", "怎", "难道", "岂不是"}
+    _reversed_context_markers = {"如何", "怎会", "岂能", "怎", "难道", "岂不是",
+                                "究竟", "为何", "为什么", "何意"}
     _hesitant_markers = {"权衡", "犹豫", "暂不", "尚未", "没敢", "不敢", "怕是", "或许",
                          "该不该", "要不要", "还是", "也许", "恐怕", "谈何容易", "未必", "会不会",
                          "怎会", "岂能", "难道不", "莫非",
@@ -331,6 +332,16 @@ def _has_teach_violation(s: str) -> bool:
         if jiao_idx >= 0:
             ctx = s[max(0, jiao_idx - 6):jiao_idx + 18]
             nearby = s[max(0, jiao_idx - 3):jiao_idx + 3]
+            # CC ch21-50 F2a：提及/指称豁免——"教的那套/教过的"为回忆或指称语境
+            # （"想弄清楚养父教的那套呼吸法"），非实施传授，放行；但句含施动动作
+            # （按/照/调整/尝试/学着/跟着…做）时仍判实施（"按教的节奏调整呼吸"
+            # =陆烬亲练，A 路线禁止），保持 hard。
+            _after6 = s[jiao_idx:jiao_idx + 6]
+            if ("的" in _after6 or "过" in _after6) and not any(
+                av in s for av in ("按", "照", "按照", "调整", "尝试", "学着", "跟着",
+                                   "模仿", "依样", "练", "练习", "试试", "试着", "配合")
+            ):
+                return False
             if nearby not in {"会了", "学", "请", "问"} and any(co in ctx for co in _CULTIVATION_OBJECTS):
                 return True
     return False
@@ -638,8 +649,13 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                     break
                 # D1/P4-1/P4-2：吐纳/调息 ch6 夜间陈老根独自豁免（含跨句代词回溯）
                 if kind == "hard" and term in _TUNA_EXEMPT_TERMS:
-                    if not _is_tuna_hard_violation(term, sent, chapter_num, cfg, prev_sents,
-                                                  night_bounded=night_bounded, root=root):
+                    # CC ch21-50 F2c：引语内吐纳豁免——"呼吸平稳，吐纳节奏……异于常童。"
+                    # 是他人话语/书面记录（施动者为记录者，非陆烬修炼），放行。
+                    if _inside_quotes(idx, sent):
+                        soft.append({"kind": "quote_exempt", "term": term,
+                                     "sentence": sent[:120]})
+                    elif not _is_tuna_hard_violation(term, sent, chapter_num, cfg, prev_sents,
+                                                     night_bounded=night_bounded, root=root):
                         soft.append({"kind": "tuna_exempt", "term": term,
                                      "sentence": sent[:120]})
                     else:
