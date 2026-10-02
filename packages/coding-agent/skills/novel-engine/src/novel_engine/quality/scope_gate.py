@@ -300,8 +300,23 @@ def _has_teach_violation(s: str) -> bool:
         # CC round-26d：否定传授（并未/没有传功）→ soft
         if any(neg in s[max(0, tv_idx - 3):tv_idx] for neg in ("并未", "没有", "不曾", "从未", "未", "不")):
             continue
-        # CC round-26d：传授动词+修炼宾语 或 +全句婴儿受事（"传功给陆烬"/"修士趁夜传功"）均 hard
-        if any(co in ctx for co in _CULTIVATION_OBJECTS) or any(b in s for b in _TUNA_BABY_AGENT_MARKERS):
+        # CC round-26d：传授动词+修炼宾语 或 动词后窗婴儿受事（"传功给陆烬"）均 hard。
+        # CC ch21-50 F1：婴儿标记由"全句 any"收紧——普通传授动词（教导/讲解/教授/教会）
+        # 只认"动词后 20 字窗内 + 受事结构（给/与 或 传给/教给/授徒）"，修复
+        # "陆烬…教导孩子…"类无传授语义误报（ch24/25/37/38 实测同源：final 文本
+        # 0 吐纳却标 [canon硬词] 吐纳）；功法类动词（传功/传法/传授/传与/授徒/传下）
+        # 本身携带功法语义，与婴儿标记同句（含跨子句，如"婴儿经脉受损，修士趁夜传功"）
+        # 仍 hard（保留 round22 既有断言）。
+        _baby_ctx = s[tv_idx:tv_idx + 20]
+        if any(co in ctx for co in _CULTIVATION_OBJECTS):
+            return True
+        if any(b in _baby_ctx for b in _TUNA_BABY_AGENT_MARKERS) and (
+            "给" in _baby_ctx or "与" in _baby_ctx or tv in ("传给", "教给", "授徒")
+        ):
+            return True
+        if tv in ("传功", "传法", "传授", "传与", "授徒", "传下") and any(
+            b in s for b in _TUNA_BABY_AGENT_MARKERS
+        ):
             return True
     # 裸"教"+修炼宾语近窗 → hard
     if "教" in s:
