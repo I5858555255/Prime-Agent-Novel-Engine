@@ -1,0 +1,52 @@
+﻿2026-09-30T04:09:59+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T200959Z.log
+2026-09-30T04:09:59+0800 [INFO] API key is present in environment.
+2026-09-30T04:09:59+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T04:09:59+0800 [INFO] Found 9 already completed chapters in checkpoint.
+2026-09-30T04:09:59+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 7, 8, 9, 10]
+2026-09-30T04:09:59+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T04:09:59+0800 [INFO] Generating chapters 6..6 (real LLM, no mock).
+2026-09-30T04:09:59+0800 [INFO] Initializing/verifying world state...
+python.exe : D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated
+ as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for remova
+l as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+所在位置 行:1 字符: 119
++ ... ngine\src"; & "D:\Program Files\Python312\python.exe" -m novel_engine ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\Program File... Setuptools<81.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import pkg_resources
+2026-09-30T04:10:01+0800 [INFO] World state initialized: current_chapter=9
+2026-09-30T04:10:01+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 0.921 seconds.
+Prefix dict has been built successfully.
+Boundary Stage1 candidate for ch6 {'containment': 0.0003, 'cosine': 0.7, 'candidate': True} → Stage2 LLM
+POV interiority ch6 scene3: deterministic excise of adult monologue
+Progression r1 ch6 scene2: no_new_state=True atmosphere_sat=False adjacent_sat=True
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Score 89.2 ≥ 88 but blocked → high=[] det_hard=['[canon硬词] 吐纳：传授呼吸法的心思，在胸腔里反复翻腾。'] det_soft=[] → continue fix
+ch6 fix pre-filter REJECTS patch: canon hard_block hits=['丹田', '吐纳'] -> abort patch, force full rewrite
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Canon scope gate ch6: 2 hard hit(s) -> hard block; terms=['丹田', '吐纳']
+CC25 literary pass ch6 rejected: deterministic gates fail ['[canon硬词] 丹田：那光游走得很慢，循着某种固定的路径，从掌心升起，沿着手臂内侧向上，绕过肩头，又从脊背滑下，最
+终归于丹田。', '[canon硬词] 吐纳：传授呼吸法的心思，在胸腔里反复翻腾。'] (journal untouched)
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Canon scope gate ch6: 2 hard hit(s) -> hard block; terms=['丹田', '吐纳']
+CC25 literary pass ch6 rejected: deterministic gates fail ['[canon硬词] 丹田：那光游走得很慢，循着某种固定的路径，从掌心升起，沿着手臂内侧向上，绕过肩头，又从脊背滑下，最
+终归于丹田。', '[canon硬词] 吐纳：传授呼吸法的心思，在胸腔里反复翻腾。'] (journal untouched)
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Best score 89.2 ≥ 88 but hard gate still blocked: high=False det=['[canon硬词] 吐纳：传授呼吸法的心思，在胸腔里反复翻腾。'] → force publish be
+st with note
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+FINAL GATE BLOCK ch6 score=89.2: ["scope_hard_leak:scope硬词 ['吐纳']"] -> quarantine+human, cursor continues
+Chapter 6 terminal quality gap (final_gate=True, continuity/quality=False) -> skip in-process retries, runner gap-conti
+nues
+2026-09-30T04:26:28+0800 [INFO] === END chapter 6 [FAILED] in 986.7s (score=89.2) ===
+2026-09-30T04:26:28+0800 [ERROR] chapter 6 errors: []
+2026-09-30T04:26:28+0800 [INFO] ============================================================
+2026-09-30T04:26:28+0800 [INFO] SUMMARY: 0/1 chapters succeeded, 1 failed in 986.7s
+2026-09-30T04:26:28+0800 [INFO]   [FAIL] chapter 6 — score=89.2 elapsed=0.0s
+2026-09-30T04:26:28+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T200959Z.log

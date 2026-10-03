@@ -1,0 +1,46 @@
+2026-09-30T20:52:39+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260930T125239Z.log
+2026-09-30T20:52:39+0800 [INFO] API key is present in environment.
+2026-09-30T20:52:39+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T20:52:39+0800 [INFO] Found 10 already completed chapters in checkpoint.
+2026-09-30T20:52:39+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+2026-09-30T20:52:39+0800 [INFO] Resuming from chapter 11 (skipped 0 already-committed)
+2026-09-30T20:52:39+0800 [INFO] Generating chapters 11..20 (real LLM, no mock).
+2026-09-30T20:52:39+0800 [INFO] Initializing/verifying world state...
+2026-09-30T20:52:40+0800 [INFO] World state initialized: current_chapter=6
+2026-09-30T20:52:40+0800 [INFO] === START chapter 11 ===
+2026-09-30T21:21:35+0800 [INFO] === END chapter 11 [FAILED] in 1734.3s (score=71.4) ===
+2026-09-30T21:21:35+0800 [ERROR] chapter 11 errors: []
+2026-09-30T21:21:35+0800 [INFO] === START chapter 12 ===
+2026-09-30T21:52:36+0800 [INFO] === END chapter 12 [FAILED] in 1861.4s (score=83.25) ===
+2026-09-30T21:52:36+0800 [ERROR] chapter 12 errors: []
+2026-09-30T21:52:36+0800 [INFO] === START chapter 13 ===
+2026-09-30T22:29:09+0800 [INFO] === END chapter 13 [COMMITTED] in 2193.0s (score=89.9) ===
+2026-09-30T22:29:09+0800 [INFO] === START chapter 14 ===
+2026-09-30T22:49:15+0800 [INFO] === END chapter 14 [COMMITTED] in 1206.5s (score=79.2) ===
+2026-09-30T22:49:15+0800 [INFO] === START chapter 15 ===
+2026-09-30T23:20:47+0800 [INFO] === END chapter 15 [FAILED] in 1891.8s (score=88.4) ===
+2026-09-30T23:20:47+0800 [ERROR] chapter 15 errors: []
+2026-09-30T23:20:47+0800 [INFO] === START chapter 16 ===
+2026-10-01T00:17:40+0800 [INFO] === END chapter 16 [FAILED] in 3412.8s (score=89.4) ===
+2026-10-01T00:17:40+0800 [ERROR] chapter 16 errors: []
+2026-10-01T00:17:40+0800 [INFO] === START chapter 17 ===
+2026-10-01T01:08:06+0800 [INFO] === END chapter 17 [COMMITTED] in 3025.6s (score=86.0) ===
+2026-10-01T01:08:06+0800 [INFO] === START chapter 18 ===
+2026-10-01T01:48:12+0800 [INFO] === END chapter 18 [COMMITTED] in 2406.6s (score=84.7) ===
+2026-10-01T01:48:12+0800 [INFO] === START chapter 19 ===
+2026-10-01T02:18:07+0800 [INFO] === END chapter 19 [COMMITTED] in 1795.3s (score=79.7) ===
+2026-10-01T02:18:07+0800 [INFO] === START chapter 20 ===
+2026-10-01T02:42:37+0800 [INFO] === END chapter 20 [COMMITTED] in 1469.2s (score=82.1) ===
+2026-10-01T02:42:37+0800 [INFO] ============================================================
+2026-10-01T02:42:37+0800 [INFO] SUMMARY: 6/10 chapters succeeded, 4 failed in 20996.3s
+2026-10-01T02:42:37+0800 [INFO]   [FAIL] chapter 11 — score=71.4 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [FAIL] chapter 12 — score=83.25 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [OK] chapter 13 — score=89.9 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [OK] chapter 14 — score=79.2 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [FAIL] chapter 15 — score=88.4 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [FAIL] chapter 16 — score=89.4 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [OK] chapter 17 — score=86.0 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [OK] chapter 18 — score=84.7 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [OK] chapter 19 — score=79.7 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO]   [OK] chapter 20 — score=82.1 elapsed=0.0s
+2026-10-01T02:42:37+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260930T125239Z.log

@@ -1,0 +1,101 @@
+2026-09-28T22:34:37+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260928T143437Z.log
+2026-09-28T22:34:37+0800 [INFO] API key is present in environment.
+2026-09-28T22:34:37+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-28T22:34:37+0800 [INFO] Found 5 already completed chapters in checkpoint.
+2026-09-28T22:34:37+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5]
+2026-09-28T22:34:37+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-28T22:34:37+0800 [INFO] Generating chapters 6..10 (real LLM, no mock).
+2026-09-28T22:34:37+0800 [INFO] Initializing/verifying world state...
+D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+2026-09-28T22:34:38+0800 [INFO] World state initialized: current_chapter=6
+2026-09-28T22:34:38+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 0.837 seconds.
+Prefix dict has been built successfully.
+Scene 4 validation failed (attempt 1/2): ['[时间线越界] 本章时间跨度限于"从深夜到次日傍晚"，却出现越界叙述"成年"'], regenerating
+Scene 4 validation failed (attempt 2/2): ['[时间线越界] 命中导演禁写时间标记"武者"'], regenerating
+Scene 4 class=USABLE (2149 chars) after 2 regens → salvage to bounded expansion/density gate, not HALT
+Boundary Stage1 candidate for ch6 {'containment': 0.0, 'cosine': 0.7253, 'candidate': True} → Stage2 LLM
+Scope leak ch6 scene4: [('hard_leak', '宗门'), ('hard_leak', '气感'), ('hard_leak', '调息')] -> targeted regen
+Progression r1 ch6 scene1: no_new_state=False atmosphere_sat=False adjacent_sat=False
+Progression r1 ch6 scene2: no_new_state=True atmosphere_sat=False adjacent_sat=True
+Progression soft-pass ch6 scene2: residual no_new_state=True atmosphere_sat=False adjacent_sat=False -> reviewer/E-loop
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Deterministic gate flagged chapter 6: ['[canon硬词] 吐纳：他几乎是毫不犹豫地，立刻中断了正在运行的吐纳法门。']
+ch6 soft regen scene2 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch6 soft regen scene3 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch6 soft regen scene4 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch6 median-of-3 votes=[85.0, 86.7, 79.7] median=85.0 range=7.0 highly_unstable=False
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+CC25 literary pass ch6 rejected: deterministic gates fail ['[canon硬词] 吐纳：他几乎是毫不犹豫地，立刻中断了正在运行的吐纳法门。'] (journal untouched)
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Fix exhausted, force-best to draft 85.0 < 88 (never novel/) with note (hard gate may still block)
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+FINAL GATE BLOCK ch6 score=85.0: ["scope_hard_leak:scope硬词 ['吐纳']"] -> quarantine+human, cursor continues
+Chapter 6 terminal quality gap (final_gate=True, continuity/quality=False) -> skip in-process retries, runner gap-continues
+2026-09-28T22:49:44+0800 [INFO] === END chapter 6 [FAILED] in 905.7s (score=85.0) ===
+2026-09-28T22:49:44+0800 [ERROR] chapter 6 errors: []
+2026-09-28T22:49:44+0800 [INFO] === START chapter 7 ===
+Scene 1 validation failed (attempt 1/2): ['truncated_or_no_sentence_ending'], regenerating
+POV interiority ch7 scene3: deterministic excise of adult monologue
+POV interiority ch7 scene4: deterministic excise of adult monologue
+ch7 soft regen scene2 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch7 soft regen scene3 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch7 soft regen scene4 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch7 green-but-low single review 78.6; one crosscheck vote 75.7 -> median 77.15
+CC25 literary pass ch7 applied 3 edits: ['scene 2 replace_span applied (94->76)', 'scene 3 replace_tail applied (99->92)', 'scene 4 replace_span applied (105->65)']
+Fix exhausted, force-best to draft 83.6 < 88 (never novel/) with note (hard gate may still block)
+Final pre-commit gate ch7: repaired once and re-verified clean
+Force-best to draft 83.6 despite hard gate (note=best 83.6 < 88 (hard gate [])) hard=[] soft=[] high=['foreshadow_execution/high:核心伏笔 F001（陈老根望向村外禁区方向）在正文中完全缺失，未执行任务卡 must_cover_b']
+Chapter 7 force-best saved to draft/chapter_7.txt (never novel/) high=['foreshadow_execution/high:核心伏笔 F001（陈老根望向村外禁区方向）在正文中完全缺失，未执行任务卡 must_cover_b'] det_hard=[] soft=[]
+2026-09-28T23:07:55+0800 [INFO] === END chapter 7 [COMMITTED] in 1090.5s (score=83.6) ===
+2026-09-28T23:07:55+0800 [INFO] === START chapter 8 ===
+Scene 2 validation failed (attempt 1/2): ["high_freq_repeat: '。\\n\\n这便是本场' x3"], regenerating
+Scope leak ch8 scene1: [('hard_leak', '吐纳')] -> targeted regen
+Scope leak ch8 scene2: [('hard_leak', '吐纳')] -> targeted regen
+Scope leak ch8 scene3: [('hard_leak', '调息')] -> targeted regen
+POV interiority ch8 scene4: deterministic excise of adult monologue
+ch8 soft regen scene2 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch8 soft regen scene3 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch8 soft regen scene4 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch8 median-of-3 votes=[85.4, 89.1, 87.9] median=87.9 range=3.6999999999999886 highly_unstable=False
+Gray-band release ch8: score 86.3 in [85,88) + gates pass + no-high → release to novel (flagged for human spot-check) soft=['[套话-软] 命中“古井”1次（预警不阻断）']
+ch8: adopt gate-green candidate 86.3 over higher-score blocked candidate 87.9
+Gray-band final release ch8 score 86.3 (gates pass, no-high) → publish to novel, flagged human spot-check
+[change_validation] rejected: entity_not_found: target character 'C001' does not exist in world_state
+2026-09-28T23:28:54+0800 [INFO] === END chapter 8 [COMMITTED] in 1259.8s (score=86.3) ===
+2026-09-28T23:28:54+0800 [INFO] === START chapter 9 ===
+ch9: plot_graph task [陈老根初传呼吸法残篇，只言'强身健体'不提修炼] conflicts with outline task [陈老根初传呼吸法残篇,只言"强身健体"不提修炼]; outline wins
+ch9: plot_graph task [陈老根初传呼吸法残篇，只言'强身健体'不提修炼] conflicts with outline task [陈老根初传呼吸法残篇,只言"强身健体"不提修炼]; outline wins
+Boundary Stage1 candidate for ch9 {'containment': 0.0002, 'cosine': 0.6885, 'candidate': True} → Stage2 LLM
+Boundary Stage2 confirmed replay for ch9; regen scene 1
+Boundary still candidate after scene 1 regen {'containment': 0.0, 'cosine': 0.6774, 'candidate': True} → hard block
+Scope leak ch9 scene3: [('hard_leak', '吐纳')] -> targeted regen
+Scope leak persists scene3 after regen [('hard_leak', '吐纳')] -> replan
+WRITE REPLAN ch9: 设定泄漏/时间锚越界经定点重生仍未消除 scenes=[3]，需重排任务卡
+Chapter 9 quality-replan requested (scenes=[3]) → skip in-process retries
+2026-09-28T23:45:00+0800 [INFO] === END chapter 9 [FAILED] in 966.0s (score=None) ===
+2026-09-28T23:45:00+0800 [ERROR] chapter 9 errors: ['WRITE_REPLAN: 设定泄漏/时间锚越界经定点重生仍未消除 scenes=[3]，需重排任务卡']
+2026-09-28T23:45:00+0800 [INFO] === START chapter 10 ===
+Scope leak ch10 scene1: [('hard_leak', '吐纳')] -> targeted regen
+Scope leak ch10 scene3: [('hard_leak', '吐纳')] -> targeted regen
+ch10 soft regen scene2 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch10 soft regen scene3 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch10 soft regen scene4 failed: WriterAgent.generate_scene() got an unexpected keyword argument 'prev'
+ch10 median-of-3 votes=[84.8, 79.8, 84.6] median=84.6 range=5.0 highly_unstable=False
+ch10 green-but-low single review 84.6; one crosscheck vote 85.1 -> median 84.85
+Gray-band release ch10: score 86.3 in [85,88) + gates pass + no-high → release to novel (flagged for human spot-check) soft=['[套话-软] 命中“一潭”1次（预警不阻断）']
+Gray-band final release ch10 score 86.3 (gates pass, no-high) → publish to novel, flagged human spot-check
+2026-09-29T00:05:55+0800 [INFO] === END chapter 10 [COMMITTED] in 1254.7s (score=86.3) ===
+2026-09-29T00:05:55+0800 [INFO] ============================================================
+2026-09-29T00:05:55+0800 [INFO] SUMMARY: 3/5 chapters succeeded, 2 failed in 5476.7s
+2026-09-29T00:05:55+0800 [INFO]   [FAIL] chapter 6 — score=85.0 elapsed=0.0s
+2026-09-29T00:05:55+0800 [INFO]   [OK] chapter 7 — score=83.6 elapsed=0.0s
+2026-09-29T00:05:55+0800 [INFO]   [OK] chapter 8 — score=86.3 elapsed=0.0s
+2026-09-29T00:05:55+0800 [INFO]   [FAIL] chapter 9 — score=None elapsed=0.0s
+2026-09-29T00:05:55+0800 [INFO]   [OK] chapter 10 — score=86.3 elapsed=0.0s
+2026-09-29T00:05:55+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260928T143437Z.log

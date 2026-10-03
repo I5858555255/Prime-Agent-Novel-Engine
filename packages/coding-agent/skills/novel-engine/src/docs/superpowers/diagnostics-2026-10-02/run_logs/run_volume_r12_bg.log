@@ -1,0 +1,38 @@
+﻿2026-09-30T05:31:18+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T213118Z.log
+2026-09-30T05:31:18+0800 [INFO] API key is present in environment.
+2026-09-30T05:31:18+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T05:31:18+0800 [INFO] Found 9 already completed chapters in checkpoint.
+2026-09-30T05:31:18+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 7, 8, 9, 10]
+2026-09-30T05:31:18+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T05:31:18+0800 [INFO] Generating chapters 6..6 (real LLM, no mock).
+2026-09-30T05:31:18+0800 [INFO] Initializing/verifying world state...
+python.exe : D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated
+ as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for remova
+l as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+所在位置 行:1 字符: 119
++ ... ngine\src"; & "D:\Program Files\Python312\python.exe" -m novel_engine ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\Program File... Setuptools<81.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import pkg_resources
+2026-09-30T05:31:20+0800 [INFO] World state initialized: current_chapter=6
+2026-09-30T05:31:20+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 0.937 seconds.
+Prefix dict has been built successfully.
+Scene 2 validation failed (attempt 1/2): ["high_freq_repeat: '陆烬躺在草铺上，' x4"], regenerating
+Scene 2 validation failed (attempt 2/2): ["high_freq_repeat: '陆烬躺在草铺上，' x3"], regenerating
+Scene 2 class=USABLE (1842 chars) after 2 regens → salvage to bounded expansion/density gate, not HALT
+Boundary Stage1 candidate for ch6 {'containment': 0.0008, 'cosine': 0.6961, 'candidate': True} → Stage2 LLM
+Scope leak ch6 scene4: [('hard_leak', '吐纳')] -> targeted regen
+Scope leak persists scene4 after regen [('hard_leak', '吐纳')] -> replan
+WRITE REPLAN ch6: 设定泄漏/时间锚越界经定点重生仍未消除 scenes=[4]，需重排任务卡
+Chapter 6 quality-replan requested (scenes=[4]) → skip in-process retries
+2026-09-30T05:37:36+0800 [INFO] === END chapter 6 [FAILED] in 376.6s (score=None) ===
+2026-09-30T05:37:36+0800 [ERROR] chapter 6 errors: ['WRITE_REPLAN: 设定泄漏/时间锚越界经定点重生仍未消除 scenes=[4]，需重排任务卡']
+2026-09-30T05:37:36+0800 [INFO] ============================================================
+2026-09-30T05:37:36+0800 [INFO] SUMMARY: 0/1 chapters succeeded, 1 failed in 376.6s
+2026-09-30T05:37:36+0800 [INFO]   [FAIL] chapter 6 — score=None elapsed=0.0s
+2026-09-30T05:37:36+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T213118Z.log

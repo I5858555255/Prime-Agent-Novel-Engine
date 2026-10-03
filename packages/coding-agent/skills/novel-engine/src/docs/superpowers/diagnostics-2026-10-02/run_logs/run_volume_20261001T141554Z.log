@@ -1,0 +1,55 @@
+2026-10-01T22:15:54+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261001T141554Z.log
+2026-10-01T22:15:54+0800 [INFO] API key is present in environment.
+2026-10-01T22:15:54+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-10-01T22:15:54+0800 [INFO] Found 20 already completed chapters in checkpoint.
+2026-10-01T22:15:54+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+2026-10-01T22:15:54+0800 [INFO] Resuming from chapter 21 (skipped 0 already-committed)
+2026-10-01T22:15:54+0800 [INFO] Generating chapters 21..50 (real LLM, no mock).
+2026-10-01T22:15:54+0800 [INFO] Initializing/verifying world state...
+2026-10-01T22:16:02+0800 [INFO] World state initialized: current_chapter=11
+2026-10-01T22:16:02+0800 [INFO] === START chapter 21 ===
+2026-10-01T22:48:00+0800 [INFO] === END chapter 21 [COMMITTED] in 1917.3s (score=81.7) note=best 81.7 < 88 (hard gate []) ===
+2026-10-01T22:48:00+0800 [INFO] === START chapter 22 ===
+2026-10-01T23:09:06+0800 [INFO] === END chapter 22 [COMMITTED] in 1266.0s (score=88.6) note=hard gate blocked but force publish 88.6: det=['[重复] 检测到 200 字级整块重复'] high=True ===
+2026-10-01T23:09:06+0800 [INFO] === START chapter 23 ===
+2026-10-01T23:30:07+0800 [INFO] === END chapter 23 [COMMITTED] in 1260.8s (score=87.1) note= ===
+2026-10-01T23:30:07+0800 [INFO] === START chapter 24 ===
+2026-10-02T01:50:06+0800 [INFO] === END chapter 24 [FAILED] in 8399.3s (score=83.3) note=best 83.3 < 88 (hard gate ['[canon硬词] 吐纳：那对眼睛里，没有寻常父亲教导孩子时的温和或鼓励，反而像两口深井，里面沉淀着太多陆烬看不懂的东西。']) ===
+2026-10-02T01:50:06+0800 [ERROR] chapter 24 errors: []
+2026-10-02T01:50:06+0800 [INFO] === START chapter 25 ===
+2026-10-02T02:10:08+0800 [INFO] === END chapter 25 [FAILED] in 1202.5s (score=90.0) note=["scope_hard_leak:scope硬词 ['吐纳']"] ===
+2026-10-02T02:10:08+0800 [ERROR] chapter 25 errors: []
+2026-10-02T02:10:08+0800 [INFO] === START chapter 26 ===
+2026-10-02T02:53:26+0800 [INFO] === END chapter 26 [COMMITTED] in 2597.5s (score=82.1) note=best 82.1 < 88 (hard gate []) ===
+2026-10-02T02:53:26+0800 [INFO] === START chapter 27 ===
+2026-10-02T03:25:56+0800 [INFO] === END chapter 27 [COMMITTED] in 1950.5s (score=84.5) note=best 84.5 < 88 (hard gate []) ===
+2026-10-02T03:25:56+0800 [INFO] === START chapter 28 ===
+2026-10-02T03:34:03+0800 [INFO] === END chapter 28 [FAILED] in 486.7s (score=None) note= ===
+2026-10-02T03:34:03+0800 [ERROR] chapter 28 errors: ['WRITE_REPLAN: 内容密度两轮重生无改善（疑似真空洞） scenes=[4]，需重排任务卡']
+2026-10-02T03:34:03+0800 [INFO] === START chapter 29 ===
+2026-10-02T04:01:42+0800 [INFO] === END chapter 29 [COMMITTED] in 1659.1s (score=82.45) note=best 82.45 < 88 (hard gate []) ===
+2026-10-02T04:01:42+0800 [INFO] === START chapter 30 ===
+2026-10-02T04:21:03+0800 [INFO] === END chapter 30 [COMMITTED] in 1160.3s (score=77.15) note=best 77.15 < 88 (hard gate []) ===
+2026-10-02T04:21:03+0800 [INFO] === START chapter 31 ===
+2026-10-02T04:45:22+0800 [INFO] === END chapter 31 [COMMITTED] in 1459.3s (score=77.3) note=best 77.3 < 88 (hard gate []) ===
+2026-10-02T04:45:22+0800 [INFO] === START chapter 32 ===
+2026-10-02T05:09:03+0800 [INFO] === END chapter 32 [COMMITTED] in 1421.1s (score=90.2) note=hard gate blocked but force publish 90.2: det=[] high=True ===
+2026-10-02T05:09:03+0800 [INFO] === START chapter 33 ===
+2026-10-02T05:31:59+0800 [INFO] === END chapter 33 [COMMITTED] in 1376.1s (score=80.1) note=best 80.1 < 88 (hard gate []) ===
+2026-10-02T05:31:59+0800 [INFO] === START chapter 34 ===
+2026-10-02T05:57:37+0800 [INFO] === END chapter 34 [COMMITTED] in 1537.5s (score=86.3) note= ===
+2026-10-02T05:57:37+0800 [INFO] === START chapter 35 ===
+2026-10-02T06:14:51+0800 [INFO] === END chapter 35 [COMMITTED] in 1034.5s (score=89.7) note= ===
+2026-10-02T06:14:51+0800 [INFO] === START chapter 36 ===
+2026-10-02T06:37:40+0800 [INFO] === END chapter 36 [COMMITTED] in 1368.8s (score=84.3) note=best 84.3 < 88 (hard gate []) ===
+2026-10-02T06:37:40+0800 [INFO] === START chapter 37 ===
+2026-10-02T06:56:44+0800 [INFO] === END chapter 37 [FAILED] in 1144.4s (score=87.4) note=best 87.4 < 88 (hard gate ['[伏笔极性矛盾] 对同一现象既判排斥又判吸引，无铺垫调和', '[canon硬词] 吐纳：陆烬下意识地想问为什么，想问这与白日的教导、与那些关于外界凶险的讲述有何不同。']) ===
+2026-10-02T06:56:44+0800 [ERROR] chapter 37 errors: []
+2026-10-02T06:56:44+0800 [INFO] === START chapter 38 ===
+2026-10-02T07:09:32+0800 [INFO] === END chapter 38 [FAILED] in 768.0s (score=88.5) note=["scope_hard_leak:scope硬词 ['吐纳']"] ===
+2026-10-02T07:09:32+0800 [ERROR] chapter 38 errors: []
+2026-10-02T07:09:32+0800 [INFO] === START chapter 39 ===
+2026-10-02T07:39:40+0800 [INFO] === END chapter 39 [COMMITTED] in 1807.4s (score=83.0) note=best 83.0 < 88 (hard gate []) ===
+2026-10-02T07:39:40+0800 [INFO] === START chapter 40 ===
+2026-10-02T07:58:40+0800 [INFO] === END chapter 40 [COMMITTED] in 1140.1s (score=86.7) note=best 86.7 < 88 (hard gate []) ===
+2026-10-02T07:58:40+0800 [INFO] === START chapter 41 ===

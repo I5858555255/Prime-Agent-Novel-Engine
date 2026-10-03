@@ -1,0 +1,32 @@
+﻿2026-09-30T03:01:54+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T190154Z.log
+2026-09-30T03:01:54+0800 [INFO] API key is present in environment.
+2026-09-30T03:01:54+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T03:01:54+0800 [INFO] Found 7 already completed chapters in checkpoint.
+2026-09-30T03:01:54+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 8, 10]
+2026-09-30T03:01:54+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T03:01:54+0800 [INFO] Generating chapters 6..9 (real LLM, no mock).
+2026-09-30T03:01:54+0800 [INFO] Initializing/verifying world state...
+python.exe : D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated
+ as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for remova
+l as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+所在位置 行:1 字符: 119
++ ... ngine\src"; & "D:\Program Files\Python312\python.exe" -m novel_engine ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\Program File... Setuptools<81.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import pkg_resources
+2026-09-30T03:01:55+0800 [INFO] World state initialized: current_chapter=9
+2026-09-30T03:01:55+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 0.890 seconds.
+Prefix dict has been built successfully.
+Boundary Stage1 candidate for ch6 {'containment': 0.0001, 'cosine': 0.6776, 'candidate': True} → Stage2 LLM
+Progression r1 ch6 scene2: no_new_state=True atmosphere_sat=False adjacent_sat=True
+Progression soft-pass ch6 scene2: residual no_new_state=True atmosphere_sat=False adjacent_sat=False -> reviewer/E-loop
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Deterministic gate flagged chapter 6: ['[canon硬词] 吐纳：若是传授给他，让他学着调整呼吸。']
+Chapter 6 ending overlaps prev (['呼吸', '夜', '睡', '静', '风', '黑暗']); suggest varied closing
+Canon scope gate ch0: 1 hard hit(s) -> hard block; terms=['吐纳']
+Post-enforce gate still flagged: ['[canon硬词] 吐纳：若是传授给他，让他学着调整呼吸。']

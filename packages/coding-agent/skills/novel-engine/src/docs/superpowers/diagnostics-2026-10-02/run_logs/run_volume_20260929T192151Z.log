@@ -1,0 +1,22 @@
+2026-09-30T03:21:51+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T192151Z.log
+2026-09-30T03:21:51+0800 [INFO] API key is present in environment.
+2026-09-30T03:21:51+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T03:21:51+0800 [INFO] Found 7 already completed chapters in checkpoint.
+2026-09-30T03:21:51+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 8, 10]
+2026-09-30T03:21:51+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T03:21:51+0800 [INFO] Generating chapters 6..9 (real LLM, no mock).
+2026-09-30T03:21:51+0800 [INFO] Initializing/verifying world state...
+2026-09-30T03:21:52+0800 [INFO] World state initialized: current_chapter=6
+2026-09-30T03:21:52+0800 [INFO] === START chapter 6 ===
+2026-09-30T03:40:54+0800 [INFO] === END chapter 6 [FAILED] in 1142.2s (score=88.2) ===
+2026-09-30T03:40:54+0800 [ERROR] chapter 6 errors: []
+2026-09-30T03:40:54+0800 [INFO] === START chapter 7 ===
+2026-09-30T03:54:33+0800 [INFO] === END chapter 7 [COMMITTED] in 818.9s (score=84.1) ===
+2026-09-30T03:54:33+0800 [INFO] === START chapter 9 ===
+2026-09-30T04:08:23+0800 [INFO] === END chapter 9 [COMMITTED] in 829.5s (score=82.8) ===
+2026-09-30T04:08:23+0800 [INFO] ============================================================
+2026-09-30T04:08:23+0800 [INFO] SUMMARY: 2/3 chapters succeeded, 1 failed in 2790.6s
+2026-09-30T04:08:23+0800 [INFO]   [FAIL] chapter 6 — score=88.2 elapsed=0.0s
+2026-09-30T04:08:23+0800 [INFO]   [OK] chapter 7 — score=84.1 elapsed=0.0s
+2026-09-30T04:08:23+0800 [INFO]   [OK] chapter 9 — score=82.8 elapsed=0.0s
+2026-09-30T04:08:23+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T192151Z.log

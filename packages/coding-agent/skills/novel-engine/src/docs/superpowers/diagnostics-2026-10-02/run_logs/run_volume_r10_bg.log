@@ -1,0 +1,55 @@
+﻿2026-09-30T04:37:47+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T203747Z.log
+2026-09-30T04:37:47+0800 [INFO] API key is present in environment.
+2026-09-30T04:37:47+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T04:37:47+0800 [INFO] Found 9 already completed chapters in checkpoint.
+2026-09-30T04:37:47+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 7, 8, 9, 10]
+2026-09-30T04:37:47+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T04:37:47+0800 [INFO] Generating chapters 6..6 (real LLM, no mock).
+2026-09-30T04:37:47+0800 [INFO] Initializing/verifying world state...
+python.exe : D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated
+ as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for remova
+l as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+所在位置 行:1 字符: 119
++ ... ngine\src"; & "D:\Program Files\Python312\python.exe" -m novel_engine ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\Program File... Setuptools<81.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import pkg_resources
+2026-09-30T04:37:48+0800 [INFO] World state initialized: current_chapter=6
+2026-09-30T04:37:48+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 0.910 seconds.
+Prefix dict has been built successfully.
+Scene 4 validation failed (attempt 1/2): ['[时间线越界] 命中导演禁写时间标记"武者"'], regenerating
+Boundary Stage1 candidate for ch6 {'containment': 0.0, 'cosine': 0.711, 'candidate': True} → Stage2 LLM
+ch6 median-of-3 votes=[83.3, 86.4, 83.6] median=83.6 range=3.1000000000000085 highly_unstable=False
+ch6 green-but-low single review 83.6; one crosscheck vote 83.9 -> median 83.75
+Polarity conflict gate ch6: 1 conflict(s) hit -> hard block; details=['对同一现象既判排斥又判吸引，无铺垫调和']
+Canon scope gate ch6: 3 hard hit(s) -> hard block; terms=['仙门', '灵根', '经脉']
+Polarity conflict gate ch6: 1 conflict(s) hit -> hard block; details=['对同一现象既判排斥又判吸引，无铺垫调和']
+Canon scope gate ch6: 4 hard hit(s) -> hard block; terms=['仙门', '吐纳', '灵根', '经脉']
+CC25 literary pass ch6 rejected: deterministic gates fail ['[伏笔极性矛盾] 对同一现象既判排斥又判吸引，无铺垫调和', '[canon硬词] 经脉：他从未想过传授他人，一来是怕
+所托非人，二来是深知这东西的凶险——若无正确引导，贸然尝试引气，极易被浊气反噬，轻则经脉受损，重则神智癫狂。', '[canon硬词] 灵根：若是寻常父母，得知自家孩儿有此禀赋，怕是欣喜若狂，千方百计也要寻个门路，送孩子去测灵根，拜仙门，
+求个鲤鱼跃龙门的前程。', '[canon硬词] 仙门：这种人，要么早早被纳入仙门道观，要么……便在这污浊世道里无声无息地夭折。', '[canon硬词] 吐纳：那点微弱的、几乎不存在的吐纳，也必须彻底停止，至少在确认这孩子完全熟睡、或不
+在近前之前，不能再尝试。'] (journal untouched)
+Polarity conflict gate ch6: 1 conflict(s) hit -> hard block; details=['对同一现象既判排斥又判吸引，无铺垫调和']
+Canon scope gate ch6: 3 hard hit(s) -> hard block; terms=['仙门', '灵根', '经脉']
+Polarity conflict gate ch6: 1 conflict(s) hit -> hard block; details=['对同一现象既判排斥又判吸引，无铺垫调和']
+Canon scope gate ch6: 3 hard hit(s) -> hard block; terms=['仙门', '灵根', '经脉']
+ch6 atm repolish scene3 failed: 'str' object has no attribute 'get'
+Polarity conflict gate ch6: 1 conflict(s) hit -> hard block; details=['对同一现象既判排斥又判吸引，无铺垫调和']
+Canon scope gate ch6: 3 hard hit(s) -> hard block; terms=['仙门', '灵根', '经脉']
+Fix exhausted, force-best to draft 83.75 < 88 (never novel/) with note (hard gate may still block)
+Polarity conflict gate ch6: 1 conflict(s) hit -> hard block; details=['对同一现象既判排斥又判吸引，无铺垫调和']
+Canon scope gate ch6: 3 hard hit(s) -> hard block; terms=['仙门', '灵根', '经脉']
+FINAL GATE BLOCK ch6 score=83.75: ["scope_hard_leak:scope硬词 ['经脉', '灵根', '仙门']"] -> quarantine+human, cursor continues
+Chapter 6 terminal quality gap (final_gate=True, continuity/quality=False) -> skip in-process retries, runner gap-conti
+nues
+2026-09-30T04:53:21+0800 [INFO] === END chapter 6 [FAILED] in 933.0s (score=83.75) ===
+2026-09-30T04:53:21+0800 [ERROR] chapter 6 errors: []
+2026-09-30T04:53:21+0800 [INFO] ============================================================
+2026-09-30T04:53:21+0800 [INFO] SUMMARY: 0/1 chapters succeeded, 1 failed in 933.0s
+2026-09-30T04:53:21+0800 [INFO]   [FAIL] chapter 6 — score=83.75 elapsed=0.0s
+2026-09-30T04:53:21+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T203747Z.log

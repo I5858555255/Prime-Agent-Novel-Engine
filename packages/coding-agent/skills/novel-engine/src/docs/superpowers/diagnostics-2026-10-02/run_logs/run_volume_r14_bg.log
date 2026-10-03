@@ -1,0 +1,58 @@
+﻿2026-09-30T06:02:21+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T220221Z.log
+2026-09-30T06:02:21+0800 [INFO] API key is present in environment.
+2026-09-30T06:02:21+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T06:02:21+0800 [INFO] Found 9 already completed chapters in checkpoint.
+2026-09-30T06:02:21+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 7, 8, 9, 10]
+2026-09-30T06:02:21+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T06:02:21+0800 [INFO] Generating chapters 6..6 (real LLM, no mock).
+2026-09-30T06:02:21+0800 [INFO] Initializing/verifying world state...
+python.exe : D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated
+ as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for remova
+l as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+所在位置 行:1 字符: 119
++ ... ngine\src"; & "D:\Program Files\Python312\python.exe" -m novel_engine ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\Program File... Setuptools<81.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import pkg_resources
+2026-09-30T06:02:23+0800 [INFO] World state initialized: current_chapter=6
+2026-09-30T06:02:23+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 0.884 seconds.
+Prefix dict has been built successfully.
+Scene 3 validation failed (attempt 1/2): ["high_freq_repeat: '。陈老根伸出手，' x3", '[时间线越界] 命中导演禁写时间标记"武者"'], regenerating
+Scene 3 CC21 under-target regen -> 2692 chars (floor 1505, target 2150)
+Scene 4 validation failed (attempt 1/2): ['[时间线越界] 命中导演禁写时间标记"武者"'], regenerating
+Scene 4 validation failed (attempt 2/2): ['[时间线越界] 命中导演禁写时间标记"武者"'], regenerating
+Scene 4 class=USABLE (2707 chars) after 2 regens → salvage to bounded expansion/density gate, not HALT
+Boundary Stage1 candidate for ch6 {'containment': 0.0, 'cosine': 0.7082, 'candidate': True} → Stage2 LLM
+Scope leak ch6 scene4: [('hard_leak', '丹田')] -> targeted regen
+POV interiority ch6 scene4: deterministic excise of adult monologue
+Chapter 6 ending overlaps prev (['夜', '睡', '静', '风', '黑暗']); suggest varied closing
+ch6 green-but-low single review 80.5; one crosscheck vote 76.9 -> median 78.70
+Cross-scene crisis gate ch6: 1 off-card crisis(es) hit -> hard block; examples=['回到院门前，陈老根停下脚步，却没有立刻推门进去。']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Cross-scene crisis gate ch6: 1 off-card crisis(es) hit -> hard block; examples=['回到院门前，陈老根停下脚步，却没有立刻推门进去。']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+CC25 literary pass ch6 rejected: deterministic gates fail ['[跨场危机] off-card crisis 未承接：回到院门前，陈老根停下脚步，却没有立刻推门进去。', '[can
+on硬词] 吐纳：不是教那些能开山裂石的武技，而是那套呼吸法最基础、最温和的入门吐纳。'] (journal untouched)
+Cross-scene crisis gate ch6: 1 off-card crisis(es) hit -> hard block; examples=['回到院门前，陈老根停下脚步，却没有立刻推门进去。']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+ch6 atm repolish scene3 failed: 'str' object has no attribute 'get'
+Cross-scene crisis gate ch6: 1 off-card crisis(es) hit -> hard block; examples=['回到院门前，陈老根停下脚步，却没有立刻推门进去。']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Fix exhausted, force-best to draft 81.9 < 88 (never novel/) with note (hard gate may still block)
+Cross-scene crisis gate ch6: 1 off-card crisis(es) hit -> hard block; examples=['回到院门前，陈老根停下脚步，却没有立刻推门进去。']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+FINAL GATE BLOCK ch6 score=81.9: ["scope_hard_leak:scope硬词 ['吐纳']"] -> quarantine+human, cursor continues
+Chapter 6 terminal quality gap (final_gate=True, continuity/quality=False) -> skip in-process retries, runner gap-conti
+nues
+2026-09-30T06:25:37+0800 [INFO] === END chapter 6 [FAILED] in 1393.6s (score=81.9) ===
+2026-09-30T06:25:37+0800 [ERROR] chapter 6 errors: []
+2026-09-30T06:25:37+0800 [INFO] ============================================================
+2026-09-30T06:25:37+0800 [INFO] SUMMARY: 0/1 chapters succeeded, 1 failed in 1393.6s
+2026-09-30T06:25:37+0800 [INFO]   [FAIL] chapter 6 — score=81.9 elapsed=0.0s
+2026-09-30T06:25:37+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T220221Z.log

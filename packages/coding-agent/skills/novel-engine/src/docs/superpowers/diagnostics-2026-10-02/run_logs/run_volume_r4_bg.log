@@ -1,0 +1,74 @@
+﻿2026-09-30T00:13:50+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T161350Z.log
+2026-09-30T00:13:50+0800 [INFO] API key is present in environment.
+2026-09-30T00:13:50+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T00:13:50+0800 [INFO] Found 7 already completed chapters in checkpoint.
+2026-09-30T00:13:50+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 8, 10]
+2026-09-30T00:13:50+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T00:13:50+0800 [INFO] Generating chapters 6..9 (real LLM, no mock).
+2026-09-30T00:13:50+0800 [INFO] Initializing/verifying world state...
+python.exe : D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated
+ as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for remova
+l as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+所在位置 行:1 字符: 193
++ ... ; exit 1 }; & "D:\Program Files\Python312\python.exe" -m novel_engine ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\Program File... Setuptools<81.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import pkg_resources
+2026-09-30T00:13:51+0800 [INFO] World state initialized: current_chapter=9
+2026-09-30T00:13:51+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 0.859 seconds.
+Prefix dict has been built successfully.
+Boundary Stage1 candidate for ch6 {'containment': 0.0, 'cosine': 0.6898, 'candidate': True} → Stage2 LLM
+Polarity conflict gate ch6: 1 conflict(s) hit -> hard block; details=['对同一现象既判排斥又判吸引，无铺垫调和']
+Canon scope gate ch6: 2 hard hit(s) -> hard block; terms=['吐纳', '调息']
+FINAL GATE BLOCK ch6 score=89.1: ["scope_hard_leak:scope硬词 ['吐纳', '调息']"] -> quarantine+human, cursor continues
+Chapter 6 terminal quality gap (final_gate=True, continuity/quality=False) -> skip in-process retries, runner gap-conti
+nues
+2026-09-30T00:23:43+0800 [INFO] === END chapter 6 [FAILED] in 592.1s (score=89.1) ===
+2026-09-30T00:23:43+0800 [ERROR] chapter 6 errors: []
+2026-09-30T00:23:43+0800 [INFO] === START chapter 7 ===
+POV interiority ch7 scene2: deterministic excise of adult monologue
+POV interiority ch7 scene4: deterministic excise of adult monologue
+ch7 median-of-3 votes=[83.5, 79.3, 78.5] median=79.3 range=5.0 highly_unstable=False
+ch7 green-but-low single review 79.3; one crosscheck vote 78.0 -> median 78.65
+Cross-scene crisis gate ch7: 1 off-card crisis(es) hit -> hard block; examples=['他走到水缸边，踮起脚想舀水喝，却发现水瓢挂得太高，够不着。']
+Canon scope gate ch7: 1 hard hit(s) -> hard block; terms=['另一个世界']
+Gray-band release ch7: score 85.4 in [85,88) + gates pass + no-high → release to novel (flagged for human spot-check) s
+oft=[]
+Fix exhausted, force-best to draft 85.4 < 88 (never novel/) with note (hard gate may still block)
+Force-best to draft 85.4 despite hard gate (note=best 85.4 < 88 (hard gate [])) hard=[] soft=[] high=['plot_consistency
+/medium:场景1中，陈老根主动提及“村里闲话多”、“村口老槐树”、“捡来不祥”、“夜里绿光”等具体传言，信息量', 'foreshadow_execution/high:核心伏笔动作[F001]“陈老根望向村外禁区方向”在正文中完全
+缺失。任务卡要求此伏笔在场景4（夜晚屋']
+Chapter 7 force-best saved to draft/chapter_7.txt (never novel/) high=['plot_consistency/medium:场景1中，陈老根主动提及“村里闲话多”、“村口
+老槐树”、“捡来不祥”、“夜里绿光”等具体传言，信息量', 'foreshadow_execution/high:核心伏笔动作[F001]“陈老根望向村外禁区方向”在正文中完全缺失。任务卡要求此伏笔在场景4（夜晚屋'] det_hard=
+[] soft=[]
+2026-09-30T00:43:47+0800 [INFO] === END chapter 7 [COMMITTED] in 1204.1s (score=85.4) ===
+2026-09-30T00:43:47+0800 [INFO] === START chapter 9 ===
+ch9: plot_graph task [陈老根初传呼吸法残篇，只言'强身健体'不提修炼] conflicts with outline task [陈老根初传呼吸法残篇,只言"强身健体"不提修炼]; outline wins
+Boundary Stage1 candidate for ch9 {'containment': 0.0, 'cosine': 0.6853, 'candidate': True} → Stage2 LLM
+Scope leak ch9 scene4: [('hard_leak', '吐纳')] -> targeted regen
+未知错误 (尝试 1/3): peer closed connection without sending complete message body (incomplete chunked read)
+连接失败 (尝试 1/3): The read operation timed out
+连接失败 (尝试 2/3): The read operation timed out
+连接失败 (尝试 1/3): The read operation timed out
+CC25 literary pass ch9 applied 1 edits: ['scene 3 replacement length out of band (29->71); skip', 'scene 2 replace_span
+ applied (153->162)', 'scene 2 span anchor not uniquely located; skip', 'scene 4 replacement length out of band (37->16
+9); skip']
+ch9 fix pre-filter REJECTS patch: canon hard_block hits=['吐纳'] -> abort patch, force full rewrite
+ch9: adopt gate-green candidate 81.4 over higher-score blocked candidate 87.5
+Fix exhausted, force-best to draft 81.4 < 88 (never novel/) with note (hard gate may still block)
+Force-best to draft 81.4 despite hard gate (note=best 81.4 < 88 (hard gate [])) hard=[] soft=['[长度] 字数不足：实际 7150 < 目标 8
+600*0.85=7310'] high=[]
+Chapter 9 force-best saved to draft/chapter_9.txt (never novel/) high=[] det_hard=[] soft=['[长度] 字数不足：实际 7150 < 目标 8600
+*0.85=7310']
+2026-09-30T01:21:47+0800 [INFO] === END chapter 9 [COMMITTED] in 2279.3s (score=81.4) ===
+2026-09-30T01:21:47+0800 [INFO] ============================================================
+2026-09-30T01:21:47+0800 [INFO] SUMMARY: 2/3 chapters succeeded, 1 failed in 4075.5s
+2026-09-30T01:21:47+0800 [INFO]   [FAIL] chapter 6 — score=89.1 elapsed=0.0s
+2026-09-30T01:21:47+0800 [INFO]   [OK] chapter 7 — score=85.4 elapsed=0.0s
+2026-09-30T01:21:47+0800 [INFO]   [OK] chapter 9 — score=81.4 elapsed=0.0s
+2026-09-30T01:21:47+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T161350Z.log

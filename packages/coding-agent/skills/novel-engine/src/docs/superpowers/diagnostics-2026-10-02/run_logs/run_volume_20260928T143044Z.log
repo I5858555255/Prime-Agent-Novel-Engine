@@ -1,0 +1,10 @@
+2026-09-28T22:30:44+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260928T143044Z.log
+2026-09-28T22:30:44+0800 [INFO] API key is present in environment.
+2026-09-28T22:30:44+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-28T22:30:44+0800 [INFO] Found 5 already completed chapters in checkpoint.
+2026-09-28T22:30:44+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5]
+2026-09-28T22:30:44+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-28T22:30:44+0800 [INFO] Generating chapters 6..10 (real LLM, no mock).
+2026-09-28T22:30:44+0800 [INFO] Initializing/verifying world state...
+2026-09-28T22:30:45+0800 [INFO] World state initialized: current_chapter=6
+2026-09-28T22:30:45+0800 [INFO] === START chapter 6 ===

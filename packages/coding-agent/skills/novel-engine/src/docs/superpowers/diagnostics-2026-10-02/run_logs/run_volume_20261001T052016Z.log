@@ -1,0 +1,25 @@
+2026-10-01T13:20:16+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261001T052016Z.log
+2026-10-01T13:20:16+0800 [INFO] API key is present in environment.
+2026-10-01T13:20:16+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-10-01T13:20:16+0800 [INFO] Found 16 already completed chapters in checkpoint.
+2026-10-01T13:20:16+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17, 18, 19, 20]
+2026-10-01T13:20:16+0800 [INFO] Resuming from chapter 11 (skipped 0 already-committed)
+2026-10-01T13:20:16+0800 [INFO] Generating chapters 11..16 (real LLM, no mock).
+2026-10-01T13:20:16+0800 [INFO] Initializing/verifying world state...
+2026-10-01T13:20:17+0800 [INFO] World state initialized: current_chapter=20
+2026-10-01T13:20:17+0800 [INFO] === START chapter 11 ===
+2026-10-01T13:46:35+0800 [INFO] === END chapter 11 [FAILED] in 1578.3s (score=None) note= ===
+2026-10-01T13:46:35+0800 [ERROR] chapter 11 errors: ['Chapter 11 hard-failed after retries']
+2026-10-01T13:46:35+0800 [INFO] === START chapter 12 ===
+2026-10-01T13:57:40+0800 [INFO] === END chapter 12 [COMMITTED] in 664.2s (score=87.3) note= ===
+2026-10-01T13:57:40+0800 [INFO] === START chapter 15 ===
+2026-10-01T14:13:54+0800 [INFO] === END chapter 15 [COMMITTED] in 974.5s (score=88.7) note= ===
+2026-10-01T14:13:54+0800 [INFO] === START chapter 16 ===
+2026-10-01T14:37:44+0800 [INFO] === END chapter 16 [COMMITTED] in 1429.9s (score=86.2) note= ===
+2026-10-01T14:37:44+0800 [INFO] ============================================================
+2026-10-01T14:37:44+0800 [INFO] SUMMARY: 3/4 chapters succeeded, 1 failed in 4646.9s
+2026-10-01T14:37:44+0800 [INFO]   [FAIL] chapter 11 — score=None elapsed=0.0s
+2026-10-01T14:37:44+0800 [INFO]   [OK] chapter 12 — score=87.3 elapsed=0.0s
+2026-10-01T14:37:44+0800 [INFO]   [OK] chapter 15 — score=88.7 elapsed=0.0s
+2026-10-01T14:37:44+0800 [INFO]   [OK] chapter 16 — score=86.2 elapsed=0.0s
+2026-10-01T14:37:44+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261001T052016Z.log

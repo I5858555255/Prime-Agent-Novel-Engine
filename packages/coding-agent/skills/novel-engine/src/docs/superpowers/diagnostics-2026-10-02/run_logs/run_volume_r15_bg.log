@@ -1,0 +1,48 @@
+﻿2026-09-30T06:38:04+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T223804Z.log
+2026-09-30T06:38:04+0800 [INFO] API key is present in environment.
+2026-09-30T06:38:05+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T06:38:05+0800 [INFO] Found 9 already completed chapters in checkpoint.
+2026-09-30T06:38:05+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 7, 8, 9, 10]
+2026-09-30T06:38:05+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T06:38:05+0800 [INFO] Generating chapters 6..6 (real LLM, no mock).
+2026-09-30T06:38:05+0800 [INFO] Initializing/verifying world state...
+python.exe : D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated
+ as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for remova
+l as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+所在位置 行:1 字符: 119
++ ... ngine\src"; & "D:\Program Files\Python312\python.exe" -m novel_engine ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\Program File... Setuptools<81.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import pkg_resources
+2026-09-30T06:38:06+0800 [INFO] World state initialized: current_chapter=6
+2026-09-30T06:38:06+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 0.854 seconds.
+Prefix dict has been built successfully.
+Scene 4 validation failed (attempt 1/2): ['[时间线越界] 命中导演禁写时间标记"武者"'], regenerating
+Boundary Stage1 candidate for ch6 {'containment': 0.0, 'cosine': 0.6858, 'candidate': True} → Stage2 LLM
+Progression r1 ch6 scene2: no_new_state=True atmosphere_sat=False adjacent_sat=True
+Progression soft-pass ch6 scene2: residual no_new_state=True atmosphere_sat=False adjacent_sat=True -> reviewer/E-loop
+Cross-scene crisis gate ch6: 1 off-card crisis(es) hit -> hard block; examples=['回到院门前，陈老根停下脚步，却没有立刻推门进去。']
+Deterministic gate flagged chapter 6: ['[跨场危机] off-card crisis 未承接：回到院门前，陈老根停下脚步，却没有立刻推门进去。']
+Chapter 6 ending overlaps prev (['夜', '睡', '静', '风', '黑暗']); suggest varied closing
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+CC25 literary pass ch6 rejected: deterministic gates fail ['[canon硬词] 吐纳：传授出去，便等于在自己与这捡来的孩子之间，系上了一条无法轻易斩断的、危险的线。'] (jou
+rnal untouched)
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+Fix exhausted, force-best to draft 87.4 < 88 (never novel/) with note (hard gate may still block)
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+FINAL GATE BLOCK ch6 score=87.4: ["scope_hard_leak:scope硬词 ['吐纳']"] -> quarantine+human, cursor continues
+Chapter 6 terminal quality gap (final_gate=True, continuity/quality=False) -> skip in-process retries, runner gap-conti
+nues
+2026-09-30T06:49:28+0800 [INFO] === END chapter 6 [FAILED] in 682.7s (score=87.4) ===
+2026-09-30T06:49:28+0800 [ERROR] chapter 6 errors: []
+2026-09-30T06:49:28+0800 [INFO] ============================================================
+2026-09-30T06:49:28+0800 [INFO] SUMMARY: 0/1 chapters succeeded, 1 failed in 682.7s
+2026-09-30T06:49:28+0800 [INFO]   [FAIL] chapter 6 — score=87.4 elapsed=0.0s
+2026-09-30T06:49:28+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T223804Z.log

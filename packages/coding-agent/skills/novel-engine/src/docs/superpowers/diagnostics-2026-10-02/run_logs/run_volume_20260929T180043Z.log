@@ -1,0 +1,24 @@
+2026-09-30T02:00:43+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T180043Z.log
+2026-09-30T02:00:43+0800 [INFO] API key is present in environment.
+2026-09-30T02:00:43+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T02:00:43+0800 [INFO] Found 7 already completed chapters in checkpoint.
+2026-09-30T02:00:43+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 8, 10]
+2026-09-30T02:00:43+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T02:00:43+0800 [INFO] Generating chapters 6..9 (real LLM, no mock).
+2026-09-30T02:00:43+0800 [INFO] Initializing/verifying world state...
+2026-09-30T02:00:45+0800 [INFO] World state initialized: current_chapter=9
+2026-09-30T02:00:45+0800 [INFO] === START chapter 6 ===
+2026-09-30T02:14:23+0800 [INFO] === END chapter 6 [FAILED] in 818.5s (score=80.3) ===
+2026-09-30T02:14:23+0800 [ERROR] chapter 6 errors: []
+2026-09-30T02:14:23+0800 [INFO] === START chapter 7 ===
+2026-09-30T02:23:37+0800 [INFO] === END chapter 7 [FAILED] in 553.8s (score=86.0) ===
+2026-09-30T02:23:37+0800 [ERROR] chapter 7 errors: []
+2026-09-30T02:23:37+0800 [INFO] === START chapter 9 ===
+2026-09-30T02:37:46+0800 [INFO] === END chapter 9 [FAILED] in 849.3s (score=81.30000000000001) ===
+2026-09-30T02:37:46+0800 [ERROR] chapter 9 errors: []
+2026-09-30T02:37:46+0800 [INFO] ============================================================
+2026-09-30T02:37:46+0800 [INFO] SUMMARY: 0/3 chapters succeeded, 3 failed in 2221.5s
+2026-09-30T02:37:46+0800 [INFO]   [FAIL] chapter 6 — score=80.3 elapsed=0.0s
+2026-09-30T02:37:46+0800 [INFO]   [FAIL] chapter 7 — score=86.0 elapsed=0.0s
+2026-09-30T02:37:46+0800 [INFO]   [FAIL] chapter 9 — score=81.30000000000001 elapsed=0.0s
+2026-09-30T02:37:46+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T180043Z.log

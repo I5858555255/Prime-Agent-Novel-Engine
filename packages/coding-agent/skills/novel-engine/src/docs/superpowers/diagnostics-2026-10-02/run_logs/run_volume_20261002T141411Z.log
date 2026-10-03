@@ -1,0 +1,35 @@
+2026-10-02T22:14:11+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261002T141411Z.log
+2026-10-02T22:14:11+0800 [INFO] API key is present in environment.
+2026-10-02T22:14:11+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-10-02T22:14:11+0800 [INFO] Found 43 already completed chapters in checkpoint.
+2026-10-02T22:14:11+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 43, 44, 45, 47, 50]
+2026-10-02T22:14:11+0800 [INFO] Resuming from chapter 24 (skipped 0 already-committed)
+2026-10-02T22:14:11+0800 [INFO] Generating chapters 24..49 (real LLM, no mock).
+2026-10-02T22:14:11+0800 [INFO] Initializing/verifying world state...
+2026-10-02T22:14:13+0800 [INFO] World state initialized: current_chapter=50
+2026-10-02T22:14:13+0800 [INFO] === START chapter 24 ===
+2026-10-02T22:40:29+0800 [INFO] === END chapter 24 [COMMITTED] in 1576.3s (score=86.1) note=best 86.1 < 88 (hard gate []) ===
+2026-10-02T22:40:29+0800 [INFO] === START chapter 25 ===
+2026-10-02T22:57:34+0800 [INFO] === END chapter 25 [FAILED] in 1025.5s (score=85.5) note=best 85.5 < 88 (hard gate ['[命名矛盾] 活井（古井）与枯井同章共现且活井证据成立', '[canon硬词] 吐纳：他清楚这绝非寻常孩童该有的恢复力，更与陈老根教的那套夜里静坐、调整呼吸节奏的法子脱不了干系。']) ===
+2026-10-02T22:57:34+0800 [ERROR] chapter 25 errors: []
+2026-10-02T22:57:34+0800 [INFO] === START chapter 37 ===
+2026-10-02T23:21:00+0800 [INFO] === END chapter 37 [COMMITTED] in 1406.1s (score=85.0) note=best 85.0 < 88 (hard gate ['[伏笔极性矛盾] 对同一现象既判排斥又判吸引，无铺垫调和']) ===
+2026-10-02T23:21:00+0800 [INFO] === START chapter 42 ===
+2026-10-02T23:39:12+0800 [INFO] === END chapter 42 [COMMITTED] in 1092.0s (score=86.1) note=best 86.1 < 88 (hard gate []) ===
+2026-10-02T23:39:12+0800 [INFO] === START chapter 46 ===
+2026-10-02T23:57:39+0800 [INFO] === END chapter 46 [COMMITTED] in 1106.5s (score=89.4) note= ===
+2026-10-02T23:57:39+0800 [INFO] === START chapter 48 ===
+2026-10-03T00:20:55+0800 [INFO] === END chapter 48 [FAILED] in 1395.9s (score=75.3) note=best 75.3 < 88 (hard gate []) ===
+2026-10-03T00:20:55+0800 [ERROR] chapter 48 errors: []
+2026-10-03T00:20:55+0800 [INFO] === START chapter 49 ===
+2026-10-03T00:47:10+0800 [INFO] === END chapter 49 [COMMITTED] in 1575.2s (score=84.2) note=best 84.2 < 88 (hard gate []) ===
+2026-10-03T00:47:10+0800 [INFO] ============================================================
+2026-10-03T00:47:10+0800 [INFO] SUMMARY: 5/7 chapters succeeded, 2 failed in 9177.6s
+2026-10-03T00:47:10+0800 [INFO]   [OK] chapter 24 — score=86.1 elapsed=0.0s
+2026-10-03T00:47:10+0800 [INFO]   [FAIL] chapter 25 — score=85.5 elapsed=0.0s
+2026-10-03T00:47:10+0800 [INFO]   [OK] chapter 37 — score=85.0 elapsed=0.0s
+2026-10-03T00:47:10+0800 [INFO]   [OK] chapter 42 — score=86.1 elapsed=0.0s
+2026-10-03T00:47:10+0800 [INFO]   [OK] chapter 46 — score=89.4 elapsed=0.0s
+2026-10-03T00:47:10+0800 [INFO]   [FAIL] chapter 48 — score=75.3 elapsed=0.0s
+2026-10-03T00:47:10+0800 [INFO]   [OK] chapter 49 — score=84.2 elapsed=0.0s
+2026-10-03T00:47:10+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261002T141411Z.log

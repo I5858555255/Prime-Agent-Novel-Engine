@@ -1,0 +1,37 @@
+﻿2026-09-30T05:44:56+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T214456Z.log
+2026-09-30T05:44:56+0800 [INFO] API key is present in environment.
+2026-09-30T05:44:56+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-09-30T05:44:56+0800 [INFO] Found 9 already completed chapters in checkpoint.
+2026-09-30T05:44:56+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 7, 8, 9, 10]
+2026-09-30T05:44:56+0800 [INFO] Resuming from chapter 6 (skipped 0 already-committed)
+2026-09-30T05:44:56+0800 [INFO] Generating chapters 6..6 (real LLM, no mock).
+2026-09-30T05:44:56+0800 [INFO] Initializing/verifying world state...
+python.exe : D:\Program Files\Python312\Lib\site-packages\jieba\_compat.py:18: UserWarning: pkg_resources is deprecated
+ as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for remova
+l as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+所在位置 行:1 字符: 119
++ ... ngine\src"; & "D:\Program Files\Python312\python.exe" -m novel_engine ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\Program File... Setuptools<81.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  import pkg_resources
+2026-09-30T05:44:58+0800 [INFO] World state initialized: current_chapter=6
+2026-09-30T05:44:58+0800 [INFO] === START chapter 6 ===
+Building prefix dict from the default dictionary ...
+Loading model from cache C:\Users\ZHANG\AppData\Local\Temp\jieba.cache
+Loading model cost 1.020 seconds.
+Prefix dict has been built successfully.
+Boundary Stage1 candidate for ch6 {'containment': 0.0008, 'cosine': 0.6961, 'candidate': True} → Stage2 LLM
+Scope leak ch6 scene4: [('hard_leak', '吐纳')] -> targeted regen
+POV interiority ch6 scene4: deterministic excise of adult monologue
+Canon scope gate ch6: 1 hard hit(s) -> hard block; terms=['吐纳']
+FINAL GATE BLOCK ch6 score=90.5: ["scope_hard_leak:scope硬词 ['吐纳']"] -> quarantine+human, cursor continues
+Chapter 6 terminal quality gap (final_gate=True, continuity/quality=False) -> skip in-process retries, runner gap-conti
+nues
+2026-09-30T05:54:09+0800 [INFO] === END chapter 6 [FAILED] in 551.4s (score=90.5) ===
+2026-09-30T05:54:09+0800 [ERROR] chapter 6 errors: []
+2026-09-30T05:54:09+0800 [INFO] ============================================================
+2026-09-30T05:54:09+0800 [INFO] SUMMARY: 0/1 chapters succeeded, 1 failed in 551.4s
+2026-09-30T05:54:09+0800 [INFO]   [FAIL] chapter 6 — score=90.5 elapsed=0.0s
+2026-09-30T05:54:09+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20260929T214456Z.log

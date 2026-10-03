@@ -1,0 +1,16 @@
+2026-10-01T16:04:00+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261001T080400Z.log
+2026-10-01T16:04:00+0800 [INFO] API key is present in environment.
+2026-10-01T16:04:00+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-10-01T16:04:00+0800 [INFO] Found 19 already completed chapters in checkpoint.
+2026-10-01T16:04:00+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+2026-10-01T16:04:00+0800 [INFO] Resuming from chapter 11 (skipped 0 already-committed)
+2026-10-01T16:04:00+0800 [INFO] Generating chapters 11..11 (real LLM, no mock).
+2026-10-01T16:04:00+0800 [INFO] Initializing/verifying world state...
+2026-10-01T16:04:02+0800 [INFO] World state initialized: current_chapter=16
+2026-10-01T16:04:02+0800 [INFO] === START chapter 11 ===
+2026-10-01T16:23:42+0800 [INFO] === END chapter 11 [FAILED] in 1180.7s (score=87.2) note=best 87.2 < 88 (hard gate ["[称谓] 同一角色“陆烬”在叙述中无锚点裸切称谓 ['陆烬', '李淳']（主用“陆烬”→['李淳']），需统一主用名或补同指锚点（如“本名…转生后名…”）", '[canon硬词] 吐纳：养父教他那一套晚上坐着调整呼吸、让身体微微发热的动作之后。']) ===
+2026-10-01T16:23:42+0800 [ERROR] chapter 11 errors: []
+2026-10-01T16:23:42+0800 [INFO] ============================================================
+2026-10-01T16:23:42+0800 [INFO] SUMMARY: 0/1 chapters succeeded, 1 failed in 1180.8s
+2026-10-01T16:23:42+0800 [INFO]   [FAIL] chapter 11 — score=87.2 elapsed=0.0s
+2026-10-01T16:23:42+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261001T080400Z.log

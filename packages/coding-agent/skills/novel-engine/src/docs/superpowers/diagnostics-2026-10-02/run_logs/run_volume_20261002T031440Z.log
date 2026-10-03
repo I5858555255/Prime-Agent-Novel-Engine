@@ -1,0 +1,64 @@
+2026-10-02T11:14:40+0800 [INFO] run_volume started — log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261002T031440Z.log
+2026-10-02T11:14:40+0800 [INFO] API key is present in environment.
+2026-10-02T11:14:40+0800 [INFO] API connectivity probe returned HTTP 200.
+2026-10-02T11:14:40+0800 [INFO] Found 35 already completed chapters in checkpoint.
+2026-10-02T11:14:40+0800 [INFO] Committed chapters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 26, 27, 29, 30, 31, 32, 33, 34, 35, 36, 39, 40]
+2026-10-02T11:14:40+0800 [INFO] Resuming from chapter 24 (skipped 0 already-committed)
+2026-10-02T11:14:40+0800 [INFO] Generating chapters 24..50 (real LLM, no mock).
+2026-10-02T11:14:40+0800 [INFO] Initializing/verifying world state...
+2026-10-02T11:14:41+0800 [INFO] World state initialized: current_chapter=41
+2026-10-02T11:14:41+0800 [INFO] === START chapter 24 ===
+2026-10-02T11:43:08+0800 [INFO] === END chapter 24 [FAILED] in 1707.0s (score=90.1) note=hard gate blocked but force publish 90.1: det=['[canon硬词] 吐纳：陈老根教的那套呼吸法。'] high=True ===
+2026-10-02T11:43:08+0800 [ERROR] chapter 24 errors: []
+2026-10-02T11:43:08+0800 [INFO] === START chapter 25 ===
+2026-10-02T11:57:16+0800 [INFO] === END chapter 25 [FAILED] in 848.2s (score=89.5) note=["scope_hard_leak:scope硬词 ['吐纳']"] ===
+2026-10-02T11:57:16+0800 [ERROR] chapter 25 errors: []
+2026-10-02T11:57:16+0800 [INFO] === START chapter 28 ===
+2026-10-02T12:17:57+0800 [INFO] === END chapter 28 [COMMITTED] in 1240.6s (score=82.8) note=best 82.8 < 88 (hard gate []) ===
+2026-10-02T12:17:57+0800 [INFO] === START chapter 37 ===
+2026-10-02T12:29:26+0800 [INFO] === END chapter 37 [FAILED] in 688.8s (score=84.4) note=best 84.4 < 88 (hard gate ['[canon硬词] 吐纳：他闭上眼睛，尝试像陈老根教的那样，让呼吸变得绵长平缓。']) ===
+2026-10-02T12:29:26+0800 [ERROR] chapter 37 errors: []
+2026-10-02T12:29:26+0800 [INFO] === START chapter 38 ===
+2026-10-02T12:48:26+0800 [INFO] === END chapter 38 [COMMITTED] in 1140.3s (score=87.0) note=best 87.0 < 88 (hard gate []) ===
+2026-10-02T12:48:26+0800 [INFO] === START chapter 41 ===
+2026-10-02T12:55:33+0800 [INFO] === END chapter 41 [COMMITTED] in 427.0s (score=88.2) note= ===
+2026-10-02T12:55:33+0800 [INFO] === START chapter 42 ===
+2026-10-02T13:11:55+0800 [INFO] === END chapter 42 [FAILED] in 982.4s (score=90.6) note=["scope_hard_leak:scope硬词 ['吐纳']"] ===
+2026-10-02T13:11:55+0800 [ERROR] chapter 42 errors: []
+2026-10-02T13:11:55+0800 [INFO] === START chapter 43 ===
+2026-10-02T13:36:05+0800 [INFO] === END chapter 43 [COMMITTED] in 1449.5s (score=88.0) note=hard gate blocked but force publish 88.0: det=["[称谓] 同一角色“陆烬”在叙述中无锚点裸切称谓 ['陆烬', '李淳']（主用“陆烬”→['李淳']），需统一主用名或补同指锚点（如“本名…转生后名…”）", '[跨场危机] off-card crisis 未承接：他等了好一阵，才见李秀才推门出来。'] high=False ===
+2026-10-02T13:36:05+0800 [INFO] === START chapter 44 ===
+2026-10-02T13:53:19+0800 [INFO] === END chapter 44 [COMMITTED] in 1034.6s (score=88.7) note= ===
+2026-10-02T13:53:19+0800 [INFO] === START chapter 45 ===
+2026-10-02T14:19:35+0800 [INFO] === END chapter 45 [COMMITTED] in 1576.0s (score=85.5) note=best 85.5 < 88 (hard gate []) ===
+2026-10-02T14:19:35+0800 [INFO] === START chapter 46 ===
+2026-10-02T14:52:08+0800 [INFO] === END chapter 46 [FAILED] in 1952.4s (score=85.3) note=best 85.3 < 88 (hard gate ['[canon硬词] 吐纳：他不是要去冒险，只是想弄清楚一点东西——弄清楚养父教的那套呼吸法。']) ===
+2026-10-02T14:52:08+0800 [ERROR] chapter 46 errors: []
+2026-10-02T14:52:08+0800 [INFO] === START chapter 47 ===
+2026-10-02T15:21:16+0800 [INFO] === END chapter 47 [COMMITTED] in 1747.8s (score=87.5) note=best 87.5 < 88 (hard gate []) ===
+2026-10-02T15:21:16+0800 [INFO] === START chapter 48 ===
+2026-10-02T15:43:27+0800 [INFO] === END chapter 48 [FAILED] in 1331.7s (score=86.4) note=best 86.4 < 88 (hard gate []) ===
+2026-10-02T15:43:27+0800 [ERROR] chapter 48 errors: []
+2026-10-02T15:43:27+0800 [INFO] === START chapter 49 ===
+2026-10-02T16:09:30+0800 [INFO] === END chapter 49 [FAILED] in 1562.2s (score=88.3) note=score=88.3>=88 dim-gate blocked (high=['plot_consistency/medium:场景1的时间锚点与任务卡不符。任务卡要求为‘午后（消化传闻后）’，但正文开头明确写为‘天光初亮’、‘'] det_hard=[] det_soft=[]), saved draft pending human review ===
+2026-10-02T16:09:30+0800 [ERROR] chapter 49 errors: []
+2026-10-02T16:09:30+0800 [INFO] === START chapter 50 ===
+2026-10-02T16:35:16+0800 [INFO] === END chapter 50 [COMMITTED] in 1546.2s (score=80.05000000000001) note=best 80.05000000000001 < 88 (hard gate []) ===
+2026-10-02T16:35:16+0800 [INFO] ============================================================
+2026-10-02T16:35:16+0800 [INFO] SUMMARY: 8/15 chapters succeeded, 7 failed in 19234.9s
+2026-10-02T16:35:16+0800 [INFO]   [FAIL] chapter 24 — score=90.1 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [FAIL] chapter 25 — score=89.5 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [OK] chapter 28 — score=82.8 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [FAIL] chapter 37 — score=84.4 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [OK] chapter 38 — score=87.0 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [OK] chapter 41 — score=88.2 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [FAIL] chapter 42 — score=90.6 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [OK] chapter 43 — score=88.0 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [OK] chapter 44 — score=88.7 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [OK] chapter 45 — score=85.5 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [FAIL] chapter 46 — score=85.3 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [OK] chapter 47 — score=87.5 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [FAIL] chapter 48 — score=86.4 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [FAIL] chapter 49 — score=88.3 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO]   [OK] chapter 50 — score=80.05000000000001 elapsed=0.0s
+2026-10-02T16:35:16+0800 [INFO] Log: D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src\novel_engine\runtime\run_volume_20261002T031440Z.log
