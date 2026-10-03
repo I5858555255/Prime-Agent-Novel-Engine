@@ -232,3 +232,47 @@ pre-work: (a) decide A/B handling of 陆烬呼吸法 line (candidate node ~ch60
 martial_identity@15 / guardian_identity@20 locks (neither lock has been
 genuinely hit in ch1-20 real runs — verify unlock timing matches intended
 reveal pacing before writing ch21+).
+
+## 2026-10-02 ch21-50 试跑（验证窗口）记录
+- 试跑进行中：ch21-50（15/30 已提交：21-23,26,27,29-36,39,40；失败：24,25,28,37,38）
+- 五章失败根因（已定位+验证）：
+  1. ch24/25/37/38 同源误报（F1）：_has_teach_violation L304 婴儿标记"全句 any"——
+     含"陆烬"+teach 动词（教导/讲解等）即判传授违规并标 [canon硬词] 吐纳，
+     final 文本实际 0 吐纳（final_gate_reject.txt 实测）→ det 修复修不存在的泄漏。
+  2. ch28：真空洞（内容密度两轮重生无改善 scenes=[4]）→ WRITE_REPLAN 标记但
+     run_volume 无重采消费（设计-实现缝隙，重跑复发时再做 run_volume 重采修复）。
+  3. ch37 附带 [伏笔极性矛盾]：ch16 修过又现（同 gate），待重跑验证单独处理。
+- F1 修复（已推送 3ae9752a0）：普通传授动词（教导/讲解/教授/教会）收紧为
+  动词后 20 字窗+受事结构（给/与/传给/教给/授徒）；功法类动词（传功/传法/传授/
+  传与/授徒/传下）保留全句婴儿共现 hard（保留 round22 断言）。新增 9 条回归
+  测试（5 误报+4 真违规）。门禁：1 failed/1059 passed（唯一 pre-existing），
+  pyflakes 0 undefined name。
+- 后续：试跑完成后重跑 5 失败章 → 卷级质量门 → 汇报试跑结论与规模化建议。
+
+## 2026-10-02 ch21-50 试跑第二轮（重启 031440Z）记录
+- 第二轮 SUMMARY：8/15 succeeded, 7 failed, 19234.9s。[OK] 28,38,41,43,44,45,47,50；
+  [FAIL] 24,25,37,42,46,48,49。checkpoint 43 条 last=50，21-50 已提交 23/30。
+- 7 失败章归因（分 5 类，验证见 failed 章 final_gate_reject.txt 实测）：
+  1. 提及/指称语境误报（F2 核心）：ch24"陈老根教的那套呼吸法"；ch42"正是那套
+     他教过的、用来'强身健体'的呼吸法门"（终检 0 吐纳）；ch46"想弄清楚养父教的
+     那套呼吸法"（提及）+ 同章真违规"他按照陈老根教的节奏，开始调整呼吸"。
+  2. 真违规句（gate 正确）：ch37"他闭上眼睛，尝试像陈老根教的那样，让呼吸变得
+     绵长平缓"（陆烬施动=真违规）；ch25 终检"自那套强身健体的动作教给陆烬后"
+     （传授实施，fix loop 不可见——scope_hard_leak 终检层立即隔离，机制性遗留）。
+  3. ch48：score=86.4 < 88 且 hard gate []（无 leak/det），段日志仅 3 行无任何
+     fix/patch 记录——发布判定拒绝但原因不在 note 中体现（疑似 has_high 或
+     gray 条件未满足），待重跑观察。
+  4. ch49：score=88.3 ≥ 88 但 dim-gate blocked（plot_consistency/medium：场景 1
+     时间锚点与任务卡不符"午后"vs"天光初亮"）——reviewer 维度门，真实内容质量
+     问题，draft pending human review（chapter_49_partial.jsonl）。
+- F2 修复（已推送 1d010c5e9）：
+  - F2a 提及豁免：裸"教"后 6 字窗含"的/过"且句无施动动词（按/照/调整/尝试/学着/
+    跟着/模仿/依样/练/练习/试试/试着/配合）→ 放行；有施动动词仍 hard。
+  - F2b 疑问降级：_reversed_context_markers 加"究竟/为何/为什么/何意"。
+  - F2c 引语豁免：吐纳/调息 hard 分支先查 _inside_quotes，引语内 → soft quote_exempt。
+  - 验证：_has_teach_violation 8/8（误报句全 False、真违规保持 True）；ch42 全文
+    复检 hard=0；回归测试 21 条 77 passed；全量 1 failed/1067 passed；pyflakes 0。
+- 待重跑：7 失败章（24,25,37,42,46,48,49）→ 50/50 → 卷级质量门 → 试跑结论汇报。
+- 机制性遗留（已记录，重跑复发时处理）：ch25 式"教给陆烬"传授实施句在终检层
+  scope_hard_leak 立即隔离、fix loop 不可见（_det_fulltext_fix 不消费 scope_hard_leak
+  前缀）——需 director 约束或专用修复路径；ch28 WRITE_REPLAN 重采缝隙未修。
