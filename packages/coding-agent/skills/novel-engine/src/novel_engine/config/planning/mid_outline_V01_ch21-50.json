@@ -11,7 +11,9 @@
     ],
     "generated_at": "2026-10-04T10:05:41+00:00",
     "batch_size": 2,
-    "status": "draft"
+    "status": "approved",
+    "approved_at": "2026-10-04T00:00:00+00:00",
+    "approved_note": "用户审阅：ch31/ch35/ch40/ch45 放行，ch42 按指定文案修改后放行"
   },
   "entries": {
     "21": {
@@ -206,12 +208,12 @@
     },
     "42": {
       "chapter": 42,
-      "core_event": "陆烬将残石带回村中，陈老根认出部分文字与呼吸法残篇有相似之处，神色凝重",
+      "core_event": "陈老根看到残石后沉默不语，只含糊说了句“莫要多想”便将其收起",
       "characters": [
         "C001",
         "C002"
       ],
-      "boundary_note": "需人工确认：残石文字与呼吸法残篇相似，可能触及“陈老根真实来历被完全揭穿”或“迷雾禁区异变根源被点明”的边界"
+      "boundary_note": null
     },
     "44": {
       "chapter": 44,
