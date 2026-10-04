@@ -1718,6 +1718,17 @@ class PipelineOrchestrator:
         marks = ["夜", "灯", "静", "沉默", "看", "睡", "风", "光", "黑暗", "影子", "呼吸"]
         return {m for m in marks if m in tail_text}
 
+    def _resolved_foreshadow_ids(self, chapter_num: int) -> set[str]:
+        """已回收伏笔 id 集合（StateDB status='resolved'），供远期回收校验用。
+
+        chapter_num 保留参数位以便将来按章收敛；当前返回全部 resolved 集合。
+        """
+        try:
+            return set(self.db.resolved_foreshadow_ids())
+        except Exception as _rf:
+            logger.warning(f"ch{chapter_num} resolved foreshadow query failed: {_rf}")
+            return set()
+
     def _deterministic_quality_gate(self, text: str, task_card: dict, scene_texts: dict | None = None) -> dict:
         """确定性校验（重复/截断硬；长度仅记soft）。
 
@@ -1760,7 +1771,7 @@ class PipelineOrchestrator:
                 issues.append("[时间线] 婴儿期主角出现“十年”级表述")
             elif any(x in purified for x in ["十年", "十年后"]):
                 soft_issues.append("[时间线-软] 出现“十年”表述（历史背景可能，预警）")
-        # 伏笔台账超期提醒（CC P0#3）
+        # 伏笔台账超期提醒（CC P0#3，soft）+ 设定贯通远期回收校验（hard）
         try:
             _fs_db = self.db.query_active_foreshadows(int(ch_num or 0))
             for _fs in _fs_db:
@@ -1769,6 +1780,23 @@ class PipelineOrchestrator:
                     soft_issues.append("[伏笔-超期] " + str(_fs.get("id")) + " 计划" + str(_rc) + "章回收仍open")
         except Exception:
             pass
+        # 设定贯通：registry 全量扫描（不依赖 query_active 的 clue_plan 命中），
+        # importance>=0.7 且 resolve_chapter 已过且未 resolved → 硬拦截（远期锚点）。
+        try:
+            from novel_engine.quality.outline_coverage_gate import validate_foreshadow_closure
+            _reg_path = self.root / "config" / "foreshadow" / "registry.json"
+            _registry = {}
+            if _reg_path.exists():
+                with open(_reg_path, "r", encoding="utf-8") as _freg:
+                    _registry = json.load(_freg)
+            _closure_ok, _closure_issues = validate_foreshadow_closure(
+                _registry, int(ch_num or 0),
+                resolved_ids=self._resolved_foreshadow_ids(ch_num),
+            )
+            for _ci in _closure_issues:
+                issues.append(f"[设定] {_ci}")
+        except Exception as _ce:
+            logger.warning(f"foreshadow closure check skipped: {_ce}")
         # CC round-7 P0-3：跨章重演边界门未解决的硬伤在此并入（assembly 阶段判定）
         for _bh in (getattr(self, "_boundary_hard", []) or []):
             if _bh not in issues:

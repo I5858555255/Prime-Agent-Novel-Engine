@@ -633,3 +633,72 @@ def check_scene_must_cover_beats(scene_text: str, beats: list[dict],
             if not hit:
                 missing.append(f"beat[{category}] scene={scene_id}: {beat_text[:60]}")
     return len(missing) == 0, missing
+
+
+# ============================================================================
+# 设定贯通：伏笔-终局回收远期校验（纯函数，零 LLM）
+# ============================================================================
+
+def validate_foreshadow_closure(
+    foreshadow_registry: dict | None,
+    current_chapter: int,
+    resolved_ids: set[str] | None = None,
+    importance_threshold: float = 0.7,
+) -> tuple[bool, list[str]]:
+    """远期检查：importance>=threshold 的伏笔，回收节点已过且未回收 → 硬拦截。
+
+    依据 ending_bible.md"关键伏笔必须回收"清单与 config/foreshadow/registry.json
+    （含 plant_chapter/resolve_chapter/importance/status）。"已过"定义为
+    resolve_chapter < current_chapter；"未回收"定义为 status!='resolved' 且
+    不在 resolved_ids 中。resolve_chapter == current_chapter 视为"正在回收"，不拦。
+
+    仅在存在已过节点条目时产生 hard issues——ch1-50 阶段 resolve_chapter 均
+    远在 1800+，生产路径零触发（远期锚点），测试用合成 fixture 覆盖。
+
+    Args:
+        foreshadow_registry: config/foreshadow/registry.json 解析结果（含
+            "foreshadows" 列表）；None/空时直接通过。
+        current_chapter: 当前生成章号。
+        resolved_ids: 已回收伏笔 id 集合（可选；来自 StateDB status='resolved' 或
+            调用方登记）。与 registry 条目自身 status 字段任一路径命中即视为已回收。
+        importance_threshold: 仅检查 importance>=该值的伏笔（默认 0.7，
+            与编写指南"importance>=0.7 必须回收"一致）。
+
+    Returns:
+        (passed, issues)：passed=False 时 issues 为可读归因列表，格式：
+            "foreshadow_closure_overdue: Fxxx resolve@N overdue at chM (importance=X)"
+    """
+    if not foreshadow_registry or not isinstance(foreshadow_registry, dict):
+        return True, []
+    fs_list = foreshadow_registry.get("foreshadows") or []
+    if not fs_list:
+        return True, []
+
+    overdue: list[str] = []
+    for fs in fs_list:
+        if not isinstance(fs, dict):
+            continue
+        fid = str(fs.get("id") or "")
+        try:
+            imp = float(fs.get("importance", 0.5))
+        except (TypeError, ValueError):
+            imp = 0.5
+        try:
+            rc = int(fs.get("resolve_chapter", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if imp < importance_threshold:
+            continue
+        if rc <= 0 or rc >= current_chapter:
+            continue  # 无回收节点或尚未到期
+        if resolved_ids and fid in resolved_ids:
+            continue
+        if str(fs.get("status", "")).strip().lower() == "resolved":
+            continue
+        overdue.append(
+            f"foreshadow_closure_overdue: {fid} resolve@{rc} overdue at "
+            f"ch{current_chapter} (importance={imp})"
+        )
+    if not overdue:
+        return True, []
+    return False, overdue

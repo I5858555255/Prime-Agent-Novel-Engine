@@ -235,6 +235,19 @@ class StateDB:
         rows = cursor.fetchall()
         return [dict(r) for r in rows]
 
+    def resolved_foreshadow_ids(self) -> set[str]:
+        """返回已回收（status='resolved'）的伏笔 id 集合。
+
+        供伏笔-终局回收远期校验（validate_foreshadow_closure）判定"已回收"。
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id FROM foreshadows WHERE status = 'resolved'")
+            return {str(r[0]) for r in cursor.fetchall()}
+        except Exception as e:
+            logger.error("resolved_foreshadow_ids failed: " + str(e))
+            return set()
+
     def plant_foreshadow(self, foreshadow_id: str, plant_chapter: int, plant_context: str, resolve_chapter: int, resolve_method: str = "", importance: str = "medium") -> bool:
         """Register a newly planted foreshadow at runtime (CC P0#3 ledger closure)."""
         try:

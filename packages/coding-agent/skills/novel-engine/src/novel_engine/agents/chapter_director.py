@@ -493,6 +493,7 @@ class ChapterDirector:
             'character': 'bible/character_bible.md',
             'style': 'bible/style_bible.md',
             'author_intent': 'bible/author_intent.md',
+            'ending': 'bible/ending_bible.md',
         }
         for key, rel_path in bible_files.items():
             full_path = self.root / rel_path
@@ -539,6 +540,7 @@ class ChapterDirector:
             "character": self._bible_cache.get("character", ""),
             "style": self._bible_cache.get("style", ""),
             "author_intent": self._bible_cache.get("author_intent", ""),
+            "ending": self._bible_cache.get("ending", ""),
         }
 
         # 加载规划数据
@@ -716,6 +718,36 @@ class ChapterDirector:
         logger.info(f"Generated template task card for chapter {chapter_num}")
         return task_card
 
+    def _build_ending_anchor_hint(self, chapter_num: int, foreshadow_registry: dict) -> str:
+        """临近伏笔回收节点的终局锚点提示（基于 registry resolve_chapter）。
+
+        返回空串表示本章不在任何伏笔回收窗口内；否则提示 director 在骨架中
+        预留呼应，避免长跑中终局线漂移。远期锚点：仅当 0 <= resolve-now <= 30。
+        """
+        if not foreshadow_registry or not isinstance(foreshadow_registry, dict):
+            return ""
+        near: list[str] = []
+        for fs in foreshadow_registry.get("foreshadows") or []:
+            if not isinstance(fs, dict):
+                continue
+            try:
+                rc = int(fs.get("resolve_chapter", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if rc <= 0:
+                continue
+            if 0 <= rc - chapter_num <= 30:
+                if str(fs.get("status", "")).strip().lower() == "resolved":
+                    continue
+                near.append(f"{fs.get('id') or '?'}（预定第{rc}章回收）")
+        if not near:
+            return ""
+        return (
+            f"【终局锚点·临近回收】当前第{chapter_num}章，30 章内接近以下伏笔的"
+            f"预定回收节点：{'；'.join(near)}。若本章剧情触及这些伏笔，应在骨架中"
+            f"预留呼应/推进，确保不越级揭露、不拖过期。"
+        )
+
     def _build_shared_context(self, chapter_num: int, dynamic_context=None):
         """Build context dict and prior_events_block shared across all 3 calls."""
         bible_files = {
@@ -723,6 +755,7 @@ class ChapterDirector:
             'character': self._bible_cache.get('character', ''),
             'style': self._bible_cache.get('style', ''),
             'author_intent': self._bible_cache.get('author_intent', ''),
+            'ending': self._bible_cache.get('ending', ''),
         }
         if dynamic_context is not None:
             volumes = dynamic_context.get('volumes', {})
@@ -852,6 +885,8 @@ class ChapterDirector:
             'chapter_outline_task': _chapter_outline_task,
             'adjacent_tasks': _adjacent_tasks,
             'outline_override_hint': _outline_override_hint,
+            # 设定贯通：终局锚点临近回收提示（bible/ending_bible.md 配套）
+            'ending_anchor_hint': self._build_ending_anchor_hint(chapter_num, foreshadow_registry),
         }
         return context, prior_events_block
 
@@ -920,6 +955,8 @@ class ChapterDirector:
             f"- 文风：{context['bible']['style'][:200]}\n"
             f"- 本卷大纲：{context.get('volume_outline', '')[:800]}\n"
             f"- 本卷禁止事项：{json.dumps(context.get('forbidden_list') or [], ensure_ascii=False)}\n"
+            f"- 终局锚点：{context['bible'].get('ending', '')[:600]}\n"
+            f"{context.get('ending_anchor_hint') or ''}\n"
             f"- 动态硬约束：{context.get('dynamic_constraints', '无')}\n"
             f"{prior_events_block}\n\n"
             f"{_render_outline_mandate(context)}\n\n"
