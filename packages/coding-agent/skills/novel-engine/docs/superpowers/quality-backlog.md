@@ -1,8 +1,46 @@
 # Quality Backlog（novel-engine）
 
 本文件记录质量门/设定贯通相关待办、决策与验收结论。新增条目置顶并标注日期。
+（本文件为唯一正本；仓库根 docs/ 与 src/docs/ 下的同名文件已废弃为迁移占位，
+见 2026-10-04 去重记录。）
 
 ---
+
+## 2026-10-04 质量类 det 硬项接入修复通道 — 已修复 ✅
+
+**背景（ch25 重跑坐实的缺口）**：中纲重跑对比显示 ch25 仍失败
+（命名矛盾"活井/枯井同章共现" + 终态硬项"跨场危机 off-card 未承接"），
+归因**质量类失败**（区别于已修复的设定类）。定位：`_deterministic_quality_gate`
+产出的 `[命名矛盾]`/`[跨场危机]`/`[伏笔极性矛盾]` hard issues 检测到了，
+但 `_det_fulltext_fix` 的消费前缀集合只有 `[称谓]/[canon/[泄漏]`——质量类
+硬项从未进入修复路径，只能靠 force-best 落 draft 等人工。
+
+**修复**（pipeline_orchestrator.py，_det_fulltext_fix + CC33 调用点）：
+- 前缀集合扩为 `("[称谓]", "[canon", "[泄漏]", "[命名矛盾]", "[跨场危机]",
+  "[伏笔极性矛盾]")`。
+- 新增三个指令分支（复用既有"锚点替换 JSON → parse/apply → 重跑 det gate
+  门过才采纳"模式，journal 不动）：
+  - `[命名矛盾]`：统一同指实体用名，全文替换一致称呼，不得同章同指异名
+    且证据成立。
+  - `[跨场危机]`：本场景补写对上一场景危机的呼应/推进，不得悬空。
+  - `[伏笔极性矛盾]`：补铺垫或调整为与既有伏笔极性一致。
+- 质量类与规则类（scope leak/concept_unlocks）检测/修复逻辑保持独立，
+  仅复用"接入 fix loop"的通道模式（符合边界文档第 13 节）。
+
+**验收**：新增 2 条 hermetic 回归测试（命名矛盾、跨场危机指令生成与消费，
+test_det_fulltext_fix.py）；pyflakes 全包 0 undefined name；全量 pytest
+1 failed / 1098 passed（唯一已知 pre-existing，无新增）。
+**遗留**：ch25 82.9 分 draft（chapters/draft/chapter_25.txt）待新通道下
+真实重跑验收（预计不再停在 force-best）。
+
+## 2026-10-04 backlog 文档去重 — 已修复 ✅
+
+仓库内曾存在三份 quality-backlog.md：src/docs/（278行，停更于封存轮）、
+docs/（正本，持续维护）、仓库根 docs/（50行，最早停更）。代码零引用
+（纯人读文档）。处理：以 `packages/coding-agent/skills/novel-engine/docs/
+superpowers/quality-backlog.md` 为唯一正本；另两份替换为一行迁移占位，
+提交说明记录原因。教训：路径只差 src/ 层级，肉眼极易选错；以后引用
+backlog 一律用正本绝对路径。
 
 ## 2026-10-04 中纲（章级意图）层 V01 ch21-50 — 草稿已生成+校验，待用户审阅 ⏳
 

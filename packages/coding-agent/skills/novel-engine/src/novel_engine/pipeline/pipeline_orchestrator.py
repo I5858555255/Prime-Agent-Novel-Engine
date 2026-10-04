@@ -3997,9 +3997,12 @@ class PipelineOrchestrator:
             gate_after = self._deterministic_quality_gate(current, frozen)
             self._last_deterministic_issues = gate_after["issues"]
             _cc25_fixed = True
-        # CC33: det 硬项全文级定点修复（称谓/canon 残留/泄漏——无 scene_ids 无法走 patch）
+        # CC33: det 硬项全文级定点修复（称谓/canon 残留/泄漏/命名矛盾/跨场危机/
+        # 伏笔极性——无 scene_ids 无法走 patch 的质量类与规则类 det 硬项共用此通道）
         _det_hard_now = [x for x in (getattr(self, "_last_deterministic_issues", []) or [])
-                         if isinstance(x, str) and x.startswith(("[称谓]", "[canon", "[泄漏]"))]
+                         if isinstance(x, str) and x.startswith(
+                             ("[称谓]", "[canon", "[泄漏]",
+                              "[命名矛盾]", "[跨场危机]", "[伏笔极性矛盾]"))]
         _det_fu = getattr(self, "_det_fulltext_used", None)
         if _det_fu is None:
             _det_fu = set()
@@ -4214,6 +4217,22 @@ class PipelineOrchestrator:
             elif _d33.startswith("[泄漏]"):
                 _s33 = _d33.split("]", 1)[-1][:80]
                 reqs33.append(f"文中出现脚手架/英文字段泄漏：{_s33}。清除该表述。")
+            elif _d33.startswith("[命名矛盾]"):
+                _s33 = _d33.split("]", 1)[-1][:80]
+                reqs33.append(
+                    f"文中存在命名/称谓矛盾：{_s33}。统一该实体（人物/地点）的用名，"
+                    "全文替换为一致称呼，不得同章出现同指异名且证据成立的冲突（如"
+                    "\"古井\"与\"枯井\"指同一处却状态互斥），必要时补一句同指说明。")
+            elif _d33.startswith("[跨场危机]"):
+                _s33 = _d33.split("]", 1)[-1][:80]
+                reqs33.append(
+                    f"上一场景提出的危机未在本场景承接：{_s33}。在本场景中补写对该危机"
+                    "的呼应/推进（提及后续、状态变化或解决动作），不得让危机悬空无下文。")
+            elif _d33.startswith("[伏笔极性矛盾]"):
+                _s33 = _d33.split("]", 1)[-1][:80]
+                reqs33.append(
+                    f"伏笔极性矛盾（如排斥/吸引无铺垫反转）：{_s33}。补上铺垫或调整为"
+                    "与既有伏笔极性一致的表述，不得无铺垫反转。")
             else:
                 reqs33.append(str(_d33)[:120])
         if not reqs33:

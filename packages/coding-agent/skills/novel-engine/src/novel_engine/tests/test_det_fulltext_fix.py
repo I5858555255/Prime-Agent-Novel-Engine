@@ -62,3 +62,53 @@ def test_det_fulltext_fix_generates_directive(tmp_path):
     assert stub.last_prompt.count("【场景") >= 2
     # 结果允许 None（编辑应用后 det gate 拒绝则弃用，journal 不动）或 tuple
     assert res is None or (isinstance(res, tuple) and len(res) == 2)
+
+
+def test_det_fulltext_fix_naming_conflict_directive(tmp_path):
+    """质量类：命名矛盾 det 硬项必须生成"统一用名"修复指令并被消费。"""
+    texts = {
+        1: "村口的活井常年有水，村民靠它取水浇田。",
+        2: "到了傍晚，有人提水走过枯井边，嘟囔着井干了多年。",
+    }
+    _mk_scene(tmp_path, 25, texts)
+    edits = [{
+        "scene_id": 1, "op": "replace_span",
+        "anchor": "活井",
+        "replacement": "枯井",
+    }]
+    stub = _StubRouter(edits)
+    orch = PipelineOrchestrator(project_root=str(tmp_path))
+    orch.polish_router = stub
+    res = orch._det_fulltext_fix(
+        "正文占位",
+        ["[命名矛盾] 活井（古井）与枯井同章共现且活井证据成立"],
+        25, {})
+    assert "命名" in stub.last_prompt
+    assert "统一" in stub.last_prompt
+    assert "活井（古井）与枯井同章共现" in stub.last_prompt
+    assert res is None or (isinstance(res, tuple) and len(res) == 2)
+
+
+def test_det_fulltext_fix_cross_scene_crisis_directive(tmp_path):
+    """质量类：跨场危机 det 硬项必须生成"场景承接"修复指令并被消费。"""
+    texts = {
+        1: "猛火催出来的，药性是有了，可也容易烧干了锅，伤了根本。",
+        2: "陆烬把药草收进背篓，两人沿着山路往回走。",
+    }
+    _mk_scene(tmp_path, 25, texts)
+    edits = [{
+        "scene_id": 2, "op": "replace_span",
+        "anchor": "两人沿着山路往回走",
+        "replacement": "陈老根叹道这锅药火候过了，两人沿着山路往回走，盘算着如何补救。",
+    }]
+    stub = _StubRouter(edits)
+    orch = PipelineOrchestrator(project_root=str(tmp_path))
+    orch.polish_router = stub
+    res = orch._det_fulltext_fix(
+        "正文占位",
+        ["[跨场危机] off-card crisis 未承接：猛火催出来的，药性是有了，可也容易烧干了锅，伤了根本。"],
+        25, {})
+    assert "危机" in stub.last_prompt
+    assert "承接" in stub.last_prompt
+    assert "猛火催出来的" in stub.last_prompt
+    assert res is None or (isinstance(res, tuple) and len(res) == 2)
