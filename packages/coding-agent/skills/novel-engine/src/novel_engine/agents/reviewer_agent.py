@@ -241,6 +241,53 @@ CC round-18 额外硬约束（婴儿卷 ch1-9，违反直接扣 5 分并记录�
         self.llm = llm_client or LLMClient()
         self.provider_config = provider_config
 
+    def _build_setting_block(self, chapter_num: int) -> str:
+        """设定对照块：当前卷 forbidden 列表 + character_bible 全文 + style_bible 全文。
+
+        解决"reviewer 对照一份从未见过的文件打分"问题（诊断结论：review prompt
+        只出现文件名，从未注入真实设定内容）。合计约 4KB，相对单章 20-30 分钟
+        运行与 7500 字正文采样，token 增量可忽略。
+
+        author_intent 按"## 第N阶段：xxx（第A-B章）"标题切分，取当前章所属
+        阶段的 forbidden 列表（`- "..."` 列表项）。定位失败时 forbidden 置空，
+        不阻断评审。
+        """
+        from pathlib import Path
+        import re
+        _bible_dir = Path(__file__).parent.parent / "bible"
+        try:
+            _ai_text = (_bible_dir / "author_intent.md").read_text(encoding="utf-8")
+            _cb_text = (_bible_dir / "character_bible.md").read_text(encoding="utf-8")
+            _sb_text = (_bible_dir / "style_bible.md").read_text(encoding="utf-8")
+        except Exception as _sb_e:
+            logger.warning(f"setting block bible read failed: {_sb_e}")
+            return ""
+        # 当前卷 forbidden
+        _cur_block = None
+        for _blk in re.split(r"^## ", _ai_text, flags=re.M):
+            _m = re.match(
+                r"第[一二三四五六七八九十]+阶段[：:].*?（.*?第?(\d+)-(\d+)章?）",
+                _blk)
+            if not _m:
+                continue
+            _lo, _hi = int(_m.group(1)), int(_m.group(2))
+            if _lo <= chapter_num <= _hi:
+                _cur_block = _blk
+                break
+        _forbidden: list[str] = []
+        if _cur_block:
+            for _line in _cur_block.splitlines():
+                _ls = _line.strip()
+                if _ls.startswith("-"):
+                    _forbidden.append(_ls.lstrip("- ").strip().strip('"'))
+        _fb_line = "；".join(_forbidden) if _forbidden else "（本阶段无显式 forbidden 条款）"
+        return (
+            "## 设定对照块（必读，以下为当前卷真实设定内容，评分必须以对照块为准）\n"
+            f"【当前卷禁止事项】{_fb_line}\n\n"
+            f"【人物设定 character_bible 全文】\n{_cb_text}\n\n"
+            f"【文风设定 style_bible 全文】\n{_sb_text}"
+        )
+
     def review_chapter(
         self,
         chapter_num: int,
@@ -280,6 +327,18 @@ CC round-18 额外硬约束（婴儿卷 ch1-9，违反直接扣 5 分并记录�
                   "相邻场共享度偏高，可作为 pacing/innovation/reader_retention 的扣分依据。"
                   "character_consistency/style_match/foreshadow_execution/hook_strength 仍按正文独立判断。"
             )
+            # 设定贯通·揭示尺度：前世描写 soft_warn（ch48 口径，不做 hard block）
+            _plr_sig = (deterministic_signals.get("past_life_reveal") or {})
+            if _plr_sig.get("reveal_scale_high"):
+                anchor_block += (
+                    "\n注意：past_life_reveal 判定本章前世描写揭示尺度偏高"
+                    f"（150字窗口内出现 {_plr_sig.get('max_window_hits')} 个前世具象细节词）。"
+                    "这【不构成阻断】——前世/重生是角色既定身份（character_bible C001），"
+                    "但请在 plot_consistency 与揭示节奏维度给出提示，并在 review issues 中"
+                    "以 severity=low/medium、category=reveal_scale 记一条 soft note 供人工审阅。"
+                )
+
+        setting_block = self._build_setting_block(chapter_num)
 
         prompt = f"""请审查第 {chapter_num} 章。
 
@@ -295,12 +354,15 @@ CC round-18 额外硬约束（婴儿卷 ch1-9，违反直接扣 5 分并记录�
 ## 世界状态
 {json.dumps(world_state, ensure_ascii=False, indent=2)[:2000]}
 
+{setting_block}
+
 ## 审查要求
 1. 检查正文是否完成了任务卡中所有 scene_blueprints 的 goal
 2. 检查伏笔动作是否执行
-3. 检查是否有 forbidden 项被违反
-4. 检查人物行为是否符合 character_bible
-5. 检查文风是否符合 style_bible{anchor_block}"""
+3. 检查是否有 forbidden 项被违反（对照上方"设定对照块·当前卷禁止事项"逐条核对，
+   违反即标记为"设定违规"，按 severity/category 机制单独归类，不放宽为普通文风问题）
+4. 检查人物行为是否符合 character_bible（对照上方人物设定全文）
+5. 检查文风是否符合 style_bible（对照上方文风设定全文）{anchor_block}"""
 
         try:
             review = _coerce_review_object(call_llm(

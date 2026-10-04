@@ -2877,6 +2877,34 @@ class PipelineOrchestrator:
                                   or getattr(self, "_boundary_hard", []))
                 _signals24 = review_hybrid.build_deterministic_signals(
                     task_card, _sc24, self.root, arc=_a24, hard_gates_clean=_hgclean24)
+                # 设定贯通·揭示尺度：前世描写 soft_warn（ch48 口径，不做 hard block）。
+                # 确定性检测，经 deterministic_signals 注入 reviewer，不新增 LLM 调用。
+                try:
+                    from novel_engine.quality.reveal_scale_gate import (
+                        detect_past_life_reveal_scale)
+                    _qt_cfg = {}
+                    try:
+                        _qt_path = self.root / "config" / "quality_thresholds.json"
+                        if _qt_path.exists():
+                            import json as _json_qt
+                            _qt_cfg = _json_qt.loads(
+                                _qt_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        _qt_cfg = {}
+                    _plr_cfg = (_qt_cfg.get("past_life_reveal") or {})
+                    _plr = detect_past_life_reveal_scale(
+                        novel_text,
+                        detail_terms=_plr_cfg.get("detail_terms"),
+                        window_chars=int(_plr_cfg.get("window_chars", 150)),
+                        detail_hits=int(_plr_cfg.get("detail_hits", 3)),
+                    )
+                    if _plr.get("reveal_scale_high") and isinstance(_signals24, dict):
+                        _signals24["past_life_reveal"] = _plr
+                        logger.info(
+                            f"ch{chapter_num} past-life reveal scale HIGH "
+                            f"(max_window_hits={_plr.get('max_window_hits')}) → soft note")
+                except Exception as _plre:
+                    logger.warning(f"past-life reveal scale check skipped: {_plre}")
             except Exception as _e24sig:
                 logger.warning(f"deterministic signals build failed-open: {_e24sig}")
                 _signals24 = None
