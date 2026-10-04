@@ -197,6 +197,7 @@ class WriterAgent:
             "world": "bible/world_bible.md",
             "character": "bible/character_bible.md",
             "style": "bible/style_bible.md",
+            "author_intent": "bible/author_intent.md",
         }.items():
             p = self.root / rel
             try:
@@ -204,12 +205,71 @@ class WriterAgent:
             except OSError:
                 self._bible_cache[key] = ""
 
-    def _bible_snippet(self, max_chars: int = 1200) -> str:
-        world = (self._bible_cache.get("world", "") or "")[:600]
-        char = (self._bible_cache.get("character", "") or "")[:600]
+    def _extract_current_volume_forbidden(self, chapter_num: int) -> list[str]:
+        """author_intent 当前卷 forbidden 列表（完整提取，不截断）。
+
+        按"## 第N阶段：xxx（第A-B章）"标题切分定位当前章所属阶段，
+        收集该阶段内 `- "..."` 列表项。定位失败返回空列表（不阻断）。
+        """
+        _ai = (self._bible_cache.get("author_intent", "") or "")
+        if not _ai:
+            return []
+        import re
+        for _blk in re.split(r"^## ", _ai, flags=re.M):
+            _m = re.match(
+                r"第[一二三四五六七八九十]+阶段[：:].*?（.*?第?(\d+)-(\d+)章?）",
+                _blk)
+            if not _m:
+                continue
+            _lo, _hi = int(_m.group(1)), int(_m.group(2))
+            if _lo <= chapter_num <= _hi:
+                return [_ln.strip().lstrip("- ").strip('"')
+                        for _ln in _blk.splitlines()
+                        if _ln.strip().startswith("-")]
+        return []
+
+    def _locate_bible_by_names(
+        self, key: str, names: list[str], fallback_chars: int = 600) -> str:
+        """按实体名定位 bible 相关段落；定位失败退回固定截断兜底。
+
+        names 为空或无有效名时直接走 fallback；命中行保留并拼接（上限
+        fallback_chars*2，避免超长段落撑爆 prompt）。
+        """
+        text = (self._bible_cache.get(key, "") or "").strip()
+        if not text:
+            return ""
+        _needles = [n for n in names if n and len(str(n).strip()) >= 2]
+        if not _needles:
+            return text[:fallback_chars]
+        _needles = [str(n) for n in _needles]
+        lines = text.splitlines()
+        hit_lines = [ln for ln in lines if any(n in ln for n in _needles)]
+        if not hit_lines:
+            return text[:fallback_chars]
+        return "\n".join(hit_lines)[:fallback_chars * 2]
+
+    def _bible_snippet(self, chapter_num: int = 0,
+                       character_names: list[str] | None = None,
+                       location_names: list[str] | None = None,
+                       max_chars: int = 1500) -> str:
+        """按卷定向注入（替代固定 world[:600]+character[:600] 截断）。
+
+        核心变更：author_intent 当前卷 forbidden 完整注入（不再缺失）；
+        character/world 优先按本章实体名定位相关段落，定位失败退回固定
+        截断兜底（保留原 600 作为兜底值，不新增风险）。
+        """
+        characters = [str(c) for c in (character_names or []) if c]
+        locations = [str(l) for l in (location_names or []) if l]
         parts = []
+        if chapter_num:
+            forbidden = self._extract_current_volume_forbidden(chapter_num)
+            if forbidden:
+                parts.append(
+                    f"【本卷禁止事项（务必遵守）】{('；'.join(forbidden))}")
+        world = self._locate_bible_by_names("world", locations)
         if world.strip():
             parts.append(f"【世界观】{world.strip()}")
+        char = self._locate_bible_by_names("character", characters)
         if char.strip():
             parts.append(f"【人物卡】{char.strip()}")
         text = "\n\n".join(parts)
@@ -409,7 +469,23 @@ class WriterAgent:
         prompt = build_scene_prompt(task_card, scene_blueprint, bps, negative_examples, fix_directive=fix_directive)
 
         # Add bible/perspective blocks (unchanged from before)
-        bible_block = self._bible_snippet()
+        # 设定贯通：按卷定向注入（当前卷 forbidden 完整 + 按本章实体定位 bible 段落）
+        _char_names: list[str] = []
+        _loc_names: list[str] = []
+        try:
+            for _bp in (task_card.get("scene_blueprints") or []):
+                _p = _bp.get("participants") or _bp.get("characters") or []
+                if isinstance(_p, list):
+                    _char_names.extend(str(x) for x in _p if x)
+                _loc = _bp.get("location") or _bp.get("place") or ""
+                if _loc:
+                    _loc_names.append(str(_loc))
+        except Exception:
+            pass
+        bible_block = self._bible_snippet(
+            chapter_num=chapter_num,
+            character_names=_char_names or None,
+            location_names=_loc_names or None)
         bible_section = f"\n\n## 人物/世界观显式设定（逐章注入，防 OOC/漂移）\n{bible_block}\n" if bible_block else ""
         perspective_block = ""
         if chapter_num <= 5:
