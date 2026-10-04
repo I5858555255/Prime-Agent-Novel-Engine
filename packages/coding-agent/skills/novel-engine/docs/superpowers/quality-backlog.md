@@ -4,6 +4,79 @@
 
 ---
 
+## 2026-10-04 中纲（章级意图）层 V01 ch21-50 — 草稿已生成+校验，待用户审阅 ⏳
+
+**背景（粒度缺口修复）**：plot_graph.json 49 节点覆盖全书约 50 个锚点章，
+ch21-50 仅 43/50 命中节点，其余 28 章此前靠 director"前后 20 章节点+卷主题"
+松散参考自由发挥（ch25/ch48 类失败的根源之一）。本批新增"章级中纲"层，
+补在 bible（骨架级）与单章大纲（LLM 临场）之间。
+
+### 阶段 1：生成（scripts/generate_mid_outline.py，新建）
+
+- 输入 vid + 章节范围，读取 bible 五文件（author_intent 当前卷 forbidden +
+  ending_bible 伏笔时间表）、volumes.json 卷主题/冲突/高潮、plot_graph.json
+  邻近节点、foreshadow registry 相关条目、world_state 承接摘要。
+- 每章输出：core_event（一句话核心事件）+ characters + boundary_note
+  （接近伏笔/forbidden 边界时显式标"需人工确认"，不自行放行）。
+- 产物：config/planning/mid_outline_V01_ch21-50.json（meta.status="draft"，
+  与 plot_graph.json 同目录同管理，长期可追溯）。
+- **踩坑记录（本批）**：
+  - siliconflow DeepSeek-V3.2 的 output_json 模式**系统性返回空 content**
+    （跨温度重试 4 次仍空，14 批全灭，90 分钟零产出）→ 改为普通文本输出
+    + 行解析（`ch<N>|core_event|characters|boundary_note`），3 分 40 秒
+    完成 28 章。
+  - LLMClient 直接构造时 `_resolve_api_key` 的默认参数（ZLEAP_MODEL_API_KEY）
+    与 runtime_config 的 api_key_env（LLM_API_KEY）不一致，且不查
+    SILICONFLOW_API_KEY → 显式按 api_base 平台解析 key（siliconflow 优先
+    SILICONFLOW_API_KEY）。此问题同样影响 run_volume 之外所有直接用
+    LLMClient.from_config_dict 的脚本，后续统一修订。
+  - 生成脚本支持 `--only 31,48` 重生成指定章并合并回主文件（覆盖式），
+    用于撞锁条目的定向重跑。
+
+### 阶段 2：校验（scripts/audit_mid_outline.py，新建）
+
+- 复用 concept_audit 思路：detect_scope_violations（concept_unlocks 硬锁/
+  软锁）+ author_intent forbidden 子串 + 新增 **A 路线主语模式判定**
+  （陆烬亲自修炼样式动作：练习/运转/引气/吐纳/打坐/调息/催动、陆烬体内
+  气机运转/共鸣——纯词表判不出，须按主语紧邻模式，避免"旁观陈老根练习"
+  误判）。
+- 结果：通过 23 章 / 需人工确认 5 章（ch31/35/40/42/45，均为模型自标
+  伏笔/身世/修炼边界，待用户审阅）/ 直接撞锁 0 章（ch31、ch48 初版撞
+  A 路线红线已用 --only 重生成修正；ch39 为审计模式误报已修）。
+- **使用门禁**：Director 只读 meta.status=="approved" 的产物；audit 通过、
+  用户审阅后由脚本将 status 置为 approved，否则永远不可用（物理门禁）。
+
+### 阶段 3：接入 Director（chapter_director.py 修改）
+
+- `_load_mid_outline_entry(chapter_num)`：扫描 config/planning/mid_outline_*.json，
+  仅接受 approved 条目；无则返回 None。
+- `_build_mid_outline_hint(entry)`：格式化强约束文本（core_event + 涉及角色
+  + 边界注意）。
+- `_build_shared_context` 注入 `mid_outline_entry` / `mid_outline_hint`；
+  `_call_scene_skeleton` prompt 在"相关剧情节点"之后注入中纲行；无 approved
+  条目时退回原松散参考逻辑。
+- 4 条 hermetic 测试（tests/test_mid_outline_director.py）：approved 注入 /
+  draft 不注入 / 无文件退回 / 任意非 approved 状态不可用。
+
+### 阶段 4：验收
+
+- pyflakes 全包 0 undefined name；全量 pytest 1 failed / 1096 passed
+  （唯一失败为已知 pre-existing test_same_location_cluster_shared_objects_not_flagged，
+  无新增）。
+- **待办（用户审阅后）**：ch21-50 中纲重跑对比（通过率/返工轮数 vs 松散
+  参考基线），结果如实追加本文件；ch25/ch48 专项复验。
+
+### 待用户审阅（5 章需人工确认，approved 标记后 Director 才启用）
+
+- ch31：迷雾边缘异域尸骨，可能接近禁区异变/身世之谜线索。
+- ch35：陈老根提及呼吸法具体功效，可能接近 F002 边界。
+- ch40：铜片样式可能与皇室秘藏相关，接近 F001 伏笔埋设边界。
+- ch42：残石文字与呼吸法残篇相似，触及"陈老根真实来历被揭穿"/"迷雾禁区
+  异变根源被点明"边界。
+- ch45：旧铁片可能与皇室秘藏碎片或陈老根过往相关，需界定性质。
+
+
+
 ## 2026-10-04 设定贯通三阶段（封存解封后第一批）— 已修复 ✅
 
 **背景（解封诊断结论，已核实）**：bible/ 目录 5 个设定文件

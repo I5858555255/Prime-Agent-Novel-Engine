@@ -502,6 +502,48 @@ class ChapterDirector:
             else:
                 self._bible_cache[key] = ""
 
+    def _load_mid_outline_entry(self, chapter_num: int) -> dict | None:
+        """加载本章的中纲条目（config/planning/mid_outline_*.json）。
+
+        只接受 meta.status == "approved" 的产物（draft 必须经 audit_mid_outline.py
+        校验通过、标记 approved 后才可使用）；无 approved 条目返回 None，
+        调用方退回"相关节点+卷大纲"的松散参考逻辑。
+        """
+        try:
+            planning_dir = self.root / "config" / "planning"
+            if not planning_dir.exists():
+                return None
+            for p in sorted(planning_dir.glob("mid_outline_*.json")):
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                meta = data.get("meta") or {}
+                if str(meta.get("status", "")).strip().lower() != "approved":
+                    continue  # 未校验通过/仍为 draft 的产物一律不可用
+                entries = data.get("entries") or {}
+                entry = entries.get(str(chapter_num))
+                if isinstance(entry, dict) and str(entry.get("core_event", "") or "").strip():
+                    return entry
+            return None
+        except Exception:
+            return None
+
+    def _build_mid_outline_hint(self, entry: dict | None) -> str:
+        """把中纲条目格式化为注入 prompt 的强约束文本（无条目返回空串）。"""
+        if not entry:
+            return ""
+        parts = [f"【本章中纲·章级意图（已校验，强约束）】{str(entry.get('core_event', ''))}"]
+        chars = entry.get("characters") or []
+        if chars:
+            parts.append(f"涉及角色：{', '.join(str(c) for c in chars)}")
+        note = entry.get("boundary_note")
+        if note:
+            parts.append(f"边界注意：{note}")
+        return "\n".join(parts)
+
     @staticmethod
     def _extract_forbidden_list(intent_text: str) -> list:
         """从作者意图段的 forbidden 块提取禁止事项列表（YAML 风格 '- "..."' 行）。"""
@@ -857,6 +899,9 @@ class ChapterDirector:
             _adjacent_tasks = '; '.join(_adj_tasks_parts)
         # T3: 与 plot_graph 节点协同：里程碑章以 plot_graph 为强约束，非里程碑以细纲为准
         _milestone_node = next((n for n in relevant_nodes if n.get('chapter_target') == chapter_num), None)
+        # 中纲（章级意图）层：无节点章优先用 approved 中纲作强约束
+        mid_entry = self._load_mid_outline_entry(chapter_num)
+        mid_outline_hint = self._build_mid_outline_hint(mid_entry)
         _outline_override_hint = ''
         if _milestone_node and _chapter_outline_task:
             _mg = _milestone_node.get('description', '')
@@ -887,6 +932,9 @@ class ChapterDirector:
             'outline_override_hint': _outline_override_hint,
             # 设定贯通：终局锚点临近回收提示（bible/ending_bible.md 配套）
             'ending_anchor_hint': self._build_ending_anchor_hint(chapter_num, foreshadow_registry),
+            # 中纲（章级意图）层：无节点章的强约束（approved 才注入，无则退回松散参考）
+            'mid_outline_entry': mid_entry,
+            'mid_outline_hint': mid_outline_hint,
         }
         return context, prior_events_block
 
@@ -949,6 +997,7 @@ class ChapterDirector:
             f'## 上下文\n'
             f"- 章节号：{chapter_num}\n"
             f"- 相关剧情节点：{json.dumps(context['relevant_plot_nodes'], ensure_ascii=False, indent=2)[:1200]}\n"
+            f"- 本章中纲（章级意图）：{context.get('mid_outline_hint') or '（本范围暂无 approved 中纲条目，按相关节点+卷大纲+细纲自由发挥）'}\n"
             f"- 活跃约束：{context['constraints'][:600]}\n"
             f"- 世界观：{context['bible']['world'][:300]}\n"
             f"- 人物：{context['bible']['character'][:300]}\n"
