@@ -30,8 +30,15 @@
 **验收**：新增 2 条 hermetic 回归测试（命名矛盾、跨场危机指令生成与消费，
 test_det_fulltext_fix.py）；pyflakes 全包 0 undefined name；全量 pytest
 1 failed / 1098 passed（唯一已知 pre-existing，无新增）。
-**遗留**：ch25 82.9 分 draft（chapters/draft/chapter_25.txt）待新通道下
-真实重跑验收（预计不再停在 force-best）。
+
+**真实重跑验收（2026-10-05 完成）**：ch25 在新通道下重新走完整流水线
+→ **85.3 分、errors=[]，det gate 全过（gates pass），gray-band（85-88）
+自动发布至 chapters/novel/chapter_25.txt，标记人工 spot-check**。
+对比链：中纲前（命名矛盾 hard block 失败）→ 中纲后旧通道（82.9 分
+force-best 落 draft，卡"跨场危机"）→ 新通道（85.3 分自动发布，不再停在
+force-best）。任务书验收 b 达成。一次日志记录"[change_validation]
+rejected: entity_not_found"（世界状态变更校验拒绝，非致命，属既有机制）。
+**遗留**：ch25 以 gray-band 发布，非全绿 88 分；人工抽查标记保留。
 
 ## 2026-10-04 backlog 文档去重 — 已修复 ✅
 
