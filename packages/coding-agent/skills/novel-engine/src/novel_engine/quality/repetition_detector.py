@@ -235,6 +235,51 @@ def verify_no_scaffolding(text: str) -> list[str]:
     # 检查括号指令残留（含截断）
     if re.search(r"（(?:章末钩子|场景目标|伏笔)", text):
         issues.append("残留括号指令（章末钩子/场景目标/伏笔）")
+    issues.extend(detect_director_speak_leak(text))
+    return issues
+
+
+# ── 中文"导演话语"泄漏检测（CC 2026-10-05）────────────────────────────
+# 背景：ch25 正文出现"这就是他必须执行的第一个外部动作：翻阅旧笔记"——
+# 纯中文的规划式表述混入正文，现有 latin/脚手架正则（[A-Za-z] 类）抓不到。
+# 两层检测：
+#   A. 兜底短语：导演规划式措辞（有限、可枚举的句式），命中即报。
+#   B. 结构化反查：task_card/schema 内部规划词汇（core_goal→"本章核心目标"、
+#      concrete_events→"外部动作" 等，由 chapter_director prompt 写死、集合有限）
+#      原样出现在正文即报——检查"内部实现的词汇泄漏到外部产物"，不依赖人工
+#      逐条读出来再补词，避免退回关键词打地鼠。
+_DIRECTOR_SPEAK_PATTERNS = (
+    r"必须执行的第一个(?:外部|内部)?动作",
+    r"(?:接下来|下一步|下面)(?:要|该|需要|应当)?做的",
+    r"这一步(?:的)?(?:任务|动作|目标)是",
+    r"按照(?:安排|规划|计划)(?:他|她|陆烬|陈老根)需要",
+    r"执行(?:完|过|好|了)?(?:这些|那些|完)?(?:指令|安排|任务)",
+    r"本章(?:的)?(?:核心|最高)?(?:目标|任务)",
+)
+_SCHEMA_LEAK_TERMS = (
+    # chapter_director prompt 写死的内部字段标签（原样进正文即泄漏）
+    "本章核心目标", "大纲核心任务", "核心任务", "场景目标", "场景冲突",
+    "场景情绪", "情节点", "外部动作", "内部动作", "concrete_events",
+    "observable_action", "must_cover_beats", "foreshadow_actions",
+    "narrative_position", "completed_actions", "pending_actions",
+    "核心事件",
+)
+
+
+def detect_director_speak_leak(text: str) -> list[str]:
+    """检测纯中文导演话语/内部规划词汇泄漏进正文。返回命中项列表（空=干净）。"""
+    issues: list[str] = []
+    if not text:
+        return issues
+    # A. 规划式短语
+    for pat in _DIRECTOR_SPEAK_PATTERNS:
+        m = re.search(pat, text)
+        if m:
+            issues.append(f"残留导演话语（规划式表述）: {m.group(0)}")
+    # B. schema 内部词汇反查
+    for term in _SCHEMA_LEAK_TERMS:
+        if term in text:
+            issues.append(f"残留内部规划词汇: {term}")
     return issues
 
 
