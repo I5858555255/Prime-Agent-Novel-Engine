@@ -2,7 +2,12 @@
 from novel_engine.quality.repetition_detector import (
     purify_novel_for_publish, verify_no_scaffolding, detect_director_speak_leak,
 )
+from novel_engine.quality.scope_gate import detect_scope_violations
 
+
+def _test_root():
+    import pathlib
+    return str(pathlib.Path(__file__).resolve().parents[1])
 
 def test_ch2_beat_point():
     raw = "**节拍点1（冲突酝酿）：村民聚集，议论声起**\n\n正文段落。"
@@ -75,4 +80,23 @@ def test_director_speak_no_false_positive():
     ]
     for c in clean:
         assert detect_director_speak_leak(c) == [], f"误报: {c}"
+
+
+def test_scope_gate_sentence_ctx_keeps_term():
+    """CC 2026-10-05 ch56：task_card extra_hard_terms 注入"吐纳"后，
+    长段落中 term 位于 120 字之后时 hard issue 的 sentence 必须仍含 term。
+    同时验证：普通物件传递（"传给旁边半大孩子"）不触发 P6-1 传授误报。"""
+    para = ("老妇哆哆嗦嗦接过碗，只抿了一小口，便传给旁边半大孩子。" * 5
+            + "陈老根在山崖边独自吐纳，气机沉入丹田。")
+    r = detect_scope_violations(para, 56, None, _test_root(),
+                                extra_hard_terms=["吐纳"])
+    assert r["hard"], "extra_hard_terms 注入吐纳 + 正文含吐纳应 hard 命中"
+    for h in r["hard"]:
+        assert h["term"] in h["sentence"], (
+            f"引用句必须含 term: term={h['term']!r} sentence={h['sentence']!r}")
+    # 无"吐纳"正文的普通传递不应触发传授误报（P6-1 收紧）
+    para2 = "老妇将碗传给旁边的孩子，孩子捧着喝了。" * 3
+    r2 = detect_scope_violations(para2, 56, None, _test_root(),
+                                 extra_hard_terms=["吐纳"])
+    assert r2["hard"] == [], f"普通物件传递误报: {r2['hard']}"
 

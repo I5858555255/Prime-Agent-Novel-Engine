@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-10-05 ch56 失败双根因 — 已修复 ✅
+
+**现象**：ch51-80 批次 ch56 FAILED 84.1，日志 hard 项 `[canon硬词] 吐纳：
+老妇哆哆嗦嗦接过，只抿了一小口，便传给旁边半大孩子。`——引用句不含
+"吐纳"，初判疑似误报，深挖后是两个独立 bug 叠加：
+
+**根因 1（P6-1 传授违规误报）**：`_has_teach_violation` 的既成传授路径
+（"传给/教给"+ 婴儿受事）用 `_TUNA_CHILD_BENEFICIARY` 泛称（孩子/娃/
+小孩）做受事匹配——"老妇…**传给**旁边**半大孩子**"（普通物件传递）命中
+"传给"+ "孩子" + "给"，虚标 term="吐纳" 判 hard。ch56 无 infant arc 配置
+（infant.json 仅覆盖 ch1-9），此命中全部来自 task_card 注入的
+extra_hard_terms=["吐纳"]。
+**修复**：新增 `_TUNA_DIRECT_RECIPIENT = {陆烬,婴儿,襁褓,小儿}`，省略
+宾语传授路径的受事收紧为修炼主角具名；含修炼宾语（吐纳/呼吸/法门…）
+的句子本就走 `_CULTIVATION_OBJECTS` 近窗路径，不受影响（7 条既有
+TRUE_POSITIVE 断言全保留，新增 3 条普通传递误报样本）。
+
+**根因 2（issue 引用句截断）**：scope_gate 所有 hard/soft issue 的
+`sentence=sent[:120]`——`_sentences()` 不按句号切分，长段落中 term 位于
+第 120 字之后时引用句不含 term，误导人工审阅且 `_det_fulltext_fix` 会
+拿错文本做定点修复。
+**修复**：新增 `_sentence_ctx(sent, idx, term)`（term 为中心 ±36/+84
+窗口），替换全部 7 处 `sent[:120]`，保证引用句始终含 term。
+
+**验收**：新增 4 条 hermetic 测试（长段落 ctx 含 term + 普通传递不误报
++ teach 误报样本 3 条）；pyflakes 0 undefined name；全量 pytest
+1 failed / 1105 passed（唯一已知 pre-existing）。批次在后台继续跑，
+ch56 已 quarantine+human，ch51-55 已 COMMITTED（88.8/83.5/82.25/78.5/76.3）。
+
 ## 2026-10-05 中纲批次 V01 ch51-80 — 已 approved，批次启动 ✅
 
 **背景**：延续 V01 中纲批次（ch21-50 已 approved）。本批范围 51-80，

@@ -207,6 +207,12 @@ _TUNA_RECOLLECTION_MARKERS = frozenset({"想起", "回想", "回想起来", "记
 _TUNA_OBSERVER_MARKERS = frozenset({"偷看", "窥见", "窥", "望着", "看着", "悄悄睁眼", "不敢出声"})
 # 与婴儿受事近窗共现才算传授（给/帮 单独不算）
 _TUNA_CHILD_BENEFICIARY = frozenset({"陆烬", "婴儿", "孩子", "娃", "小孩", "小儿"})
+# CC 2026-10-05 ch56：传授省略宾语的受事收紧为修炼主角具名。
+# "传给旁边半大孩子一碗汤"是普通物件传递（_TEACH_VERBS 含"传给"，误命中
+# _TUNA_CHILD_BENEFICIARY 泛称导致 hard）；而含修炼宾语（吐纳/呼吸/法门…）
+# 的句子早已由 _CULTIVATION_OBJECTS 近窗路径拦截，此兜底只需抓"传给了陆烬"
+# 式省略宾语句式，受事限定具名修炼主角。
+_TUNA_DIRECT_RECIPIENT = frozenset({"陆烬", "婴儿", "襁褓", "小儿"})
 # 教授短语：给+婴儿+讲/授/教/带
 _TUNA_TEACH_PHRASES = frozenset({
     "给陆烬", "给婴儿", "给孩子", "给娃",
@@ -311,7 +317,7 @@ def _has_teach_violation(s: str) -> bool:
         _baby_ctx = s[tv_idx:tv_idx + 20]
         if any(co in ctx for co in _CULTIVATION_OBJECTS):
             return True
-        if any(b in _baby_ctx for b in _TUNA_BABY_AGENT_MARKERS) and (
+        if any(b in _baby_ctx for b in _TUNA_DIRECT_RECIPIENT) and (
             "给" in _baby_ctx or "与" in _baby_ctx or tv in ("传给", "教给", "授徒")
         ):
             return True
@@ -587,6 +593,17 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
         if t and t not in hard_terms:
             hard_terms.append(t)
 
+    def _sentence_ctx(sent: str, idx: int, term: str, lead: int = 36, tail: int = 84) -> str:
+        """以 term 命中位置为中心的上下文窗口，确保引用句始终含 term。
+
+        CC 2026-10-05：ch56 实测 `sent[:120]` 在长段落（_sentences 不按句号切分）
+        下截断后不含 term——issue 显示"老妇…抿一小口"却标 term=吐纳，
+        误导人工审阅，且 _det_fulltext_fix 会拿错文本做定点修复。
+        """
+        start = max(0, idx - lead)
+        end = min(len(sent), idx + len(term) + tail)
+        return sent[start:end]
+
     def _scan_terms(terms, kind):
         for term in terms:
             # concept_unlocks 检查：对无细粒度豁免的术语，概念已解锁则放行。
@@ -629,7 +646,7 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                     continue
                 if _has_negation_near(idx, len(term), sent, markers, window):
                     soft.append({"kind": "negated_" + kind, "term": term,
-                                 "sentence": sent[:120]})
+                                 "sentence": _sentence_ctx(sent, idx, term)})
                     prev_sents.append(sent)
                     prev_sents = prev_sents[-3:]
                     break
@@ -643,7 +660,7 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                                 "要么", "有人", "有人会", "或许有"}
                 if any(mk in sent for mk in _rhetorical_markers):
                     soft.append({"kind": "negated_" + kind, "term": term,
-                                 "sentence": sent[:120]})
+                                 "sentence": _sentence_ctx(sent, idx, term)})
                     prev_sents.append(sent)
                     prev_sents = prev_sents[-3:]
                     break
@@ -653,20 +670,20 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
                     # 是他人话语/书面记录（施动者为记录者，非陆烬修炼），放行。
                     if _inside_quotes(idx, sent):
                         soft.append({"kind": "quote_exempt", "term": term,
-                                     "sentence": sent[:120]})
+                                     "sentence": _sentence_ctx(sent, idx, term)})
                     elif not _is_tuna_hard_violation(term, sent, chapter_num, cfg, prev_sents,
                                                      night_bounded=night_bounded, root=root):
                         soft.append({"kind": "tuna_exempt", "term": term,
-                                     "sentence": sent[:120]})
+                                     "sentence": _sentence_ctx(sent, idx, term)})
                     else:
                         hard.append({"kind": "hard_leak", "term": term,
-                                     "sentence": sent[:120]})
+                                     "sentence": _sentence_ctx(sent, idx, term)})
                     prev_sents.append(sent)
                     prev_sents = prev_sents[-3:]
                     break
                 if kind == "hard":
                     hard.append({"kind": "hard_leak", "term": term,
-                                 "sentence": sent[:120]})
+                                 "sentence": _sentence_ctx(sent, idx, term)})
                 else:
                     soft.append({"kind": "soft_term", "term": term,
                                  "sentence": sent[:120]})
