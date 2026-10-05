@@ -13,7 +13,9 @@
     ],
     "generated_at": "2026-10-05T05:48:51+00:00",
     "batch_size": 6,
-    "status": "draft"
+    "status": "approved",
+    "approved_at": "2026-10-05",
+    "approved_note": "8章需人工确认全部放行（ch53/54/59/63/67/69/76/78）；F004编号标注为LLM生成层标错（实为迷雾异象铺垫，非脚本bug），不影响门禁"
   },
   "entries": {
     "51": {
