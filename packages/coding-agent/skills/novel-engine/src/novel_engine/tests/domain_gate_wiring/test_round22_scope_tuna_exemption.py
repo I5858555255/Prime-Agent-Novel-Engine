@@ -329,7 +329,9 @@ def test_gap_b_definite_teach_with_hesitant_hard():
         6, _NIGHT_ANCHOR, _ROOT,
     )
     hard_terms = [h["term"] for h in r["hard"]]
-    assert "吐纳" in hard_terms, f"既成传授应 hard，实际：{hard_terms}"
+    # CC 2026-10-06：归因显示实际命中词（句含"呼吸法"→"呼吸"），非硬编码"吐纳"
+    assert hard_terms, f"既成传授应 hard，实际：{hard_terms}"
+    assert "呼吸" in hard_terms, f"归因应显示实际命中词，实际：{hard_terms}"
 
 
 def test_gap_b_hesitant_no_teach_soft():

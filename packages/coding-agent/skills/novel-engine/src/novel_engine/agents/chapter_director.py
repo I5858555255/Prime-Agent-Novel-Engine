@@ -563,6 +563,16 @@ class ChapterDirector:
                     collecting = False  # 下一个键（note/theme 等）即列表结束
         return forbidden
 
+
+    # CC 2026-10-06：传授既成 vs 提及/认知 的边界例句（随 forbidden 列表注入，
+    # 从生成源头降低"教我呼吸的法子"式传授既成句发生率；ch59/ch60 实证来源）。
+    _TEACH_BOUNDARY_HINT = (
+        "- 呼吸法边界（传授既成 vs 提及/认知）：可以说『陆烬知道根伯会些调息的"
+        "法子』（认知/提及，允许）；不可以说『根伯教我呼吸的法子』『教我吐纳』"
+        "『传我呼吸法』（传授既成——方法已交付陆烬，A 路线禁止）。"
+        "陆烬不得出现静坐吐纳/引气/气流流转/暖意灌注/气感等体感描写。\n"
+    )
+
     def _load_json(self, path: Path) -> dict:
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
@@ -1072,6 +1082,7 @@ class ChapterDirector:
             f'基于以下场景骨架，补充每个场景的重字段。必须保持场景数量不变。\n\n'
             f'## 场景骨架\n{scenes_json}\n\n'
             f'## 本卷禁止事项（场景内容不得违反）：{json.dumps(context.get("forbidden_list") or [], ensure_ascii=False)}\n'
+            f'{self._TEACH_BOUNDARY_HINT}'
             f'{_render_outline_mandate(context)}\n\n'
             '## 输出 JSON（只含 scene_blueprints 数组，追加以下字段到每个场景）：\n'
             '{\n'
@@ -1163,6 +1174,7 @@ class ChapterDirector:
             f"- 活跃约束：{context['constraints'][:400]}\n"
             f"- 本卷作者意图：{context.get('author_intent', '')[:1000]}\n"
             f"- 本卷禁止事项：{json.dumps(context.get('forbidden_list') or [], ensure_ascii=False)}\n"
+            f'{self._TEACH_BOUNDARY_HINT}'
             f'- 动态硬约束：{context.get("dynamic_constraints", "无")}\n'
             f'{prior_events_block}\n\n'
             f'{_render_outline_mandate(context)}\n\n'

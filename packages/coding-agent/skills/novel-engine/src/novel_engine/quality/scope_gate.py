@@ -696,12 +696,19 @@ def detect_scope_violations(scene_text: str, chapter_num: int, timeline_anchor, 
 
     # P6-1：传授违规独立检测（不依赖 吐纳/调息 是否命中）
     # 避免"传呼吸之法给陆烬"等不含 吐纳 但含传授+修炼宾语的漏放
+    # CC 2026-10-06：term 归因显示实际命中词（如"呼吸的法子"命中→"呼吸"），
+    # 不再硬编码"吐纳"——ch60 正文无"吐纳"却标 [canon硬词] 吐纳 误导排查。
+    # 命中词选取用固定特异度顺序（吐纳>调息>行气>口诀>功法>法诀>法门>呼吸），
+    # 避免 set 迭代顺序不稳定导致同一句子显示词漂移。
     try:
         from novel_engine.quality.scope_gate import _has_teach_violation as _htv
+        _teach_hit_order = ("吐纳", "调息", "行气", "口诀", "功法", "法诀", "法门", "呼吸")
         for sent in sents:
             if _htv(sent):
-                hard.append({"kind": "hard_leak", "term": "吐纳",
-                             "sentence": sent[:120]})
+                _hit = next((co for co in _teach_hit_order if co in sent), "传授")
+                _hidx = max(0, sent.find(_hit)) if _hit != "传授" else 0
+                hard.append({"kind": "hard_leak", "term": _hit,
+                             "sentence": _sentence_ctx(sent, _hidx, _hit)})
                 break
     except Exception:
         pass

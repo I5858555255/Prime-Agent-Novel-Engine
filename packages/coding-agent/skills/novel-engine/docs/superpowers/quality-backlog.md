@@ -415,3 +415,19 @@ Writer 与 Reviewer 两层几乎看不到真实设定内容，对应封存时两
 - 未决待办：ch21+ 创作方向（用户/剧情负责人提供大纲后，先用
   concept_audit.py 纸面推演）；martial_identity@15、guardian_identity@20
   两个解锁点从未在真实跑批中触发，是 ch21-50 第一个必撞窗口。
+
+## 2026-10-06 传授既成 vs 提及/认知 边界（ch59/ch60 实证收口）
+- 判定实证（_has_teach_violation 真代码运行）：ch60 L234 "您教我……呼吸的法子"→True
+  （传授既成，拦截正确）；ch59 L56 体感+传授既成→True；认知句"陆烬知道根伯会些
+  调息的法子"→False；纯提及句→False。允许边界=陈老根练/提及、陆烬旁观/被告知结果，
+  "被传授方法"不在允许形态内。此前"疑似误报"判断撤回（只读 forbidden 文字未跑代码）。
+- 修复 1（归因显示）：P6-1 传授违规 term 由硬编码"吐纳"改为实际命中词（固定特异度
+  顺序 吐纳>调息>行气>口诀>功法>法诀>法门>呼吸，避免 set 迭代漂移）；sentence 用
+  _sentence_ctx 定位（不再 sent[:120] 可能截掉命中词）。
+- 修复 2（源头例句注入）：chapter_director 新增 _TEACH_BOUNDARY_HINT 常量并注入三处
+  prompt（skeleton/craft/metadata），显式给"认知句可以 / 传授既成句不可以"边界例句，
+  从生成源头降低发生率（与 concept_unlocks 同哲学，不新增检测词表）。
+- 回归：test_teach_boundary.py 4 用例（ch59/ch60 违规 + 认知/纯提及放行）；
+  round22 test_gap_b_definite_teach_with_hesitant_hard 断言更新为"实际命中词"。
+- 教训（本次自查）：类体内定义类属性常量须 4 空格缩进；方法内引用类属性须 self. 前缀；
+  归因显示改动会撞旧断言（写死"吐纳"），需同步更新断言而非只改实现。
