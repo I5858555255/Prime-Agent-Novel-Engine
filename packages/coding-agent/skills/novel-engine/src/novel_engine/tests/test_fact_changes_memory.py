@@ -20,7 +20,7 @@ def test_add_pending_change_writes_to_fact_changes(tmp_path: Path) -> None:
         "target": "hero",
         "new_value": "Yuanying",
         "source": "director",
-    })
+    }, chapter=12)
     # Check pending file
     pfile = tmp_path / "memory" / "world_state" / "pending" / "pending_changes.json"
     data = json.loads(pfile.read_text(encoding="utf-8"))
@@ -31,6 +31,8 @@ def test_add_pending_change_writes_to_fact_changes(tmp_path: Path) -> None:
     assert entries[0]["status"] == "pending"
     assert entries[0]["type"] == "character_realm"
     assert entries[0]["target"] == "hero"
+    # chapter must be preserved (CC: 缺陷A 修复——章节号可追溯)
+    assert entries[0]["chapter"] == 12
 
 
 def test_commit_pending_changes_clears_pending_file(tmp_path: Path) -> None:

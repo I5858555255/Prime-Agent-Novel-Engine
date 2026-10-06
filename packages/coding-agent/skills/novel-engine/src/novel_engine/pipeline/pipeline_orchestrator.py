@@ -1694,7 +1694,7 @@ class PipelineOrchestrator:
             synopsis = self.synopsis_agent.generate_synopsis(task_card)
         self.current_synopsis = synopsis
         for change in synopsis.get("state_changes", []):
-            self.memory.add_pending_change(change)
+            self.memory.add_pending_change(change, chapter=task_card.get("chapter_num", 0))
         source = "task_card" if (merge and isinstance(raw, str) and len(raw.strip()) >= 50) else ("deterministic_fallback" if merge else "agent")
         self._current_synopsis_source = source
         logger.info(f"Synopsis ready for chapter {task_card.get('chapter_num', 0)} (source={source})")

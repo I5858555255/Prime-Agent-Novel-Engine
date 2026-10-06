@@ -193,8 +193,12 @@ class MemoryManager:
         for key, value in state.items():
             self._save_json(self.root / "memory" / "world_state" / f"{key}.json", value)
 
-    def add_pending_change(self, change: dict):
-        """添加待提交的状态变更，同步写入 fact_changes 台账（status=pending）。"""
+    def add_pending_change(self, change: dict, chapter: int = 0):
+        """添加待提交的状态变更，同步写入 fact_changes 台账（status=pending）。
+
+        chapter 为发起提案的章节号（默认 0 表示未知/批量）；调用方应显式传入，
+        保证账本可按章追溯。
+        """
         pending_file = self.root / "memory" / "world_state" / "pending" / "pending_changes.json"
         data = self._load_json(pending_file)
         data.setdefault("pending_changes", []).append(change)
@@ -203,7 +207,7 @@ class MemoryManager:
         try:
             record_change(
                 self.root,
-                chapter=0,
+                chapter=chapter,
                 change_type=change.get("type", "unknown"),
                 target=str(change.get("target", "")),
                 old_value=change.get("old_value"),

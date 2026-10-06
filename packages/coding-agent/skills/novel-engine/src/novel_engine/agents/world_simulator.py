@@ -181,6 +181,7 @@ class WorldSimulator:
             target = change.get("target")
             new_value = change.get("new_value")
             old_value = None
+            _applied = False
 
             # Hard violation or entity-not-found: reject without applying
             if verdict == "rejected":
@@ -210,12 +211,14 @@ class WorldSimulator:
                 old_value = self.characters["characters"][target].get("realm")
                 self.characters["characters"][target]["realm"] = new_value
                 modified = True
+                _applied = True
                 logger.info(f"Applied realm change: {target} → {new_value}")
 
             elif change_type == "character_location" and target in self.characters.get("characters", {}):
                 old_value = self.characters["characters"][target].get("location")
                 self.characters["characters"][target]["location"] = new_value
                 modified = True
+                _applied = True
 
             elif change_type == "relationship_update":
                 rel_id = change.get("relationship_id")
@@ -226,6 +229,7 @@ class WorldSimulator:
                     old_value = rels.get(rel_key)
                     rels[rel_key] = new_value
                     modified = True
+                    _applied = True
                     # Use relationship_id as target for audit trail
                     target = rel_id
 
@@ -237,8 +241,13 @@ class WorldSimulator:
                 }
                 self.power_system.setdefault("breakthrough_history", []).append(event)
                 modified = True
+                _applied = True
                 old_value = None
                 new_value = event
+            elif not _applied:
+                logger.warning(
+                    f"[change_validation] no apply branch matched: type={change_type!r} "
+                    f"target={target!r} (change recorded as skipped, value unchanged)")
 
             # Record to fact_changes ledger (fire-and-forget, non-fatal)
             try:
@@ -251,7 +260,7 @@ class WorldSimulator:
                     new_value=new_value,
                     source=source,
                     gate_result="passed",
-                    status="applied",
+                    status="applied" if _applied else "skipped",
                 )
             except Exception as _fc_err:
                 logger.warning(f"fact_changes write failed (non-fatal): {_fc_err}")
