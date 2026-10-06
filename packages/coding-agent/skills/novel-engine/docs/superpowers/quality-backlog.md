@@ -30,19 +30,25 @@ draft 欠账）。**修复项（待排期）**：L1173 前检查 result["gray_ba
 短路 force-best 路径；确认 final gate 后 best_score 改写来源；补回归测试
 "gray-band 已发布后不得被 force-best 覆盖"。
 
-### 异常 2：fact_changes 101 条 pending 滞留（账本半接）
-**根因**：112 条中 pending=101（source=director，全部 character_realm
-境界提案）+ rejected=8 + deferred=1 + applied=2。查证：
-- 提案阶段（director 产出 state_changes）写入 fact_changes status=pending
-- **应用阶段（L1297-1299 apply_pending_changes + commit_pending_changes）
-  不调用 record_change/更新账本状态** → pending 永不转 applied
-- deferred 路径（L1302-1316）正确记录 status=deferred（仅 1 条）
-- applied 2 条（ch51/73）为某条单独调用路径
+### 异常 2：fact_changes pending 滞留 — 已澄清（非 bug，附 2 个真实缺陷）
+**初判（已修正）**：112 条中 pending=101 曾被误判为"apply 路径不更新账本
+导致滞留"。深挖后确认：
+- **pending 101 条是提案层正常记账**：_stage_synopsis（L1696-1697）对
+  synopsis.state_changes 调 add_pending_change → 写 pending 行。
+- **apply 路径记账正常**：apply_pending_changes 正确追加 rejected（8）/
+  applied（2）/ deferred（1）行。fact_changes 是 append-only 账本，
+  提案行与应用行本就分离，pending 不会"转"applied——这是设计形态。
 
-**影响**：审计账本无法反映真实应用状态；V01 内境界本应不变（提案持续
-pending 属低危），但随规模扩大，pending 池与真实状态将不可核对。
-**修复项（待排期）**：apply 路径补 record_change status=applied（或
-update_pending→applied）；补测试"应用后账本状态必须更新"。
+**真实缺陷 2 个**：
+- **缺陷 A：add_pending_change 写 chapter=0**（memory_manager.py:206
+  硬编码 chapter=0，_stage_synopsis 有 chapter_num 未传入）→ 101 条
+  提案全部无法按章追溯，账本的审计价值打折。
+- **缺陷 B：apply_pending_changes 分支未命中时静默**（world_simulator.py
+  L179-257：character_realm 的 target 不在 characters、或 type 不匹配时，
+  不应用、不 rejected、不 applied、不 deferred——变更去向完全不可见）。
+
+**修复方向（待排期）**：A：add_pending_change 增加 chapter 参数并传
+chapter_num；B：未命中分支记录 status=skipped 或至少 warning 日志。
 
 ## 2026-10-06 中纲批次 V01 ch51-80 — 生成完成 + 验收 ✅（附 3 项异常待处理）
 
