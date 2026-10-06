@@ -30,6 +30,16 @@ draft 欠账）。**修复项（待排期）**：L1173 前检查 result["gray_ba
 短路 force-best 路径；确认 final gate 后 best_score 改写来源；补回归测试
 "gray-band 已发布后不得被 force-best 覆盖"。
 
+**✅ 2026-10-06 已修复（提交待记）**：novel/ 为唯一发布源不变量落地——
+1. generate_single_chapter L1174 前：result["gray_band_release"] 为真时
+   短路 force-best（置 _force_publish_best=False，force_best=False，
+   result["published"]=True），不写 draft、不覆盖 checkpoint；
+2. _decide_publish L1399 同样短路（双保险，两处 force-best 写 draft 点
+   都被覆盖）；gray-band 走 _gray_commit 正常发布 novel；
+3. 回归测试 test_gray_band_force_best_race.py：gray_band_release 短路
+   不写 draft + 无 gray_band 时 force-best 保持原行为；
+4. 验证：pyflakes 0 undefined；全量 1 failed/1107（唯一已知 pre-existing）。
+
 ### 异常 2：fact_changes pending 滞留 — 已澄清（非 bug，附 2 个真实缺陷）
 **初判（已修正）**：112 条中 pending=101 曾被误判为"apply 路径不更新账本
 导致滞留"。深挖后确认：

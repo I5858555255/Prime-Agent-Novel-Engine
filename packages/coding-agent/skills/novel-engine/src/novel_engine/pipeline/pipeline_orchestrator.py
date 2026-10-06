@@ -1172,6 +1172,18 @@ class PipelineOrchestrator:
             return result
         # P0-终态发布：fix 耗尽后的 best 按 Q5 只进 chapters/draft（从不进 novel），供人审阅（泄漏仍阻断并走正常仲裁）。
         force_best = bool(getattr(self, "_force_publish_best", False))
+        if force_best and result.get("gray_band_release"):
+            # CC ch62：gray-band 已授权发布 novel/（全绿发布路径已走通），force-best
+            # 不得再以更差版本覆盖。不变量：novel/ 是唯一发布源，已发布章节不降级
+            # 为 draft，也不覆盖 checkpoint。短路后走下方 _decide_publish 的
+            # _gray_commit 正常发布路径。
+            logger.warning(
+                f"ch{chapter_num} gray_band_release={result.get('gray_band_score')} — "
+                f"force-best short-circuited (novel publish path wins; draft/checkpoint untouched)")
+            self._force_publish_best = False
+            force_best = False
+            result["score"] = cur_score
+            result["published"] = True
         if force_best and not leak_issues:
             logger.warning(f"Force-best to draft {cur_score} despite hard gate (note={result.get('note','')}) hard={det_issues} soft={det_soft} high={high_list}")
             self._force_publish_best = False
@@ -1385,6 +1397,14 @@ class PipelineOrchestrator:
         Returns (can_publish, verdict_dict).
         """
         force_best = bool(getattr(self, "_force_publish_best", False))
+        if force_best and result.get("gray_band_release"):
+            # CC ch62 不变量（与 generate_single_chapter L1174 同源双保险）：
+            # gray-band 已授权发布 novel/，force-best 不得再降级为 draft。
+            logger.warning(
+                f"ch{chapter_num} _decide_publish: gray_band_release={result.get('gray_band_score')} — "
+                f"force-best short-circuited (novel publish path wins)")
+            self._force_publish_best = False
+            force_best = False
         from novel_engine.pipeline.quality_gate import evaluate_publish
         leak_issues = getattr(self, "_last_leak_issues", [])
         if force_best and not leak_issues:
