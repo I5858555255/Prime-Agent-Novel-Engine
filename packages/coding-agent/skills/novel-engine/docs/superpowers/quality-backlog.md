@@ -6,6 +6,41 @@
 
 ---
 
+## 2026-10-06 中纲批次 V01 ch51-80 — 生成完成 + 验收 ✅（附 3 项异常待处理）
+
+**批次结果（30 章，全程 16h）**：COMMITTED 26 章（51-55/57/58/61-65/67-80）；
+FAILED 4 章：ch56（P6-1 传授误报，已修）、ch59（89.7 分 force publish 入
+novel，含"陆烬能感觉到气息"气感嫌疑，标记 spot-check）、ch60（85.3，
+"您教我认字，教我那些呼吸的法子"提及指称疑似误报，quarantine）、
+ch66（内容密度真空洞 WRITE_REPLAN，无规则误报）。
+
+**验收**：
+- checkpoint 51-80 无空洞（26 COMMITTED 全记录；4 FAILED 不写 checkpoint 符合设计）。
+- novel 51-80：51(88.8)/73(87.6)/76(88.3) 合规发布；draft 51-80：23 章
+  force_best_draft 欠账（累计 draft 池 58 章）——规模化画像：跑通 ≠ 达标，
+  欠账在积累，需后续逐批修复或批量 force-best 复审。
+- memory_health 类核验：StateDB characters=8/factions=0/foreshadows=9/
+  relationships=6/concept_unlocks=4；world_state characters/power_system
+  更新至 10/6 04:09，**relationships.json 停在 9/29 未随批次更新**。
+
+**待处理异常（3 项）**：
+1. **ch62 novel/draft 双写残留**：checkpoint mode=force_best_draft，但
+   chapters/novel/chapter_62.txt（22:17 中间稿 34.8K）与
+   chapters/draft/chapter_62.txt（22:23 终稿 31.3K）并存——force-best
+   时未回滚/删除 novel 中间稿，novel 目录被非终态文本污染。需确认
+   force-best 发布路径是否应清理 novel 残留。
+2. **fact_changes 量级异常**：112 条中 pending=101 / rejected=8 / applied=2
+   / deferred=1——提案大量滞留 pending（已知"add_pending_change 无生产
+   调用方、提案直通"缺口的直接后果），审计账本未真正形成"提案→校验→
+   应用"闭环。
+3. **relationships.json 未随批次更新**：记忆层关系状态自 9/29 后未写入，
+   与 characters/power_system 更新节奏不一致。
+
+**后续优先级建议**：先修 ch62 残留（数据污染，最小改动）；ch59/60 做
+"提及指称 vs 气感"边界系统性判定（ch5 约束气感最早 654 章）；ch56/66
+修复后重跑；fact_changes pending 滞留与 relationships 更新一并深挖
+（记忆层提交链路）；上述稳定后再启动 ch81+ 批次。
+
 ## 2026-10-05 ch56 失败双根因 — 已修复 ✅
 
 **现象**：ch51-80 批次 ch56 FAILED 84.1，日志 hard 项 `[canon硬词] 吐纳：
