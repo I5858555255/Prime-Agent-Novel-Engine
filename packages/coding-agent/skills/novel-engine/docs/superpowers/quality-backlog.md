@@ -6,6 +6,44 @@
 
 ---
 
+## 2026-10-06 ch62 发布状态不一致 + fact_changes 账本半接 — 根因已定位（修复待排期）
+
+### 异常 1：ch62 novel/draft 双写 + checkpoint 语义错乱（真实状态机竞争）
+**现象**：chapters/novel/chapter_62.txt（22:17，86.9 分 gray-band 合规版，
+34.8K）与 chapters/draft/chapter_62.txt（22:23，79.5 分 force-best 版，
+31.3K）并存；checkpoint ch62 mode=force_best_draft（记录 79.5 hash），
+与 novel 内容不一致。
+
+**行为链（日志还原）**：
+1. fix loop 内 L3917-3923：86.9 分 gray-band → 返回 'gray_band' → break
+2. L749 采纳 86.9 绿候选（"adopt gate-green candidate 86.9"）
+3. L947-975 final gate：_gray_final=True → "Gray-band final release → publish
+   to novel" + result["gray_band_release"]=True → 成功分支（apply_world_state=True）
+4. 但后续 best_score 被改写为 79.5 → L976-992 else 分支（"Fix exhausted,
+   force-best to draft 79.5"）→ _force_publish_best=True
+5. L1174-1189 force_best 分支：写 draft + create_draft_checkpoint
+   （force_best_draft）→ 覆盖 checkpoint；novel 62（86.9 版）残留未清
+
+**判定**：novel 62 是合规 gray-band 发布内容（质量更高，保留）；draft 62
+是 force-best 残留（多余，保留待审）；checkpoint 语义错乱（发布章被标为
+draft 欠账）。**修复项（待排期）**：L1173 前检查 result["gray_band_release"]
+短路 force-best 路径；确认 final gate 后 best_score 改写来源；补回归测试
+"gray-band 已发布后不得被 force-best 覆盖"。
+
+### 异常 2：fact_changes 101 条 pending 滞留（账本半接）
+**根因**：112 条中 pending=101（source=director，全部 character_realm
+境界提案）+ rejected=8 + deferred=1 + applied=2。查证：
+- 提案阶段（director 产出 state_changes）写入 fact_changes status=pending
+- **应用阶段（L1297-1299 apply_pending_changes + commit_pending_changes）
+  不调用 record_change/更新账本状态** → pending 永不转 applied
+- deferred 路径（L1302-1316）正确记录 status=deferred（仅 1 条）
+- applied 2 条（ch51/73）为某条单独调用路径
+
+**影响**：审计账本无法反映真实应用状态；V01 内境界本应不变（提案持续
+pending 属低危），但随规模扩大，pending 池与真实状态将不可核对。
+**修复项（待排期）**：apply 路径补 record_change status=applied（或
+update_pending→applied）；补测试"应用后账本状态必须更新"。
+
 ## 2026-10-06 中纲批次 V01 ch51-80 — 生成完成 + 验收 ✅（附 3 项异常待处理）
 
 **批次结果（30 章，全程 16h）**：COMMITTED 26 章（51-55/57/58/61-65/67-80）；
