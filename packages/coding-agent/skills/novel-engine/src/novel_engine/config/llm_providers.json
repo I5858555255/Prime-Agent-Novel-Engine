@@ -163,6 +163,81 @@
           "total_timeout_s": 650
         }
       }
+    },
+    "agnes_30": {
+      "base_url": "https://apihub.agnes-ai.com",
+      "api_key_env": "AGNES_API_KEY",
+      "timeout_s": 120,
+      "max_retries": 2,
+      "default_extra_body": {},
+      "phases": {
+        "outline": {
+          "models": [
+            "agnes-3.0-flash"
+          ],
+          "response_format": null,
+          "stream": true,
+          "idle_timeout_s": 100,
+          "total_timeout_s": 220
+        },
+        "director": {
+          "models": [
+            "agnes-3.0-flash"
+          ],
+          "response_format": "json_object",
+          "stream": true,
+          "idle_timeout_s": 100,
+          "total_timeout_s": 560
+        },
+        "synopsis": {
+          "models": [
+            "agnes-3.0-flash"
+          ],
+          "response_format": "json_object",
+          "stream": true,
+          "idle_timeout_s": 100,
+          "total_timeout_s": 560
+        },
+        "scenes": {
+          "models": [
+            "agnes-3.0-flash"
+          ],
+          "response_format": "json_object",
+          "concurrency": 4,
+          "stream": true,
+          "idle_timeout_s": 100,
+          "total_timeout_s": 650
+        },
+        "polish": {
+          "models": [
+            "agnes-3.0-flash"
+          ],
+          "response_format": null,
+          "concurrency": 4,
+          "stream": true,
+          "idle_timeout_s": 100,
+          "total_timeout_s": 650
+        },
+        "review": {
+          "models": [
+            "agnes-3.0-flash"
+          ],
+          "response_format": "json_object",
+          "stream": true,
+          "idle_timeout_s": 100,
+          "total_timeout_s": 220
+        },
+        "refine": {
+          "models": [
+            "agnes-3.0-flash"
+          ],
+          "response_format": null,
+          "concurrency": 4,
+          "stream": true,
+          "idle_timeout_s": 100,
+          "total_timeout_s": 650
+        }
+      }
     }
   }
 }
