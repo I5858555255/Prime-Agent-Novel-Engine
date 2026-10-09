@@ -75,6 +75,20 @@ def test_real_ch3_sentence_still_safe():
     assert detect_timeline_jump(text, anchor) is None
 
 
+def test_geo_place_name_not_flagged_as_timeline():
+    """CC round-30：地名（青河县等）被 director 误填进 forbidden_markers 时不得判时间越界。"""
+    for marker in ["青河县", "雾隐村", "铁风武馆", "后山镇"]:
+        assert _is_spatial_marker(marker) is True, f"Expected geo name as spatial: {marker}"
+    # 正文出现该地名 → 不触发时间线越界
+    anchor = {"max_time_progression": "当日", "forbidden_markers": ["青河县"]}
+    text = "一行人沿着官道走了半日，终于在午后望见青河县的城墙。"
+    assert detect_timeline_jump(text, anchor) is None
+    # 真时间词仍命中
+    anchor2 = {"max_time_progression": "当日", "forbidden_markers": ["次日清晨"]}
+    text2 = "次日清晨，他们启程赶往青河县。"
+    assert detect_timeline_jump(text2, anchor2) is not None
+
+
 # ============================================================================
 # R14-2：按场景 beat 覆盖检查 + 强制补丁指令生成
 # ============================================================================

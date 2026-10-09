@@ -122,6 +122,17 @@ _SPATIAL_SUFFIXES = frozenset({
     "边缘", "边上", "边", "深处", "入口", "外围", "附近", "外头", "那边",
     "周围", "里头", "里面", "旁边", "尽头", "顶端", "底端",
 })
+# CC round-30：director 偶把"地名揭示禁词"（如"青河县"）误填入 forbidden_markers，
+# 地名不是时间标记，不得触发时间线越界。地理后缀命中即视为地点短语。
+_GEO_SUFFIXES = frozenset({
+    "县", "镇", "村", "寨", "庄", "山", "岭", "坡", "河", "江", "湖", "海",
+    "溪", "潭", "谷", "沟", "滩", "湾", "港", "关", "城", "坊", "街", "道",
+    "林", "原", "野", "园", "祠", "庙", "观", "亭", "桥", "井", "泉", "洞",
+    "口", "州", "府", "郡", "国", "界",
+    # CC round-30 追加：建筑/场所类地名（武馆、镖局、客栈、书院等），仅限 2 字明确场所词
+    "武馆", "镖局", "客栈", "酒楼", "书院", "医馆", "药铺", "府邸",
+    "庄园", "山寨", "门派", "当铺", "衙门", "驿站", "码头", "营地",
+})
 
 
 def _is_spatial_marker(marker: str) -> bool:
@@ -133,6 +144,9 @@ def _is_spatial_marker(marker: str) -> bool:
     if has_root and has_suffix:
         return True
     if has_root and len(marker) >= 2:
+        return True
+    # 地理后缀：地点名（如"青河县""雾隐村"）不是时间标记
+    if any(marker.endswith(s) for s in _GEO_SUFFIXES) and len(marker) >= 2:
         return True
     return False
 

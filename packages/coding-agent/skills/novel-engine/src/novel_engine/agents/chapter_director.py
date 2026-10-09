@@ -27,6 +27,67 @@ OUTLINE_FILENAME = '吸氧证道_V2_1_完整大纲.md'
 # T1: 候选路径（从运行根出发），按优先级排序
 _OUTLINE_CANDIDATE_REL = ['docs', 'planning']
 
+# CC round-30：章内场景时间顺序校验用的时间词排序表（粗粒度，含回溯词标记）。
+# 用于 detect_task_card_scene_time_inversion：场景 narrative_time 不得随 scene 序号倒置。
+_SCENE_TIME_ORDER = [
+    ("清晨", 1), ("早晨", 1), ("黎明", 1), ("拂晓", 1), ("破晓", 1), ("鸡鸣", 1),
+    ("早上", 2), ("上午", 2),
+    ("正午", 3), ("中午", 3),
+    ("午后", 4), ("下午", 4),
+    ("傍晚", 5), ("黄昏", 5),
+    ("入夜", 6), ("晚间", 6), ("晚上", 6),
+    ("深夜", 8), ("子夜", 8), ("三更", 8), ("四更", 8),
+    ("夜", 7),
+    ("五更", 9),
+]
+_SCENE_TIME_BACKREF = ("昨日", "昨夜", "前日", "前一天", "先前", "回忆", "闪回", "回想", "回述")
+
+
+def _scene_time_order(s: str) -> int:
+    """返回时间词排序值；未知返回 0（不参与倒置判定）。"""
+    if not s:
+        return 0
+    for kw, order in _SCENE_TIME_ORDER:
+        if kw in s:
+            return order
+    return 0
+
+
+def detect_task_card_scene_time_inversion(scenes: list[dict]) -> list[str]:
+    """检测任务卡内场景叙事时间的顺序倒置（如 ch141：1午后→2上午/傍晚→3午后→4黄昏）。
+
+    仅对带 narrative_time 且非回溯/闪回（含昨日/回忆等词）的场景做单调性判定；
+    未知时间词（order=0）跳过。返回可读错误列表，空=无倒置。
+    """
+    errors: list[str] = []
+    ordered = sorted(
+        (s for s in scenes if isinstance(s, dict)),
+        key=lambda s: int(s.get("sequence_index", s.get("scene_num", 0)) or 0),
+    )
+    prev_order = 0
+    prev_label = ""
+    for s in ordered:
+        nt = str(s.get("narrative_time", "") or "").strip()
+        if not nt:
+            continue
+        # 回溯/闪回场景（回忆、昨夜等）不参与单调判定，重置链条
+        if any(b in nt for b in _SCENE_TIME_BACKREF):
+            prev_order = 0
+            prev_label = ""
+            continue
+        order = _scene_time_order(nt)
+        if order == 0:
+            # 未知时间词不断链：沿用前一已知序，防跨未知词漏检倒置
+            continue
+        if prev_order and order < prev_order:
+            errors.append(
+                f"场景{int(s.get('scene_num', 0))} 叙事时间「{nt}」早于前序场景「{prev_label}」，"
+                f"章内时间顺序倒置（{prev_label} → {nt}），请按故事时序重排场景或修正 narrative_time"
+            )
+        prev_order = order
+        prev_label = nt
+    return errors
+
 
 def parse_chapter_tasks(content: str) -> dict[int, str]:
     """T2: pure function to parse all chapter-task tables from outline content.
@@ -1397,6 +1458,21 @@ class ChapterDirector:
         expected_nums = list(range(1, len(scenes) + 1))
         if scene_nums != expected_nums:
             errors.append(f"场景编号不连续: {scene_nums}，期望 {expected_nums}")
+
+        # CC round-30：章内场景叙事时间顺序倒置检测（ch141 场景1午后→2上午/傍晚→3午后→4黄昏）
+        errors.extend(detect_task_card_scene_time_inversion(scenes))
+
+        # CC round-30：当日跨度内出现跨日时间词（次日/翌日/N日后）→ 章级矛盾
+        span = str((task_card.get("timeline_anchor") or {}).get("max_time_progression", "") or "")
+        if span and "年" not in span:
+            for s in scenes:
+                nt = str(s.get("narrative_time", "") or "").strip()
+                if not nt:
+                    continue
+                if re.search(r"(次日|翌日|来日|第[一二两三四五六七八九十\d]+[天日]|三[天日]后|五[天日]后)", nt):
+                    errors.append(
+                        f"场景{int(s.get('scene_num', 0))} 叙事时间「{nt}」超出章级跨度「{span}」（章内不得跨日）"
+                    )
 
         # 检查 forbidden 项
         author_intent = self._bible_cache.get("author_intent", "")

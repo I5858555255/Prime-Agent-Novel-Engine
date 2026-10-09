@@ -69,7 +69,7 @@
   },
   "fallback_llm": {
     "api_base": "https://apihub.agnes-ai.com",
-    "model": "agnes-2.5-flash",
+    "model": "agnes-3.0-flash",
     "api_key_env": "AGNES_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
