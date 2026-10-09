@@ -476,3 +476,20 @@ Writer 与 Reviewer 两层几乎看不到真实设定内容，对应封存时两
   136/138 人工复核。
 - 模型切换（本次新增）：agnes_30 profile 已建（agnes-3.0-flash 全阶段，免费，
   实测单场景 17-19s/严格 JSON 通过）；批次验收后启动 ch141 A/B 试点对照 V3.2 基线。
+
+## agnes-3.0-flash A/B 试点结论（2026-10-09）
+
+- 试点批次（ch126-141 resume 跑 6 章，53 分钟，全程 agnes-3.0-flash）：
+  - ch132 OK 65.0 / ch136 OK 71.7 / ch141 OK 76.1（新章首跑，单章 9.3 分钟）
+  - ch126 / ch135 / ch138 FAIL 无分数（无产物落盘）
+- 同章对比 V3.2 旧稿：有分章均分 agnes 70.9 vs V3.2 82.0（-11 分）
+  - ch132: 86.3(F)→65.0(OK) -21.3；ch136: 85.9(F)→71.7(OK) -14.2
+  - 速度：单章 9.3 分钟 vs V3.2 23-31 分钟（约 3 倍加速）✓
+  - 质量：场景 under-target 频发（ch141 Scene 3/4 字数 1160-1392 < floor 1505 触发 regen）、
+    polish 退化、review 出现 green-but-low+crosscheck 多轮
+- 结论：**试点判负，已切回 siliconflow（DeepSeek-V3.2）**。速度 3 倍但分数全面下降
+  14-21 分，失败章更彻底（无分数稿），按"draft 池算最终内容"共识会直接拉低全书
+  质量。agnes_30 profile 保留，仅作 fallback/成本降级选项备用。
+- 副作用记录：ch136 V3.2 的 85.9 稿（pending_human_review）被 agnes 71.7 稿覆盖，
+  旧稿文本不可恢复（checkpoint hash 可追溯）；其余旧稿未受影响。
+- 后续：ch132/136/141 的 agnes 稿保留为负样本；126/135/138 仍缺产物，下轮 V3.2 重跑。
