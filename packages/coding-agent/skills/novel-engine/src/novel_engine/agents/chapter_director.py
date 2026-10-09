@@ -41,29 +41,70 @@ _SCENE_TIME_ORDER = [
     ("五更", 9),
 ]
 _SCENE_TIME_BACKREF = ("昨日", "昨夜", "前日", "前一天", "先前", "回忆", "闪回", "回想", "回述")
+# 跨日前缀：命中时时间序整体 +10 档，保证"深夜→次日清晨"等自然跨日推进不判倒置。
+_SCENE_TIME_DAY_SHIFT = re.compile(r"(次日|翌日|来日|明早|明天|第[一二两三四五六七八九十\d]+[天日]|[三四五][天日]后)")
+
+
+_CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _day_offset(s: str) -> int:
+    """解析时间词里的跨日天数：次日/翌日=1 天，第三日=3 天，三天后=3 天。返回天数。"""
+    if not s:
+        return 0
+    m = re.search(r"第([一二两三四五六七八九十\d]+)[天日]", s)
+    if m:
+        tok = m.group(1)
+        if tok.isdigit():
+            return int(tok)
+        if tok in _CN_NUM:
+            return _CN_NUM[tok]
+        if tok.startswith("十"):
+            return 10 + _CN_NUM.get(tok[1:], 0)
+        return 0
+    m = re.search(r"([一二两三四五六七八九十\d]+)[天日]后", s)
+    if m:
+        tok = m.group(1)
+        if tok.isdigit():
+            return int(tok)
+        if tok in _CN_NUM:
+            return _CN_NUM[tok]
+        return 0
+    if _SCENE_TIME_DAY_SHIFT.search(s):
+        return 1
+    return 0
 
 
 def _scene_time_order(s: str) -> int:
-    """返回时间词排序值；未知返回 0（不参与倒置判定）。"""
+    """返回时间词排序值；未知返回 0（不参与倒置判定）。
+
+    跨日前缀（次日/翌日/第N日/N日后/明早/明天）按天数整体 +10*N 档偏移：
+    "深夜"(8) → "次日清晨"(11) 是合法跨日推进；同日"午后"(4) → "上午"(2)
+    仍判倒置；"第三日清晨"(21) 继续递增。
+    """
     if not s:
         return 0
+    day_shift = 10 * _day_offset(s)
     for kw, order in _SCENE_TIME_ORDER:
         if kw in s:
-            return order
+            return day_shift + order
     return 0
 
 
 def detect_task_card_scene_time_inversion(scenes: list[dict]) -> list[str]:
     """检测任务卡内场景叙事时间的顺序倒置（如 ch141：1午后→2上午/傍晚→3午后→4黄昏）。
 
-    仅对带 narrative_time 且非回溯/闪回（含昨日/回忆等词）的场景做单调性判定；
-    未知时间词（order=0）跳过。返回可读错误列表，空=无倒置。
+    时间模型为 (日期档, 时段档) 二元组：显式跨日词（次日/第N日/N天后）决定日期档；
+    裸时段词（上午/午后/深夜等）承接前序场景的日期档（同一章内多日推进时，
+    "次日清晨" 后接 "上午" 同指次日，不判倒置）。回溯/闪回场景重置链条。
+    未知时段词（order=0）跳过。返回可读错误列表，空=无倒置。
     """
     errors: list[str] = []
     ordered = sorted(
         (s for s in scenes if isinstance(s, dict)),
         key=lambda s: int(s.get("sequence_index", s.get("scene_num", 0)) or 0),
     )
+    prev_day = 0  # 前序场景日期档（0=当日）
     prev_order = 0
     prev_label = ""
     for s in ordered:
@@ -72,21 +113,41 @@ def detect_task_card_scene_time_inversion(scenes: list[dict]) -> list[str]:
             continue
         # 回溯/闪回场景（回忆、昨夜等）不参与单调判定，重置链条
         if any(b in nt for b in _SCENE_TIME_BACKREF):
+            prev_day = 0
             prev_order = 0
             prev_label = ""
             continue
-        order = _scene_time_order(nt)
+        day = _day_offset(nt)
+        if day == 0 and prev_day > 0:
+            day = prev_day  # 裸时段词承接前序日期档（"次日清晨"→"上午"同指次日）
+        order = _base_time_order(nt)
         if order == 0:
             # 未知时间词不断链：沿用前一已知序，防跨未知词漏检倒置
             continue
-        if prev_order and order < prev_order:
-            errors.append(
-                f"场景{int(s.get('scene_num', 0))} 叙事时间「{nt}」早于前序场景「{prev_label}」，"
-                f"章内时间顺序倒置（{prev_label} → {nt}），请按故事时序重排场景或修正 narrative_time"
-            )
+        if prev_order and (day < prev_day or (day == prev_day and order < prev_order)):
+            # 深夜档(入夜/深夜/子夜/夜/五更)之后接清晨/上午类(清晨/黎明/拂晓/早上/上午)
+            # 是隐含跨日推进（"当晚深夜 → 次日清晨"），不算倒置；更新日期档后放行。
+            if prev_order >= 6 and order <= 2:
+                day = prev_day + 1
+            else:
+                errors.append(
+                    f"场景{int(s.get('scene_num', 0))} 叙事时间「{nt}」早于前序场景「{prev_label}」，"
+                    f"章内时间顺序倒置（{prev_label} → {nt}），请按故事时序重排场景或修正 narrative_time"
+                )
+        prev_day = day
         prev_order = order
         prev_label = nt
     return errors
+
+
+def _base_time_order(s: str) -> int:
+    """仅时段档（无日期偏移）：清晨=1 … 深夜=8。未知返回 0。"""
+    if not s:
+        return 0
+    for kw, order in _SCENE_TIME_ORDER:
+        if kw in s:
+            return order
+    return 0
 
 
 def parse_chapter_tasks(content: str) -> dict[int, str]:
@@ -1462,17 +1523,34 @@ class ChapterDirector:
         # CC round-30：章内场景叙事时间顺序倒置检测（ch141 场景1午后→2上午/傍晚→3午后→4黄昏）
         errors.extend(detect_task_card_scene_time_inversion(scenes))
 
-        # CC round-30：当日跨度内出现跨日时间词（次日/翌日/N日后）→ 章级矛盾
+        # CC round-30/31：章内跨日检查。放宽规则（ch151 双模型复现后修正）：
+        #   - span 自身允许跨日（如"约24小时/深夜至次日黄昏"）→ 全放行；
+        #   - 首个带时间场景即跨日 → 放行（span 起点语义模糊，导演可能从次日清晨起章）；
+        #   - 前序场景为深夜类(order>=6) 后跨日 → 放行（"深夜→次日清晨"隐含跨日推进）；
+        #   - 其余（当日白昼场景之后突现跨日，如 ch141 场景4"次日晨"）→ 拦。
         span = str((task_card.get("timeline_anchor") or {}).get("max_time_progression", "") or "")
-        if span and "年" not in span:
-            for s in scenes:
+        span_allows_overnight = bool(span and re.search(r"(次日|翌日|跨日|24小时|一天一夜|一夜|深夜)", span))
+        if span and "年" not in span and not span_allows_overnight:
+            ordered = sorted(
+                (s for s in scenes if isinstance(s, dict)),
+                key=lambda s: int(s.get("sequence_index", s.get("scene_num", 0)) or 0),
+            )
+            last_order = 0
+            for s in ordered:
                 nt = str(s.get("narrative_time", "") or "").strip()
                 if not nt:
                     continue
+                if any(b in nt for b in _SCENE_TIME_BACKREF):
+                    last_order = 0
+                    continue
                 if re.search(r"(次日|翌日|来日|第[一二两三四五六七八九十\d]+[天日]|三[天日]后|五[天日]后)", nt):
-                    errors.append(
-                        f"场景{int(s.get('scene_num', 0))} 叙事时间「{nt}」超出章级跨度「{span}」（章内不得跨日）"
-                    )
+                    if last_order and last_order < 6:
+                        errors.append(
+                            f"场景{int(s.get('scene_num', 0))} 叙事时间「{nt}」超出章级跨度「{span}」（章内不得跨日）"
+                        )
+                o = _base_time_order(nt)
+                if o:
+                    last_order = o
 
         # 检查 forbidden 项
         author_intent = self._bible_cache.get("author_intent", "")
