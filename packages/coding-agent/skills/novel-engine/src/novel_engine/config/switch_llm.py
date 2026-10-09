@@ -111,15 +111,21 @@ def sync_runtime_config(name: str, profile: dict) -> str:
     llm.update({"provider": "openai", **common})
     rc["llm"] = llm
     fb = dict(rc.get("fallback_llm", {}))
-    fb.update(common)
+    # fallback 只随 agnes 系 profile 同步；切到其它供应商时保持既有回退
+    # （AGNES_API_KEY 常驻 .env，siliconflow 故障时回退到 agnes，测试断言此不变量）。
+    if "agnes" in name:
+        fb.update(common)
+    elif not fb.get("api_base"):
+        fb.update(common)
     rc["fallback_llm"] = fb
 
-    if "agnes" in name:
-        family = "agnes"
-    elif "silicon" in name or "qwen" in name:
-        family = "qwen"
-    else:
-        family = rc.get("provider", {}).get("family", "openai")
+    # family 优先取 profile 显式声明；缺省再按名字推导（修正早期 "silicon"->"qwen" 的误映射）
+    family = profile.get("family") or (
+        "agnes" if "agnes" in name else
+        "siliconflow" if "silicon" in name else
+        "qwen" if "qwen" in name else
+        rc.get("provider", {}).get("family", "openai")
+    )
     prov = dict(rc.get("provider", {}))
     prov.update({"family": family, "api_base": base_url, "model": model,
                  "reasoning_fallback": family != "agnes"})

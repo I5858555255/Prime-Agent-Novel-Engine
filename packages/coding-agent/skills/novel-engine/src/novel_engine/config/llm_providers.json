@@ -3,6 +3,7 @@
   "active_profile": "siliconflow",
   "profiles": {
     "agnes": {
+      "family": "agnes",
       "base_url": "https://apihub.agnes-ai.com",
       "api_key_env": "AGNES_API_KEY",
       "timeout_s": 120,
@@ -86,6 +87,7 @@
       }
     },
     "siliconflow": {
+      "family": "siliconflow",
       "base_url": "https://api.siliconflow.cn",
       "api_key_env": "LLM_API_KEY",
       "timeout_s": 120,
@@ -165,6 +167,7 @@
       }
     },
     "agnes_30": {
+      "family": "agnes",
       "base_url": "https://apihub.agnes-ai.com",
       "api_key_env": "AGNES_API_KEY",
       "timeout_s": 120,
