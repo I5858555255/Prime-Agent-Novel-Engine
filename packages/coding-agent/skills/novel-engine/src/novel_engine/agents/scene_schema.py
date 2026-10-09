@@ -3,6 +3,24 @@ import json, re
 from dataclasses import dataclass, field
 
 
+# CC round-32：蓝图瘦身。concrete_events/named_interactions/info_reveal_points/
+# scene_craft_elements 已被专用约束块（density_block/craft_block）完整注入 prompt，
+# 在蓝图中重复打印只会拉长 prompt。实测（agnès-3.0-flash，ch148 场景2）：
+# 全量蓝图 prompt 3651 字符 → scene_text 1343 字；瘦身后 2570 字符 → 2160 字（+61%）。
+# 弱模型在超长 prompt 下输出被压缩，冗余重复是"写短"的根因之一。
+_SLIM_DROP_FIELDS = (
+    "concrete_events", "named_interactions", "info_reveal_points", "scene_craft_elements",
+)
+
+
+def slim_scene_blueprint(bp: dict) -> dict:
+    """返回不含被专用约束块覆盖的大字段的蓝图副本（不动原对象）。"""
+    out = dict(bp)
+    for k in _SLIM_DROP_FIELDS:
+        out.pop(k, None)
+    return out
+
+
 @dataclass
 class SceneOutput:
     scene_id: int
@@ -362,7 +380,7 @@ def build_scene_prompt(
     prompt = f"""请生成第 {chapter_num} 章第 {scene_num} 场景的正文。
 {anchor_text}
 ## 本场景蓝图
-{json.dumps(scene_blueprint, ensure_ascii=False, indent=2)}
+{json.dumps(slim_scene_blueprint(scene_blueprint), ensure_ascii=False, indent=2)}
 
 ## 本场景必须涵盖的事件点（beats）
 {chr(10).join(f'- {b}' for b in scene_blueprint.get('beats', []) if b)}

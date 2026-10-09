@@ -1,4 +1,46 @@
-from novel_engine.agents.scene_schema import extract_beats_fallback, parse_scene
+from novel_engine.agents.scene_schema import extract_beats_fallback, parse_scene, slim_scene_blueprint, build_scene_prompt
+
+
+def test_slim_scene_blueprint_drops_density_fields_keeps_core():
+    """CC round-32：蓝图瘦身移除被专用约束块覆盖的大字段，保留场景定义核心。"""
+    bp = {
+        "scene_num": 2, "narrative_time": "凌晨", "location": "酒馆暗巷",
+        "characters": ["上官烈"], "goal": "g", "conflict": "c", "emotion": "e",
+        "beats": ["b1", "b2"],
+        "concrete_events": [{"event": "x", "observable_action": "y"}],
+        "named_interactions": [{"characters": ["a"], "interaction_type": "t", "brief": "z"}],
+        "info_reveal_points": [{"type": "伏笔", "content": "q"}],
+        "scene_craft_elements": {"x": 1},
+        "scene_progression_contract": {"irreversible_change": "不可逆"},
+    }
+    slim = slim_scene_blueprint(bp)
+    assert "concrete_events" not in slim
+    assert "named_interactions" not in slim
+    assert "info_reveal_points" not in slim
+    assert "scene_craft_elements" not in slim
+    for k in ("scene_num", "narrative_time", "location", "characters", "goal",
+              "conflict", "emotion", "beats", "scene_progression_contract"):
+        assert k in slim, f"core field {k} lost"
+    assert bp.get("concrete_events"), "原对象不被修改"
+
+
+def test_build_scene_prompt_slims_blueprint():
+    """场景 prompt 的蓝图 JSON 不含瘦身字段（避免超长 prompt 压缩弱模型输出）。"""
+    tc = {"chapter_num": 148, "scene_blueprints": [
+        {"scene_num": 1, "narrative_time": "子时", "location": "a", "characters": ["x"],
+         "goal": "g1", "conflict": "c1", "emotion": "e1", "beats": ["b"],
+         "concrete_events": [{"event": "e", "observable_action": "o"}],
+         "info_reveal_points": [{"type": "t", "content": "c"}]},
+        {"scene_num": 2, "narrative_time": "凌晨", "location": "b", "characters": ["y"],
+         "goal": "g2", "conflict": "c2", "emotion": "e2", "beats": ["b1", "b2"],
+         "concrete_events": [{"event": "e2", "observable_action": "o2"}]},
+    ]}
+    prompt = build_scene_prompt(tc, tc["scene_blueprints"][0], tc["scene_blueprints"])
+    assert '"concrete_events"' not in prompt
+    assert '"info_reveal_points"' not in prompt
+    assert '"goal"' in prompt and '"beats"' in prompt
+    assert '"g1"' in prompt  # goal 值保留
+    assert '"子时"' in prompt  # narrative_time 保留
 
 
 def test_fallback_extracts_from_text_not_self_report():

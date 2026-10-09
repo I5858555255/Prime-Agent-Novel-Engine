@@ -557,3 +557,44 @@ Writer 与 Reviewer 两层几乎看不到真实设定内容，对应封存时两
 - 批次失败率 48% vs V3.2 基线 87%：agnès 整体能力差距（写短 4640<7310、reviewer 低分、任务卡不自洽），
   继续 agnes 优化边际递减；建议切回 V3.2 重跑全部 FAIL 章（15 章）
 - ch126/135/138（更早 agnes 试点 FAIL）仍未重跑，纳入 V3.2 重跑清单
+
+
+## agnes 写短根因实证与提示词优化（CC round-32，2026-10-10）
+
+### 四组对照实验（agnès-3.0-flash，ch148 场景2 真实任务卡）
+| 版本 | prompt 长度 | scene_text 字数 |
+| --- | --- | --- |
+| 裸测（简单 prompt 写3000字） | ~300 | 5011 |
+| C 极简（任务卡+beats+字数） | ~900 | 2202 |
+| D 蓝图瘦身（全约束+核心字段） | 2570 | 2160 |
+| A 原版（全约束+全蓝图） | 3651 | 1343 |
+| B 字数前置强化（A+字数前置） | ~3700 | 1095 |
+
+结论：**写短不是模型能力问题，是 prompt 约束密度问题**。弱模型在超长
+prompt 下输出被压缩；"强化字数指令"无效（B 比 A 更短），"精简 prompt 密度"
+有效（D 比 A +61%）。用户"简单的字数 agnes 做不到"的判断方向正确。
+
+### 根因（流程+提示词两层）
+1. 流程层：director 只为 >5 场景章（merge_thin）和单场景章分配
+   word_count_target，**4 场景章（绝大多数）从不分配** → writer 用默认
+   2000/场景（ch148 任务卡 4 场景 word_count_target 全 None 实证）。
+2. 提示词层：build_scene_prompt 蓝图 JSON 完整打印，其中
+   concrete_events/named_interactions/info_reveal_points/scene_craft_elements
+   已被 density_block/craft_block 等专用约束块完整注入，重复打印拉长
+   prompt 近 1100 字符（3651→2570）。
+
+### 修复（CC round-32，待提交）
+1. scene_schema.py 新增 slim_scene_blueprint()：移除被专用块覆盖的 4 个大字段，
+   build_scene_prompt 蓝图打印改用瘦身版。保留全部硬约束块，零行为风险。
+2. 测试：test_scene_schema.py 新增 2 用例（瘦身不丢核心字段 + prompt 不含大字段）。
+3. 真实批次验证：**agnès 重跑 ch148 = COMMITTED 78.65**（4.4 分钟）。
+   字数 4640→6021（+30%），从硬失败变为进 draft（draft 算最终内容共识）。
+   仍差 7310 软门槛 1289 字（soft issue 不阻断），评审 78.65 < 88 按共识接受。
+
+### 遗留
+- 流程层缺陷仍待修：director 应对所有场景数分配 word_count_target（按章目标
+  分摊），不只 >5/单场景——对 V3.2 无影响（能力可补），对弱模型有意义。
+- 真实流程注入块（bible/事件台账/前情/视角）使 prompt 比实验 D 更长，
+  若需继续提长可做次级精简（bible_section 按命中压缩等），边际收益递减。
+- 4 场景默认 2000 目标可考虑按章目标 8600/4=2150 提升（弱模型写出率 75% 时
+  4×1612=6450 仍不足，需配合目标超额策略，另行评估）。
