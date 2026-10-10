@@ -16,7 +16,10 @@ UNSTABLE_RANGE: float = 15.0
 # 三票排序 x0≤x1≤x2，相邻 gap g1=x1-x0、g2=x2-x1：
 #   一个 gap>OUTLIER_MIN 且另一个 gap<=TIGHT_CLUSTER_MAX → 单张离群票 + 两票紧簇；
 #   两个 gap 都>OUTLIER_MIN → 真三分布分裂（维持人工/gap）。
-TIGHT_CLUSTER_MAX: float = 5.0
+# CC33：紧簇阈值由 5.0 放宽至 7.0（9 维 120 分体系下两票差 5-7 分=每维不足 1 分，
+#   属正常波动；agnès-3.0-flash temperature=0 实测 ch151 三票 [31.7, 59.1, 64.7]
+#   紧簇差 5.6 恰被旧阈值误判为 consistent，导致单离群补票机制未触发）。
+TIGHT_CLUSTER_MAX: float = 7.0
 OUTLIER_MIN: float = 15.0
 # 单离群时补 1 票，新票与紧簇中位数差距<=此值 → 确认离群票为崩票、收敛。
 CONVERGENCE_TOLERANCE: float = 8.0

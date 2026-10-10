@@ -148,7 +148,7 @@ def test_internally_inconsistent_feature():
 def test_review_call_cap_constant():
     # 首评1+三评2+单离群补票1+两轮修复后复评2 = 6
     assert rv.REVIEW_CALL_CAP == 6
-    assert rv.TIGHT_CLUSTER_MAX == 5.0
+    assert rv.TIGHT_CLUSTER_MAX == 7.0
     assert rv.OUTLIER_MIN == 15.0
     assert rv.CONVERGENCE_TOLERANCE == 8.0
 

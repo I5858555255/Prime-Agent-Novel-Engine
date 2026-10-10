@@ -224,7 +224,7 @@ class ModelRouter:
                 if _c is not None:
                     _c.phase = phase
         else:
-            self.providers = self._build_clients(profile)
+            self.providers = self._build_clients(profile, phase_cfg)
 
         # 速率限制器
         self.limiters: dict[str, ModelRateLimiter] = {}
@@ -236,13 +236,18 @@ class ModelRouter:
             f"timeout={self.timeout}, max_retries={self.max_retries}"
         )
 
-    def _build_clients(self, profile: dict) -> dict[str, LLMClient]:
-        """为当前 phase 的所有模型构建 LLMClient。"""
+    def _build_clients(self, profile: dict, phase_cfg: dict | None = None) -> dict[str, LLMClient]:
+        """为当前 phase 的所有模型构建 LLMClient。
+
+        CC33：支持相位级 temperature（评审等评分任务应确定性打分）；未配置时
+        沿用 LLMClient 默认 0.85，保持历史行为不变。
+        """
         out = {}
         base_url = profile["base_url"].rstrip("/")
         key_env = profile["api_key_env"]
         api_key = os.environ.get(key_env, "")
         timeout = int(profile.get("timeout_s") or 120)
+        _temp = (phase_cfg or {}).get("temperature")
 
         for model in self.models:
             if model in out:
@@ -252,6 +257,7 @@ class ModelRouter:
                 model=model,
                 api_key=api_key,
                 timeout=timeout,
+                temperature=_temp if _temp is not None else 0.85,
             )
             # CC round-11：把阶段标识下发给 client，使空/退化短正文门能按阶段生效
             out[model].phase = self.phase
