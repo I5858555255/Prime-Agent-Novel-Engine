@@ -87,6 +87,21 @@ def supplementary_converges(cluster_votes: list[float], supplementary: float,
     return abs(float(supplementary) - median(cluster_votes)) <= float(tol)
 
 
+def slope_median_converges(four_votes: list[float],
+                           tol: float = CONVERGENCE_TOLERANCE) -> bool:
+    """缓坡补票收敛判定（CC round-27，纯函数）。
+
+    缓坡形态 = 三票无单离群/无真分裂（classify==consistent）但极差>15（如 49.2/62.5/69.7）。
+    补第 4 票后取排序后中间两票（去掉最高最低）的差 <= tol → 共识成形、评审可信，
+    清 highly_unstable 走正常流程（内容不达标≠评审不可信）；
+    中间两票仍宽（>tol）→ 多数票仍分散，维持 unstable 交人工复核。
+    """
+    xs = sorted(float(v) for v in (four_votes or []))
+    if len(xs) < 4:
+        return False
+    return abs(xs[2] - xs[1]) <= float(tol)
+
+
 def should_run_extra_reviews(existing_scores: list[float],
                              band_low: float = BAND_LOW,
                              band_high: float = BAND_HIGH,

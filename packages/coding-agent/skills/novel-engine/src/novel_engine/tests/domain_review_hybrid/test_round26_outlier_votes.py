@@ -66,6 +66,44 @@ def test_converged_three_votes_median_is_cluster_consensus():
     assert rv.aggregate(final)["highly_unstable"] is False
 
 
+# ---------- 2b. CC round-27：缓坡形态补票收敛判定（consistent + 极差>15）----------
+
+def test_slope_pattern_is_consistent_with_big_range():
+    # 49.2/62.5/69.7：两 gap 均<=15 -> consistent，但 range=20.5>15 -> highly_unstable
+    agg = rv.aggregate([49.2, 62.5, 69.7])
+    assert agg["pattern"] == rv.PATTERN_CONSISTENT
+    assert agg["range"] > 15 and agg["highly_unstable"] is True
+    assert agg["outlier"] is None and agg["cluster"] == []
+
+
+def test_slope_supplementary_converges_when_midpair_tight():
+    # 缓坡补票：补票落入共识区 -> 4 票中间两票差<=8 -> 收敛（清 unstable）
+    assert rv.slope_median_converges([49.2, 62.5, 65.0, 69.7]) is True
+    # 补票落在高簇附近（62.5/69.7 本就近）-> 收敛
+    assert rv.slope_median_converges([49.2, 62.5, 69.7, 100.0]) is True
+    # 边界：中间两票差恰好=8 -> 收敛
+    assert rv.slope_median_converges([49.2, 57.0, 65.0, 69.7]) is True
+
+
+def test_slope_supplementary_not_converged_when_midpair_wide():
+    # 补票落在低端 -> 中间两票仍宽（62.5-49.2=13.3>8）-> 不收敛（多数票仍分散）
+    assert rv.slope_median_converges([49.2, 62.5, 69.7, 20.0]) is False
+    assert rv.slope_median_converges([49.2, 62.5, 69.7, 40.0]) is False
+    # 不足 4 票 -> 不收敛（补票未发生）
+    assert rv.slope_median_converges([49.2, 62.5, 69.7]) is False
+
+
+def test_slope_supplementary_equiv_routing():
+    # 编排层等价逻辑：缓坡补票收敛 -> 清 unstable（即使新中位<软线也进 E-loop）；
+    # 不收敛 -> 维持 unstable 交人工复核。
+    def route(four_votes, soft5):
+        if rv.slope_median_converges(four_votes):
+            return "cleared"
+        return "keep_unstable"
+    assert route([49.2, 62.5, 65.0, 69.7], 85) == "cleared"
+    assert route([49.2, 62.5, 69.7, 40.0], 85) == "keep_unstable"
+
+
 # ---------- 4. dim_sum_mismatch 算术自相矛盾直接丢弃 ----------
 
 def _review_with_scores(scores, raw_total):

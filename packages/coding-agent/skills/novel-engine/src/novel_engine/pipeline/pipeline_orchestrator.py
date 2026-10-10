@@ -3118,10 +3118,16 @@ class PipelineOrchestrator:
                         _bias4 = (_real24 and _green24
                                   and review_hybrid.diagnose_low_score(
                                       _med, _signals24, _soft5) == "suspected_reviewer_bias")
+                        # CC round-27：缓坡形态（consistent + 极差>15，无单离群/无真分裂，
+                        # 如 49.2/62.5/69.7）——中位<软线且非全绿时旧逻辑直接人工、不给补票机会。
+                        # 同样给恰好 1 次交叉验证：4 票中间两票差<=8 视为共识成形清 unstable。
+                        _slope4 = (str((_agg or {}).get("pattern", "")) == "consistent"
+                                   and float((_agg or {}).get("range", 0)) > 15)
                     else:
                         _rescue4 = False
                         _bias4 = False
-                    if _rescue4 or _bias4:
+                        _slope4 = False
+                    if _rescue4 or _bias4 or _slope4:
                         def _pick_pair(pairs, target):
                             w = next((rv for rv, sc in pairs if abs(sc - target) < 1e-9), None)
                             if w is None and pairs:
@@ -3156,12 +3162,28 @@ class PipelineOrchestrator:
                                     # 偏严交叉验证：诚实采纳新中位；多数票仍低则交 runner gap。
                                     _med4 = _med4_raw
                                     _ch4 = _pick_pair(_pairs4, _med4)
-                                logger.warning(
-                                    f"ch{chapter_num} supplementary review ({'rescue' if _rescue4 else 'bias-crosscheck'}): "
-                                    f"votes={[round(v, 1) for v in _vals4]} raw4med={_med4_raw:.2f} "
-                                    f"adopted={_med4:.2f}")
+                                    if _slope4:
+                                        # CC round-27：缓坡补票——4 票中间两票差<=8 视为评审
+                                        # 共识成形，清 unstable 走正常 E-loop/提交路由（内容不达标
+                                        # ≠评审不可信）；中间两票仍宽则维持 unstable 交人工复核。
+                                        _slope_ok26 = _rv26mod.slope_median_converges(_vals4)
+                                        self._review_highly_unstable = not _slope_ok26
+                                        _midpair26 = float(
+                                            sorted(float(v) for v in _vals4)[2]
+                                            - sorted(float(v) for v in _vals4)[1])
+                                        logger.warning(
+                                            f"ch{chapter_num} slope-check supplementary: "
+                                            f"votes={[round(v, 1) for v in _vals4]} "
+                                            f"midpair_range={_midpair26:.2f} converged={_slope_ok26} "
+                                            f"median={_med4:.2f}")
+                                    else:
+                                        self._review_highly_unstable = bool(_med4 < _soft5)
+                                    logger.warning(
+                                        f"ch{chapter_num} supplementary review "
+                                        f"({'rescue' if _rescue4 else ('slope-check' if _slope4 else 'bias-crosscheck')}): "
+                                        f"votes={[round(v, 1) for v in _vals4]} raw4med={_med4_raw:.2f} "
+                                        f"adopted={_med4:.2f}")
                             review, score = _ch4, _med4
-                            self._review_highly_unstable = bool(_med4 < _soft5)
                         except Exception as _se4:
                             logger.warning(
                                 f"supplementary review failed-open ch{chapter_num}; keep "
