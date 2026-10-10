@@ -171,13 +171,14 @@ async def _generate_batch(prompt: str, logger: logging.Logger,
     from novel_engine.core.llm_client import _load_runtime_config, LLMClient
     cfg = _load_runtime_config() or {}
     llm_cfg = cfg.get("llm", {}) or {}
-    # api_key 显式解析：api_base 为 siliconflow 时优先 SILICONFLOW_API_KEY，
-    # 否则按配置的 api_key_env 字段读取（_resolve_api_key 默认参数不可靠）
+    # api_key 显式解析：按 runtime_config 的 api_key_env 字段读取
+    # （当前 active provider 是 agnes → AGNES_API_KEY）。
+    # 修复：SILICONFLOW_API_KEY 从优先级移除/置后——系统环境变量里残留的硅基 key
+    # 曾被优先选中、发到 agnes 导致 401 Invalid token（2026-10-10 中纲生成事故）。
     api_key = (
-        os.environ.get("SILICONFLOW_API_KEY")
-        or os.environ.get(llm_cfg.get("api_key_env", "LLM_API_KEY"))
-        or os.environ.get("LLM_API_KEY")
+        os.environ.get(llm_cfg.get("api_key_env", "LLM_API_KEY"))
         or os.environ.get("AGNES_API_KEY")
+        or os.environ.get("LLM_API_KEY")
         or ""
     )
     client = LLMClient(
