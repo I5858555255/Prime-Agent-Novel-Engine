@@ -624,3 +624,23 @@ prompt 下输出被压缩；"强化字数指令"无效（B 比 A 更短），"�
 2. 4 章三评极差章：试 agnes 内部更强 reviewer（agnes-3.0-flash-max 或 2.5-pro，
    配置里 agnes_30 profile 的 review 只有 flash）→ 仍不稳再切 V3.2
 3. agnes 通过率 66.7% vs V3.2 87%：免费模型可行但评审稳定性是硬差距
+
+## 三评极差>15 根因与修复（CC round-33，2026-10-10）
+
+### 根因（代码级，已核实）
+- model_router._build_clients() 不传 temperature → 全部相位落 LLMClient 默认 0.85。
+  评审是"评分"任务却用写作温度 → 高分方差（agnès-3.0-flash 对同一文本 raw 37-85 漂移）。
+- ch151 温度 0 下三票 [31.7, 59.1, 64.7]：紧簇 59.1/64.7 差 5.6 恰超 TIGHT_CLUSTER_MAX=5，
+  → 单离群识别失败（误判 consistent），CC26 补票通道未触发。
+
+### 修复（d7cbde07b）
+1. model_router._build_clients(profile, phase_cfg) 读相位级 temperature；
+   llm_providers.json agnes_30 review 相位 temperature=0（写作相位保持 0.85）。
+2. review_votes.py TIGHT_CLUSTER_MAX 5.0→7.0（9 维 120 分体系下两票差 5-7 分=每维<1 分，
+   属正常波动）；同步 test_round26_outlier_votes.py 常量断言。
+
+### 真机验证（agnès-3.0-flash，temperature=0）
+- ch161：三票 [49.9, 38.3, 68.4] range 30.1（0.85）→ [58.7, 65.7, 54.6] range 11.1 → 不再 unstable
+- ch151：0.85 全票漂移 unstable → 温度0+阈值7 后正常走完修复循环（70.5 分，score<88 正常路径），
+  不再卡"三评极差>15 强制人工"
+- 门禁：pyflakes 全包 0 undefined name；全量 pytest 1 failed/1130 passed（唯一已知 pre-existing）
