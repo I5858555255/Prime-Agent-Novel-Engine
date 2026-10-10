@@ -644,3 +644,15 @@ prompt 下输出被压缩；"强化字数指令"无效（B 比 A 更短），"�
 - ch151：0.85 全票漂移 unstable → 温度0+阈值7 后正常走完修复循环（70.5 分，score<88 正常路径），
   不再卡"三评极差>15 强制人工"
 - 门禁：pyflakes 全包 0 undefined name；全量 pytest 1 failed/1130 passed（唯一已知 pre-existing）
+
+### 残留 FAIL 章温度0复跑（2026-10-10，修复 d7cbde07b 后）
+- ch151：不再三评卡死（首评 68.3 单评路径）→ 修复循环 70.5 分 FAILED（分数不足正常路径）
+- ch161：三评 range 11.1 通过，但修复循环 hard-failed（场景 length_too_short/标点反复失败，
+  写作质量问题，非评审方差）
+- ch162：votes=[64.1, 65.4, 63.7] range 1.7 → **COMMITTED 73.0**
+- ch164：votes=[73.1, 79.4, 70.2] range 9.2 → **COMMITTED 73.1**
+- ch148：votes=[69.7, 62.5, 49.2] range 20.5 仍 unstable —— **缓坡三分布形态**（g1=13.3、g2=7.2，
+  无紧簇无崩票），现有形态规则（single_outlier/true_split）均不命中，CC26 无补救通道。
+  温度0 已改善（0.85 时 55.1/48.3/38.3 更差）但仍超 15。
+- 结论：三评极差>15 卡死率 5/5→1/5。缓坡形态是 agnès flash 评审天花板残留，1 章人工复核；
+  若后续批次该形态高频复现，再实施"缓坡补票"（consistent+range>15 时补 1 票，收敛才继续）。
