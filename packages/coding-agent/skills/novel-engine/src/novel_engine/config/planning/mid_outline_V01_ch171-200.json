@@ -8,7 +8,8 @@
     "node_chapters_in_range": [],
     "generated_at": "2026-10-10T06:37:29+00:00",
     "batch_size": 6,
-    "status": "draft"
+    "status": "approved",
+    "approved_at": "2026-10-10"
   },
   "entries": {
     "171": {
@@ -116,12 +117,12 @@
     },
     "182": {
       "chapter": 182,
-      "core_event": "陆烬在梦中模糊感知到残片散发微弱暖意，醒来向陈老根发问",
+      "core_event": "陆烬梦见残片上纹路会流动发光（视觉奇观，非气感），醒后向陈老根发问残片来历",
       "characters": [
         "C001",
         "C002"
       ],
-      "boundary_note": "需人工确认：梦中感知可能违背禁止修炼感知（气感/暖意）的红线，需确认是否纯属幻觉"
+      "boundary_note": null
     },
     "183": {
       "chapter": 183,
