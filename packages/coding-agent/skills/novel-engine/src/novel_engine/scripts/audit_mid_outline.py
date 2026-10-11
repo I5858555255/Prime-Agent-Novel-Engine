@@ -1,12 +1,19 @@
 """audit_mid_outline: 中纲草稿前置校验（生成后、交付 Director 前，必须执行）。
 
 对 config/planning/mid_outline_*.json 的每条章级意图做自动判定：
+  0) 条款判定化覆盖审计（bible 无人值守加固）：当前卷 forbidden 未全部条款化
+     → 批次全部挂起 pending_human，防无人值守漏判（V03-V10 未条款化会卡关）；
   1) 判定规则库（config/planning/decision_rules.json，bible/decision_rules.md 的
-     条款化实现）逐条匹配——forbidden 类 → needs_regenerate；allowed/hint 类 → approved；
+     条款化实现）逐条匹配——rule_applies 卷范围过滤后，
+     forbidden 类 → needs_regenerate；allowed/hint 类 → approved；
      R11 密度类 → 批次级密度统计后收紧；
-  2) 未命中规则 → concept_unlocks 判定（scope_gate）；
-  3) A 路线硬红线 + author_intent 当前卷 forbidden；
-  4) boundary_note 自带"需人工确认"→ pending_human。
+  2) 未命中规则 → A 路线硬红线 + concept_unlocks 判定（scope_gate）；
+  3) boundary_note 自带"需人工确认"→ pending_human；
+  4) F 编号锚点校验：boundary_note 的 F00X 与中纲文本锚点不匹配 → pending_human
+     （foreshadow_anchors.json，防伏笔编号标错）；
+  5) author_intent 当前卷 forbidden（子串匹配，剥离条款内正例段）；
+  6) 新角色检测：未登记专名（character_registry.json）→ pending_human；
+  7) 默认通过。概念解锁规划状态（unlock_schedule）输出提醒。
 
 判定结果写回每条 entry.status（approved / pending_human / needs_regenerate），
 供 chapter_director 逐条门禁读取（meta.status=draft 时逐条 approved 才可用，
@@ -72,17 +79,26 @@ def _load_decision_rules() -> list[dict]:
 
 def decide_entry(
     event: str, chars: list, note: str, chapter: int,
-    rules: list[dict], joined: str | None = None,
+    rules: list[dict], joined: str | None = None, vol_id: str = "",
 ) -> tuple[str, str, str | None]:
     """对单条章级意图做规则判定。
 
     返回 (status, reason, rule_id|None)。
     status: approved / pending_human / needs_regenerate。
+    rule_applies 卷范围判定：rule 不在当前卷/章节窗口内则跳过（防止旧卷规则误伤新卷）。
     注意：R11 密度类在此不判定（返回特殊标记），由批次级统计处理。
     """
     if joined is None:
         joined = f"{event} {', '.join(str(c) for c in chars)}"
     for r in rules:
+        applies = r.get("rule_applies")
+        if applies:
+            if "vols" in applies and vol_id and vol_id not in applies["vols"]:
+                continue
+            if "chapter_range" in applies:
+                lo, hi = applies["chapter_range"]
+                if not (lo <= chapter <= hi):
+                    continue
         for pat in r.get("patterns", []):
             try:
                 m = re.search(pat, joined)
@@ -101,6 +117,30 @@ def decide_entry(
     return "", "", None
 
 
+def _clause_lines(blk: str) -> list[str]:
+    """取块内 forbidden 条款行（排除 chapter_range/theme 等配置行）。"""
+    out = []
+    for ln in blk.splitlines():
+        s = ln.strip()
+        if not s.startswith("-"):
+            continue
+        body = s.lstrip("- ").strip()
+        if body.startswith("chapter_range"):
+            continue
+        out.append(body.strip('"'))
+    return out
+
+
+def _forbidden_scan_text(clause: str) -> str:
+    """条款只保留禁止语义部分：截断"正例（允许）"之后的内容，
+    避免条款正文里的正例例句被子串匹配误判为禁止。"""
+    for marker in ("正例（允许）", "正例（允许）:", "。正例"):
+        idx = clause.find(marker)
+        if idx != -1:
+            return clause[:idx]
+    return clause
+
+
 def _current_volume_forbidden(author_intent: str, vid: str, chapter_num: int) -> list[str]:
     if not author_intent:
         return []
@@ -110,9 +150,129 @@ def _current_volume_forbidden(author_intent: str, vid: str, chapter_num: int) ->
             continue
         lo, hi = int(m.group(1)), int(m.group(2))
         if lo <= chapter_num <= hi:
-            return [ln.strip().lstrip("- ").strip('"')
-                    for ln in blk.splitlines() if ln.strip().startswith("-")]
+            return _clause_lines(blk)
     return []
+
+
+_CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+           "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _current_volume_id(author_intent: str, chapter_num: int) -> str:
+    """按章节号定位卷 id（V01/V02/…），供 rule_applies 卷范围判定。"""
+    if not author_intent:
+        return ""
+    for blk in re.split(r"^## ", author_intent, flags=re.M):
+        m = re.match(r"第([一二三四五六七八九十]+)阶段[：:].*?（.*?第?(\d+)-(\d+)章?）", blk)
+        if not m:
+            continue
+        lo, hi = int(m.group(2)), int(m.group(3))
+        if lo <= chapter_num <= hi:
+            return f"V{_CN_NUM.get(m.group(1), 0):02d}"
+    return ""
+
+
+def _parse_intent_clauses(author_intent: str) -> dict[str, list[str]]:
+    """解析 author_intent 各卷 forbidden 条款 → {vid: [clause,...]}（列表序=条款序号）。"""
+    vols: dict[str, list[str]] = {}
+    for blk in re.split(r"^## ", author_intent, flags=re.M):
+        m = re.match(r"第([一二三四五六七八九十]+)阶段[：:].*?（.*?第?(\d+)-(\d+)章?）", blk)
+        if not m:
+            continue
+        vid = f"V{_CN_NUM.get(m.group(1), 0):02d}"
+        vols[vid] = _clause_lines(blk)
+    return vols
+
+
+def _coverage_audit(author_intent: str, rules: list[dict], vid: str) -> tuple[list[str], bool]:
+    """条款判定化覆盖审计：该卷 forbidden N/M/K；未覆盖条款 → 批次挂起不静默放行。"""
+    vols = _parse_intent_clauses(author_intent)
+    if vid not in vols or not vols[vid]:
+        return [], False
+    clauses = vols[vid]
+    covers = {c for r in rules for c in r.get("covers_clauses", [])}
+    uncovered = [(i + 1, c) for i, c in enumerate(clauses)
+                 if f"{vid}#{i + 1}" not in covers]
+    msgs = [f"[覆盖审计] {vid}: forbidden {len(clauses)} 条，已判定化 "
+            f"{len(clauses) - len(uncovered)} 条，未覆盖 {len(uncovered)} 条"]
+    for i, c in uncovered:
+        msgs.append(f"  - {vid}#{i}: {c[:70]}  — 未条款化，需补判例后重审")
+    return msgs, bool(uncovered)
+
+
+def _load_foreshadow_anchors() -> dict:
+    p = ROOT / "config" / "planning" / "foreshadow_anchors.json"
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("anchors", {})
+    except Exception:
+        return {}
+
+
+def _check_f_anchor(note: str, joined: str, anchors: dict) -> str | None:
+    """boundary_note 含 F00X → 校验该编号锚点词是否命中中纲文本；不匹配返回原因。"""
+    if not anchors:
+        return None
+    for fid, words in anchors.items():
+        if fid in note:
+            if any(w in joined for w in words):
+                return None
+            return f"{fid} 锚点未命中（{'/'.join(words[:4])}…），疑似伏笔编号标错"
+    return None
+
+
+_IGNORE_ROLE_SUFFIX = ("叔", "伯", "娘", "婶", "掌柜", "村长", "里正",
+                       "兵", "役", "官", "爷", "婆", "汉", "子", "人", "氏", "哥", "姐")
+_IGNORE_ROLE_TAIL = ("村", "镇", "县", "城", "山", "店", "馆", "铺", "坊")
+
+
+def _load_character_registry() -> tuple[set[str], set[str]]:
+    p = ROOT / "config" / "planning" / "character_registry.json"
+    if not p.exists():
+        return set(), set()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return (set(data.get("characters", [])), set(data.get("character_ids", [])))
+    except Exception:
+        return set(), set()
+
+
+def _unregistered_proper_names(chars: list, registry: set[str], registry_ids: set[str]) -> list[str]:
+    """中纲 characters 中未登记且疑似专名（非通用称谓/地名结尾）的角色。
+
+    已登记的 C 编号（C001-C009）豁免；未知 C 编号（如 C010）与未登记专名报出。
+    """
+    out: list[str] = []
+    for c in chars or []:
+        s = str(c).strip()
+        if not s or s in registry or s in registry_ids:
+            continue
+        if len(s) < 2 or len(s) > 5:
+            continue
+        if any(s.endswith(t) for t in _IGNORE_ROLE_SUFFIX):
+            continue
+        if any(s.endswith(t) for t in _IGNORE_ROLE_TAIL):
+            continue
+        out.append(s)
+    return out
+
+
+def _load_unlock_schedule() -> list[dict]:
+    p = ROOT / "config" / "leak_terms" / "concept_unlocks.json"
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("unlock_schedule", [])
+    except Exception:
+        return []
+
+
+def _schedule_status(schedule: list[dict], vid: str) -> str | None:
+    for s in schedule:
+        if s.get("vol") == vid:
+            return s.get("status", "unknown")
+    return None  # 未规划
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -166,6 +326,25 @@ def main(argv: list[str] | None = None) -> int:
     if p.exists():
         author_intent = p.read_text(encoding="utf-8")
 
+    vid = str(meta.get("vid") or "")
+    anchors = _load_foreshadow_anchors()
+    registry, registry_ids = _load_character_registry()
+    schedule = _load_unlock_schedule()
+
+    # 覆盖审计（修复1）：当前卷 forbidden 未条款化 → 批次挂起
+    cov_msgs, uncovered = _coverage_audit(author_intent, rules, vid)
+    for m in cov_msgs:
+        print(m)
+    if uncovered:
+        print(f"[卡关] {vid} 存在未条款化 forbidden 条款，批次全部挂起待 bible 完善")
+
+    # 概念解锁规划检查（修复4）
+    sched_status = _schedule_status(schedule, vid)
+    if sched_status is None:
+        print(f"[概念规划] {vid} 不在 concept_unlocks.unlock_schedule 中，需补卷级概念规划")
+    elif sched_status != "covered":
+        print(f"[概念规划] {vid} unlock_schedule.status={sched_status}（planned=已规划待验证/covered=已覆盖）")
+
     passed: list[int] = []
     human_confirm: list[tuple[int, str]] = []
     hard_blocked: list[tuple[int, str]] = []
@@ -175,6 +354,10 @@ def main(argv: list[str] | None = None) -> int:
 
     for ch_str, entry in sorted(entries.items()):
         chapter = int(ch_str)
+        if uncovered:
+            status_map[chapter] = "pending_human"
+            human_confirm.append((chapter, f"覆盖审计卡关：{vid} 有未条款化 forbidden，批次挂起"))
+            continue
         event = str(entry.get("core_event", "") or "").strip()
         chars = entry.get("characters") or []
         note = entry.get("boundary_note") or ""
@@ -187,8 +370,8 @@ def main(argv: list[str] | None = None) -> int:
             human_confirm.append((chapter, "中纲条目为空/本批生成失败，需重跑"))
             continue
 
-        # 2) 判定规则库（bible 条款化，最高优先）
-        status, why, rid = decide_entry(event, chars, note, chapter, rules, joined)
+        # 2) 判定规则库（bible 条款化，最高优先；rule_applies 卷范围生效）
+        status, why, rid = decide_entry(event, chars, note, chapter, rules, joined, vid)
         if status == "__density__":
             density_chapters.append(chapter)
             status_map[chapter] = "approved"
@@ -219,6 +402,14 @@ def main(argv: list[str] | None = None) -> int:
             human_confirm.append((chapter, str(note)))
             continue
 
+        # 4.5) F 编号锚点校验（修复2）：boundary_note 的 F00X 与中纲文本锚点匹配
+        if anchors and note:
+            f_issue = _check_f_anchor(str(note), joined, anchors)
+            if f_issue:
+                status_map[chapter] = "pending_human"
+                human_confirm.append((chapter, f"伏笔编号校验: {f_issue}"))
+                continue
+
         # 5) concept_unlocks 判定
         result = detect_scope_violations(joined, chapter, {}, ROOT)
         if result["hard"]:
@@ -232,12 +423,19 @@ def main(argv: list[str] | None = None) -> int:
             human_confirm.append((chapter, f"soft 命中: {terms}"))
             continue
 
-        # 6) forbidden 条款命中（子串匹配）
+        # 6) forbidden 条款命中（子串匹配，剥离条款内正例段）
         forbidden = _current_volume_forbidden(author_intent, meta.get("vid", ""), chapter)
-        hits = [f for f in forbidden if f and f in joined]
+        hits = [f for f in forbidden if f and _forbidden_scan_text(f) in joined]
         if hits:
             status_map[chapter] = "needs_regenerate"
             hard_blocked.append((chapter, f"撞 author_intent forbidden: {hits[:3]}"))
+            continue
+
+        # 6.5) 新角色检测（修复5）：未登记专名（非通用称谓/地名结尾）→ pending_human
+        new_names = _unregistered_proper_names(chars, registry, registry_ids)
+        if new_names:
+            status_map[chapter] = "pending_human"
+            human_confirm.append((chapter, f"新角色未登记: {'、'.join(new_names)}"))
             continue
 
         # 7) 默认通过

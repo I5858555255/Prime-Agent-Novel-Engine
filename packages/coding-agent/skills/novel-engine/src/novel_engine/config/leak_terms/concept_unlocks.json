@@ -4,6 +4,36 @@
     1,
     9
   ],
+  "unlock_schedule": [
+    {
+      "vol": "V01",
+      "range": [1, 316],
+      "status": "covered",
+      "notes": "ch25 起修炼词汇（xianxia_system）全解锁；陆烬个人禁修炼由 R04（rule_applies=V01）与 A 路线硬红线覆盖，本卷无需新增概念"
+    },
+    {
+      "vol": "V02",
+      "range": [317, 652],
+      "status": "planned",
+      "unlocks": [
+        {
+          "concept_id": "lj_path_start",
+          "unlocked_at_chapter": 317,
+          "unlocked_by": "陆烬确认修士力量真实存在（V01 结尾'决意'），正式踏入修仙世界",
+          "applies_to_character": "陆烬",
+          "terms": ["寻路", "访仙", "拜师", "打听仙门", "踏入修仙", "求仙问道"]
+        },
+        {
+          "concept_id": "lj_qi_refinement",
+          "unlocked_at_chapter": 317,
+          "unlocked_by": "陆烬开始炼气期修炼（V02 主题'大乾人间'，筑基突破仍禁，见 R15）",
+          "applies_to_character": "陆烬",
+          "terms": ["炼气", "引气", "聚气", "功法修炼", "打坐修炼"]
+        }
+      ],
+      "notes": "ch317 起陆烬修炼体感放行（R04 已限定 V01）；筑基突破仍受 R15 拦截至第三卷"
+    }
+  ],
   "concepts": [
     {
       "concept_id": "cultivation_system",
