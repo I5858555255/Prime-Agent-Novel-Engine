@@ -711,3 +711,25 @@ prompt 下输出被压缩；"强化字数指令"无效（B 比 A 更短），"�
   无法从批次日志确认；187/135 从三评极差→COMMITTED 可能来自补票或温度0+阈值7 常规随机性。
 - 161/206/215 仍三评极差：形态（缓坡 vs 单离群不收敛 vs 真分裂）需单章带日志复现才能确认。
 - 待办：如需要，用 repro_ch*.py 对 161/206/215 各跑一次带全量日志复现，确认 slope-check 行为。
+---
+
+## 2026-10-11 draft→novel 批量提升（用户确认）
+
+### 背景
+novel/ 目录此前只有 28 章（ch1-139 早期正常发布路径产物），而 checkpoint 已记录 223 章
+COMMITTED——force-best/gray-band 兜底机制落地后所有新章都写 chapters/draft/，从未做
+draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留在语义认定、未落地文件操作。
+
+### 执行
+- 规则：draft/ 中 checkpoint 有 COMMITTED 记录的章 → 复制进 novel/（不覆盖已有、不删除 draft 副本）；
+  无 checkpoint 记录（FAILED 章产物）留在 draft/。
+- 结果：novel/ 28 → **223 章（覆盖 ch1-230）**；novel 缺失 7 章均为 FAILED 章：
+  ch161（三评极差）、ch190（hard-failed）、ch201（87.3 未达标）、ch206（三评极差）、
+  ch212（hard-failed）、ch215（三评极差）、ch229（canon 传授泄漏）——符合"被标记缺陷不提升"政策。
+- ch200（88.5）、ch219（97.5）两个达标章随批量提升进入 novel/。
+- 校验：committed but file nowhere = 空（所有 COMMITTED 章都有文件）。
+
+### 后续注意
+- draft/ 保留全部副本（含已提升章）作为工作目录；FAILED 产物继续留 draft/ 作负样本。
+- 新批次章仍写 draft/——**批量提升是补历史欠账的一次性操作**，不是流水线的常设环节；
+  是否把"COMMITTED 后自动进 novel/"设为常设机制，待 ch231+ 批次观察后再定。
