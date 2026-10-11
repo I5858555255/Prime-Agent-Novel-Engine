@@ -125,3 +125,40 @@ def test_mid_outline_file_status_not_approved_any_variant(tmp_path):
                                "characters": [], "boundary_note": None}})
     director, _ = _build_director(tmp_path)
     assert director._load_mid_outline_entry(25) is None
+
+
+def _entry(ev: str) -> dict:
+    return {"chapter": 25, "core_event": ev, "characters": ["C001", "C002"],
+            "boundary_note": None}
+
+
+def test_entry_status_approved_used_when_file_draft(tmp_path):
+    """逐条门禁：文件级 draft + entry.status=approved → 可用（挂起其余章不阻塞）。"""
+    _write_mid_outline(tmp_path, "draft",
+                       {"25": _entry(SAMPLE_EVENT_25) | {"status": "approved"},
+                        "26": _entry("陆烬学着陈老根的样子吐纳") | {"status": "needs_regenerate"}})
+    director, fake = _build_director(tmp_path)
+    e25 = director._load_mid_outline_entry(25)
+    assert e25 is not None, "approved entry must be usable even when file is draft"
+    assert director._load_mid_outline_entry(26) is None, "needs_regenerate entry must be skipped"
+    ctx, prior = director._build_shared_context(25)
+    assert SAMPLE_EVENT_25 in ctx["mid_outline_hint"]
+
+
+def test_entry_status_pending_human_skipped(tmp_path):
+    """逐条门禁：entry.status=pending_human → 挂起不可用。"""
+    _write_mid_outline(tmp_path, "draft",
+                       {"25": _entry(SAMPLE_EVENT_25) | {"status": "pending_human"}})
+    director, _ = _build_director(tmp_path)
+    assert director._load_mid_outline_entry(25) is None
+    ctx, prior = director._build_shared_context(25)
+    assert ctx["mid_outline_hint"] == ""
+
+
+def test_legacy_approved_file_without_entry_status_usable(tmp_path):
+    """旧数据兼容：meta.status=approved 且无 entry.status → 仍可用（不破坏历史 approved 文件）。"""
+    _write_mid_outline(tmp_path, "approved",
+                       {"25": {"chapter": 25, "core_event": SAMPLE_EVENT_25,
+                               "characters": ["C001", "C002"], "boundary_note": None}})
+    director, _ = _build_director(tmp_path)
+    assert director._load_mid_outline_entry(25) is not None

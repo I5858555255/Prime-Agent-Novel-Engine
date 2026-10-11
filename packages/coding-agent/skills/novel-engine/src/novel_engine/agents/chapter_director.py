@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from novel_engine.core.llm_client import LLMClient, call_llm
+from novel_engine.core.llm_client import LLMClient
 from novel_engine.core.quality_policy import load_quality_policy, derive_scene_targets, is_blocking
 from novel_engine.agents.world_simulator import WorldSimulator
 from novel_engine.core.memory_manager import MemoryManager
@@ -627,9 +627,11 @@ class ChapterDirector:
     def _load_mid_outline_entry(self, chapter_num: int) -> dict | None:
         """加载本章的中纲条目（config/planning/mid_outline_*.json）。
 
-        只接受 meta.status == "approved" 的产物（draft 必须经 audit_mid_outline.py
-        校验通过、标记 approved 后才可使用）；无 approved 条目返回 None，
-        调用方退回"相关节点+卷大纲"的松散参考逻辑。
+        门禁（逐条级，阶段1 起）：
+        - entry.status 存在时以其为准：approved 可用；pending_human/needs_regenerate
+          不可用（挂起单章，不阻塞批次，调用方退回松散参考逻辑）。
+        - entry.status 缺失（旧文件）时退回文件级 meta.status：approved 才可用；
+          draft 一律不可用（须经 audit_mid_outline.py 校验、写回逐条 status）。
         """
         try:
             planning_dir = self.root / "config" / "planning"
@@ -643,12 +645,22 @@ class ChapterDirector:
                 if not isinstance(data, dict):
                     continue
                 meta = data.get("meta") or {}
-                if str(meta.get("status", "")).strip().lower() != "approved":
-                    continue  # 未校验通过/仍为 draft 的产物一律不可用
                 entries = data.get("entries") or {}
                 entry = entries.get(str(chapter_num))
-                if isinstance(entry, dict) and str(entry.get("core_event", "") or "").strip():
-                    return entry
+                if not isinstance(entry, dict):
+                    continue
+                if not str(entry.get("core_event", "") or "").strip():
+                    continue
+                entry_status = str(entry.get("status", "") or "").strip().lower()
+                if entry_status:
+                    # 逐条门禁（阶段1）：仅 approved 可用
+                    if entry_status != "approved":
+                        continue
+                else:
+                    # 旧数据兼容：退回整文件级门禁
+                    if str(meta.get("status", "")).strip().lower() != "approved":
+                        continue
+                return entry
             return None
         except Exception:
             return None
@@ -817,7 +829,6 @@ class ChapterDirector:
         if node_type not in ("main_plot", "character_development"):
             return None
 
-        import os
         template_cache_dir = self.root / "cache" / "task_cards"
         template_cache_dir.mkdir(parents=True, exist_ok=True)
         template_file = template_cache_dir / f"chapter_{chapter_num}.json"
