@@ -50,9 +50,16 @@ def test_coverage_audit_v02_fully_covered():
     assert any("已判定化 3 条" in m for m in msgs)
 
 
-def test_coverage_audit_v03_uncovered_blocks():
-    """V03 尚未条款化 → K>0（进入该卷批次时卡关，防无人值守漏判）。"""
-    _, uncovered = _coverage_audit(_AUTHOR_INTENT, _RULES, "V03")
+def test_coverage_audit_v03_fully_covered():
+    """V03 预判例：2 条 forbidden 由 R16/R17 覆盖 → K=0 不卡关。"""
+    msgs, uncovered = _coverage_audit(_AUTHOR_INTENT, _RULES, "V03")
+    assert not uncovered, f"V03 应全判定化（R16/R17），未覆盖: {msgs}"
+    assert any("已判定化 2 条" in m for m in msgs)
+
+
+def test_coverage_audit_v04_uncovered_blocks():
+    """V04 尚未条款化 → K>0（进入该卷批次时卡关，防无人值守漏判）。"""
+    _, uncovered = _coverage_audit(_AUTHOR_INTENT, _RULES, "V04")
     assert uncovered
 
 
@@ -158,12 +165,53 @@ def test_r08_chapter_window_only():
     assert st_out == "" and rid_out is None
 
 
+# ── V03 预判例（R16/R17 + R15 窗口扩展）────────────────────────────
+
+def test_r16_soul_workshop_full_exposure_forbidden():
+    st, _, rid = decide_entry("摄魂阁的组织全貌终于浮出水面，人造飞升是他们的真实目的",
+                              ["C001"], "", 700, _RULES, vol_id="V03")
+    assert st == "needs_regenerate" and rid == "R16"
+    # V01 不误伤
+    st_v01, _, rid_v01 = decide_entry("摄魂阁的组织全貌终于浮出水面，人造飞升是他们的真实目的",
+                                      ["C001"], "", 700, _RULES, vol_id="V01")
+    assert st_v01 == "" and rid_v01 is None
+
+
+def test_r16_vague_clue_allowed():
+    """V03#1 允许第702/848章模糊线索：'摄魂阁近来有动静'不含揭露措辞 → 放行。"""
+    st, _, rid = decide_entry("摄魂阁的人近来在黑市出没，行踪诡秘", ["C001"], "", 700, _RULES, vol_id="V03")
+    assert st == "" and rid is None  # 交 concept/forbidden 继续判定
+
+
+def test_r17_soul_secret_fully_known_forbidden():
+    st, _, rid = decide_entry("摄魂阁长老已完全掌握陆烬两界神魂的秘密",
+                              ["C001"], "", 700, _RULES, vol_id="V03")
+    assert st == "needs_regenerate" and rid == "R17"
+
+
+def test_r17_vague_awareness_allowed():
+    """V03#2 允许'察觉异样'：'长老觉得陆烬神魂有些异样' 无完全掌握措辞 → 放行。"""
+    st, _, rid = decide_entry("长老觉得陆烬神魂有些异样，多看了两眼",
+                              ["C001"], "", 700, _RULES, vol_id="V03")
+    assert st == "" and rid is None
+
+
+def test_r15_extended_to_v03_until_987():
+    """R15 窗口扩展：ch700（V03 内）筑基突破仍拦；ch988（V03 高潮）放行。"""
+    text = "陆烬气息一变，就此突破筑基"
+    st_700, _, rid = decide_entry(text, ["C001"], "", 700, _RULES, vol_id="V03")
+    assert st_700 == "needs_regenerate" and rid == "R15"
+    st_988, _, rid_988 = decide_entry(text, ["C001"], "", 988, _RULES, vol_id="V03")
+    assert st_988 == "" and rid_988 is None
+
+
 # ── 概念解锁规划（修复4）───────────────────────────────────────────
 
 def test_schedule_status():
     schedule = _load_unlock_schedule()
     assert _schedule_status(schedule, "V01") == "covered"
     assert _schedule_status(schedule, "V02") == "planned"
+    assert _schedule_status(schedule, "V03") == "planned"
     assert _schedule_status(schedule, "V05") is None  # 未规划 → audit 输出提醒
 
 

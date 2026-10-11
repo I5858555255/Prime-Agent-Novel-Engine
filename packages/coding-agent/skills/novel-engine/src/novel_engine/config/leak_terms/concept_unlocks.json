@@ -31,7 +31,29 @@
           "terms": ["炼气", "引气", "聚气", "功法修炼", "打坐修炼"]
         }
       ],
-      "notes": "ch317 起陆烬修炼体感放行（R04 已限定 V01）；筑基突破仍受 R15 拦截至第三卷"
+      "notes": "ch317 起陆烬修炼体感放行（R04 已限定 V01）；筑基突破仍受 R15 拦截至 V03 高潮 ch988"
+    },
+    {
+      "vol": "V03",
+      "range": [653, 988],
+      "status": "planned",
+      "unlocks": [
+        {
+          "concept_id": "sect_life",
+          "unlocked_at_chapter": 653,
+          "unlocked_by": "陆烬入仙门开始宗门生活（V03 主题'仙门初渡'）",
+          "applies_to_character": "*",
+          "terms": ["仙门", "宗门", "外门", "内门", "灵田", "藏经阁", "丹房", "演武场", "灵脉"]
+        },
+        {
+          "concept_id": "lj_foundation",
+          "unlocked_at_chapter": 988,
+          "unlocked_by": "陆烬筑基突破（V03 高潮，获《太上养魂经》残卷）",
+          "applies_to_character": "陆烬",
+          "terms": ["筑基", "筑基期", "筑基成功"]
+        }
+      ],
+      "notes": "炼气期修炼词已由 lj_qi_refinement@317 解锁；筑基词（筑基/筑基期）锁定至 ch988（R15 同窗拦截），988 起放行"
     }
   ],
   "concepts": [
