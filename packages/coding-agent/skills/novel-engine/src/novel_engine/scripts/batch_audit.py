@@ -11,12 +11,20 @@
 并为每类给出处置路由；汇总统计后自动追加"批次验收报告"到 backlog 唯一正本
 （docs/superpowers/quality-backlog.md），可 --no-write 只打印。
 
+额外产物（统一待处理清单 + 趋势指标，bible 无人值守加固）：
+  - 写 runtime/review_queue_<log>.json：本批"需要人工看一眼"的条目统一队列，
+    每条带 signal 分类标签（review_variance/fix_loop_exhausted/hard_gate_leak/
+    below_threshold = 隔离稿信号；gray_band_spot_check = 85-88 档抽查）；
+  - 报告与 backlog 追加 pending_ratio（卷级）：pending（失败章+抽查章）/ 总章数，
+    按卷切层，趋势异常时优先检查现有规则 pattern 扩充而非新开规则。
+
 Usage (run from src/):
     python -m novel_engine.scripts.batch_audit <run_volume_*.log> [--no-write]
 """
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from datetime import datetime, timezone
@@ -33,6 +41,7 @@ BACKLOG_DEFAULT = (
 
 PASS_BAND_LOW = 73.0
 PASS_BAND_HIGH = 88.0
+GRAY_BAND_LOW = 85.0  # 85-88 档为抽查档
 
 _END_RE = re.compile(
     r"=== END chapter (\d+) \[(\w+)\] in ([\d.]+)s \(score=([\d.]+|None)\) note=(.*)"
@@ -42,6 +51,37 @@ _SUMMARY_RE = re.compile(r"SUMMARY: (\d+)/(\d+) chapters succeeded, (\d+) failed
 
 _CANON_PREFIX = re.compile(r"\[canon硬词\]\s*([^：:，,\s]{1,12})")
 _CANON_FALLBACK = re.compile(r"\[([^\[\]]+)\]")
+
+_VOL_RE = re.compile(r"第[一二三四五六七八九十]+阶段[：:].*?第?(\d+)-(\d+)章?")
+_CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+           "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+_volume_ranges: list[tuple[str, int, int]] | None = None
+
+
+def _load_volume_ranges() -> list[tuple[str, int, int]]:
+    """从 author_intent.md 解析卷范围 → [(vid, lo, hi), ...]，避免硬编码漂移。"""
+    global _volume_ranges
+    if _volume_ranges is not None:
+        return _volume_ranges
+    _volume_ranges = []
+    p = ROOT / "bible" / "author_intent.md"
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"## 第([一二三四五六七八九十]+)阶段[：:].*?第?(\d+)-(\d+)章?", line)
+            if not m:
+                continue
+            vid = f"V{_CN_NUM.get(m.group(1), 0):02d}"
+            _volume_ranges.append((vid, int(m.group(2)), int(m.group(3))))
+    _volume_ranges.sort(key=lambda t: t[1])
+    return _volume_ranges
+
+
+def volume_of(chapter: int) -> str:
+    for vid, lo, hi in _load_volume_ranges():
+        if lo <= chapter <= hi:
+            return vid
+    return "V10+"
 
 
 def parse_log(log_path: Path) -> list[dict]:
@@ -146,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("log", help="run_volume_*.log path")
     parser.add_argument("--no-write", action="store_true", help="只打印不写 backlog")
     parser.add_argument("--backlog", default=str(BACKLOG_DEFAULT), help="backlog 唯一正本路径")
+    parser.add_argument("--queue-dir", default=str(ROOT / "runtime"),
+                        help="统一待处理清单输出目录（默认 novel_engine/runtime）")
     args = parser.parse_args(argv)
 
     log_path = Path(args.log)
@@ -175,6 +217,28 @@ def main(argv: list[str] | None = None) -> int:
     green_rate = green / n * 100 if n else 0.0
     elapsed_total = sum(r["elapsed"] for r in recs)
 
+    # ── 统一待处理清单（review_queue.json）+ pending_ratio 卷级趋势 ──
+    queue: list[dict] = []
+    for cat2, rec, reason, term in details:
+        ch = rec["chapter"]
+        if cat2 in ("review_variance", "fix_loop_exhausted", "hard_gate_leak", "below_threshold"):
+            # 隔离稿信号（FAILED）
+            queue.append({
+                "chapter": ch, "signal": cat2, "score": _fmt_score(rec),
+                "reason": reason[:110], "route": route(cat2, rec, term),
+            })
+        elif cat2 == "pass_ok" and rec["score"] is not None and rec["score"] >= GRAY_BAND_LOW:
+            # 85-88 档抽查（gray-band spot check）
+            queue.append({
+                "chapter": ch, "signal": "gray_band_spot_check", "score": _fmt_score(rec),
+                "reason": "85-88 档合格发布，按政策人工 spot-check 抽查一次",
+                "route": route(cat2, rec, term),
+            })
+    pending = len(queue)
+    pending_ratio = pending / n * 100 if n else 0.0
+    vols = sorted({volume_of(r["chapter"]) for r in recs})
+    vol_str = ",".join(vols)
+
     lines = [
         "## 批次验收报告（自动生成）",
         f"- 日志: `{log_path.name}` 章节数={n} 成功={n_ok} 失败={n_fail} "
@@ -183,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
         f"- 达标发布 {green} 章: {sorted(cats['pass_green'])}",
         f"- 合格发布 {len(cats['pass_ok'])} 章: {sorted(cats['pass_ok'])}",
         f"- 低分发布 {len(cats['pass_low'])} 章: {sorted(cats['pass_low'])}",
+        f"- 待处理队列: pending={pending} 章（失败 {n_fail} + 抽查 {pending - n_fail}）"
+        f" 比率={pending_ratio:.1f}%  卷={vol_str}",
         "- 失败分类:",
     ]
     for cat, name in (("review_variance", "评审方差"),
@@ -200,12 +266,16 @@ def main(argv: list[str] | None = None) -> int:
     for cat2, rec, reason, term in details:
         if cat2 not in ("pass_green", "pass_ok", "pass_low"):
             lines.append(f"  - {route(cat2, rec, term)}")
+    gray = [e["chapter"] for e in queue if e["signal"] == "gray_band_spot_check"]
+    if gray:
+        lines.append(f"- 抽查清单（85-88 档）: {sorted(gray)}")
     lines.append(f"- 记录时间: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
     report = "\n".join(lines)
 
     print(f"=== 批次验收报告: {log_path.name} ===")
     print(f"章节数: {n}  成功: {n_ok}  失败: {n_fail}  通过率: {passed_rate:.1f}%")
     print(f"达标(>=88): {green} ({green_rate:.1f}%)  平均分: {avg:.2f}")
+    print(f"待处理队列: pending={pending} 比率={pending_ratio:.1f}%  卷={vol_str}")
     for cat, name in (("review_variance", "评审方差"), ("fix_loop_exhausted", "修复循环耗尽"),
                       ("hard_gate_leak", "硬项泄漏"), ("below_threshold", "未达标/其他")):
         if cats[cat]:
@@ -213,10 +283,27 @@ def main(argv: list[str] | None = None) -> int:
     for cat2, rec, reason, term in details:
         if cat2 not in ("pass_green", "pass_ok", "pass_low"):
             print(f"  -> {route(cat2, rec, term)}")
+    if gray:
+        print(f"  抽查清单(85-88档): {sorted(gray)}")
 
     if not args.no_write:
         write_backlog(Path(args.backlog), report)
+        _write_review_queue(Path(args.queue_dir), log_path, queue, {
+            "batch": log_path.name, "generated_at": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            "volume": vol_str, "n": n, "pending": pending, "pending_ratio": round(pending_ratio, 1),
+        })
     return 0 if not n_fail else 1
+
+
+def _write_review_queue(out_dir: Path, log_path: Path, queue: list[dict], meta: dict) -> None:
+    """统一待处理清单：<out_dir>/review_queue_<log>.json，每条带 signal 分类标签。"""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"review_queue_{log_path.stem}.json"
+    payload = {"meta": meta, "entries": queue}
+    tmp = out.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(out)
+    print(f"[write] 统一待处理清单已写入 {out}")
 
 
 if __name__ == "__main__":
