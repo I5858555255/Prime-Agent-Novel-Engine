@@ -760,3 +760,25 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   - ch215 评审方差类：下批自然重跑；若复现，repro 单跑查三票形态（CC26/CC27 已兜底）
   - ch229 硬项泄漏：提取命中词自动入库，；命中词 [调息] 对照 decision_rules R01-R11 判例匹配处置
 - 记录时间: 2026-10-11T06:56:27Z
+## 2026-10-12 10:16 中纲 ch261-316 生成与校验记录
+- ch261-290（30 条）、ch291-316（25 条，ch316 为 plot_graph 节点章无需中纲）已生成并通过 audit，全部 approved（55/55），meta.status=approved，可供 director 逐条读取。
+- 处理：ch271/277/290/303/308 五条 pending_human 经对照 V01 forbidden 原文放行；ch300 改写措辞规避（原"陈老根传授陆烬基础谋生策略"）。
+### 记录两个机制问题（不阻塞，待后续独立处理）
+1. P6-1 传授检测误报：scope_gate 传授语义词（传授/教/传 + 受事）命中即 hard，不区分宾语是否修炼内容——"传授谋生策略/凡人智慧"这类非修炼宾语也触发 hard block。建议后续优化：hard 判定要求修炼宾语近窗（参照 author_intent V01 forbidden#1 的传授反例语义），非修炼传授降级为允许。
+2. audit_mid_outline 预测性标注与 F 编号错标复发：ch277 标 F004（实为迷雾异象，应关联 forbidden#3，F004=线粒体/地球起源）；ch303 标"F001 回收节点/皇室秘藏"但实际 core_event 为采药遇异响，与标注不符。此前 ch53/59/63/67/78 曾出现同类 F 错标，疑似 audit 内伏笔 ID 匹配逻辑索引问题，建议单独立项核查 audit_mid_outline 的 F 锚点匹配段。
+
+## 2026-10-12 ch267 gray-band 授权被最终门否决（已修复）
+
+- 症状：85.9 分章 FAILED，END note=`best 85.9 < 88 (hard gate [])`、errors=[]，无任何归因。
+- 根因（机制级）：fix loop 授权 gray_band（3963 行 flag_human，85≤score<88 且 det passed 快照）→
+  净化/修复后阶段6 重测出现新 det 硬项 → _decide_publish（原 1429 行 `not det_issues` 条件）否决授权 →
+  落到 82-87 人工复核队列（1245-1259），该分支 human_review_note 不含否决原因，归因丢失。
+  ch62 只修了 force_best 与 gray_band 竞争一条路径，"授权后最终门重测否决"未覆盖。
+- 修复：_decide_publish gray_band 分支在 det_issues 非空时记录 result["gray_band_det_block"]，
+  走 evaluate_publish 判定并保留 verdict reasons；调用点保留 _publish_verdict；
+  82-87 队列 human_review_note + errors 追加归因（gray_band_det_block 或 verdict reasons 前 3 条）。
+- 测试：test_gray_band_det_block.py（3 用例：授权+det hard→否决带归因 / 授权+clean→发布 /
+  score<软线→不走 gray 路径）。定向 5 passed（含既有 force_best_race 2 个）；
+  全量 9 failed/1177 passed，无新增回归（9 个均为既有环境差异类别：
+  6 agnes/siliconflow 配置断言 + 2 round27 deepseek 断言 + 1 pre-existing）。
+- 待办：ch267 需重跑验证（85.9 分章应不再静默 FAILED）；10 个 FAILED 章处置走失败分类器。

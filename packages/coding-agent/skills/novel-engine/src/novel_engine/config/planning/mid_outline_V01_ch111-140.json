@@ -9,7 +9,10 @@
     "generated_at": "2026-10-07T16:16:31+00:00",
     "batch_size": 6,
     "status": "approved",
-    "approved_chapters": "all 30 (6 flagged reviewed and released)"
+    "approved_chapters": "all 30 (6 flagged reviewed and released)",
+    "audit": {
+      "last_run": true
+    }
   },
   "entries": {
     "111": {
@@ -19,7 +22,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "112": {
       "chapter": 112,
@@ -28,7 +32,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "113": {
       "chapter": 113,
@@ -37,7 +42,8 @@
         "C001",
         "C003"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "114": {
       "chapter": 114,
@@ -46,7 +52,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": "需人工确认：提及呼吸法效果，但未涉及修炼动作，符合约束但接近边界"
+      "boundary_note": "需人工确认：提及呼吸法效果，但未涉及修炼动作，符合约束但接近边界",
+      "status": "pending_human"
     },
     "115": {
       "chapter": 115,
@@ -55,7 +62,8 @@
         "C001",
         "C004"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "116": {
       "chapter": 116,
@@ -64,7 +72,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "117": {
       "chapter": 117,
@@ -73,7 +82,8 @@
         "C001",
         "C003"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "118": {
       "chapter": 118,
@@ -83,7 +93,8 @@
         "C003",
         "C004"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "119": {
       "chapter": 119,
@@ -93,7 +104,8 @@
         "C004",
         "C005"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "120": {
       "chapter": 120,
@@ -103,7 +115,8 @@
         "C005",
         "C006"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "121": {
       "chapter": 121,
@@ -112,7 +125,8 @@
         "C001",
         "C007"
       ],
-      "boundary_note": "需人工确认：地理图志涉及迷雾禁区描述，是否触及异变根源暗示边界"
+      "boundary_note": "需人工确认：地理图志涉及迷雾禁区描述，是否触及异变根源暗示边界",
+      "status": "pending_human"
     },
     "122": {
       "chapter": 122,
@@ -122,7 +136,8 @@
         "C002",
         "C003"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "123": {
       "chapter": 123,
@@ -131,7 +146,8 @@
         "C001",
         "C003"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "124": {
       "chapter": 124,
@@ -140,7 +156,8 @@
         "C001",
         "C003"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "125": {
       "chapter": 125,
@@ -150,7 +167,8 @@
         "C003",
         "C005"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "126": {
       "chapter": 126,
@@ -159,7 +177,8 @@
         "C001",
         "C005"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "127": {
       "chapter": 127,
@@ -168,7 +187,8 @@
         "C001",
         "C005"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "128": {
       "chapter": 128,
@@ -177,7 +197,8 @@
         "C001",
         "C005"
       ],
-      "boundary_note": "需人工确认：主角展现的超常直觉是否接近'不属于凡人的力量'感知边界"
+      "boundary_note": "需人工确认：主角展现的超常直觉是否接近'不属于凡人的力量'感知边界",
+      "status": "pending_human"
     },
     "129": {
       "chapter": 129,
@@ -186,7 +207,8 @@
         "C001",
         "C003"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "130": {
       "chapter": 130,
@@ -194,7 +216,8 @@
       "characters": [
         "C001"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "131": {
       "chapter": 131,
@@ -203,7 +226,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "132": {
       "chapter": 132,
@@ -211,7 +235,8 @@
       "characters": [
         "C002"
       ],
-      "boundary_note": "需人工确认：陈老根带回残破石碑，可能涉及伏笔F001（七窍碑残页）或禁区异变相关，请评估是否过早触及禁区异变根源"
+      "boundary_note": "需人工确认：陈老根带回残破石碑，可能涉及伏笔F001（七窍碑残页）或禁区异变相关，请评估是否过早触及禁区异变根源",
+      "status": "pending_human"
     },
     "133": {
       "chapter": 133,
@@ -220,7 +245,8 @@
         "C002",
         "C003"
       ],
-      "boundary_note": "需人工确认：石碑纹路与禁区关联，可能接近禁区异变根源描述边界"
+      "boundary_note": "需人工确认：石碑纹路与禁区关联，可能接近禁区异变根源描述边界",
+      "status": "pending_human"
     },
     "134": {
       "chapter": 134,
@@ -229,7 +255,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "135": {
       "chapter": 135,
@@ -238,7 +265,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "136": {
       "chapter": 136,
@@ -247,7 +275,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "137": {
       "chapter": 137,
@@ -256,7 +285,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "138": {
       "chapter": 138,
@@ -265,7 +295,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "139": {
       "chapter": 139,
@@ -274,7 +305,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": null
+      "boundary_note": null,
+      "status": "approved"
     },
     "140": {
       "chapter": 140,
@@ -283,7 +315,8 @@
         "C001",
         "C002"
       ],
-      "boundary_note": "需人工确认：古文字内容是否涉及修炼概念或异变根源暗示"
+      "boundary_note": "需人工确认：古文字内容是否涉及修炼概念或异变根源暗示",
+      "status": "approved"
     }
   }
 }
