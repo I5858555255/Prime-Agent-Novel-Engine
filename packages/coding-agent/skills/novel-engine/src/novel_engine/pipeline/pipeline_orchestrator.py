@@ -1199,7 +1199,7 @@ class PipelineOrchestrator:
             result["force_published"] = True
             self._flag_for_human(chapter_num, cur_score, f"force-best to draft: {result.get('note','')} high={high_list} det_hard={det_issues} soft={det_soft}")
             return result
-        can_publish, _ = self._decide_publish(
+        can_publish, _publish_verdict = self._decide_publish(
             chapter_num=chapter_num, task_card=task_card,
             synopsis=synopsis, world_state=world_state,
             result=result, score=score, sm=sm,
@@ -1255,6 +1255,14 @@ class PipelineOrchestrator:
                 result["score"] = cur_score
                 result["pending_human_review"] = True  # 新增标记
                 result["human_review_note"] = f"score={cur_score} in 82-87 range, queued for human review, not force-best"
+                # ch267 归因：gray-band 授权被最终 det 硬项否决时，必须带归因进 note+errors，
+                # 禁止静默降级（之前 85.9 分无归因地 FAILED，日志查不出原因）
+                _gbd = result.get("gray_band_det_block")
+                if _gbd:
+                    result["human_review_note"] += f"; gray-band 授权被最终 det 硬项否决: {_gbd}"
+                    result["errors"].append(f"gray-band authorized but final det hard: {_gbd}")
+                elif _publish_verdict and _publish_verdict.get("reasons"):
+                    result["human_review_note"] += f"; 否决原因: {_publish_verdict['reasons'][:3]}"
                 # early return，避免进入下面成功后的 world_state 提交流程
                 return result
             else:
@@ -1426,10 +1434,20 @@ class PipelineOrchestrator:
         _gray_commit = bool(result.get("gray_band_release")) and cur_score + 1e-9 >= int(
             _commit_policy.get("soft_publication_line", int(_commit_policy["publication_line"]) - 3))
         has_high = any(b for b, _ in (_review_issue_is_blocking(_commit_policy, iss) for iss in (review.get("issues") or [])))
-        if _gray_commit and not leak_issues and not det_issues and not has_high:
-            can_publish = True
-            verdict = {"publish": True, "reasons": [],
-                       "note": f"gray-band release {cur_score}"}
+        if _gray_commit and not leak_issues and not has_high:
+            if det_issues:
+                # ch267 归因：gray-band 授权（fix loop 检测快照全绿）后，最终门对净化/修复后
+                # 文本重测出现新 det 硬项——授权失效是合理否决，但必须带归因，禁止静默
+                # 降级到 82-87 队列（无归因 FAILED，日志查不出为什么）。
+                result["gray_band_det_block"] = list(det_issues)
+                verdict = evaluate_publish(score=cur_score, reviewer_issues=review.get("issues", []),
+                                           det_hard=det_issues, leak=leak_issues, violations=violations,
+                                           policy=_commit_policy, dim_scores=review.get("dim_scores"), total_score=cur_score)
+                can_publish = verdict["publish"]
+            else:
+                can_publish = True
+                verdict = {"publish": True, "reasons": [],
+                           "note": f"gray-band release {cur_score}"}
         else:
             verdict = evaluate_publish(score=cur_score, reviewer_issues=review.get("issues", []),
                                        det_hard=det_issues, leak=leak_issues, violations=violations,
