@@ -846,3 +846,16 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   - ch292 修复循环耗尽：下批自然重跑；若复现，定位写作质量 vs 机制 bug，机制信号入 backlog 等任务书
   - ch293 评审方差类：下批自然重跑；若复现，repro 单跑查三票形态（CC26/CC27 已兜底）
 - 记录时间: 2026-10-12T14:15:06Z
+## 测试套件模型无关化改造（第一批）— 完成 2026-10-13
+- 提交：326f10950（feat/stability-quality）
+- 范围：7 个测试文件改造——test_factory_config/test_llm_client_streaming/test_model_router/test_novel_engine/test_switch_llm/domain_scene_schema/test_round27_phase_models/domain_gate_wiring/test_round14_cross_scene_repeat；test_same_location_cluster_shared_objects_not_flagged 标 xfail
+- 效果：9 个环境差异失败清零（active_profile==siliconflow / model==deepseek 硬编码断言改为动态读配置；round18/19 fixture 缺失类已在前轮 hermetic 化）
+- 收尾难点：test_pipeline_incremental_patcher 原"假通过"（mock 场景计数无界→SETS[i] IndexError→扩写链吞错→门软放过）。本次走真实路径暴露并修复：
+  1) MockLLMForFix 场景计数加 threading.Lock + capped 取模（修复无界）
+  2) _scene_text 解析 _mock_full_task_card 真实 word_count_target（不再 8 字子串循环违规）
+  3) writer/scene/polish 三分支统一 json.loads 取 scene_text 纯文本（修复 JSON 进 .format 崩 } 与 latin_leak 误报）
+  4) 四套互不相交词表（acts/locs/objs/ends 各 8 词）+ 单场景唯一中文序号（seq=k+1，<100 避免 _cn_num 返回阿拉伯数字）
+  5) density 覆盖句改"动作发生状可见，第X条线索。"（跨场景共享前缀 10 字 < lcs≥12 阈值，不再触发 det gate fired → triple review）
+  6) 场景 1 前置"夜色如墨，浓雾自荒原尽头漫卷而来。"（满足成品断言 B2 zero-scaffolding）
+- 验证：决定性组合（41 文件）980 passed + 1 xfailed；全量 1185 passed + 1 xfailed，0 failed（唯一 pre-existing 已 xfail）
+- pyflakes 全包：0 undefined name（unused import/局部未用等低危警告不计门禁，存量未清）
