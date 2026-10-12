@@ -4,25 +4,31 @@ from pathlib import Path
 
 
 def test_llm_providers_factory_contract():
-    """Verify llm_providers.json has expected shipped values."""
+    """Verify llm_providers.json has structurally valid shipped values (model-agnostic).
+
+    Asserts the active profile is present and complete, without pinning a specific
+    provider/model, so the suite stays green across provider switches
+    (siliconflow → agnes → token plan).
+    """
     cfg_path = Path(__file__).parent.parent / "config" / "llm_providers.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
 
-    # active_profile must be siliconflow (CC round-0 baseline)
-    assert cfg["active_profile"] == "siliconflow", f"expected siliconflow, got {cfg['active_profile']}"
+    active = cfg["active_profile"]
+    assert active in cfg["profiles"], f"active_profile {active} missing from profiles"
 
-    # base_url must NOT contain /v1
-    profile = cfg["profiles"]["siliconflow"]
+    profile = cfg["profiles"][active]
     base_url = profile["base_url"]
+    assert base_url, "base_url must be set"
     assert "/v1" not in base_url, f"base_url should not contain /v1: {base_url}"
-    assert base_url == "https://api.siliconflow.cn"
+    assert profile.get("api_key_env"), "api_key_env must be set"
+    assert profile.get("family"), "family must be set"
 
-    # CC round-0：所有相位主模型 deepseek-ai/DeepSeek-V3.2
+    # All standard phases must exist and carry a non-empty primary model
     phases = profile["phases"]
     for phase_name in ["outline", "director", "synopsis", "scenes", "polish", "review", "refine"]:
         assert phase_name in phases, f"missing phase: {phase_name}"
         models = phases[phase_name]["models"]
-        assert models == ["deepseek-ai/DeepSeek-V3.2"], f"{phase_name} models: {models}"
+        assert models and isinstance(models[0], str) and models[0], f"{phase_name} models: {models}"
 
 
 def test_runtime_config_factory_contract():

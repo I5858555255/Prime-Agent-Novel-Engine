@@ -87,10 +87,16 @@ def test_router_falls_to_next_on_429(tmp_path, monkeypatch):
 def test_orchestrator_builds_routers(tmp_path, monkeypatch):
     import json
     import pipeline.pipeline_orchestrator as po_mod
-    monkeypatch.setenv("LLM_API_KEY", "sk-test")
     root = os.path.dirname(os.path.dirname(po_mod.__file__))
     providers_path = Path(root) / "config" / "llm_providers.json"
-    if not providers_path.exists():
+    if providers_path.exists():
+        # Real config: set the env var the active profile actually requires
+        real = json.loads(providers_path.read_text(encoding="utf-8"))
+        active = real["active_profile"]
+        key_env = real["profiles"][active]["api_key_env"]
+        monkeypatch.setenv(key_env, "sk-test")
+    else:
+        monkeypatch.setenv("LLM_API_KEY", "sk-test")
         providers_path.parent.mkdir(parents=True, exist_ok=True)
         providers_path.write_text(
             __import__('json').dumps({

@@ -272,24 +272,21 @@ def test_multimodel_all_fail():
 # ── C1.4.10 出厂配置契约 ─────────────────────────────────────────────────────
 
 def test_factory_config_timeout_specs():
-    """六 phase 的 stream/idle_timeout_s/total_timeout_s 缺省值可被 TimeoutSpec 解析."""
+    """active profile 各 phase 的 stream/idle_timeout_s/total_timeout_s 可被 TimeoutSpec 解析且结构有效.
+
+    Model-agnostic: asserts structural validity (boolean stream, positive timeouts)
+    instead of pinning provider-specific timeout values.
+    """
     cfg_path = Path(__file__).parent.parent / "config" / "llm_providers.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     profile = cfg["profiles"][cfg["active_profile"]]
-    expected = {
-        "outline":  (True, 100, 220),
-        "director": (True, 240, 240),
-        "synopsis": (True, 100, 560),
-        "scenes":   (True, 100, 650),
-        "polish":   (True, 100, 650),
-        "review":   (True, 100, 220),
-    }
-    for phase, (exp_stream, exp_idle, exp_total) in expected.items():
+    for phase in ["outline", "director", "synopsis", "scenes", "polish", "review", "refine"]:
         phase_cfg = profile["phases"].get(phase, {})
         spec = RouterTimeoutSpec.from_phase_cfg(phase_cfg, phase)
-        assert spec.stream is exp_stream, f"{phase} stream"
-        assert spec.idle_s == exp_idle, f"{phase} idle"
-        assert spec.total_s == exp_total, f"{phase} total"
+        assert isinstance(spec.stream, bool), f"{phase} stream"
+        assert spec.idle_s > 0, f"{phase} idle"
+        assert spec.total_s > 0, f"{phase} total"
+        assert spec.connect_s > 0, f"{phase} connect"
 
 
 # ── C1.4.10 扩展 ──────────────────────────────────────────────────────────────

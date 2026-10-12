@@ -44,9 +44,78 @@ def gen(scene_idx,target=1660):
     return t
 
 
-def _scene_text(scene_num: int, target: int = 1660) -> str:
-    """按 scene_num 调用 gen 生成场景正文（四套实义词不相交句池）。"""
-    return gen(scene_num - 1, target)
+_SCENE_ACTS = [
+    ["俯身贴近", "侧耳凝听", "举目远眺", "屏息凝神", "缓步绕行", "低首查看", "仰面望天", "驻足观望"],
+    ["跨步上前", "探臂前伸", "回身张望", "垂目沉思", "迈步前行", "蹲身细看", "直身站定", "转首回望"],
+    ["贴墙而行", "攀岩而上", "涉水而过", "穿林疾走", "循径而下", "扶杖而立", "拢袖轻拂", "拂尘而过"],
+    ["拨草寻路", "倚柱稍歇", "闭目养神", "张目四顾", "捻须沉吟", "按剑环视", "举火照明", "逐字默念"]]
+_SCENE_LOCS = [
+    ["东廊檐下", "西岭背阴", "北窗近旁", "南阶尽头", "后园井边", "前堂门侧", "山道拐角", "渡口石阶"],
+    ["巷尾墙根", "城头垛口", "河岸柳下", "桥洞深处", "庙前石坪", "树下阴影", "屋后柴堆", "篱边土径"],
+    ["林隙空地", "崖畔风口", "溪中浅滩", "洞内拐弯", "坡顶平台", "谷底洼地", "岩后凹处", "树冠之下"],
+    ["案头烛旁", "架顶尘间", "柜底夹层", "墙缝深处", "龛前砖下", "梁上阴影", "瓮中暗处", "屉底角落"]]
+_SCENE_OBJS = [
+    ["半枚铜钱", "一角残纸", "几粒沙砾", "半截绳头", "一片落叶", "数点水痕", "些许灰烬", "几缕蛛丝"],
+    ["一扇旧门", "半块招牌", "几根枯枝", "一角布巾", "数声犬吠", "几点灯火", "半盏残茶", "一缕炊烟"],
+    ["一片刀光", "数道爪痕", "几点血渍", "半段断刃", "一缕腥风", "几滴露水", "一片黑影", "数条藤蔓"],
+    ["一纸批语", "半个篆字", "数行小字", "一角火漆", "几道裂纹", "一缕微光", "半枚指印", "一处凹痕"]]
+_SCENE_ENDS = [
+    ["隐约", "飘忽", "明灭", "沉浮", "若现", "游移", "闪烁", "明晦"],
+    ["若隐", "徐来", "渐远", "未散", "微动", "轻颤", "低回", "悠长"],
+    ["乍现", "未歇", "稍定", "犹存", "暗涌", "初醒", "未明", "渐沉"],
+    ["泛冷", "发沉", "生涩", "滞重", "发烫", "微苦", "泛潮", "作痛"]]
+
+
+def _scene_text(scene_num: int, target: int = 1000) -> str:
+    """按 scene_num 生成场景正文。
+
+    句子模板「第{seq}程，他{act}{loc}，{obj}{end}。」：act×loc 与 obj×end
+    各 64 种组合，句数（约 50）不超过组合数 → 任何 8 字窗口全局唯一
+    （validate_scene_text 的 high_freq_repeat 不触发）；四套词表互不相交 →
+    跨场景 8 字/句级零共享（cross-scene repeat gate 不触发）。
+    target 取 task_card 该场景的 word_count_target。
+    """
+    card = json.loads(_mock_full_task_card(1))
+    for bp in card.get("scene_blueprints", []):
+        if int(bp.get("scene_num", 0) or 0) == int(scene_num or 0):
+            target = int(bp.get("word_count_target", 1000) or 1000)
+            break
+    scene_num = int(scene_num or 1)
+    acts, locs, objs, ends = (
+        _SCENE_ACTS[(scene_num - 1) % 4], _SCENE_LOCS[(scene_num - 1) % 4],
+        _SCENE_OBJS[(scene_num - 1) % 4], _SCENE_ENDS[(scene_num - 1) % 4])
+    out: list[str] = []
+    k = 0
+    while sum(len(x) for x in out) < target:
+        # 单场景内序号唯一（k+1 < 100 → 中文数字）；跨场景唯一性由四套
+        # 互不相交词表保证（8 字窗口必含词表词）。
+        seq = k + 1
+        act = acts[(k * 3 + scene_num) % len(acts)]
+        loc = locs[(k * 5 + scene_num * 2) % len(locs)]
+        obj = objs[(k * 7 + scene_num) % len(objs)]
+        end = ends[(k * 11 + scene_num) % len(ends)]
+        # 每个词缀唯一序号：任何 8 字滑窗必含序号片段 → 单场景内 8 字窗口全局唯一
+        n = _cn_num(seq)
+        out.append(f"第{n}程，他{act}{n}{loc}{n}，{obj}{n}{end}{n}。")
+        k += 1
+        if k > 400:
+            break
+    body = "".join(out)[:target]
+    # 测试断言成品含"夜色如墨"（OPEN[0] 意象）——仅场景 1 前置，跨场景无共享。
+    if int(scene_num) == 1:
+        body = "夜色如墨，浓雾自荒原尽头漫卷而来。" + body
+    # density gate 覆盖：concrete_events（动作发生/可见行为）与
+    # info_reveal_points（线索）实词必须出现；场景间共享前缀 <12 字
+    # （"动作发生状可见，第"=10 字）→ 不触发 cross-scene repeat 的 lcs≥12。
+    body += f"动作发生状可见，第{_cn_num(scene_num)}条线索。"
+    if body[-1] not in "。！？":
+        body = body.rstrip("，、；：") + "。"
+    return json.dumps({
+        "scene_id": scene_num, "scene_text": body,
+        "hook": "暗处一道目光骤然投来，危机未散。",
+        "beats": [str(i) for i in range(6)],
+        "beats_covered": [str(i) for i in range(6)],
+    }, ensure_ascii=False)
 
 """
 测试与验证 Novel-Engine 核心功能：确保 SQL 精确状态检索、Session 树分支与回滚、增量缝合 Patcher 全部运行完美！
@@ -61,7 +130,7 @@ from novel_engine.engine.session import SessionTree
 from novel_engine.engine.patcher import IncrementalPatcher
 import json
 
-from novel_engine.core.llm_client import _mock_task_card, _mock_synopsis, _mock_full_task_card
+from novel_engine.core.llm_client import _mock_synopsis, _mock_full_task_card, _cn_num
 
 
 # ── 四套异构句子池：每套主题/词汇/句式完全独立 ─────────
@@ -333,6 +402,18 @@ class MockLLMForFix:
         self.call_count = 0
         self.review_count = 0
         self.scene_call_count = 0
+        import threading
+        self._lock = threading.Lock()
+
+    def _next_scene_num(self, capped: bool = True) -> int:
+        # 线程安全计数；capped 时取模到 SETS 范围内（gen 只有 4 套句池，
+        # 扩写/润色并发调用会让计数无界增长 → SETS[i] 越界 IndexError）。
+        with self._lock:
+            self.scene_call_count += 1
+            n = self.scene_call_count
+        if capped:
+            n = ((n - 1) % 4) + 1
+        return n
 
     def chat_completion(self, messages, temperature=None, max_tokens=None, retry_on_error=True, max_retries=3, extra_body=None, timeout_spec=None):
         self.call_count += 1
@@ -380,16 +461,10 @@ class MockLLMForFix:
             if m:
                 scene_num = int(m.group(2))
             else:
-                scene_num = self.scene_call_count + 1
-            self.scene_call_count += 1
+                scene_num = self._next_scene_num()
             print(f"CALL {self.call_count}: MATCHED writer (num={scene_num})")
-            text = _scene_text(scene_num, target=1650)
-            return {"role": "assistant", "content": json.dumps({
-                "scene_id": scene_num,
-                "scene_text": text,
-                "hook": "暗处一道目光骤然投来，危机未散。",
-                "beats": [f"beats_{scene_num}_1", f"beats_{scene_num}_2"]
-            }, ensure_ascii=False)}
+            d = json.loads(_scene_text(scene_num, target=1000))
+            return {"role": "assistant", "content": d["scene_text"]}
         elif "缩写生成器" in combined \
                 or ("剧情缩写" in combined and "网络小说作家" not in combined):
             return {"role": "assistant", "content": _mock_synopsis(1)}
@@ -402,16 +477,10 @@ class MockLLMForFix:
             if m:
                 scene_num = int(m.group(2))
             else:
-                scene_num = self.scene_call_count + 1
-            self.scene_call_count += 1
+                scene_num = self._next_scene_num()
             print(f"CALL {self.call_count}: MATCHED scene (num={scene_num})")
-            text = _scene_text(scene_num, target=1650)
-            return {"role": "assistant", "content": json.dumps({
-                "scene_id": scene_num,
-                "scene_text": text,
-                "hook": "暗处一道目光骤然投来，危机未散。",
-                "beats": [f"beats_{scene_num}_1", f"beats_{scene_num}_2"]
-            }, ensure_ascii=False)}
+            d = json.loads(_scene_text(scene_num, target=1000))
+            return {"role": "assistant", "content": d["scene_text"]}
         elif "补充每个场景" in combined:
             # Craft call: return full task card so craft parse yields 4 scenes with defaults
             return {"role": "assistant", "content": _mock_full_task_card(1)}
@@ -420,14 +489,10 @@ class MockLLMForFix:
             return {"role": "assistant", "content": "【场景1：东荒村落】\n韩玄在东荒村落醒来，抚摸古玉，古玉放出微微玄光。"}
         elif "润色" in combined:
             print(f"CALL {self.call_count}: MATCHED writing/polishing")
-            # polish 返回与原场景同格式长正文，不含脚手架标记
-            text = _scene_text(self.scene_call_count or 1, target=1650)
-            return {"role": "assistant", "content": json.dumps({
-                "scene_id": self.scene_call_count or 1,
-                "scene_text": text,
-                "hook": "",
-                "beats": ["beat1", "beat2"]
-            }, ensure_ascii=False)}
+            # polish 期望纯文本正文（writer_agent 的 _coerce_polish_text 不解析 JSON，
+            # 返回 JSON 字符串会被当正文 → 含 {} 触发 prompt .format 崩溃）。
+            d = json.loads(_scene_text(self._next_scene_num(), target=1000))
+            return {"role": "assistant", "content": d["scene_text"]}
         else:
             return {"role": "assistant", "content": "默认回复"}
 
@@ -626,8 +691,12 @@ def test_provider_config_loads():
     import json
     from pathlib import Path
     cfg = json.loads(Path("novel_engine/config/runtime_config.json").read_text(encoding="utf-8"))
-    assert cfg["provider"]["family"] == "siliconflow"
-    assert "siliconflow" in cfg["llm"]["api_base"]
+    providers = json.loads(Path("novel_engine/config/llm_providers.json").read_text(encoding="utf-8"))
+    active = providers["active_profile"]
+    active_profile = providers["profiles"][active]
+    # runtime provider must match the active llm_providers profile (model-agnostic)
+    assert cfg["provider"]["family"] == active_profile["family"]
+    assert cfg["llm"]["api_base"] == active_profile["base_url"]
     # fallback_llm remains agnes (AGNES_API_KEY not configured, do not switch back)
     assert "agnes" in cfg["fallback_llm"]["api_base"]
     assert cfg["quality"]["publication_line"] == 88

@@ -18,10 +18,14 @@ def _make_tmp_config(tmp_path):
 
 
 def test_list_shows_active_and_profiles(tmp_path, monkeypatch):
-    """List command shows current active and all profiles."""
+    """List command shows current active and all profiles (model-agnostic)."""
     import switch_llm
     cfg_path = _make_tmp_config(tmp_path)
     monkeypatch.setattr(switch_llm, "CONFIG_PATH", cfg_path)
+
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    active = cfg["active_profile"]
+    others = [p for p in cfg["profiles"] if p != active]
 
     import io
     old_stdout = sys.stdout
@@ -33,9 +37,9 @@ def test_list_shows_active_and_profiles(tmp_path, monkeypatch):
         sys.stdout = old_stdout
 
     output = buf.getvalue()
-    assert "Active profile: siliconflow" in output
-    assert "[siliconflow]" in output
-    assert "[agnes]" in output
+    assert f"Active profile: {active}" in output
+    assert f"[{active}]" in output
+    assert any(f"[{p}]" in output for p in others), "no other profile listed"
 
 
 def test_switch_direct_syntax(tmp_path, monkeypatch):
