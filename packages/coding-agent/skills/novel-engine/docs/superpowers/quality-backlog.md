@@ -897,3 +897,24 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
 - 门禁：pyflakes 全包仅 2 处既有 unused 警告（ab_evaluate.py，非本次引入，非 undefined name）；
   全量 pytest 待批次内确认无新增失败。
 - 下一步：中纲新批次生成时 boundary_note 优先用 fid；旧 F00X 引用无需迁移（双向兼容）。
+
+
+## 残留 9 章重跑验收（token 档，A 类机制真机验证）— 2026-10-13
+- 批次：run_volume --chapters 316 --resume（9 个未提交章：266/267/282/285/292/295/299/304/305）
+- 结果：5/9 COMMITTED（282/285/299/304/305，全 <88 → 仅进 draft/，novel/ 唯一发布源原则保持，
+  novel/ 最大章节号 230 不变）；4 FAILED（266/267/292/295）；总耗时 6841s（约 1.9h），无 429。
+- A 类机制（低分整章重写自动路径）真机验证：
+  - 5 次 LOW-SCORE ESCALATION 触发：282(41.9)/285(69.7)/299(58.4)/304(68.0)/305(48.1)
+  - ch299 修复成功（rewrite → 65.2 verdict=fix ≥60）；其余 4 章 rewrite 无增益 → terminal → force-best draft
+  - 上一轮 A 类"review 极低分无升级路径、直接 NEEDS HUMAN"的失败形态消失——所有低分均自动走升级链路
+- 四类失败对照（上轮 9 章全 FAILED → 本轮 5/9）：
+  - D 类伏笔 beats：ch266 复现（scene4 foreshadow miss + length short）
+  - C 类泄漏硬项：ch267 复现（84.7，差 1.3 未达 88 线）；ch305 泄漏缓解（改由 plot 低分主导，48.1）
+  - B 类评审方差：ch285 通过（range=8.2，CC26/CC27 生效）；ch292 复现（42.65 极差>15）→ CC26/27 降低概率未消除
+  - 新形态（本轮新增）：directing_error 时间倒置——ch295 FAILED / ch304 COMMITTED，
+    场景3「午后/正午」早于前场景（task card 时间验证重试失败），需单独归因（test_task_card_time_inversion
+    已有覆盖，但真实 LLM 仍生成倒置）
+- 待办（下批次优先）：
+  1) ch292 三评方差复现：repro 单跑查三票形态，评估是否需要异构 judge 或锚定评分
+  2) ch295 时间倒置：查 task_card 时间验证失败后的重试路径，是否缺确定性修复指令
+  3) ch266 伏笔 beats / ch267 泄漏差 1.3 分：已有归因，自然重跑观察
