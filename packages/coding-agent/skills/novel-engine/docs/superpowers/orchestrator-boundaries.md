@@ -118,3 +118,11 @@ python scripts/check_static.py && \
 新增 `tests/test_commit_path.py`，覆盖：
 - T1：正常提交路径 → COMMITTED + event_ledger + end_state 各追加一条
 - T2：含 state_changes 的 synopsis → apply_pending_changes 生效
+
+## 反例纪律（2026-10-13，源自外部评审 P6-4）
+
+任何新增/修改的检测规则（concept_unlocks 概念分组、泄漏检测模式、scope/传授判定、forbidden 条款、规则表 pattern）必须满足：
+
+1. **附带反例测试才能合入**：提交时必须同时附至少一条"该规则不误杀合法内容"的反例测试（如概念解锁后同样表述放行、传授非修炼宾语不触发、合法形态不误杀）。教训：round-30 只测了 ch141 正例、未枚举"首个场景跨日/深夜→清晨隐含跨日"两类合法形态，导致 8 章被误杀（backlog 552 行）。
+2. **不靠人工逐条加词续命**：发现新误报时，先判断能否归入已有概念分组/规则覆盖；只有明确不属于任何已知概念的才允许新增规则，并在 commit message 写清为什么不适用现有机制。
+3. **验证范围**：规则变更后必须跑全量 pytest（novel_engine/tests，约 3 分钟），失败只允许已知 pre-existing（test_same_location_cluster_shared_objects_not_flagged）；pyflakes 全包 0 undefined name。
