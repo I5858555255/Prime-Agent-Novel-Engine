@@ -731,14 +731,28 @@ def _run_latin_leak_gate(self, chapter_num: int, task_card: dict,
     changed = False
     for info in leaks:
         sid = info["scene_id"]
-        directive = ("正文出现了英文字母/英文单词，这在纯中文古风里是严重错误。重写本场景时"
-                     "严禁出现任何英文字母、英文单词或拉丁字符，正文必须全部为中文，"
-                     "专有名词也一律用中文或约定译名；不得改变剧情与情节点。")
+        # 区分"零星残片"与"整段英文跑飞"：后者用更强烈的指令 + 真实英文句样例
+        # （ch267/ch325：模型整段输出英文，重生指令必须点明是语言跑飞而非个别词）。
+        sent = llg.detect_english_sentences(
+            next((getattr(x, "scene_text", "") or "" for x in scenes
+                  if int(getattr(x, "scene_id", 0) or 0) == sid), ""))
+        if sent["has_english_sentence"]:
+            directive = ("本场景整段输出了英文句子（示例：" + (sent["sample"] or "") + "）。"
+                         "这是模型语言跑飞，本场景必须整体重写为纯中文：正文 100% 中文，"
+                         "禁止任何英文字母、英文单词、英文句子与拉丁字符，专有名词一律用中文"
+                         "或约定译名；不得改变剧情与情节点。")
+            neg_ex = [(sent["sample"] or "The purple fog pressed against the outside of his body"),
+                      "（正文整段英文，严禁——必须整体重写为中文）"]
+        else:
+            directive = ("正文出现了英文字母/英文单词，这在纯中文古风里是严重错误。重写本场景时"
+                         "严禁出现任何英文字母、英文单词或拉丁字符，正文必须全部为中文，"
+                         "专有名词也一律用中文或约定译名；不得改变剧情与情节点。")
+            neg_ex = ["he decision 不对外透露（正文混入英文残片，严禁）"]
         try:
             ns = self._regen_scene_for_id(
                 task_card, sid, scenes,
-                negative_examples=["he decision 不对外透露（正文混入英文残片，严禁）"],
-                fix_directive=directive, frequency_penalty=0.3, presence_penalty=0.3)
+                negative_examples=neg_ex, fix_directive=directive,
+                frequency_penalty=0.3, presence_penalty=0.3)
             for idx, x in enumerate(scenes):
                 if int(getattr(x, "scene_id", 0) or 0) == sid:
                     scenes[idx] = ns
@@ -748,8 +762,12 @@ def _run_latin_leak_gate(self, chapter_num: int, task_card: dict,
         # 复检
         latest = next((x for x in scenes if int(getattr(x, "scene_id", 0) or 0) == sid), None)
         still = llg.detect_latin_leak(getattr(latest, "scene_text", "") or "")
+        still_sent = llg.detect_english_sentences(getattr(latest, "scene_text", "") or "")
         if still["has_leak"]:
-            hard = f"[非中文] 场景{sid} 重生后仍含拉丁字符 {still['leaked_tokens']}"
+            detail = (f"场景{sid} 重生后仍含拉丁字符 {still['leaked_tokens']}"
+                      if not still_sent["has_english_sentence"]
+                      else f"场景{sid} 重生后仍含整段英文（样例={still_sent['sample']}）")
+            hard = f"[非中文] {detail}"
             self._last_deterministic_issues = getattr(self, "_last_deterministic_issues", []) + [hard]
             logger.error(f"Latin leak persists ch{chapter_num} scene{sid} {still['leaked_tokens']} -> hard block")
             self._flag_for_human(chapter_num, getattr(self, "_cur_review_score", 0), hard)
