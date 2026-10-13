@@ -703,10 +703,26 @@ class PipelineOrchestrator:
                 self._flag_for_human(chapter_num, score, "review highly unstable (median-of-3 range>15)")
                 return result
 
+            # A类：低分整章重写——verdict="fail"（score 低于 fix_threshold）且启用时
+            # 也进入修复路径（fix loop 内低分升级为整章重写），不再直接挂人工。
+            _lsr_cfg = (self._policy or {}).get("low_score_rewrite") or {}
+            _lsr_enabled = bool(_lsr_cfg.get("enabled", True))
+            _lsr_floor = float(_lsr_cfg.get(
+                "floor", int(self._policy.get("fix_threshold", 60))))
+            _low_score_eligible = (
+                _lsr_enabled
+                and verdict == "fail"
+                and isinstance(score, (int, float))
+                and 0 < score < _lsr_floor
+            )
             if verdict == "pass":
                 result["success"] = True
                 logger.info(f"Chapter {chapter_num} PASSED (score={score})")
-            elif verdict == "fix":
+            elif verdict == "fix" or _low_score_eligible:
+                if _low_score_eligible:
+                    logger.warning(
+                        f"Chapter {chapter_num} low score ({score} < {_lsr_floor}) "
+                        f"→ routed into fix loop for low-score whole-chapter rewrite")
                 orig_novel = self.current_novel
                 orig_draft = getattr(self, "_draft_novel", orig_novel)
                 pre_fix_score = score
@@ -3912,7 +3928,7 @@ class PipelineOrchestrator:
             return current, current_draft, best_state, _reaction_fix_budget, stop_reason
         current, current_draft, best_state, _reaction_fix_budget, stop_reason = self._dispatch_remediation(
             chapter_num, task_card, synopsis, current, current_draft,
-            best_state, _reaction_fix_budget, frozen, staged)
+            best_state, _reaction_fix_budget, frozen, staged, world_state)
         if stop_reason is not None:
             return current, current_draft, best_state, _reaction_fix_budget, stop_reason
         return current, current_draft, best_state, _reaction_fix_budget, None
@@ -3996,6 +4012,7 @@ class PipelineOrchestrator:
         _reaction_fix_budget: int,
         frozen: dict,
         staged: dict,
+        world_state: dict,
     ) -> tuple:
         """C-type: dispatch remediation (patch/rewrite) based on review outcome.
 
@@ -4121,6 +4138,31 @@ class PipelineOrchestrator:
                 logger.info(f"ch{chapter_num}: CC25 literary pass produced no gain")
         if _cc25_fixed:
             return current, current_draft, best_state, _reaction_fix_budget, None
+        # A类：低分整章重写升级——patch/literary 无改善且 best_score 低于 floor 时，
+        # 先做整章重写（回滚世界状态 + 按任务卡重新生成 + 重评审），把稿子拉回
+        # "可修复"区间继续 fix loop，而不是直接 rewrite_disabled 结束挂人工。
+        _lsr_cfg = (self._policy or {}).get("low_score_rewrite") or {}
+        _lsr_enabled = bool(_lsr_cfg.get("enabled", True))
+        _lsr_max = int(_lsr_cfg.get("max_rounds", 2))
+        _lsr_floor = float(_lsr_cfg.get(
+            "floor", int(self._policy.get("fix_threshold", 60))))
+        _lsr_done = int(getattr(self, "_low_score_rewrites_used", 0))
+        _s_after = float(staged.get("score") or best_state.best_score)
+        if (_lsr_enabled and _lsr_done < _lsr_max
+                and not _cc25_fixed
+                and isinstance(best_state.best_score, (int, float))
+                and (best_state.best_score < _lsr_floor or _s_after < _lsr_floor)):
+            logger.warning(
+                f"ch{chapter_num} LOW-SCORE ESCALATION: best={best_state.best_score} "
+                f"cur={_s_after} < floor={_lsr_floor} -> whole-chapter rewrite "
+                f"(round {_lsr_done + 1}/{_lsr_max})")
+            if self._low_score_rewrite(chapter_num, task_card, synopsis, world_state):
+                self._low_score_rewrites_used = _lsr_done + 1
+                # 重写成功：返回 None 让 fix loop 下一轮以新稿重新评审
+                return current, current_draft, best_state, _reaction_fix_budget, None
+            logger.warning(
+                f"ch{chapter_num} low-score rewrite yielded no gain "
+                f"(still below {_lsr_floor}) -> terminal routing")
         # CC round-7 P0-1：整章 rewrite 实测会降分（84.2→65.8），默认下线；
         # 只保留 E 场景定点重生，patch 走不通即结束修复循环 → 终态隔离/HALT。
         if not self._allow_whole_rewrite:
@@ -4448,6 +4490,38 @@ class PipelineOrchestrator:
             f"原文章节:\n{novel}"
         )
         return call_llm(prompt, system_prompt="你是资深小说润色编辑，擅长根据审查意见精准改写章节（保持或缩短，不增字）", output_json=False, client=self.refine_router)
+
+    def _low_score_rewrite(self, chapter_num: int, task_card: dict, synopsis: dict,
+                           world_state: dict) -> bool:
+        """A类：低分整章重写——回滚世界状态后，按任务卡整章重新生成并重新评审。
+
+        与 _recover_chapter 的区别：达标线是 fix_threshold（默认60）而非
+        publication_line（88）——低分重写只需把稿子拉回"可修复"区间，
+        后续继续交给 fix loop；只有仍低于 fix_threshold 才视为无改善。
+        """
+        try:
+            self._rollback_world_to(chapter_num - 1)
+            novel = self.writer.generate_full_chapter(
+                task_card, synopsis, None, temperature_override=0.9)
+            self._journal_validated_scenes(chapter_num)
+            novel = self.writer.polish_chapter(novel, task_card, llm_client=self.polish_router)
+            novel = self._ensure_chinese(novel)
+            self.current_novel = novel
+            novel = self._finalize_current_novel(chapter_num)
+            _st = self._stage_review(chapter_num, task_card, synopsis, novel, world_state)
+            _new_score = _st["score"]
+            _floor = float((self._policy or {}).get("low_score_rewrite", {}).get(
+                "floor", int(self._policy.get("fix_threshold", 60))))
+            logger.warning(
+                f"ch{chapter_num} low-score rewrite -> score={_new_score} "
+                f"verdict={_st['verdict']} (floor={_floor})")
+            if isinstance(_new_score, (int, float)) and _new_score >= _floor:
+                self.current_novel = novel
+                self._low_score_rewritten_score = _new_score
+                return True
+        except Exception as e:
+            logger.warning(f"ch{chapter_num} low-score rewrite failed: {e}")
+        return False
 
     def _rollback_world_to(self, prev_chapter: int):
         history = self.session_tree.get_branch_history("main")

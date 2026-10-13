@@ -13,6 +13,13 @@ DEFAULT_POLICY = {
     "publication_line": 88,
     "soft_publication_line": 85,  # CC round-14: 85-87.9 且确定性门全过+无high即放行（人验抽查）
     "fix_threshold": 60,
+    # A类（2026-10-13）：低分整章重写——review 低于 floor（默认=fix_threshold）时，
+    # 不再直接挂人工，先尝试按任务卡整章重写把稿子拉回"可修复"区间继续 fix loop。
+    "low_score_rewrite": {
+        "enabled": True,
+        "max_rounds": 2,
+        "floor": 60,
+    },
     "severity_map": {
         "leak_scaffolding": "hard",
         "truncation": "hard",
