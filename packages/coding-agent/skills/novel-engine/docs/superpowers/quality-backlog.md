@@ -859,3 +859,15 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   6) 场景 1 前置"夜色如墨，浓雾自荒原尽头漫卷而来。"（满足成品断言 B2 zero-scaffolding）
 - 验证：决定性组合（41 文件）980 passed + 1 xfailed；全量 1185 passed + 1 xfailed，0 failed（唯一 pre-existing 已 xfail）
 - pyflakes 全包：0 undefined name（unused import/局部未用等低危警告不计门禁，存量未清）
+
+## ch294-316 批次验收（token 档 STARTER）— 2026-10-13
+- 结果：23/32 COMMITTED，9 FAILED，总耗时 18172.2s（约 5.05h）；无 429/速率限制，token 档 5h 窗口配额够用（ch314 一次 502 被 failover 吸收后 COMMITTED）
+- 新章（294-316，23 章）：19 COMMITTED / 4 FAILED（295、299、304、305）
+- 残留重跑（266/267/282/285/287/290/292/293）：287/290/293 本轮 COMMITTED；266/267/282/285/292 仍 FAILED
+- 失败归因分类：
+  A. review 极低分无自动升级路径（4 章，新主要类别）：292(50.5)/295(54.2)/299(34.2)/304(59.9) — 全部 review 分极低 → NEEDS HUMAN，fix loop 不消费"无具体 issues 的低分"；304 另叠加 [称谓] 裸切硬项（陆烬/李淳）Post-enforce 仍 flagged
+  B. 评审方差（2 章）：282(46.9)/285(70.1) 三评极差>15 复现，CC26/CC27 兜底未完全消除
+  C. 泄漏硬项反复（2 章）：267(86.8，泄漏"接下来要做的"修复后仍差 1.2 分未达 88 线)/305(泄漏"执行任务"反复 2 次 → retries 耗尽)
+  D. 伏笔 beats 未覆盖（1 章）：266 场景 4 反复 length_too_short(282/245 字 < 860) + foreshadow beats unresolved → 3 次 attempt 全 HARD BLOCK
+- 疑似状态机问题：日志多处"无效状态转换: REVIEW → NEEDS_HUMAN (允许: ['PASS','FAIL','COMMIT'])"但 NEEDS_HUMAN 仍被设置——两条路径矛盾，需查 REVIEW 低分时的真实状态流
+- 处置：下批（ch317+）自然重跑 A/B/C/D 四类；ch304 的 [称谓] 裸切与 ch305 泄漏短语、ch266 伏笔覆盖，建议分别单独归因（本批机制信号入 backlog 等任务书）
