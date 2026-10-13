@@ -703,9 +703,11 @@ class PipelineOrchestrator:
             if stage_review.get("review_unstable"):
                 _unstable_upgrade = _unstable_upgrade_eligible(self._policy, score)
                 if _unstable_upgrade:
+                    _lsr_floor = float(((self._policy or {}).get("low_score_rewrite") or {}).get(
+                        "floor", int((self._policy or {}).get("fix_threshold", 60))))
                     logger.warning(
                         f"Chapter {chapter_num} review highly unstable but low score "
-                        f"({score} < {_lsr_floor_u}) -> try whole-chapter rewrite first (A-class upgrade); "
+                        f"({score} < {_lsr_floor}) -> try whole-chapter rewrite first (A-class upgrade); "
                         f"human review only if still unstable/low")
                     verdict = "fail"  # 强制走 low_score_eligible 整章重写路径，不直接挂人工
                 else:
@@ -4684,6 +4686,7 @@ class PipelineOrchestrator:
     def _run_with_retry(self, chapter_num):
         MAX_CHAPTER_RETRIES = int(self.config.get("pipeline", {}).get("max_review_retries", 3))
         last_exc = None
+        replan_used = False
         for attempt in range(MAX_CHAPTER_RETRIES + 1):
             self._attempt_index = attempt
             try:
@@ -4703,9 +4706,33 @@ class PipelineOrchestrator:
                     "-> skip in-process retries, runner gap-continues")
                 return result
             if result.get("quality_replan"):
+                # CC ch295/ch66：WRITE REPLAN 后直接交 runner 意味着"坏任务卡→外部重跑"
+                # 一整轮往返；改为进程内重排一次（绕过 director 缓存重新规划 + 重走 writer），
+                # 限 1 次，仍失败才返回（不再继续烧 retry 配额）。
+                if not replan_used:
+                    replan_used = True
+                    os.environ["NOVEL_DIRECTOR_BYPASS_CACHE_CHAPTER"] = str(chapter_num)
+                    logger.warning(
+                        f"Chapter {chapter_num} in-process replan (limit 1) "
+                        f"scenes={result.get('replan_scene_ids')} reason={result.get('replan_reason')}")
+                    try:
+                        result = self.generate_single_chapter(chapter_num)
+                    except Exception as e2:
+                        logger.error(f"Chapter {chapter_num} in-process replan raised: {e2}")
+                        result = {"success": False, "errors": [f"REPLAN: {e2}"]}
+                    # 重排后统一出口：成功/通过即返回；仍质量重排或失败也返回（限 1 次）
+                    if result.get("quality_replan"):
+                        logger.warning(
+                            f"Chapter {chapter_num} still quality-replan after in-process replan → return")
+                        return result
+                    if result.get("final_gate_blocked") or result.get("quality_gap_continue"):
+                        return result
+                    if result.get("success") or result.get("pending_human_review"):
+                        return result
+                    logger.warning(f"Chapter {chapter_num} in-process replan returned success=False")
+                    return result
                 logger.warning(
-                    f"Chapter {chapter_num} quality-replan requested "
-                    f"(scenes={result.get('replan_scene_ids')}) → skip in-process retries")
+                    f"Chapter {chapter_num} quality-replan after replan → skip in-process retries")
                 return result
             if result.get("success") or result.get("pending_human_review"):
                 return result
