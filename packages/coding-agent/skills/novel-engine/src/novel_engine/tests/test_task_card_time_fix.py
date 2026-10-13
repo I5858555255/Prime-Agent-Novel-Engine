@@ -16,6 +16,7 @@ from novel_engine.agents.chapter_director import ChapterDirector
 
 _INVERTED_TIMES = ["清晨", "午后", "上午", "黄昏"]   # scene3 上午 早于 scene2 午后 → 倒置
 _FIXED_TIMES = ["清晨", "上午", "午后", "黄昏"]      # 单调推进
+_SPAN_TIMES = ["清晨", "午时", "黄昏", "次日晨"]     # scene4 次日晨 超出章级跨度（span=一日）→ 跨日
 
 
 class _FakeLLM:
@@ -121,4 +122,55 @@ def test_generate_task_card_time_inversion_routed_to_timefix(tmp_path):
     assert times == _FIXED_TIMES, f"final card must be time-ordered, got {times}"
     # 终检通过：无 strict 错误（generate_task_card 成功返回即校验通过）
     assert len(scenes) == 4
+    assert director.validate_task_card(card, 1, strict=True) == []
+
+
+class _SpanFakeLLM(_FakeLLM):
+    """跨日 fake：首次 craft 返回跨日时间（次日晨超出章级跨度）；收到时间修正要求后返回当日单调时间。"""
+
+    def chat_completion(self, messages: list[dict], **kwargs: Any) -> dict:
+        user_prompt = ""
+        for m in messages:
+            if m.get("role") == "user":
+                user_prompt = m.get("content", "")
+        self.captured_prompts.append(user_prompt)
+        if "时间修正要求" in user_prompt:
+            self.timefix_prompts.append(user_prompt)
+            body = {"scene_blueprints": self._scenes(_FIXED_TIMES)}
+        elif "生成章级元数据" in user_prompt:
+            body = {
+                "chapter_num": 1, "protagonist_agency_level": "normal",
+                "core_goal": "本章核心目标", "conflicts": {"internal": "内心", "external": "外部"},
+                "emotion_curve": {"start": "起", "middle": "中", "climax": "高", "end": "钩子"},
+                "chapter_hook": "章末钩子", "foreshadow_actions": [],
+                "chapter_events": [{"event_type": "互动", "one_line_summary": "一句摘要",
+                                    "participants": ["C001"], "location": "村口",
+                                    "narrative_time": "清晨", "consequence_state": "结果"}],
+                "state_changes": [], "foreshadow_execution": [],
+                "end_state": {"narrative_position": "末帧", "location": "村口",
+                              "completed_actions": ["完成"], "pending_actions": ["接续"],
+                              "time_marker": "当日"},
+                "timeline_anchor": {"chapter_start_marker": "清晨",
+                                    "max_time_progression": "一日",
+                                    "forbidden_markers": []},
+            }
+        else:  # skeleton / craft（无修正指令）
+            body = {"scene_blueprints": self._scenes(_SPAN_TIMES)}
+        return {"content": json.dumps(body, ensure_ascii=False),
+                "finish_reason": "stop", "_usage": {}}
+
+
+def test_generate_task_card_overnight_span_routed_to_timefix(tmp_path):
+    """跨日 span 错误（超出章级跨度）必须走 call2_timefix，注入时间跨度修正指令后重发。"""
+    director, _ = _build_director(tmp_path)
+    fake = _SpanFakeLLM()
+    director = ChapterDirector(tmp_path, llm_client=fake)
+    card = director.generate_task_card(1)
+    assert fake.timefix_prompts, "overnight-span must trigger a time-fix retry"
+    fix_prompt = fake.timefix_prompts[0]
+    assert "超出章级跨度" in fix_prompt or "章内不得跨日" in fix_prompt, \
+        "retry prompt must carry the span violation detail"
+    scenes = card.get("scene_blueprints", [])
+    times = [s.get("narrative_time") for s in scenes]
+    assert times == _FIXED_TIMES, f"final card must stay within chapter span, got {times}"
     assert director.validate_task_card(card, 1, strict=True) == []

@@ -1210,8 +1210,9 @@ class ChapterDirector:
                            skeleton: list, time_fix_instructions: list[str] | None = None) -> list:
         """Call 2: add craft fields to existing scenes. max_tokens=2000. Matches by scene_num.
 
-        time_fix_instructions: 上一版场景叙事时间倒置的具体错误（detect_task_card_scene_time_inversion
-        的输出），注入 prompt 作为确定性修正指令——无差别重发大概率再次倒置，必须给出针对性要求。
+        time_fix_instructions: 上一版场景叙事时间倒置或超出章级跨度的具体错误
+        （detect_task_card_scene_time_inversion / 章内跨日检查的输出），注入 prompt 作为确定性
+        修正指令——无差别重发大概率再次触发同类错误，必须给出针对性要求。
         """
         self._check_budget(chapter_num)
         scenes_json = json.dumps(skeleton, ensure_ascii=False, indent=2)
@@ -1219,10 +1220,11 @@ class ChapterDirector:
         if time_fix_instructions:
             _time_fix_blk = (
                 "\n## 时间修正要求（必须遵守）\n"
-                "上一版场景的 narrative_time 顺序倒置，以下各条必须修正"
+                "上一版场景的 narrative_time 存在时间顺序倒置或超出章级跨度的问题，以下各条必须修正"
                 "（可改对应场景的 narrative_time，或调整场景顺序；保持4场不变）：\n"
                 + "\n".join(f"- {t}" for t in time_fix_instructions)
-                + "\n修正后场景的叙事时间必须随 scene_num 单调推进（回溯/闪回除外）。\n"
+                + "\n修正后场景的叙事时间必须随 scene_num 单调推进（回溯/闪回除外），"
+                  "且全部落在章级时间跨度内（不得跨日，除非 timeline_anchor 显式允许）。\n"
             )
         prompt = (
             f'基于以下场景骨架，补充每个场景的重字段。必须保持场景数量不变。\n\n'
@@ -1407,7 +1409,9 @@ class ChapterDirector:
             # 分流补发：章级缺失→重发Call3，场景craft缺失→重发Call2，时间倒置→带修正指令重发Call2
             chapter_missing = [e for e in strict_errors if '缺少必填' in e]
             craft_missing = [e for e in strict_errors if '缺少 craft' in e]
-            time_inv = [e for e in strict_errors if '叙事时间' in e and '早于' in e]
+            time_inv = [e for e in strict_errors
+                        if ('叙事时间' in e and '早于' in e)
+                        or '超出章级跨度' in e or '章内不得跨日' in e]
             retry_source = None
             if craft_missing and len(skeleton) == 4:
                 retry_source = 'call2'
@@ -1490,7 +1494,9 @@ class ChapterDirector:
             logger.warning(f'Final validation errors for ch{chapter_num}: {strict_errors[:3]}')
             chapter_missing = [e for e in strict_errors if '缺少必填' in e]
             craft_missing = [e for e in strict_errors if '缺少 craft' in e]
-            time_inv = [e for e in strict_errors if '叙事时间' in e and '早于' in e]
+            time_inv = [e for e in strict_errors
+                        if ('叙事时间' in e and '早于' in e)
+                        or '超出章级跨度' in e or '章内不得跨日' in e]
             retry_source = None
             if craft_missing and len(skeleton) == 4:
                 retry_source = 'call2'
