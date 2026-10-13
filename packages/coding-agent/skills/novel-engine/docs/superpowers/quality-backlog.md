@@ -871,3 +871,29 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   D. 伏笔 beats 未覆盖（1 章）：266 场景 4 反复 length_too_short(282/245 字 < 860) + foreshadow beats unresolved → 3 次 attempt 全 HARD BLOCK
 - 疑似状态机问题：日志多处"无效状态转换: REVIEW → NEEDS_HUMAN (允许: ['PASS','FAIL','COMMIT'])"但 NEEDS_HUMAN 仍被设置——两条路径矛盾，需查 REVIEW 低分时的真实状态流
 - 处置：下批（ch317+）自然重跑 A/B/C/D 四类；ch304 的 [称谓] 裸切与 ch305 泄漏短语、ch266 伏笔覆盖，建议分别单独归因（本批机制信号入 backlog 等任务书）
+
+
+## 反例纪律条款（外部评审 P6-4 缺口1）— 完成 2026-10-13
+- 提交：b6e043624（feat/stability-quality）
+- 内容：orchestrator-boundaries.md 新增"反例纪律"小节——任何新增/修改检测规则必须
+  ①附带反例测试才能合入（round-30 只测正例导致 8 章被误杀的教训）②不靠人工逐条加词续命
+  ③规则变更后跑全量 pytest + pyflakes 全包 0 undefined name。
+- 验证：提交前 pre-commit 检查通过；后续全量 pytest 无新增失败。
+
+## 伏笔权威注册表（外部评审 6.1 缺口2）— 完成 2026-10-13
+- 背景：伏笔编号体系曾有三份各自维护的源（ending_bible.md 文本 / config/foreshadow/registry.json /
+  config/planning/foreshadow_anchors.json），均用 F00X 数字编号，靠人工同步——索引错位根源
+  （ch53/59/63/67/78 曾把 F005 标成 F004）。
+- 改动：
+  1) config/foreshadow/registry.json 升级为权威注册表：每条伏笔新增 fid（稳定语义ID，
+     如 f005_fog_core）+ anchors（从 foreshadow_anchors.json 并入）。
+  2) foreshadow_anchors.json 改为废弃指针（_deprecated=true，不再含 anchors 数据）。
+  3) audit_mid_outline._load_foreshadow_anchors 改读 registry.json，返回 F00X 与 fid 双向
+     解析视图；boundary_note 任一引用均校验到同一实体锚点。
+  4) generate_mid_outline prompt：伏笔时间表显示 fid（F编号），引导新引用优先用 fid。
+  5) memory_health 消费 legacy id，兼容不变。
+- 测试：新增 tests/test_foreshadow_registry.py（5 条：注册表完整性、双向解析、
+  fid/F00X 锚点命中与未命中、旧文件废弃）；audit/memory_health 相关 34 passed。
+- 门禁：pyflakes 全包仅 2 处既有 unused 警告（ab_evaluate.py，非本次引入，非 undefined name）；
+  全量 pytest 待批次内确认无新增失败。
+- 下一步：中纲新批次生成时 boundary_note 优先用 fid；旧 F00X 引用无需迁移（双向兼容）。

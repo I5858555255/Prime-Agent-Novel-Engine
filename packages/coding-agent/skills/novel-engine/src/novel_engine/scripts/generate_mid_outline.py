@@ -125,8 +125,9 @@ def _build_batch_prompt(
     lines.append("【结局与伏笔时间表（仅列与本章范围相关的条目）】")
     for fs in relevant_foreshadows:
         lines.append(
-            f"- {fs.get('id')}：plant@{fs.get('plant_chapter')} resolve@{fs.get('resolve_chapter')} "
-            f"importance={fs.get('importance')}；埋设：{str(fs.get('plant_context'))[:60]}")
+            f"- {fs.get('fid') or fs.get('id')}（{fs.get('id')}）：plant@{fs.get('plant_chapter')} "
+            f"resolve@{fs.get('resolve_chapter')} importance={fs.get('importance')}；"
+            f"埋设：{str(fs.get('plant_context'))[:60]}")
     lines.append("")
     lines.append("【已确认剧情节点（邻近，前后 20 章内）】")
     for n in nearby_nodes:
@@ -153,7 +154,8 @@ def _build_batch_prompt(
     lines.append("ch<章节号>|<core_event>|<characters 逗号分隔>|<boundary_note 或 无>")
     lines.append("示例：ch21|陈老根带陆烬首次进县城赶集，偶遇猎户老周|C001,C002|无")
     lines.append("其中 boundary_note 仅在接近伏笔回收/触及 forbidden 边界时写"
-                 "'需人工确认：<原因>'，否则写'无'。")
+                 "'需人工确认：<原因>'，否则写'无'。原因里涉及伏笔时，"
+                 "优先用上方时间表的 fid（如 f005_fog_core）标注，legacy F 编号（F005）也可，均会被校验。")
     lines.append("")
     lines.append("请为以下章节逐一输出（每章一行，共 %d 行）：" % len(chapters))
     lines.append("".join(f"ch{c}|" for c in chapters))

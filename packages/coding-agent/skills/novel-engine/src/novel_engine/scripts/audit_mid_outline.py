@@ -201,17 +201,35 @@ def _coverage_audit(author_intent: str, rules: list[dict], vid: str) -> tuple[li
 
 
 def _load_foreshadow_anchors() -> dict:
-    p = ROOT / "config" / "planning" / "foreshadow_anchors.json"
+    """伏笔锚点视图：从权威注册表 config/foreshadow/registry.json 读取。
+
+    返回 {引用标识: [锚点词,...]}——legacy F 编号（F001）与稳定语义 fid
+    （f001_royal_heirlooms）都作为键，boundary_note 里任一引用均可解析到
+    同一实体的锚点（双向解析，防编号错位）。旧文件 foreshadow_anchors.json
+    已并入注册表并废弃（见 registry.json _comment）。
+    """
+    p = ROOT / "config" / "foreshadow" / "registry.json"
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8")).get("anchors", {})
+        data = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    out: dict[str, list[str]] = {}
+    for fs in data.get("foreshadows", []):
+        if not isinstance(fs, dict):
+            continue
+        anchors = fs.get("anchors") or []
+        if fs.get("id"):
+            out[fs["id"]] = anchors
+        if fs.get("fid"):
+            out[fs["fid"]] = anchors
+    return out
 
 
 def _check_f_anchor(note: str, joined: str, anchors: dict) -> str | None:
-    """boundary_note 含 F00X → 校验该编号锚点词是否命中中纲文本；不匹配返回原因。"""
+    """boundary_note 含伏笔引用（F00X 或 fid）→ 校验该实体锚点词是否命中
+    中纲文本；不匹配返回原因。F00X 与 fid 双向解析到同一实体（权威注册表）。"""
     if not anchors:
         return None
     for fid, words in anchors.items():
