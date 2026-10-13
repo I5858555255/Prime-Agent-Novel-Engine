@@ -28,6 +28,19 @@ from novel_engine.pipeline.chapter_journal import (
     load_authoritative_scenes, authoritative_completed_scene_ids,
     snapshot_journal, restore_journal,
 )
+
+
+def _unstable_upgrade_eligible(policy: dict | None, score) -> bool:
+    """ch292 归因：review_unstable 且低分（0<score<floor）且 A 类整章重写启用时，
+    先给一次整章重写预算（重写改变文本后评审噪声可能收敛，ch299 已验证），
+    而非直接强制人工——只有高分 unstable 或升级未启用才走人工复核。"""
+    _cfg = (policy or {}).get("low_score_rewrite") or {}
+    _floor = float(_cfg.get("floor", int((policy or {}).get("fix_threshold", 60))))
+    return (
+        bool(_cfg.get("enabled", True))
+        and isinstance(score, (int, float))
+        and 0 < score < _floor
+    )
 from novel_engine.pipeline.event_ledger import (
     append_chapter_events, recent_event_block,
     append_end_state, latest_end_state, end_state_anchor_block,
@@ -683,25 +696,37 @@ class PipelineOrchestrator:
 
             # CC round-8 P0-3：三评极差>15 → 评审本身不可靠，无论中位数是否过线都不自动提交，
             # 落 draft 强制人工复核（不做整章重采，重采无法消除评审噪声）。
+            # 2026-10-13 ch292 归因补充：低分 unstable 章（如 ch292，5258 字严重短于 7310 下限）
+            # 先给一次 A 类整章重写预算——重写改变文本后评审噪声可能收敛（ch299 已验证 rewrite→fix
+            # 有效），这与"重采"（同文重评）不同；只有高分 unstable（score>=60）或升级未启用时
+            # 才直接强制人工，避免绕过已验证有效的修复路径。
             if stage_review.get("review_unstable"):
-                logger.error(
-                    f"Chapter {chapter_num} review highly unstable (median-of-3 range>15, "
-                    f"score={score}) -> force human review, no commit")
-                try:
-                    _dp = self.root / "chapters" / "draft" / f"chapter_{chapter_num}.txt"
-                    _dp.parent.mkdir(parents=True, exist_ok=True)
-                    _dp.write_text(self._novel_string(), encoding="utf-8")
-                except Exception as _de:
-                    logger.warning(f"save unstable draft failed: {_de}")
-                result["success"] = False
-                result["published"] = False
-                result["score"] = score
-                result["review_unstable"] = True
-                result["pending_human_review"] = True
-                result["human_review_note"] = (
-                    f"score={score} 三评极差>15，评审极不稳定，强制人工复核（不自动重采）")
-                self._flag_for_human(chapter_num, score, "review highly unstable (median-of-3 range>15)")
-                return result
+                _unstable_upgrade = _unstable_upgrade_eligible(self._policy, score)
+                if _unstable_upgrade:
+                    logger.warning(
+                        f"Chapter {chapter_num} review highly unstable but low score "
+                        f"({score} < {_lsr_floor_u}) -> try whole-chapter rewrite first (A-class upgrade); "
+                        f"human review only if still unstable/low")
+                    verdict = "fail"  # 强制走 low_score_eligible 整章重写路径，不直接挂人工
+                else:
+                    logger.error(
+                        f"Chapter {chapter_num} review highly unstable (median-of-3 range>15, "
+                        f"score={score}) -> force human review, no commit")
+                    try:
+                        _dp = self.root / "chapters" / "draft" / f"chapter_{chapter_num}.txt"
+                        _dp.parent.mkdir(parents=True, exist_ok=True)
+                        _dp.write_text(self._novel_string(), encoding="utf-8")
+                    except Exception as _de:
+                        logger.warning(f"save unstable draft failed: {_de}")
+                    result["success"] = False
+                    result["published"] = False
+                    result["score"] = score
+                    result["review_unstable"] = True
+                    result["pending_human_review"] = True
+                    result["human_review_note"] = (
+                        f"score={score} 三评极差>15，评审极不稳定，强制人工复核（不自动重采）")
+                    self._flag_for_human(chapter_num, score, "review highly unstable (median-of-3 range>15)")
+                    return result
 
             # A类：低分整章重写——verdict="fail"（score 低于 fix_threshold）且启用时
             # 也进入修复路径（fix loop 内低分升级为整章重写），不再直接挂人工。

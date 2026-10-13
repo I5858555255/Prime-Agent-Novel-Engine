@@ -918,3 +918,33 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   1) ch292 三评方差复现：repro 单跑查三票形态，评估是否需要异构 judge 或锚定评分
   2) ch295 时间倒置：查 task_card 时间验证失败后的重试路径，是否缺确定性修复指令
   3) ch266 伏笔 beats / ch267 泄漏差 1.3 分：已有归因，自然重跑观察
+
+
+## 下批次待办修复：ch292 三评方差 / ch295 时间倒置 — 2026-10-13
+- 归因结论（真机数据）：
+  - ch292（FAILED 42.65）：评审 4 票 [37.8,29.0,47.5,57.0] 不收敛（28 分跨度），
+    draft 文本仅 5258 字（目标下限 7310）——评审发散与严重短章客观缺陷强相关。
+    流程缺口：pipeline_orchestrator review_unstable 分支在 A 类低分升级之前 return，
+    低分 unstable 章被硬出口人工拦截，绕过已验证有效的整章重写路径（ch299 rewrite→fix 有效）。
+    对照组 ch304：初判 range=21.3，补票后 midpair_range=7.10 converged=True → COMMITTED，
+    证明 CC26/27 缓坡补票机制有判别力，ch292 属真发散而非机制失效。
+  - ch295（FAILED directing_error）：detect_task_card_scene_time_inversion 能检测倒置
+    （CC round-30），但 strict 分流只处理字段缺失（craft_missing→call2、chapter_missing→call3
+    无差别重发），时间倒置语义错误无针对性修复指令 → 重发大概率再次倒置 → 重试耗尽。
+- 修复 1（unstable 低分接入 A 类升级）：
+  - 新增模块级纯函数 _unstable_upgrade_eligible(policy, score)：unstable 且 0<score<floor
+    且 low_score_rewrite 启用 → 强制 verdict="fail" 继续走 low_score_eligible 整章重写，
+    仅高分（>=floor）或升级未启用时才直接 force human（保留 CC round-8 原设计）。
+  - 新增 tests/test_unstable_low_score_upgrade.py（6 条：默认升级/高分不升级/禁用保持人工/
+    score<=0 不触发/自定义 floor）。
+- 修复 2（时间倒置确定性修复指令）：
+  - _call_scene_craft 新增 time_fix_instructions 参数，注入"时间修正要求"块
+    （逐条列出倒置场景 + 要求随 scene_num 单调推进），不再无差别重发。
+  - generate_task_card / generate_task_card_cached 的 strict 分流新增 call2_timefix 分支
+    （elif time_inv：以时间倒置错误为指令重发 craft）。
+  - 新增 tests/test_task_card_time_fix.py（3 条：指令注入/默认无块/真实分流链路
+    倒置→timefix 重发→单调时间终检通过）。
+- 验收：pyflakes 全包 0 undefined name；全量 pytest 1205 passed + 1 xfailed
+  （唯一 xfail 为已知 pre-existing，1196+9 新增，无回归）。
+- 剩余待办：ch266（D 类伏笔 beats）/ ch267（C 类泄漏 84.7 差 1.3）自然重跑观察，
+  随下一批次（ch317+ 中纲生成后）覆盖。

@@ -1207,16 +1207,30 @@ class ChapterDirector:
             prompt += f'\n\n修正要求：必须正好4个场景，当前{len(bps)}个。{advice}。'
 
     def _call_scene_craft(self, chapter_num: int, context: dict, prior_events_block: str,
-                           skeleton: list) -> list:
-        """Call 2: add craft fields to existing scenes. max_tokens=2000. Matches by scene_num."""
+                           skeleton: list, time_fix_instructions: list[str] | None = None) -> list:
+        """Call 2: add craft fields to existing scenes. max_tokens=2000. Matches by scene_num.
+
+        time_fix_instructions: 上一版场景叙事时间倒置的具体错误（detect_task_card_scene_time_inversion
+        的输出），注入 prompt 作为确定性修正指令——无差别重发大概率再次倒置，必须给出针对性要求。
+        """
         self._check_budget(chapter_num)
         scenes_json = json.dumps(skeleton, ensure_ascii=False, indent=2)
+        _time_fix_blk = ""
+        if time_fix_instructions:
+            _time_fix_blk = (
+                "\n## 时间修正要求（必须遵守）\n"
+                "上一版场景的 narrative_time 顺序倒置，以下各条必须修正"
+                "（可改对应场景的 narrative_time，或调整场景顺序；保持4场不变）：\n"
+                + "\n".join(f"- {t}" for t in time_fix_instructions)
+                + "\n修正后场景的叙事时间必须随 scene_num 单调推进（回溯/闪回除外）。\n"
+            )
         prompt = (
             f'基于以下场景骨架，补充每个场景的重字段。必须保持场景数量不变。\n\n'
             f'## 场景骨架\n{scenes_json}\n\n'
             f'## 本卷禁止事项（场景内容不得违反）：{json.dumps(context.get("forbidden_list") or [], ensure_ascii=False)}\n'
             f'{self._TEACH_BOUNDARY_HINT}'
             f'{_render_outline_mandate(context)}\n\n'
+            f'{_time_fix_blk}\n'
             '## 输出 JSON（只含 scene_blueprints 数组，追加以下字段到每个场景）：\n'
             '{\n'
             '  "scene_blueprints": [\n'
@@ -1390,9 +1404,10 @@ class ChapterDirector:
         strict_errors = self.validate_task_card(task_card, chapter_num, strict=True)
         if strict_errors:
             logger.warning(f'Final validation errors for ch{chapter_num}: {strict_errors[:3]}')
-            # 分流补发：章级缺失→重发Call3，场景craft缺失→重发Call2
+            # 分流补发：章级缺失→重发Call3，场景craft缺失→重发Call2，时间倒置→带修正指令重发Call2
             chapter_missing = [e for e in strict_errors if '缺少必填' in e]
             craft_missing = [e for e in strict_errors if '缺少 craft' in e]
+            time_inv = [e for e in strict_errors if '叙事时间' in e and '早于' in e]
             retry_source = None
             if craft_missing and len(skeleton) == 4:
                 retry_source = 'call2'
@@ -1413,6 +1428,20 @@ class ChapterDirector:
                     task_card = _normalize_placeholder_characters(task_card)
                 except Exception as e2:
                     logger.error(f'Retry call 3 failed: {e2}')
+                    retry_source = None
+            elif time_inv and len(skeleton) == 4:
+                # CC round-34：时间倒置是语义错误，无差别重发大概率再次倒置；
+                # 必须注入确定性修正指令（具体倒置场景+时序要求）后重发 Call2。
+                retry_source = 'call2_timefix'
+                logger.info(f'Re-sending call 2 (craft) with time-order fix for ch{chapter_num}: {time_inv[:3]}')
+                try:
+                    skeleton = self._call_scene_craft(
+                        chapter_num, context, prior_events_block, skeleton,
+                        time_fix_instructions=time_inv)
+                    task_card = self._merge_task_cards(skeleton, meta, chapter_num)
+                    task_card = _normalize_placeholder_characters(task_card)
+                except Exception as e2:
+                    logger.error(f'Retry call 2 (timefix) failed: {e2}')
                     retry_source = None
             if retry_source:
                 strict_errors = self.validate_task_card(task_card, chapter_num, strict=True)
@@ -1461,6 +1490,7 @@ class ChapterDirector:
             logger.warning(f'Final validation errors for ch{chapter_num}: {strict_errors[:3]}')
             chapter_missing = [e for e in strict_errors if '缺少必填' in e]
             craft_missing = [e for e in strict_errors if '缺少 craft' in e]
+            time_inv = [e for e in strict_errors if '叙事时间' in e and '早于' in e]
             retry_source = None
             if craft_missing and len(skeleton) == 4:
                 retry_source = 'call2'
@@ -1481,6 +1511,18 @@ class ChapterDirector:
                     task_card = _normalize_placeholder_characters(task_card)
                 except Exception as e2:
                     logger.error(f'Retry call 3 failed: {e2}')
+                    retry_source = None
+            elif time_inv and len(skeleton) == 4:
+                retry_source = 'call2_timefix'
+                logger.info(f'Re-sending call 2 (craft) with time-order fix for ch{chapter_num}: {time_inv[:3]}')
+                try:
+                    skeleton = self._call_scene_craft(
+                        chapter_num, context, prior_events_block, skeleton,
+                        time_fix_instructions=time_inv)
+                    task_card = self._merge_task_cards(skeleton, meta, chapter_num)
+                    task_card = _normalize_placeholder_characters(task_card)
+                except Exception as e2:
+                    logger.error(f'Retry call 2 (timefix) failed: {e2}')
                     retry_source = None
             if retry_source:
                 strict_errors = self.validate_task_card(task_card, chapter_num, strict=True)
