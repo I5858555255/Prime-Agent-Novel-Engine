@@ -4590,6 +4590,22 @@ class PipelineOrchestrator:
             self._journal_validated_scenes(chapter_num)
             novel = self.writer.polish_chapter(novel, task_card, llm_client=self.polish_router)
             novel = self._ensure_chinese(novel)
+            # G1: A类整章重写产物先过拉丁复检——整句英文或拉丁泄漏视为无效重写（不采纳），
+            # 与修复D（scene regen 出口拦截）同一检测函数，覆盖 generate_full_chapter 直出路径。
+            try:
+                from novel_engine.quality.latin_leak_gate import (
+                    detect_latin_leak, detect_english_sentences)
+                _txt_l = self._novel_string(novel)
+                _leak_l = detect_latin_leak(_txt_l)
+                if _leak_l["has_leak"]:
+                    _sent_l = detect_english_sentences(_txt_l)
+                    logger.warning(
+                        f"ch{chapter_num} low-score rewrite discarded: latin leak "
+                        f"tokens={_leak_l['leaked_tokens'][:6]} "
+                        f"english_sentence={_sent_l['has_english_sentence']}")
+                    return False
+            except Exception as _e_l:
+                logger.warning(f"ch{chapter_num} low-score rewrite latin check skipped: {_e_l}")
             self.current_novel = novel
             novel = self._finalize_current_novel(chapter_num)
             _st = self._stage_review(chapter_num, task_card, synopsis, novel, world_state)
