@@ -1191,6 +1191,24 @@ def _run_final_precommit_gate(self, chapter_num, task_card, final_text):
     if "halfwidth_punct" in repairable:
         repaired, _ = fg.normalize_halfwidth_punctuation(repaired)
     if "punctuation" in repairable:
+        # 修复E（ch370 归因）：先零 LLM 确定性断句（每45字硬边界插句号，超长无句读段
+        # 也能修），残余段再走 LLM 仅插标点——旧逻辑直接上 LLM，213/248 字符超长
+        # 流水段连"仅插标点"都校验不过，最终 9/13 修完剩 4 段硬阻断。
+        try:
+            _z19, _zs19 = _ph19.repair_text_punctuation(repaired)
+            if _zs19.get("residual_unhealthy", 1) == 0:
+                repaired = _z19
+                logger.info(f"Final gate ch{chapter_num}: zero-LLM deterministic "
+                            f"punct split resolved all run-on paras "
+                            f"({_zs19.get('changed_paragraphs', 0)} paras, "
+                            f"{_zs19.get('inserts', 0)} pauses)")
+            elif _z19 != repaired:
+                repaired = _z19
+                logger.info(f"Final gate ch{chapter_num}: zero-LLM punct split resolved "
+                            f"partially, {_zs19.get('residual_unhealthy')} paras remain "
+                            f"-> LLM punct repair fallback")
+        except Exception as _ze19:
+            logger.warning(f"Final gate zero-LLM punct split error ch{chapter_num}: {_ze19}")
         paras = repaired.split("\n")
         _bad_infos = _ph19.check_text_punctuation(repaired) or []
         _targets = [info.get("para_index") for info in _bad_infos]
