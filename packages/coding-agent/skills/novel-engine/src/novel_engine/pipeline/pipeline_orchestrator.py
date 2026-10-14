@@ -2486,25 +2486,82 @@ class PipelineOrchestrator:
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
     ) -> "SceneOutput":
-        """Regenerate a single scene by id, injecting negative examples into prompt."""
+        """Regenerate a single scene by id, injecting negative examples into prompt.
+
+        出口硬拦（修复D，ch325 归因）：latin_leak_gate 只在主流程对原始场景跑一次，
+        density/punct/continuity/scope 等后续通道的重生产物不再复检英文——ch325 的
+        859 处英文正是经这些 regen 通道进入最终稿、绕过 latin 门直进 final gate BLOCK。
+        这里在统一重生出口拦截：产物含拉丁泄漏（整句=语言跑飞、残片=混入）→ 携带对应
+        directive 重试 1 次；重试成功返回干净场景，仍泄漏则记录 hard（final gate 兜底
+        隔离），不改变既有异常控制流。
+        """
+        from novel_engine.quality import latin_leak_gate as _llg_d
         bps = task_card.get("scene_blueprints", [])
         bp = next((b for b in bps if int(b.get("scene_num", 0) or 0) == scene_id), None)
         if bp is None:
             bp = {"scene_num": scene_id, "goal": "", "location": "", "characters": [], "beats": []}
         synopsis_text = (getattr(self, "_current_synopsis_text", "") or "")
-        try:
+
+        def _gen(_fix=None, _neg=None, _fp=None, _pp=None):
             return self.writer.generate_scene(
-                task_card, bp, synopsis_text, negative_examples=negative_examples,
+                task_card, bp, synopsis_text,
+                negative_examples=_neg if _neg is not None else negative_examples,
                 all_blueprints=bps, temperature_override=temperature_override,
-                fix_directive=fix_directive,
-                frequency_penalty=frequency_penalty, presence_penalty=presence_penalty,
+                fix_directive=_fix if _fix is not None else fix_directive,
+                frequency_penalty=_fp if _fp is not None else frequency_penalty,
+                presence_penalty=_pp if _pp is not None else presence_penalty,
             )
+
+        try:
+            ns = _gen()
         except Exception as e:
             logger.error(f"Scene {scene_id} regeneration failed: {e}")
             raise SceneUnrecoverableError(
                 f"Scene {scene_id} regeneration failed: {e}",
                 chapter=task_card.get("chapter_num"), scene_id=scene_id,
             )
+        # 出口拉丁硬拦：任何 regen 通道的产物若再含英文，带语言 directive 重试 1 次
+        try:
+            _txt = getattr(ns, "scene_text", "") or ""
+            _leak = _llg_d.detect_latin_leak(_txt)
+            if not _leak["has_leak"]:
+                return ns
+            _sent = _llg_d.detect_english_sentences(_txt)
+            if _sent["has_english_sentence"]:
+                _d = ("本场景整段输出了英文句子（示例：" + (_sent["sample"] or "") + "）。"
+                      "这是模型语言跑飞，本场景必须整体重写为纯中文：正文 100% 中文，"
+                      "禁止任何英文字母、英文单词、英文句子与拉丁字符，专有名词一律用"
+                      "中文或约定译名；不得改变剧情与情节点。")
+                _ne = [(_sent["sample"] or "The purple fog pressed against the outside of his body"),
+                       "（正文整段英文，严禁——必须整体重写为中文）"]
+            else:
+                _d = ("正文出现了英文字母/英文单词，这在纯中文古风里是严重错误。重写本场景时"
+                      "严禁出现任何英文字母、英文单词或拉丁字符，正文必须全部为中文，"
+                      "专有名词也一律用中文或约定译名；不得改变剧情与情节点。")
+                _ne = ["he decision 不对外透露（正文混入英文残片，严禁）"]
+            logger.warning(
+                f"Scene {scene_id} regen output leaked latin "
+                f"({_leak['leaked_tokens'][:5]}) -> language retry")
+            try:
+                ns2 = _gen(_fix=_d, _neg=_ne, _fp=0.3, _pp=0.3)
+            except Exception as _e2:
+                logger.warning(f"Scene {scene_id} language retry failed: {_e2}")
+                ns2 = None
+            if ns2 is not None and not _llg_d.detect_latin_leak(
+                    getattr(ns2, "scene_text", "") or "")["has_leak"]:
+                return ns2
+            _still = _llg_d.detect_english_sentences(getattr(ns2, "scene_text", "") or "")
+            hard = (f"[非中文] 场景{scene_id} 重生产物含整段英文（样例="
+                    f"{_still['sample'] or (getattr(ns2, 'scene_text', '') or '')[:80]}）"
+                    if _still["has_english_sentence"]
+                    else f"[非中文] 场景{scene_id} 重生产物仍含拉丁字符 "
+                         f"{_llg_d.detect_latin_leak(getattr(ns2, 'scene_text', '') or '')['leaked_tokens'][:6]}")
+            self._last_deterministic_issues = getattr(self, "_last_deterministic_issues", []) + [hard]
+            logger.error(f"Scene {scene_id} regen leaked latin twice -> hard (final gate will block)")
+            return ns2 if ns2 is not None else ns
+        except Exception as _ee:
+            logger.warning(f"Scene {scene_id} latin exit-check skipped: {_ee}")
+            return ns
 
     def _cc25_rescue_scene_l2l3(
         self,
