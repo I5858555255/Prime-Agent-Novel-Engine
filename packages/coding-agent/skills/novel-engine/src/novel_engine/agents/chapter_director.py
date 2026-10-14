@@ -1225,6 +1225,10 @@ class ChapterDirector:
                 + "\n".join(f"- {t}" for t in time_fix_instructions)
                 + "\n修正后场景的叙事时间必须随 scene_num 单调推进（回溯/闪回除外），"
                   "且全部落在章级时间跨度内（不得跨日，除非 timeline_anchor 显式允许）。\n"
+                + "若某场景在故事时间上早于前序场景且确属回忆/闪回/倒叙，必须在其 "
+                  "narrative_time 前加“回忆/先前”等前缀（如“回忆·午后”），以便校验按"
+                  "回溯处理；若不属于回溯，必须重排场景顺序使叙事时间随 scene_num 单调"
+                  "递增。禁止仅修改 narrative_time 文本而不改变场景顺序关系。\n"
             )
         prompt = (
             f'基于以下场景骨架，补充每个场景的重字段。必须保持场景数量不变。\n\n'

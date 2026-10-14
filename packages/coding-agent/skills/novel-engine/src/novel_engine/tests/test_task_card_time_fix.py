@@ -101,6 +101,20 @@ def test_craft_injects_time_fix_instructions(tmp_path):
     assert "随 scene_num 单调推进" in last
 
 
+def test_craft_timefix_includes_backref_label_guidance(tmp_path):
+    """修复F（ch394）：timefix 指令必须含回溯标注指引——闪回场景须加"回忆/先前"前缀，
+    非回溯必须重排场景顺序，禁止仅改 narrative_time 文本。"""
+    director, fake = _build_director(tmp_path)
+    ctx, prior = director._build_shared_context(1)
+    skeleton = fake._scenes(_INVERTED_TIMES)
+    time_inv = ["场景3 叙事时间「午后」早于前序场景「当夜」，章内时间顺序倒置（当夜 → 午后），请按故事时序重排场景或修正 narrative_time"]
+    director._call_scene_craft(1, ctx, prior, skeleton, time_fix_instructions=time_inv)
+    last = fake.captured_prompts[-1]
+    assert "回忆/先前" in last, "timefix must guide flashback prefix labeling"
+    assert "重排场景顺序" in last, "timefix must require reordering for non-flashback"
+    assert "禁止仅修改 narrative_time 文本" in last, "timefix must forbid label-only edits"
+
+
 def test_craft_without_time_fix_no_block(tmp_path):
     """time_fix_instructions 为 None 时 prompt 不含修正块（默认路径不变）。"""
     director, fake = _build_director(tmp_path)
