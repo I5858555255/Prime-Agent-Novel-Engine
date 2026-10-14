@@ -570,6 +570,12 @@ def _check_foreshadow_coverage(scene_text: str, beat_text: str) -> tuple[bool, s
     if not has_abnormal:
         return False, f"abnormal_object({abnormal_hits[:2]}) not in scene_text"
 
+    # 条件2 前置：R15-1 婴儿篇收紧仅适用于 beat 明确要求婴儿反应的伏笔。
+    # 普通章伏笔（beat 不含婴儿反应词，如"旗号金纹与古字异象产生视觉共振"）
+    # 异常对象命中即判覆盖，防止婴儿篇双条件规则外溢到非婴儿场景（ch426 根因）。
+    if not infant_reaction_from_beat:
+        return True, f"abnormal={abnormal_hits[:2]} non-infant-beat keyword pass"
+
     # 条件2：scene_text 中婴儿主体附近有婴儿反应词
     # 婴儿主体候选词
     _INFANT_SUBJECTS = frozenset({"陆烬", "婴儿", "婴孩", "襁褓", "娃", "他"})

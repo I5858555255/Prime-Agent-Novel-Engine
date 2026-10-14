@@ -188,3 +188,43 @@ def test_scene_check_different_scene_not_confused():
     scene2_text = "井边空无一人，陈老根打水。陆烬安静坐着。"
     passed, missing = check_scene_must_cover_beats(scene2_text, beats, scene_id=2)
     assert passed is False
+
+
+# ── ch426 回归：普通章伏笔 beat 无婴儿反应词，异常对象命中即覆盖 ───────────
+NON_INFANT_BEAT = "[F001] 旗号金纹与古字异象产生视觉共振"
+
+
+def test_non_infant_beat_abnormal_hit_is_covered():
+    # 普通章（非婴儿篇）F001 伏笔：场景出现"异象"，但无婴儿/反应词。
+    # R15-1 婴儿篇双条件不得外溢——异常对象命中即判覆盖（ch426 根因回归）。
+    text = "考院前旗号猎猎，陆烬抬眼，金纹与古字在日光下浮起一层异象。"
+    covered, reason = _check_foreshadow_coverage(text, NON_INFANT_BEAT)
+    assert covered is True, f"Expected covered, got reason={reason}"
+    assert "non-infant-beat" in reason
+
+
+def test_non_infant_beat_abnormal_missing_still_miss():
+    # 异常对象词未在场景出现时仍判 miss（条件1 不受影响）
+    text = "考院前旗号猎猎，陆烬抬眼望向长街尽头。"
+    covered, reason = _check_foreshadow_coverage(text, NON_INFANT_BEAT)
+    assert covered is False, f"Expected MISS, got reason={reason}"
+    assert "abnormal_object" in reason
+
+
+def test_non_infant_beat_scene_must_cover_passes():
+    beats = [
+        {"scene_num": 2, "beat_text": NON_INFANT_BEAT,
+         "category": "foreshadow", "foreshadow_id": "F001"},
+    ]
+    scene_text = "考院前旗号猎猎，陆烬抬眼，金纹与古字在日光下浮起一层异象。"
+    passed, missing = check_scene_must_cover_beats(scene_text, beats, scene_id=2)
+    assert passed is True
+    assert missing == []
+
+
+def test_infant_beat_still_requires_reaction_even_with_abnormal():
+    # 婴儿篇 beat（含反应词"侧头"）双条件收紧必须保留：有异常词但无婴儿反应仍 miss
+    text = "井底泛起浊气。陆烬安静地站在井边看着。"
+    covered, reason = _check_foreshadow_coverage(text, BEAT)
+    assert covered is False, f"Expected MISS, got reason={reason}"
+    assert "infant_reaction" in reason
