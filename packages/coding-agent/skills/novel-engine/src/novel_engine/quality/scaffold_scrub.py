@@ -14,7 +14,7 @@ FIELD_WORDS = {
     "scene_id", "scene", "title", "content", "json", "schema", "validate",
     "density", "coverage", "raw", "gap", "chapter_id", "outline",
     "director", "writer", "reviewer", "polish", "refine", "failover",
-    "token", "prompt", "api", "llm",
+    "token", "prompt", "api", "llm", "hook", "chapter_hook",
 }
 WHITELIST = {"iphone", "nba", "wifi", "app", "ai", "dna", "ok"}
 
