@@ -216,8 +216,8 @@ async def main_async(argv: list[str] | None = None) -> int:
                 succeeded, len(results), failed, total_elapsed)
     for r in results:
         flag = "OK" if r.get("success") else "FAIL"
-        logger.info("  [%s] chapter %d — score=%s elapsed=%.1fs",
-                    flag, r["chapter"], r.get("score"), r.get("elapsed_s", 0))
+        logger.info("  [%s] chapter %s — score=%s elapsed=%.1fs",
+                    flag, r.get("chapter", "?"), r.get("score"), r.get("elapsed_s", 0))
     logger.info("Log: %s", log_path)
     return 0 if failed == 0 else 1
 

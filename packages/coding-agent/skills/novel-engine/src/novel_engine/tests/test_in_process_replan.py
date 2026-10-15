@@ -78,3 +78,38 @@ def test_no_replan_keeps_single_pass():
     result = PipelineOrchestrator._run_with_retry(stub, 326)
     assert stub.calls == 1
     assert result.get("success") is True
+
+
+class _StubOrchestratorRaiseOnSecond:
+    """首次 WRITE REPLAN、第二次生成抛异常：验证 replan 异常出口的 result 结构。
+
+    对应 run_496 ch370 收尾 KeyError 根因：in-process replan 的第二次
+    generate_single_chapter 抛异常时，旧代码构造 {"success": False, "errors": [...]}
+    缺 "chapter" key，导致 run_volume SUMMARY 后逐条明细打印 r["chapter"] 崩溃。
+    """
+
+    def __init__(self):
+        self.calls = 0
+        self.config = {}
+        self._attempt_index = 0
+
+    def generate_single_chapter(self, chapter_num: int) -> dict:
+        self.calls += 1
+        if self.calls == 1:
+            return {"quality_replan": True, "replan_scene_ids": [4],
+                    "replan_reason": "density_block"}
+        raise RuntimeError("'str' object has no attribute 'get'")
+
+    def _record_slo_failure(self, chapter_num: int, reason: str) -> None:
+        self.slo_failures = getattr(self, "slo_failures", []) + [(chapter_num, reason)]
+
+
+def test_replan_exception_result_keeps_chapter_key():
+    """replan 二次生成抛异常 → 返回 result 必须含 "chapter"（run_volume 明细打印依赖）。"""
+    stub = _StubOrchestratorRaiseOnSecond()
+    os.environ.pop("NOVEL_DIRECTOR_BYPASS_CACHE_CHAPTER", None)
+    result = PipelineOrchestrator._run_with_retry(stub, 370)
+    assert stub.calls == 2, "replan second pass raised -> must return (limit 1)"
+    assert result.get("chapter") == 370, "replan exception result must carry chapter key"
+    assert result.get("success") is False
+    assert any(str(e).startswith("REPLAN:") for e in result.get("errors", []))

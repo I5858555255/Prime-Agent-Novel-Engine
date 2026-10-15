@@ -4791,8 +4791,10 @@ class PipelineOrchestrator:
                     try:
                         result = self.generate_single_chapter(chapter_num)
                     except Exception as e2:
-                        logger.error(f"Chapter {chapter_num} in-process replan raised: {e2}")
-                        result = {"success": False, "errors": [f"REPLAN: {e2}"]}
+                        import traceback as _tb2
+                        logger.error(f"Chapter {chapter_num} in-process replan raised: {e2}\n{_tb2.format_exc()}")
+                        result = {"chapter": chapter_num, "success": False,
+                                  "errors": [f"REPLAN: {e2}"]}
                     # 重排后统一出口：成功/通过即返回；仍质量重排或失败也返回（限 1 次）
                     if result.get("quality_replan"):
                         logger.warning(
