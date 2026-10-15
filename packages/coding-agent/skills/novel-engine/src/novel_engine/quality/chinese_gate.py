@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 # 检测模式：任意连续拉丁字母即判违规
 _LATIN_RE = re.compile(r"[A-Za-z]+")
 
+# 中文借用词豁免：拉丁字母串紧跟中文量词/名词单字（V字形/U型/T恤/X光等）
+# 视为中文借用表达，不算英文混入；孤立拉丁词不受豁免。
+_BORROW_SUFFIX_RE = re.compile(r"([A-Za-z]+)[字型领式恤光]")
+
 
 def _load_whitelist(root: Path) -> set[str]:
     """加载 allowed_latin.json 白名单，默认空集。"""
@@ -35,9 +39,19 @@ def detect_latin_leak(text: str, whitelist: Optional[set[str]] = None) -> list[s
     """
     if not text:
         return []
-    words = _LATIN_RE.findall(text)
     ws = whitelist or set()
-    return [w for w in words if w not in ws]
+    leaked: list[str] = []
+    for m in _LATIN_RE.finditer(text):
+        w = m.group(0)
+        if w in ws:
+            continue
+        # 借用词豁免：该拉丁词原文位置紧跟中文借用后缀（V字形/U型/T恤/X光）
+        # 仅豁免紧邻位置，不影响文本中同拼写的孤立拉丁词。
+        end = m.end()
+        if end < len(text) and text[end] in "字型领式恤光":
+            continue
+        leaked.append(w)
+    return leaked
 
 
 def is_chinese_clean(text: str, whitelist: Optional[set[str]] = None) -> bool:
@@ -69,10 +83,13 @@ def fix_latin_leak(
 
     for attempt in range(max_retries + 1):
         try:
+            leak_list = "、".join(leaked)
             prompt = (
                 "以下中文网络小说正文里混入了英文/拉丁字母片段（如 Scene、steady 等）。"
-                "请将它们全部改写为通顺、符合语境的中文，保持剧情人物文风不变。"
-                "只输出修正后的完整正文，不要任何解释或注释：\n\n" + text
+                f"本次必须处理的违规拉丁片段包括：{leak_list}。"
+                "请将它们全部改写为通顺、符合语境的中文（例如 V字形 改写为 人字形），"
+                "保持剧情人物文风不变。只输出修正后的完整正文，不要任何解释或注释：\n\n"
+                + text
             )
             resp = llm_client.chat_completion(
                 [
