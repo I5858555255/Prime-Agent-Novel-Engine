@@ -49,11 +49,24 @@ _A_ROUTE_PATTERNS = [
      "陆烬亲自出现修炼样式动作"),
     (r"陆烬.{0,4}(照着|学着|模仿|跟着).{0,10}(练|练习|呼吸法|吐纳)",
      "陆烬模仿修炼样式动作"),
-    (r"陆烬体内.{0,20}(运转|流转|共鸣|气感|气流|暖意)", "陆烬体内出现气机运转/共鸣"),
+    (r"陆烬.{0,12}体内.{0,20}(运转|流转|共鸣|气感|气流|暖意|灵气|气机)", "陆烬体内出现气机运转/共鸣"),
     (r"(练|修炼|运转|引气|吐纳|打坐|调息)的.{0,8}(是|主角|他)", "动作主语指回陆烬"),
 ]
 
 _STATUS_ORDER = {"needs_regenerate": 0, "pending_human": 1, "approved": 2}
+
+# 否定语境豁免：forbidden 规则命中"解读/用途/秘密"类词时，若其紧邻前文是否定式
+# （无法解读/未能参透等），视为"未坐实解读"而非"完成解读"——避免 R14 等规则把
+# "无法解读，暂且封存"误判为用途完全解读（ch559/ch573 实证）。
+_NEGATED_DISCLOSURE_RE = re.compile(
+    r"(?:无法|不能|难以|未能|尚未|不曾|未解|未明|不知|看不|参不透).{0,5}"
+    r"(?:解读|全貌|真正用途|用途|秘密|是钥匙|是密码|为阵法)"
+)
+
+
+def _is_negated_disclosure(snippet: str) -> bool:
+    """snippet 中是否出现"否定词 + 解读/用途类词"的否定语境。"""
+    return bool(_NEGATED_DISCLOSURE_RE.search(snippet or ""))
 
 
 def _load_json(path: Path) -> dict:
@@ -108,6 +121,9 @@ def decide_entry(
                 continue
             scale = r.get("scale", "forbidden")
             rid = r.get("id", "")
+            if scale == "forbidden" and _is_negated_disclosure(m.group(0)):
+                # 否定语境（无法解读/未能参透等）未坐实 → 跳过该 pattern，继续查其余规则
+                continue
             if scale == "forbidden":
                 return "needs_regenerate", f"规则{rid}: {r.get('name', '')}", rid
             if r.get("action") == "density_count":

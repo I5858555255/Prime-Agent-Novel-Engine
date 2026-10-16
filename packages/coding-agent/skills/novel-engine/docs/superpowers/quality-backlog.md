@@ -948,3 +948,28 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   （唯一 xfail 为已知 pre-existing，1196+9 新增，无回归）。
 - 剩余待办：ch266（D 类伏笔 beats）/ ch267（C 类泄漏 84.7 差 1.3）自然重跑观察，
   随下一批次（ch317+ 中纲生成后）覆盖。
+
+
+## run_556 批验收（新章 527-556 + 重跑 370/499/524）— 2026-10-16
+- SUMMARY：29/33 succeeded, 4 failed in 25111.3s（≈7h0m，无 429）。
+- 成功 29 章：重跑 ch524 转正（79.7）；新章 527-556 除 531/549 外全部 COMMITTED
+  （分数带 42.7-91.6；ch545 91.6 唯一过 88 线进 novel/；低分 committed 不算失败：
+  ch534 42.7、ch543 54.6、ch547 59.5、ch532 58.8 等 force-best to draft）。
+- FAILED 4 章归因（全部非确定性代码 bug，无代码修改）：
+  - ch370（score=37.1，**第八败**）：内容质量极低 → 整章重写无增益 → force-best 37.1 < 88
+    被最终门拒绝 → quarantine。处置方向（模型能力 vs 大纲密度 vs 豁免硬门）**待用户拍板**。
+  - ch499（score=None，**重跑第二败**）：WRITE REPLAN 内容密度两轮重生无改善（疑似真空洞）
+    → in-process replan 后仍 quality-replan → 放弃（无 score）。机制正常拦截；
+    是否反向修密度（中纲 scene 密度目标）需判断后可能**待用户确认**。
+  - ch531（score=62.3，首败）：初始检测 200 字级整块重复 → force patch/rewrite；
+    低分 escalation（best 62.3 < floor 60 触发整章重写 round1 → 重写 60.2 勉强过 floor）；
+    终末 FINAL GATE BLOCK：`punctuation:para#128 最长无句读=256 密度=0.39` → quarantine+human。
+    根因链=低分无增益 + 标点硬门，与 ch370 同方向，**待用户拍板**是否调整大纲密度/豁免策略。
+  - ch549（score=66.5，首败）：note=三评极差>15，评审极不稳定，强制人工复核（不自动重采）
+    → 入 needs_human_review。机制行为（B 类评审方差升级），CC26/27 降低概率未消除。
+- 观察：ch497 同源 `'str' object has no attribute 'get'` 本轮未复现；ch524 修复
+  （借用词豁免，commit ceaa5167d）真机验证通过（重跑 79.7 COMMITTED，无 latin 误报）。
+- 待办（下批次优先）：
+  1) ch370/ch531 处置方向（模型能力/大纲密度/豁免硬门）待用户拍板；
+  2) ch499 密度真空洞是否反向修密度（中纲 scene 密度目标）待判断；
+  3) ch549 已入 needs_human_review 待用户查阅；
