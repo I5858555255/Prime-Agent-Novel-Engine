@@ -1000,3 +1000,32 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
 - 待办（下批次优先）：
   1) ch370/ch584 处置方向（模型能力/大纲密度/豁免硬门 vs latin 修复强度/换模型）待用户拍板；
   2) ch549 已入 needs_human_review 待用户查阅（本批重跑已转正 71.2，建议复核后关闭）；
+
+
+## run_616 批验收（新章 587-616 + 重跑 370/584）— 2026-10-17
+- SUMMARY：29/32 succeeded, 3 failed in 24542.6s（约 6.8h）。
+- 终态：新章 587-616 全部 COMMITTED（25 章，分数带 53.1–85.8；ch599/607/608/616
+  触 [跨场危机] off-card crisis hard gate 均修复过门；ch612 低分 54.7 仍 COMMITTED）；
+  重试章 ch370 FAILED(39.2)、ch584 FAILED(73.1)；新败章 ch613 FAILED(71.5) quarantine。
+- FAILED 归因：
+  - ch370（**第十一败**，39.2）：同前——段落整块重复 + 长度 SEVERE shortfall +
+    标点门（punctuation para# 最长无句读 密度 0.0），机制按设计拦截。处置方向仍待用户拍板。
+  - ch584（**第三轮败**，73.1）：本轮无 hard gate note、纯分数未达 88 线，latin 泄漏
+    类稳定性问题持续（前两轮 'barely' 泄漏同因）。处置方向仍待用户拍板。
+  - ch613（71.5，**新败章**）：草稿在陆烬场景自由插入'吐纳要诀'实体描写
+    （该章中纲 core_event='陆烬察觉皇室与仙门隐秘监控'，无任何修炼要素——模型跑偏）
+    → canon 硬词门按设计拦截（terms=['吐纳']）；**但 atm repolish 修复通道每次崩溃**：
+    `'str' object has no attribute 'get'`——`_deterministic_quality_gate` 的 issues 为
+    字符串列表（无 severity 字段），atm repolish 回滚判定对元素调用 `.get("severity")`
+    → AttributeError → 硬词句无法被 LLM 修复 → force-best 71.5 仍被最终门 BLOCK。
+- 确定性修复（commit de1b63fd8）：新增纯函数 `repolish_candidate_ok(cand_gate, base_gate)`
+  （atmosphere_dedup.py，issues 非空即含硬项），pipeline_orchestrator 改调；
+  回归测试 1 个（str-issues 不抛异常 + 6 断言语义判定）；pyflakes 0 undefined name +
+  全量 pytest 1250 passed + 1 xfailed（唯一 xfail 为基线项）。
+- 关联：backlog 既有 ch497 同源 `'str' object has no attribute 'get'` 大概率同为
+  该 repolish 路径（当时未复现故未定位）；下批 run_646 将重试 ch613/ch370/ch584。
+- 待办（下批次优先）：
+  1) ch370（十一败）/ch584（三轮败）处置方向待用户拍板；
+  2) ch613 修复通道已修；若 run_646 重试仍因 canon '吐纳' 持续卡死，需评估
+     A 路线是否加'人物归属豁免'（陈老根物品可提及、陆烬仅旁观），**待用户拍板**；
+  3) ch549 needs_human_review 待用户查阅（run_586 批重跑已转正 71.2，建议复核后关闭）；
