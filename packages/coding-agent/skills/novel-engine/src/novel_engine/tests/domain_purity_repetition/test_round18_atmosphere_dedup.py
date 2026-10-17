@@ -15,6 +15,7 @@ from novel_engine.quality.atmosphere_dedup import (
     cn_chars,
     cn_chars_total,
     roll_back_ok,
+    repolish_candidate_ok,
     run_atmosphere_dedup,
 )
 
@@ -449,3 +450,29 @@ def test_f3_rollbacks_on_forbidden_word(tmp_path):
         f"Result must not have atmosphere_repolished_scenes, got: {result.get('atmosphere_repolished_scenes')}"
     # 断言6：success为真
     assert result.get('success') is True, f"Result must be success, got: {result}"
+
+
+# ── repolish_candidate_ok（回归：issues 为 str 列表，无 severity 字段）────────
+
+def test_repolish_candidate_ok_str_issues_does_not_raise():
+    """回归 ch613：deterministic gate 的 issues 是字符串列表，旧判定对元素 .get() 抛
+    'str' object has no attribute 'get'，导致 atm repolish 修复通道静默失败。"""
+    # 基线通过 + 候选引入硬项（字符串 issue）→ 拒绝采纳
+    cand = {"passed": False, "issues": ["[canon硬词] 吐纳：……"]}
+    base = {"passed": True, "issues": []}
+    assert repolish_candidate_ok(cand, base) is False
+    # 候选清掉硬项且通过 → 可采纳
+    cand2 = {"passed": True, "issues": []}
+    base2 = {"passed": False, "issues": ["[canon硬词] 吐纳：……"]}
+    assert repolish_candidate_ok(cand2, base2) is True
+    # 双方同状态 → 可采纳（未恶化）
+    assert repolish_candidate_ok({"passed": True, "issues": []},
+                                 {"passed": True, "issues": []}) is True
+    assert repolish_candidate_ok({"passed": False, "issues": ["[重复] x"]},
+                                 {"passed": False, "issues": ["[重复] x"]}) is True
+    # 候选把通过的基线弄坏（cand 未过且 base 过）→ 拒绝
+    assert repolish_candidate_ok({"passed": False, "issues": ["[截断] y"]},
+                                 {"passed": True, "issues": []}) is False
+    # 候选有硬项但基线也有硬项 → 允许（不比基线更差）
+    assert repolish_candidate_ok({"passed": False, "issues": ["[canon硬词] 吐纳：……"]},
+                                 {"passed": False, "issues": ["[重复] x"]}) is True

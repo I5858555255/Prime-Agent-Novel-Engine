@@ -847,6 +847,7 @@ class PipelineOrchestrator:
                             run_atmosphere_dedup as _rad,
                             generate_repolish_directive as _grd,
                             roll_back_ok as _rbo,
+                            repolish_candidate_ok as _rbo_ok_candidate,
                             _split_scenes as _split,
                         )
                         _atm_result = _rad(best_novel, root=self.root)
@@ -923,18 +924,7 @@ class PipelineOrchestrator:
                                             # 对比 baseline：新增 hard/high、危机翻坏、极性翻坏、新禁词/套话
                                             _cand_issues = set(_cand_gate.get("issues") or [])
                                             _new_issues = _cand_issues - _base_issues
-                                            _has_hard_high = any(
-                                                i.get("severity") in ("hard", "high")
-                                                for i in (_cand_gate.get("issues") or [])
-                                            )
-                                            _score_ok = (
-                                                not _cand_gate.get("passed", True) and _base_passed
-                                            ) or (
-                                                _has_hard_high and not any(
-                                                    i.get("severity") in ("hard", "high")
-                                                    for i in (_final_det_g.get("issues") or [])
-                                                )
-                                            )
+                                            _score_ok = not _rbo_ok_candidate(_cand_gate, _final_det_g)
                                             _new_forbidden = bool(_forbidden) and not any(
                                                 v.get("name") in [iv.get("name") for iv in violations or []]
                                                 for v in _forbidden

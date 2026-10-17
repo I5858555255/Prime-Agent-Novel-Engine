@@ -211,6 +211,22 @@ def cn_chars_total(text: str) -> int:
     return sum(cn_chars(s) for s in scenes)
 
 
+def repolish_candidate_ok(cand_gate: dict, base_gate: dict) -> bool:
+    """atm repolish 候选门回归判定：True=候选可通过守门（可采纳），False=需回滚。
+
+    对比重抛光候选与基线 deterministic gate 结果：
+      - 候选把通过的基线弄坏（cand 未过且 base 过）→ 拒绝；
+      - 候选引入基线没有的硬项（issues 非空 vs 基线空）→ 拒绝。
+    gate 的 issues 为硬项字符串列表（soft_issues 为软项），无 severity 字段，
+    因此"存在 hard/high 项"等价于 issues 非空。
+    """
+    if not cand_gate.get("passed", True) and base_gate.get("passed", True):
+        return False
+    if cand_gate.get("issues") and not base_gate.get("issues"):
+        return False
+    return True
+
+
 def roll_back_ok(
     new_scene_text: str,
     orig_scene_text: str,
