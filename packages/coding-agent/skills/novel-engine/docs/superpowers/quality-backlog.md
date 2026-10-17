@@ -973,3 +973,30 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   1) ch370/ch531 处置方向（模型能力/大纲密度/豁免硬门）待用户拍板；
   2) ch499 密度真空洞是否反向修密度（中纲 scene 密度目标）待判断；
   3) ch549 已入 needs_human_review 待用户查阅；
+
+
+## run_586 批验收（新章 557-586 + 重跑 370/499/531/549）— 2026-10-17
+- 批次全程：首跑进程于 10-17 01:56 异常终止（无 SUMMARY、无 traceback，日志停在
+  ch585 连接超时重试；无 python 进程残留），10-17 06:25 resume 重启续跑，07:13 出 SUMMARY。
+- 重启批 SUMMARY：5/7 succeeded, 2 failed in 2872.7s。终态：
+  - ch499/531/549 重跑转正（71.1/66.95/71.2，ch499 第二败后第三跑转正）；
+  - ch568/569/575 重跑转正（81.9/71.3/49.3——三评极差>15 章重跑后 COMMITTED）；
+  - ch585/586 首跑 COMMITTED（68.05/58.2，均低分 force-best to draft）；
+  - 新章 557-586 分数带 49.0（ch579）~87.2（ch573）；ch578 称谓裸切 hard gate 修复过门；
+    ch581 200 字级整块重复 hard gate 修复后 COMMITTED。
+- FAILED 2 章归因（全部非确定性代码 bug，无代码修改，机制按设计拦截）：
+  - ch370（**第十败**，score=37.3）：段落整块重复 7 次（"存在即是意识…"循环句）+ 长度
+    SEVERE shortfall 4080 + 整章重写 55.9 仍 <floor 60 → terminal → force-best 37.3 <88
+    被最终门拒绝（punctuation:para#9 最长无句读=120 密度=0.0）→ quarantine+human。
+    处置方向仍**待用户拍板**（模型能力/大纲密度/豁免硬门），与第八/九败同因。
+  - ch584（**第二轮败**，score=79.0）：两轮同词 latin 泄漏 **'barely'**——轮1 86.3
+    （gray-band release 后 FINAL GATE BLOCK latin 'barely'）、轮2 79.0（targeted rewrite
+    后 scene1 regen 又泄漏 'loop'×4 → language retry，终态 FINAL GATE BLOCK
+    latin 'barely' 1 处 + halfwidth_punct '.' 2 处）→ quarantine+human。
+    归因：修复通道（latin targeted rewrite）对该章两轮均未清除 'barely'，属模型输出
+    语言稳定性问题（writer 习惯性输出该副词），非代码 bug；机制链路
+    （检测→重试→final gate 拦截）按设计工作。是否提升修复强度/换模型**待用户拍板**。
+- 观察：ch568 高分 85.6/81.9 均未过 88 硬线（novel/ 只收 >=88）；本批无 88+ 进 novel 章。
+- 待办（下批次优先）：
+  1) ch370/ch584 处置方向（模型能力/大纲密度/豁免硬门 vs latin 修复强度/换模型）待用户拍板；
+  2) ch549 已入 needs_human_review 待用户查阅（本批重跑已转正 71.2，建议复核后关闭）；
