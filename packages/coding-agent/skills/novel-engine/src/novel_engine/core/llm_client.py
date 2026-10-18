@@ -39,6 +39,11 @@ DEGEN_RETRY_TEMPERATURES = (0.85, 1.0)
 DEGEN_MIN_CJK = 20
 DEGEN_EXHAUSTED_FLAG = "_degenerate_exhausted"
 
+# CC watchdog：LLM 调用整体放入 daemon 线程并施加 wall-clock 上限，防止代理半开连接
+# （如本机代理 127.0.0.1:7897 CLOSE_WAIT）导致流式/非流式调用永久阻塞整个流水线。
+# 默认上限 = effective_total(max_tokens) + 该常量；超时抛 TransientLLMError 交由上层重试/降级。
+WATCHDOG_SLACK = 60
+
 
 def count_cjk_chars(text: str) -> int:
     return sum(1 for ch in (text or "") if ord(ch) > 0x2E7F)
@@ -586,10 +591,72 @@ class LLMClient:
         extra_body: Optional[dict] = None,
         timeout: Optional[int] = None,
         timeout_spec: Optional[TimeoutSpec] = None,
+        watchdog_s: Optional[int] = None,
     ) -> dict:
         if self.use_mock or self._mock:
             return self._mock.chat_completion(messages, temperature, max_tokens, retry_on_error, max_retries, extra_body, timeout_spec)
 
+        # CC watchdog：真实 LLM 调用整体放入 daemon 线程并施加 wall-clock 上限。
+        # 上游/本地代理半开连接（CLOSE_WAIT、无数据无 EOF）时，read/idle/total 超时
+        # 可能均无法触发，导致调用永久阻塞整个批次；watchdog 兜底为 TransientLLMError，
+        # 交由上层既有重试/降级/跳过机制处理。daemon 线程超时后继续存活无害（不再复用，
+        # 进程退出时随之消亡）；其迟到结果仅计入调用统计，不污染主流程。
+        spec = timeout_spec or TimeoutSpec()
+        wd = watchdog_s if watchdog_s is not None else (spec.effective_total(max_tokens) + WATCHDOG_SLACK)
+        if wd and wd > 0:
+            box: dict = {}
+            # threading.local 按线程隔离：worker 线程看不到主线程注入的 client
+            # （测试 MockTransport / 调用方注入），必须显式透传，否则 worker 会自建
+            # 真实 httpx client（测试中被 conftest 拦截、生产中多建一个连接）。
+            _inj_client = getattr(self._local, "client", None)
+            _inj_spec = getattr(self._local, "spec_client", None)
+            _inj_key = getattr(self._local, "spec_key", None)
+
+            def _run():
+                if _inj_client is not None:
+                    self._local.client = _inj_client
+                if _inj_spec is not None:
+                    self._local.spec_client = _inj_spec
+                    self._local.spec_key = _inj_key
+                try:
+                    box["result"] = self._chat_completion_inner(
+                        messages, temperature, max_tokens, retry_on_error,
+                        max_retries, extra_body, timeout, timeout_spec,
+                    )
+                except BaseException as e:  # noqa: BLE001 - 跨线程回传任意异常
+                    box["error"] = e
+
+            worker = threading.Thread(target=_run, daemon=True, name="llm-watchdog")
+            worker.start()
+            worker.join(wd)
+            if worker.is_alive():
+                logger.error(
+                    f"LLM watchdog timeout after {wd}s phase={getattr(self, 'phase', '?')} "
+                    f"model={self.model} (possible dead proxy connection); abandoning call"
+                )
+                raise TransientLLMError(
+                    f"LLM watchdog timeout after {wd}s (dead proxy connection?)",
+                    phase=getattr(self, 'phase', None),
+                )
+            if "error" in box:
+                raise box["error"]
+            return box["result"]
+        return self._chat_completion_inner(
+            messages, temperature, max_tokens, retry_on_error,
+            max_retries, extra_body, timeout, timeout_spec,
+        )
+
+    def _chat_completion_inner(
+        self,
+        messages: list[dict],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        retry_on_error: bool,
+        max_retries: int,
+        extra_body: Optional[dict],
+        timeout: Optional[int],
+        timeout_spec: Optional[TimeoutSpec],
+    ) -> dict:
         base_temp = temperature if temperature is not None else self.temperature
 
         # CC round-11 Q1：空200/纯reasoning/极短正文属“可重试瞬时退化”，在本层跨温度
