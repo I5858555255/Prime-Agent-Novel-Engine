@@ -1099,3 +1099,24 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
 - 历史计数预置：checkpoint.json failure_counts 预置 {"370": 13}（run_676 验收实录"第十三败"），
   使 ch370 在下一批（run_736，新代码生效）直接进入跳过判定；run_706 本身运行旧代码不受影响。
 - 生效边界：run_706 结束后下一批起生效；ch584（5 败=阈值）不触发跳过，继续累积至 >5。
+
+## 机制修复：LLM 调用 watchdog 线程防永久挂死 — 2026-10-18（commit 0962e9fb2）
+- 实录：run_706 两次挂死——旧进程（09:35 启动）ch370 Scene1 重试后 6h17m 无进展；
+  重启进程（15:54 启动）ch584 latin_leak targeted rewrite 后 2.5h 无进展（CPU 3.9s、无日志活动）。
+- 根因证据：netstat 显示进程到本机代理 127.0.0.1:7897（Clash 类）连接 CLOSE_WAIT——
+  代理已断上游连接（半开），httpx 的 read/idle/total 超时在"无数据无 EOF"场景均不触发，
+  chat_completion 永久阻塞，整个批次挂死。两次挂死 + run_676 时代 ch658-676 连续 19 章
+  FAILED（上游连接问题被 _resp_bytes 掩盖）指向同一代理断连族问题。
+- 修复（commit 0962e9fb2）：真实 LLM 调用整体放入 daemon 线程并施加 wall-clock 上限
+  （默认 = TimeoutSpec.effective_total(max_tokens) + 60s），超时抛 TransientLLMError，
+  交由上层既有重试/降级/skip-after 机制处理；worker 透传 threading.local 注入 client
+  （保持测试 MockTransport 与调用方注入语义）。daemon 线程超时后继续存活无害。
+- 回归：+5 hermetic 测试（test_llm_watchdog.py：阻塞放弃/正常透传/异常回传/禁用/
+  默认上限），pyflakes 0 undefined name，全量 pytest 1267 passed + 1 xfailed。
+- 副作用说明：生产环境每次 LLM 调用在独立 worker 线程自建 httpx client（连接不复用），
+  每请求多一次 TCP 握手，对分钟级长生成可忽略；换取的是任何半开连接都会被兜住。
+- 处置记录：run_706 两次死进程均已 Stop-Process 终止，证据日志保留为
+  run_706_batch.log.stale / .stale2（未删除）；18:40 第三次重启（新代码），
+  ch370 正式 abandoned、ch584 续跑。
+- 待用户拍板：run_706 三次实例两次挂死，代理（127.0.0.1:7897）稳定性是否需排查/
+  换直连；watchdog 上限 650s 是否合适（新章长生成实测反馈）。
