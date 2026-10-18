@@ -1050,3 +1050,36 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   2) ch626 定向复核：确认伏笔极性矛盾（排斥 vs 吸引同现）是中纲埋设冲突还是草稿自相矛盾；
   3) ch549 needs_human_review 待用户查阅（run_586 批重跑已转正 71.2，建议复核后关闭）；
   4) 新章分数偏低趋势：后续批次统计审视（是否提示中纲密度/场景强度不足）。
+
+## run_676 批验收（新章 647-676 + 重跑 370/584/626）— 2026-10-18
+- SUMMARY：11/33 succeeded, 22 failed in 12317.4s（约 3.4h）。
+- 终态：ch626 重试**转正 COMMITTED(73.5)**（伏笔极性矛盾 hard gate 触门后修复过门，
+  未走 unstable 人工复核通道即修复成功；run_646 验收时"待用户拍板"项实际由修复通道消化）；
+  新章 647-657 除 ch650 外全部 COMMITTED（10 章，分数带 28.7–80.8；ch648 触 [跨场危机]
+  hard gate 修复过门）；**ch658-676 连续 19 章 FAILED(score=None)**（系统性故障，见下）。
+- 失败归因：
+  - **ch658-676（19 章连续硬失败）— 确定性根因，已修复**：ModelRouter director 相位
+    phase=agnes-3.0-flash 持续报 `Attempted to access streaming response content, without
+    having called read()`。定位：httpx 新版 Response.content property 在流式模式
+    （client.stream）未 read() 前访问抛 RuntimeError；`_stream_chat` 非 200 分支
+    `_resp_bytes(resp)` 先访问 content 属性 → 把真实 429/5xx 状态错误掩盖成协议错误，
+    每章 3 次尝试 × 3 次内部重试全失败 → directing_error hard-fail。上游 API 在
+    ch658 期间开始返回非 200（疑似限流/网关故障，持续至批次结束）。
+  - ch370（**第十三败**，56.3）/ch584（**第五轮败**，71.15）：同前，机制按设计拦截，
+    处置方向仍待用户拍板。
+  - ch650（55.15，**新败章**）：latin_leak 'anomalous' + 标点门多段无句读（密度 0.0-3.77），
+    既有机制拦截，非新代码 bug。
+- 确定性修复（commit ac5c7c24d）：`_resp_bytes` 改为先 read() 再取 content（兼容
+  read 抛异常回退 _content / 无 read 的测试 fake）；回归测试 5 个 hermetic
+  （test_llm_client_resp_bytes.py，含 httpx RuntimeError 复现）；pyflakes 0 undefined
+  name + 全量 pytest 1255 passed + 1 xfailed。
+- 观察：API 上游故障窗口（05:27-07:08）与 19 章失败同区间；修复后 API 已恢复
+  （run_706 启动 probe 200）。ch626 转正使"三评发散强制复核"项可关闭（已由修复通道消化）。
+- 下一批：run_706（补跑 ch370/584/658-676 + 新章 677-706，中纲 28/28 approved，
+  commit d3bd5c689）。
+- 待办（更新）：
+  1) ch370（十三败）/ch584（五轮败）处置方向待用户拍板；
+  2) ch650 latin_leak/标点失败重试观察（run_706 中）；
+  3) ch549 needs_human_review 待用户查阅（run_586 批重跑已转正 71.2，建议复核后关闭）；
+  4) 新章分数偏低趋势（28.7-80.8）后续批次统计审视；
+  5) 若 agnes API 再次出现非 200 窗口：观察 _resp_bytes 修复后真实状态码分类与退避行为。
