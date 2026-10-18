@@ -1125,6 +1125,10 @@ class PipelineOrchestrator:
         from novel_engine.quality.repetition_detector import purify_novel_for_publish as _purify_final
         final_text = _purify_final(final_text, chapter_num=chapter_num)
         self.current_novel = final_text
+        # CC ch584 根因修复：最终组装稿 latin 残片自动修复（verify-then-trust，
+        # 失败保持原样，由紧随的 final_det / final pre-commit gate 照常 fail-closed）。
+        final_text = self._auto_fix_final_latin(final_text, chapter_num)
+        self.current_novel = final_text
         # R16c P0-C2: stage6 foreshadow coverage check
         from novel_engine.pipeline.final_gate import run_stage6_foreshadow_check
         _stage6_result = run_stage6_foreshadow_check(
@@ -2909,6 +2913,63 @@ class PipelineOrchestrator:
 
     def _run_final_precommit_gate(self, *a, **k):
         return _gates._run_final_precommit_gate(self, *a, **k)
+
+    def _auto_fix_final_latin(self, final_text: str, chapter_num: int) -> str:
+        """CC ch584：最终组装稿拉丁残片自动修复（verify-then-trust）。
+
+        _run_latin_leak_gate 只修"进入该 gate 时的 scenes 快照"，后续 review/topup/
+        Progression 等改写相位可能在最终稿重新注入拉丁残片，而 final pre-commit gate
+        是 fail-closed 只检不修。此处对定稿做一次全文级 latin 自动修复：fix_latin_leak
+        复检干净才采纳（并补回 LLM strip 掉的段首全角缩进）；修复失败/异常/无泄漏时
+        返回原文本（fail-closed 由紧随的 final_det / final pre-commit gate 照常保证）。
+        """
+        if not final_text:
+            return final_text
+        try:
+            if bool((self.config.get("llm") or {}).get("use_mock")):
+                return final_text
+        except Exception:
+            pass
+        try:
+            from novel_engine.quality.chinese_gate import detect_latin_leak as _cg_detect
+            from novel_engine.quality.chinese_gate import fix_latin_leak as _cg_fix
+            if not _cg_detect(final_text):
+                return final_text
+            _fixed, _ok, _reason = _cg_fix(final_text, self.llm)
+            if _ok and _fixed != final_text:
+                # LLM 修复会 strip 行首空白：按行补回原文前导全角缩进，保持段落排版一致
+                _fixed = self._restore_lead_indent(final_text, _fixed)
+                if _fixed != final_text:
+                    logger.warning(
+                        f"ch{chapter_num} final-assembly latin auto-fix applied ({_reason or 'clean'})")
+                    return _fixed
+            if not _ok:
+                logger.error(
+                    f"ch{chapter_num} final-assembly latin auto-fix failed ({_reason}) "
+                    f"-> keep original, fail-closed gates still run")
+        except Exception as _el:
+            logger.warning(f"ch{chapter_num} final-assembly latin auto-fix skipped: {_el}")
+        return final_text
+
+    @staticmethod
+    def _restore_lead_indent(orig: str, fixed: str) -> str:
+        """按行补回原文前导空白（全角空格缩进），LLM 修复 strip 后排版保持一致。
+
+        原文某行有前导空白而修复行没有时，补回与原文相同的前导串；其余行不动。
+        """
+        if not orig or not fixed:
+            return fixed
+        o_lines = orig.split("\n")
+        f_lines = fixed.split("\n")
+        import re as _re_ind
+        out = []
+        for i, fl in enumerate(f_lines):
+            ol = o_lines[i] if i < len(o_lines) else ""
+            m = _re_ind.match(r"^[\u3000 ]+", ol)
+            if m and not fl.startswith(m.group(0)):
+                fl = m.group(0) + fl.lstrip("\u3000 ")
+            out.append(fl)
+        return "\n".join(out)
 
     def _run_boundary_reprise_gate(self, *a, **k):
         return _gates._run_boundary_reprise_gate(self, *a, **k)
