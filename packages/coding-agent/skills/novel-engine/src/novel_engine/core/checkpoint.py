@@ -263,6 +263,46 @@ class CheckpointManager:
         ]
         self.save(cp_data)
 
+    # ------------------------------------------------------------------
+    # 跨批次失败计数 + 跳过标记（run_volume --skip-after 机制）
+    # ------------------------------------------------------------------
+
+    def get_failure_counts(self) -> dict:
+        """返回 {chapter_str: count} 跨批次累计失败轮数（默认空）。"""
+        return self.load().get("failure_counts", {})
+
+    def record_failure(self, chapter: int) -> int:
+        """该章失败轮数 +1 并持久化，返回更新后的计数。"""
+        data = self.load()
+        counts = dict(data.get("failure_counts", {}))
+        key = str(chapter)
+        counts[key] = counts.get(key, 0) + 1
+        data["failure_counts"] = counts
+        self.save(data)
+        return counts[key]
+
+    def reset_failure(self, chapter: int) -> None:
+        """该章成功提交后清零失败计数（消除旧 key 避免历史失败导致误跳过）。"""
+        data = self.load()
+        counts = dict(data.get("failure_counts", {}))
+        if str(chapter) in counts:
+            del counts[str(chapter)]
+            data["failure_counts"] = counts
+            self.save(data)
+
+    def get_skipped_chapters(self) -> set:
+        """返回已按 skip-after 策略放弃的章号集合。"""
+        return set(self.load().get("skipped_chapters", []))
+
+    def mark_skipped(self, chapter: int) -> None:
+        """将章节标记为已放弃（策略性跳过），--resume 不再重试。"""
+        data = self.load()
+        skipped = list(data.get("skipped_chapters", []))
+        if chapter not in skipped:
+            skipped.append(chapter)
+            data["skipped_chapters"] = skipped
+            self.save(data)
+
 
 def create_draft_checkpoint(
     manager: CheckpointManager,
