@@ -1083,3 +1083,19 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   3) ch549 needs_human_review 待用户查阅（run_586 批重跑已转正 71.2，建议复核后关闭）；
   4) 新章分数偏低趋势（28.7-80.8）后续批次统计审视；
   5) 若 agnes API 再次出现非 200 窗口：观察 _resp_bytes 修复后真实状态码分类与退避行为。
+
+## 机制变更：run_volume --skip-after 超 5 轮失败跳过该章 — 2026-10-18（用户指示）
+- 用户指示：超过 5 轮失败的章节，尝试跳过该章生成（不影响上下文时）。
+- 实现（commit 5de9650a8）：
+  - checkpoint.json 顶层新增 failure_counts（跨批次累计失败轮数，持久化）与 skipped_chapters（已放弃章号）。
+  - run_volume 新增 --skip-after 参数（默认 5，语义：累计失败轮数 > 阈值即放弃该章）。
+  - 失败 → record_failure 累加；新计数 > 阈值 → mark_skipped 当场放弃，本轮结果标 SKIPPED；
+    成功 → reset_failure 清零。已放弃章在后续 --resume 中直接 SKIP 不再重试。
+  - 上下文影响：跳过章不写 world state / 事实库（无脏写入），后续章从上一 committed 章续接；
+    读者侧剧情缺口由验收轮记 backlog 待用户拍板是否人工补写。SUMMARY 单列 skipped 计数。
+  - 回归测试 7 个 hermetic（test_skip_after_failures.py）：计数持久化/清零/幂等跳过/
+    阈值边界/集成（失败累加→超阈值跳过→成功清零→已放弃不重试）；pyflakes 0 undefined name；
+    全量 pytest 1262 passed + 1 xfailed。
+- 历史计数预置：checkpoint.json failure_counts 预置 {"370": 13}（run_676 验收实录"第十三败"），
+  使 ch370 在下一批（run_736，新代码生效）直接进入跳过判定；run_706 本身运行旧代码不受影响。
+- 生效边界：run_706 结束后下一批起生效；ch584（5 败=阈值）不触发跳过，继续累积至 >5。
