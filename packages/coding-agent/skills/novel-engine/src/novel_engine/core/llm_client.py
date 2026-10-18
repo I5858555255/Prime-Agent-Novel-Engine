@@ -897,14 +897,22 @@ class LLMClient:
     @staticmethod
     def _resp_bytes(resp) -> bytes:
         # 兼容流式 context-manager 响应（.read）与测试 fake（.content/_content）。
+        # 注意：httpx 新版 Response.content property 在流式模式未 read() 前访问会抛
+        # RuntimeError（"Attempted to access streaming response content..."），
+        # 掩盖真实 HTTP 状态错误，必须先 read() 再取 content。
+        read = getattr(resp, "read", None)
+        if callable(read):
+            try:
+                raw = read()
+                if isinstance(raw, (bytes, bytearray)):
+                    return bytes(raw)
+            except Exception:
+                pass
         for attr in ("content", "_content"):
             v = getattr(resp, attr, None)
             if isinstance(v, (bytes, bytearray)):
                 return bytes(v)
-        try:
-            return resp.read()
-        except Exception:
-            return b""
+        return b""
 
     def _stream_client(self, spec: Optional[TimeoutSpec] = None) -> httpx.Client:
         injected = getattr(self._local, 'client', None)
