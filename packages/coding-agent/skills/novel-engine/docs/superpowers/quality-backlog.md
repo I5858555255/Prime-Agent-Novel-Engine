@@ -1120,3 +1120,21 @@ draft→novel 迁移，"draft 池 73-87 分算最终发布内容"的政策停留
   ch370 正式 abandoned、ch584 续跑。
 - 待用户拍板：run_706 三次实例两次挂死，代理（127.0.0.1:7897）稳定性是否需排查/
   换直连；watchdog 上限 650s 是否合适（新章长生成实测反馈）。
+
+## 运维诊断：代理 7897 非根因，agnes 上游疑似故障 — 2026-10-18（本轮）
+- 实录：watchdog 生效后 run_706 不再永久挂死，但每次 LLM 调用白等 710s 超时后重试，
+  ch584 refine 相位 2h43m 无推进；netstat 显示 25 条到 127.0.0.1:7897 的 CLOSE_WAIT 堆积，
+  代理进程 TCP 握手正常但上游已断（半开）。
+- 排除代理实验：当前 shell 环境无任何 proxy 变量（httpx mounts 无 ProxyTransport）；
+  无 key 直连 apihub.agnes-ai.com 得 401/2.3s（TCP/TLS/HTTP 层可达）；以干净 env（清空
+  proxy 变量 + NO_PROXY=*）重启 run_706 后，ch584 latin_leak targeted rewrite 的 LLM 调用
+  依然卡满 710s 被 watchdog 放弃——**直连同样超时**。
+- 结论：根因不在本机代理 7897，而在 agnes 上游（服务或账号侧）——小请求（无 key 探测）
+  快速拒绝，带 key 的真实长生成请求建立连接后无数据返回。本地代码/代理修复无法解决，
+  watchdog 仅兜底防止永久挂死。
+- 处置：直连实验进程已终止（无损，checkpoint failure_counts 仅 {"370":13}、skipped=[370]、
+  last_complete=657 未变）；证据日志保留为 run_706_batch.log.stale3/.stale4（+err 同后缀）。
+  ch584 失败计数停于 5（=阈值，>5 才跳过），未触发跳过机制，恢复后 resume 仍可重试。
+- 恢复策略建议（待用户拍板）：确认 agnes 上游/账号状态（控制台/工单）；恢复后直接
+  --chapters 706 --resume 续跑（ch370 已放弃、ch584 计数 5 待续）；若多次重试仍 710s 超时
+  且计数突破 5，ch584 会被 skip-after 放弃产生剧情缺口，需提前决定是否人工补写。
