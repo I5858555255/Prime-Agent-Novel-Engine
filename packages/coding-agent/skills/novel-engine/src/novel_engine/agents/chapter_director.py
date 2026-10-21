@@ -1252,10 +1252,13 @@ class ChapterDirector:
         )
         feedback_count = 0
         length_reduce_done = False
+        # time_fix 重发携带修正指令后 prompt 显著变长，4 场 craft 输出可能超 2000 token
+        # （ch761 实证：finish=length 截断产出 0 场景 → 修复无效）。提高预算避免截断。
+        _max_tokens = 3000 if time_fix_instructions else 2000
         while True:
             self._check_budget(chapter_num)
             result, finish_reason, usage = self._call_with_meta(
-                prompt, max_tokens=2000, system_prompt=self._CRAFT_SYSTEM)
+                prompt, max_tokens=_max_tokens, system_prompt=self._CRAFT_SYSTEM)
             if isinstance(result, dict):
                 craft_bps = result.get('scene_blueprints', [])
             else:
@@ -1278,10 +1281,12 @@ class ChapterDirector:
                 length_reduce_done = True
                 logger.warning(f'Call 2 ch{chapter_num}: finish=length, re-sending with tighter prompt')
                 # TIGHTEN: concrete_events fixed 2, named_interactions only substantive, empty = []
+                # 保留时间修正指令：截断重发不得丢失 time_fix 要求，否则倒置依旧（ch744/745/761 实证）
                 tight_prompt = (
                     f'基于以下场景骨架，补充craft字段。必须保持4个场景不变。\n'
                     f'每场骨架：{json.dumps(skeleton, ensure_ascii=False)[:2000]}\n'
                     f'{_render_outline_mandate(context)}\n'
+                    f'{_time_fix_blk}\n'
                     f'要求：concrete_events固定2条(每条event≤12字、action≤12字)；'
                     f'named_interactions只保留有实质互动的(无则[])；info_reveal_points 2-3条(content≤12字)；'
                     f'protagonist_interiority≤20字；scene_constraints[]；'

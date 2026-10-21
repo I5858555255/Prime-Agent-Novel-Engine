@@ -188,3 +188,88 @@ def test_generate_task_card_overnight_span_routed_to_timefix(tmp_path):
     times = [s.get("narrative_time") for s in scenes]
     assert times == _FIXED_TIMES, f"final card must stay within chapter span, got {times}"
     assert director.validate_task_card(card, 1, strict=True) == []
+
+
+class _TimefixTruncateFakeLLM(_FakeLLM):
+    """ch761 实证路径：time_fix craft 首次调用被 2000 token 截断（finish=length、0 场景），
+    tight 重发保留修正指令后输出单调时间。记录每次 craft 调用的 max_tokens。"""
+
+    def __init__(self):
+        super().__init__()
+        self.craft_max_tokens: list[int] = []
+        self.last_craft_max_tokens: int | None = None
+        self.tight_prompt: str | None = None
+
+    def chat_completion(self, messages: list[dict], **kwargs: Any) -> dict:
+        user_prompt = ""
+        for m in messages:
+            if m.get("role") == "user":
+                user_prompt = m.get("content", "")
+        self.captured_prompts.append(user_prompt)
+        is_craft = ("场景骨架" in user_prompt) and ("生成章级元数据" not in user_prompt)
+        if is_craft:
+            self.craft_max_tokens.append(kwargs.get("max_tokens"))
+            self.last_craft_max_tokens = kwargs.get("max_tokens")
+        if "时间修正要求" in user_prompt:
+            if "concrete_events固定2条" in user_prompt:
+                # tight 重发：保留修正指令并输出单调时间
+                self.tight_prompt = user_prompt
+                body = {"scene_blueprints": self._scenes(_FIXED_TIMES)}
+            else:
+                # 首次 timefix craft：模拟 token 截断（0 场景）
+                self.timefix_prompts.append(user_prompt)
+                return {"content": '{"scene_blueprints": []}',
+                        "finish_reason": "length", "_usage": {}}
+        elif "生成章级元数据" in user_prompt:
+            body = {
+                "chapter_num": 1, "protagonist_agency_level": "normal",
+                "core_goal": "本章核心目标", "conflicts": {"internal": "内心", "external": "外部"},
+                "emotion_curve": {"start": "起", "middle": "中", "climax": "高", "end": "钩子"},
+                "chapter_hook": "章末钩子", "foreshadow_actions": [],
+                "chapter_events": [{"event_type": "互动", "one_line_summary": "一句摘要",
+                                    "participants": ["C001"], "location": "村口",
+                                    "narrative_time": "清晨", "consequence_state": "结果"}],
+                "state_changes": [], "foreshadow_execution": [],
+                "end_state": {"narrative_position": "末帧", "location": "村口",
+                              "completed_actions": ["完成"], "pending_actions": ["接续"],
+                              "time_marker": "当日"},
+                "timeline_anchor": {"chapter_start_marker": "清晨",
+                                    "max_time_progression": "一日",
+                                    "forbidden_markers": []},
+            }
+        else:  # skeleton / craft（无修正指令）
+            body = {"scene_blueprints": self._scenes(_INVERTED_TIMES)}
+        return {"content": json.dumps(body, ensure_ascii=False),
+                "finish_reason": "stop", "_usage": {}}
+
+
+def test_craft_timefix_uses_larger_budget(tmp_path):
+    """time_fix 重发必须提高 craft token 预算（ch761：2000 截断产出 0 场景 → 修复无效）。"""
+    director, fake = _build_director(tmp_path)
+    fake = _TimefixTruncateFakeLLM()
+    director = ChapterDirector(tmp_path, llm_client=fake)
+    ctx, prior = director._build_shared_context(1)
+    skeleton = fake._scenes(_INVERTED_TIMES)
+    time_inv = ["场景3 叙事时间「午后」早于前序场景「夜」，章内时间顺序倒置（夜 → 午后），请按故事时序重排场景或修正 narrative_time"]
+    director._call_scene_craft(1, ctx, prior, skeleton, time_fix_instructions=time_inv)
+    assert fake.last_craft_max_tokens == 3000, \
+        f"timefix craft must use 3000 token budget, got {fake.last_craft_max_tokens}"
+    assert "时间修正要求" in fake.captured_prompts[-1]
+
+
+def test_craft_timefix_tight_retry_keeps_instructions(tmp_path):
+    """截断后 tight 重发必须保留时间修正指令（ch744/745/761：丢失后修复无效仍倒置）。"""
+    director, fake = _build_director(tmp_path)
+    fake = _TimefixTruncateFakeLLM()
+    director = ChapterDirector(tmp_path, llm_client=fake)
+    card = director.generate_task_card(1)
+    assert fake.timefix_prompts, "time-inversion must trigger a time-fix retry"
+    assert 3000 in fake.craft_max_tokens, \
+        f"timefix craft must use 3000 token budget, got {fake.craft_max_tokens}"
+    assert fake.tight_prompt is not None, "truncated timefix craft must tight-retry"
+    assert "时间修正要求" in fake.tight_prompt, "tight retry must keep time-fix instructions"
+    assert "随 scene_num 单调推进" in fake.tight_prompt
+    scenes = card.get("scene_blueprints", [])
+    times = [s.get("narrative_time") for s in scenes]
+    assert times == _FIXED_TIMES, f"final card must be time-ordered, got {times}"
+    assert director.validate_task_card(card, 1, strict=True) == []
