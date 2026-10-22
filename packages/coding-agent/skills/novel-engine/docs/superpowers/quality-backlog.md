@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-10-22 run_796 重启成功（AGNES key 缺失 + 死代理变量根因修复）
+
+**中断重启**：首次重启失败两次——(1) `AGNES_TOKEN_API_KEY` 环境变量为空
+（用户会话级变量随会话结束丢失，runtime_config 指定 `api_key_env=
+AGNES_TOKEN_API_KEY`）；(2) 环境残留 `HTTP_PROXY/HTTPS_PROXY=
+http://127.0.0.1:7897`（代理未运行，Python urllib 走死代理 → WinError
+10061，而系统代理关闭、直连 HTTP 200）。修复：启动时注入 AGNES key +
+清空代理变量后 Start-Process。
+
+**已确认**：PID 22384 存活（22:09:54 启动），probe HTTP 200，checkpoint
+791 章，world_state current_chapter=796，先重试 ch730/778/784 再续跑
+ch796。新 run_volume 日志 `run_volume_20261022T140954Z.log`。
+
+**教训（写入运行纪律）**：本机 Python 子进程必须显式清空 http_proxy/
+https_proxy（残留指向未运行的 127.0.0.1:7897）；AGNES key 需每次启动前注入。
+
+---
+
 ## 2026-10-22 run_796 批次中断（进程死亡，ch796 中途停止）
 
 **现象**：run_796 于 2026-10-21 11:06 启动（PID 17164），ch796 于 20:35 START，
