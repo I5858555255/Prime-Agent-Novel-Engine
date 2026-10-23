@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-10-23 run_796 完成验收 + 中纲 ch797-826 批准 + run_826 启动
+
+**run_796 验收（SUMMARY 4/5 成功、0 失败、1 跳过，3372.6s）**：ch730
+COMMITTED 77.6（此前 3 次失败）、ch778 COMMITTED 70.45（此前 hard-failed）、
+ch784 COMMITTED 75.05（此前三评发散）、ch796 COMMITTED 81.2（中断章续跑）。
+全部历史失败章重试成功；checkpoint last_complete=796，failure_counts 仅剩
+{"370":13}（370 已弃置）。ch778 修复循环达 1519s（draft 70.45 force-best）；
+ch796 中途一次 45.2 低分触发整章重写，终 81.2 force-best（soft 字数不足
+6566<7310，high 场景 2 地点偏移与 F001 伏笔执行不力）。
+
+**中纲 ch797-826 生成与批准**：30 条写入 mid_outline_V03_ch797-826.json。
+audit 首查 22 approved + 8 pending_human + 0 撞锁；写模式复查 23+7。
+- ch812 触 A 路线红线（陆烬"基础吐纳"修炼动作，第一阶段禁修炼样式动作
+  已条款化）→ 确定性改写为"旁观正式弟子修炼吐纳被执法弟子喝止"（陆烬无
+  自身修炼动作），audit 复检通过。属既有判例执行，非新创作决策。
+- 其余 7 条（799/802/804/810/814/821/824）均为摄魂阁/神魂特异者/魂火
+  印记/眼线模糊线索埋设，不点组织全貌、弱暗示未坐实 → 按 V01 判例放行
+  approved。全部 30 条 status=approved，JSON 有效（commit 316 insertions）。
+
+**run_826 启动**：PID 15096（12:11:45），AGNES key 注入 + 清代理变量，
+probe HTTP 200，world_state current_chapter=796，START ch797 生成中。
+预计 30 章 × 12-20 分钟/章 ≈ 6-10 小时。
+
+**运行纪律复盘**：audit/generate 等 Python 子进程必须带 -WorkingDirectory src
+（模块路径依赖）且同调用内注入 key + 清代理；中文长串写 JSON 用临时脚本文件，
+避免 PowerShell 内联引号转义（SyntaxError 已两次踩坑）。
+
+---
+
 ## 2026-10-22 run_796 重启成功（AGNES key 缺失 + 死代理变量根因修复）
 
 **中断重启**：首次重启失败两次——(1) `AGNES_TOKEN_API_KEY` 环境变量为空
