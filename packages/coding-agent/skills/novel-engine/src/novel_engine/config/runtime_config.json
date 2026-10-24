@@ -3,7 +3,7 @@
     "provider": "openai",
     "model": "agnes-3.0-flash",
     "api_base": "https://apihub.agnes-ai.com",
-    "api_key_env": "AGNES_API_KEY",
+    "api_key_env": "AGNES_TOKEN_API_KEY",
     "temperature": 0.7,
     "max_tokens": 12000,
     "timeout_seconds": 600,
@@ -50,7 +50,7 @@
   "review_llm": {
     "api_base": "https://apihub.agnes-ai.com",
     "model": "agnes-3.0-flash",
-    "api_key_env": "AGNES_API_KEY",
+    "api_key_env": "AGNES_TOKEN_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
     "timeout_seconds": 60,
@@ -70,7 +70,7 @@
   "fallback_llm": {
     "api_base": "https://apihub.agnes-ai.com",
     "model": "agnes-3.0-flash",
-    "api_key_env": "AGNES_API_KEY",
+    "api_key_env": "AGNES_TOKEN_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
     "timeout_seconds": 600,
