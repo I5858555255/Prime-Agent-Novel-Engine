@@ -334,7 +334,23 @@ def _has_teach_violation(s: str) -> bool:
                 if any(co in ctx for co in _CULTIVATION_OBJECTS):
                     return True
                 break
-        jiao_idx = s.find("教")
+        # ch805 归因（2026-10-24）："圆顿大教/佛教/道教/经教"等复合名词中的
+        # "教"是名词后缀而非传授动词。遍历所有"教"位，跳过复合名词尾，
+        # 取第一个有效传授动词位——避免佛偈（"不二法门…圆顿大教"）被误判
+        # 为传授违规（归因误导 + 阻断正文，佛学词堆砌应由 writer 约束拦截）。
+        _NOUN_SUFFIX_PRECEDERS = frozenset(
+            "大佛道儒神仙邪魔经圣礼文法宗国家学校本诸玄释")
+        jiao_idx = -1
+        _pos = -1
+        while True:
+            _pos = s.find("教", _pos + 1)
+            if _pos < 0:
+                break
+            _before = s[_pos - 1] if _pos >= 1 else ""
+            if _before and _before in _NOUN_SUFFIX_PRECEDERS:
+                continue  # 复合名词尾（如"大教"），非传授动词
+            jiao_idx = _pos
+            break
         if jiao_idx >= 0:
             ctx = s[max(0, jiao_idx - 6):jiao_idx + 18]
             nearby = s[max(0, jiao_idx - 3):jiao_idx + 3]
@@ -343,7 +359,10 @@ def _has_teach_violation(s: str) -> bool:
             # （按/照/调整/尝试/学着/跟着…做）时仍判实施（"按教的节奏调整呼吸"
             # =陆烬亲练，A 路线禁止），保持 hard。
             _after6 = s[jiao_idx:jiao_idx + 6]
-            if ("的" in _after6 or "过" in _after6) and not any(
+            # ch805 归因（2026-10-24）：F2a 原条件 `"的" in _after6` 过宽——
+            # "教陆烬吐纳的节奏"（实施传授）被误当"教的那套"回忆指称豁免。
+            # 收紧为"教"字后紧跟"的/过"才算指称结构（教的那套/教过的）。
+            if (_after6[1:2] in ("的", "过")) and not any(
                 av in s for av in ("按", "照", "按照", "调整", "尝试", "学着", "跟着",
                                    "模仿", "依样", "练", "练习", "试试", "试着", "配合")
             ):
