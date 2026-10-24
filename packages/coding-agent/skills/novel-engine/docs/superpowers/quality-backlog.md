@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-10-24 run_826 完成验收（重试全过，仅 ch805 持续失败）+ 中纲 ch827-856 批准 + run_856 启动
+
+**run_826 最终验收（SUMMARY 4/6 成功、1 失败、1 跳过，5087.5s）**：重启段
+798(70.4)、811(45.1)、819(79.9)、826(46.05) 全部 COMMITTED——run_826 全批
+30 章目标 29 章交付（25+4），仅 ch805 持续失败。
+
+- **ch805（canon「法门」泄漏，计数 2/5）**：重启段 349s 快速失败（best 66.8），
+  仍卡 scope_hard_leak。skip 阈值 5 未到。**待用户拍板**（沿用上一条目问题）：
+  是否将 canon 硬词注入重写禁止词清单。不阻塞推进。
+- checkpoint：last_complete=826，failure_counts={"370":13,"805":2}。
+
+**中纲 ch827-856**：generate_mid_outline 写入 29 条（batch4 章节列表
+[845,846,847,849,850,851] 主动跳过 848——经 plot_graph.json 验证 ch848 为
+节点章 chapter_target=848，节点章无中纲属预期，29 条即完整集；--only 848 与
+单章 848 均报 nothing to generate 佐证脚本 node-free 设计）。audit 首查：
+19 approved / 10 pending_human / 0 撞锁。10 条 pending 全部为 ch848 回收节点前
+f003_shehun_ascension / f009_soul_duality 模糊线索章，按 V01 判例（残物线索
+含糊带过可放行 / 实物与谜团不点全貌 / 弱暗示未坐实可放行）逐条判定为放行并
+写回 approved（29/29，JSON 校验有效），commit 302 insertions。
+
+**run_856 启动**：PID 25492（13:49:56），key 注入+清代理，current_chapter=826，
+START ch805 重试中（后续 827-856 主批，ch848 节点章由 plot_graph 引导）。
+
+---
+
 ## 2026-10-23 run_826 批次中断与重启（ch826 外部终止）+ 4 失败章归因
 
 **中断现象**：run_826（PID 15096，12:11 启动）于 21:46 START ch826 后进程消失，
