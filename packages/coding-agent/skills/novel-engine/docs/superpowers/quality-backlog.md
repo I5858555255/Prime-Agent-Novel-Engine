@@ -6,6 +6,45 @@
 
 ---
 
+## 2026-10-24 run_856 完成验收（29/32）+ ch805/ch849 归因修复（3 commits）+ 失败章重跑启动
+
+**run_856 最终验收（SUMMARY 29/32 成功、2 失败、1 跳过，29777.2s）**：主批
+827-856 全部 COMMITTED（分数带 45.1-79.9，节点章 848=61.2，856 主批末章 77.9），
+仅 2 失败：ch805（score=48.55，三连败后仍被"法门"泄漏阻断）、ch849
+（score=None，1292.3s，hard-failed after retries）。ch370 按 skip-after 政策弃置。
+
+**ch805 三连败归因 → 确定性修复（commit `7b5558ea3`）**：canon「法门」泄漏
+链实为**检测端误判 + writer 文风失控**双因：
+1. `scope_gate._has_teach_violation` 把佛偈"圆顿大教"中的"教"（复合名词尾）
+   误判为传授动词 → scope_hard_leak 硬阻断与归因均误导。修复：裸"教"分支遍历
+   所有"教"位、跳过复合名词尾（大佛道儒神仙邪魔经圣礼文法宗国家学校本诸玄释），
+   取第一个有效传授动词位；F2a 提及/指称豁免收紧为"教"字后紧跟"的/过"
+   （"教陆烬吐纳的节奏"实施传授保持 hard，不再被"教的那套"回忆豁免误放）。
+2. writer 反复输出佛偈堆砌（不二法门/圆顿大教/见性成佛/顿悟渐修/彼岸…）。
+   修复：SCENE_SYSTEM_PROMPT 注入「世界观纯净约束」条款，点名禁写宗教术语
+   堆砌/偈语化文风，修炼表述限用本作体系词汇。
+新增回归 test_teach_boundary +5 case、test_writer_worldview_purity。门禁：
+pyflakes 全包 0 undefined；pytest 1279 passed + 1 xfailed。
+
+**ch849 归因 → 确定性修复（commit `53419ce1f`）**：err 日志
+`atm repolish scene3 failed: name '_has_hard_high' is not defined`——
+pipeline_orchestrator atm repolish 拒绝路径日志 f-string 引用未定义名
+（pyflakes 对 f-string 插值不报 undefined 故门禁漏网），NameError 被 except
+吞掉 → 候选即使全门回归合格也不被采纳，**atm repolish 修复通道整体失效**。
+叠加 ch849 scene1 F001 伏笔（梦呓提及雾隐村异象，abnormal_object 未落地）
+3 次尝试全被 MANDATORY HARD BLOCK 卡死。修复：补 `_has_hard_high` 日志派生值
+（候选 gate issues 含 hard/high 前缀），控制流不变。门禁全过（1279+1）。
+
+**配套 commit `50cc7aaf9`**：runtime_config api_key_env 切至 AGNES_TOKEN_API_KEY
+（用户侧 token plan plus 挡位切换的配套配置，与批次启动 env 注入一致）。
+
+**失败章重跑中**：`--chapters 856 --resume`（run_856r，PID 启动 22:15:51，
+key 注入 HTTP 200，checkpoint 853 committed + [370:13, 805:3, 849:1]），
+依次重试 ch805（验证检测端+writer 修复）→ ch849（验证 atm repolish 恢复）。
+预计 2 章 × 12-20 分钟。ch805 计数 3/5、ch849 1/5 均未到跳过阈值。
+
+---
+
 ## 2026-10-24 run_826 完成验收（重试全过，仅 ch805 持续失败）+ 中纲 ch827-856 批准 + run_856 启动
 
 **run_826 最终验收（SUMMARY 4/6 成功、1 失败、1 跳过，5087.5s）**：重启段
