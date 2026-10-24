@@ -924,6 +924,12 @@ class PipelineOrchestrator:
                                             # 对比 baseline：新增 hard/high、危机翻坏、极性翻坏、新禁词/套话
                                             _cand_issues = set(_cand_gate.get("issues") or [])
                                             _new_issues = _cand_issues - _base_issues
+                                            # ch849 归因（2026-10-24）：_has_hard_high 此前未定义，atm repolish
+                                            # 拒绝路径的日志行抛 NameError → 被 except 吞掉 → 候选即使合格也不被采纳，
+                                            # 整条修复通道失效。此处为日志专用派生值，不改动控制流。
+                                            _has_hard_high = any(
+                                                ("hard" in x.lower() or "high" in x.lower()) for x in _cand_issues
+                                            )
                                             _score_ok = not _rbo_ok_candidate(_cand_gate, _final_det_g)
                                             _new_forbidden = bool(_forbidden) and not any(
                                                 v.get("name") in [iv.get("name") for iv in violations or []]
