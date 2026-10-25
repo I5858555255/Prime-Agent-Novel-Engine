@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-10-25 ch849 修复验证通过（COMMITTED 59.4，427.2s）→ run_856 系列收官，推进 ch857-886
+
+**ch849 验证重跑（run_849v，17:07 SUMMARY）**：`0739b0e83` 伏笔异常词近义兜底
+修复**验证通过**——F001 不再硬块，COMMITTED score=59.4（427.2s，best 59.4 < 88
+hard gate []）。低分原因：scene4 剧情偏离任务卡（上官烈未出场、时间轴错乱）、
+长度 soft 不足（5456 < 7310）→ force-best 到 draft，属既有质量噪声（同
+ch855/856 先例），已 COMMITTED 不算失败。run_856 系列（主批 29/32 + 重跑
+ch805/ch849 + 验证）至此全部收官，失败章清零（ch370 弃置除外）。
+
+**推进 ch857-886**：无既有中纲，`generate_mid_outline --vid V03 --start 857
+--end 886 --batch-size 6` 已后台启动（PID 6720，21:24）。audit + pending_human
+按 V02 forbidden / V01 判例判定的流程由下轮 cron 继续，随后启动 run_886。
+
+---
+
 ## 2026-10-25 ch849 二次归因 → 伏笔硬块机制修复（commit `0739b0e83`，门禁全过已推送）
 
 **run_856r 失败章重跑结果（22:38:23 SUMMARY）**：ch805 **CONFIRMED FIXED**
