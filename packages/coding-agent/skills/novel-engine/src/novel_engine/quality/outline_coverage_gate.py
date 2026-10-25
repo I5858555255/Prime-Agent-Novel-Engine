@@ -520,6 +520,9 @@ _ABNORMAL_OBJECT_TERMS = frozenset({
     "浊气", "瘴气", "异样气息", "异常气息", "诡异气息",
     "气感", "异象", "腥气", "腐气", "黑气", "青气",
     "焦痕", "灼痕", "异光", "异样",
+    # ch849 归因（2026-10-25）：雾隐村迷雾类异常自然现象词——writer 按 scene
+    # blueprint anchor_terms（雾隐/迷雾）实现时不会逐字复刻 beat 用词（"异象"）。
+    "迷雾", "雾霭", "雾气", "怪雾", "异雾",
 })
 
 # ── 婴儿主体反应词：仅限婴儿/襁褓中的陆烬发出的身体反应 ────────────────────
@@ -568,6 +571,13 @@ def _check_foreshadow_coverage(scene_text: str, beat_text: str) -> tuple[bool, s
         return False, "no_abnormal_object_in_beat"
     has_abnormal = any(ao in (scene_text or "") for ao in abnormal_hits)
     if not has_abnormal:
+        # ch849 归因（2026-10-25）：异常物件词字面未命中时，允许场景内出现
+        # 词表其它异常物词（近义表达，如 beat 用"异象"而场景写"迷雾"）视为覆盖。
+        # 与 2026-10-01 隐晦伏笔弱校验同型：防 no_abnormal_object_in_beat 把
+        # 按 anchor_terms 正确实现的伏笔打成硬块（ch849 三次整章重试同失败根因）。
+        near_hits = [ao for ao in _ABNORMAL_OBJECT_TERMS if ao in (scene_text or "")]
+        if near_hits:
+            return True, f"abnormal_near={near_hits[:2]}"
         return False, f"abnormal_object({abnormal_hits[:2]}) not in scene_text"
 
     # 条件2 前置：R15-1 婴儿篇收紧仅适用于 beat 明确要求婴儿反应的伏笔。

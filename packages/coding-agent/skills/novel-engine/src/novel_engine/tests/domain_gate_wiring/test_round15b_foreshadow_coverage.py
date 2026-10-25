@@ -137,6 +137,39 @@ def test_true_coverage_with_infant_reaction_near_subject():
     assert covered is True, f"Expected covered, got reason={reason}"
 
 
+# ── ch849 归因（2026-10-25）：beat 异常物词用"异象"，场景按 anchor_terms 写"迷雾" ──
+CH849_BEAT = "[FF001] 陆烬梦呓提及雾隐村异象"
+CH849_SCENE1_TEXT = (
+    "夜色如墨，陆烬斜倚在老槐树粗壮的根须旁，双眼紧闭，呼吸极浅。"
+    "他清楚对方在想什么，也清楚自己刚才梦呓中那句\u201c迷雾\u201d意味着什么。"
+    "昨夜那场梦里的雾霭还在眼前盘旋，那些模糊的身影似乎在拉扯他的脚踝。"
+)
+CH849_SCENE_NO_ANOMALY = "清晨官道，陆烬收拾行装，陈老根站在路口欲言又止。"
+
+
+def test_ch849_mist_anomaly_near_synonym_covered():
+    """beat 用"异象"，场景出现"迷雾/雾霭"（异常物词近义表达）→ 判覆盖。
+
+    修复前该伏笔 6 次尝试（run_856 两批）全被 abnormal_object(['异象']) 硬块
+    卡死，即使正文已按 scene blueprint anchor_terms（雾隐/迷雾）实现梦呓伏笔。
+    """
+    covered, reason = _check_foreshadow_coverage(CH849_SCENE1_TEXT, CH849_BEAT)
+    assert covered is True, f"Expected covered, got reason={reason}"
+
+
+def test_ch849_no_anomaly_still_miss():
+    """场景完全无异常物件词（梦呓未提及雾隐异象）→ 仍判 miss。"""
+    covered, reason = _check_foreshadow_coverage(CH849_SCENE_NO_ANOMALY, CH849_BEAT)
+    assert covered is False
+    assert "abnormal_object" in reason or "not in scene_text" in reason
+
+
+def test_mist_terms_added_to_abnormal_set():
+    assert "迷雾" in _ABNORMAL_OBJECT_TERMS
+    assert "雾霭" in _ABNORMAL_OBJECT_TERMS
+    assert "雾气" in _ABNORMAL_OBJECT_TERMS
+
+
 def test_true_coverage_short():
     covered, reason = _check_foreshadow_coverage(POSITIVE_COVERAGE_SHORT, BEAT)
     assert covered is True, f"Expected covered, got reason={reason}"
