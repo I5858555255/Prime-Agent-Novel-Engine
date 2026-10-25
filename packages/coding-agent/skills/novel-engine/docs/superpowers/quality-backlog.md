@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-10-25 ch849 二次归因 → 伏笔硬块机制修复（commit `0739b0e83`，门禁全过已推送）
+
+**run_856r 失败章重跑结果（22:38:23 SUMMARY）**：ch805 **CONFIRMED FIXED**
+（COMMITTED score=41.7，783.1s，best < 88 hard gate []，三连败终结）；
+ch849 **再次 FAILED**（560.2s，计数 1→2/5）。`_has_hard_high` NameError
+修复已生效（err 日志无 atm repolish 报错），失败链收敛为 F001 伏笔硬块。
+
+**ch849 第二次归因 → 异常物件词字面匹配与任务卡锚点不同源**：
+- task_card scene1 锚点 = 「雾隐/迷雾」（`anchor_terms`，`foreshadow_execution`
+  note "场景1通过梦呓提及雾隐村"），被拒不采纳正文（`final_gate_reject.txt`
+  16401B）**实质覆盖**：梦呓中那句"迷雾"、昨夜梦里雾霭等，唯无字面"异象"。
+- 检查端 `_check_foreshadow_coverage` 从 beat 文本（"陆烬梦呓提及雾隐村异象"）
+  jieba 提取 abnormal_object=['异象']，要求 scene_text **字面命中"异象"**
+  （严格子串），writer 按 anchor_terms 实现 → 6 次尝试（run_856 主批 + run_856r）
+  全被 `abnormal_object(['异象']) not in scene_text` 硬块卡死；
+  低分(<60)整章重写 iter=0 即 MANDATORY HARD BLOCK，3 次 attempt 全败。
+- 修复（`outline_coverage_gate.py`）：
+  1. `_ABNORMAL_OBJECT_TERMS` 补迷雾/雾霭/雾气/怪雾/异雾（异常自然现象词族）；
+  2. 异常物件词字面未命中时，允许词表其它异常物词在场景出现作近义兜底
+     （`abnormal_near`），与 2026-10-01 隐晦伏笔弱校验同型；无异常词的场景
+     仍判 miss（`test_t5_well_only_no_abnormal_object` 等严格用例全保持）。
+- 回归：test_round15b +3 case（近义覆盖/无异常词仍 miss/词表入列），相关
+  45 项测试全过；全量 pytest **1282 passed + 1 xfailed**，pyflakes 0 undefined。
+- 验证：ch849 单章重跑已启动（run_849v，16:59:55，计数 2/5，阈值 5）。
+- 判断：属确定性机制修复（检查词表/锚点不同源），非创作决策，未记待拍板。
+
+---
+
 ## 2026-10-24 run_856 完成验收（29/32）+ ch805/ch849 归因修复（3 commits）+ 失败章重跑启动
 
 **run_856 最终验收（SUMMARY 29/32 成功、2 失败、1 跳过，29777.2s）**：主批
