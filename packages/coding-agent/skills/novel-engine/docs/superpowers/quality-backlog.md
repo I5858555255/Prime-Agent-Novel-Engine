@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-10-27 run_886 两次外部终止（无 traceback）→ 重启续跑，ch857-860 已提交
+
+**现象**：run_886（ch857-886）10-25 21:36 启动后，进程在 ch860 低分整章重写阶段被
+外部终止（日志停在 LOW-SCORE ESCALATION round 1/2，无异常栈）；10-27 00:07 重启后
+ch860 COMMITTED（69.2，366.4s），进程在 ch861 低分重写阶段再次被外部终止（err 停在
+"Scene 1 polish degenerate, keep original"，无 traceback）。两次均无崩溃栈、
+runtime run_volume log 为空、checkpoint 无脏数据——判定为外部终止（机器关机/资源
+回收），非代码 bug（`_low_score_rewrite`/polish 均有全包 try/except；重启后 ch860
+正常走完低分重写路径佐证）。00:26 第三次重启，world state=861 续跑 ch861-886。
+失败计数仅 ch370 弃置（13 次，skip-after 不重试），ch857-860 已 COMMITTED。
+**观察项**：若后续再次出现"低分重写阶段进程消失"，需排查机器资源/父会话连带终止。
+
+---
+
 ## 2026-10-25 ch849 修复验证通过（COMMITTED 59.4，427.2s）→ run_856 系列收官，推进 ch857-886
 
 **ch849 验证重跑（run_849v，17:07 SUMMARY）**：`0739b0e83` 伏笔异常词近义兜底
