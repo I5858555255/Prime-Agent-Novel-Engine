@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-10-27 run_916 收官（28/31，ch891/893 待用户拍板）→ 推进 ch917-946
+
+**SUMMARY（06:19:11）**：28/31 succeeded, 2 failed (ch891, ch893), 1 skipped (ch370),
+10041.2s（约 2.8h）。分数带 39.4-88.9，多数 60-83。
+**ch891 FAILED（score=66.3）**：median-of-3 三评极差>15 → unstable，高分（≥60）走
+既有机制终端"强制人工复核（不自动重采）"；已入 needs_human_review（idx 12381）。
+**ch893 FAILED（score=88.9）**：dim-gate blocked（≥88 高分被 plot_consistency high
+拦截：场景4 陆烬目送柳踏歌离去后转身回庙又见其背影/袖口，时间空间矛盾；F001
+玉佩核心线索场景1 已执行未收束；另字数不足 6328<7310）→ 机制分支 saved draft
+pending human review，draft 已落 chapter_893.txt（未写 needs_human_review 队列，
+draft 即复核入口）。
+**处置**：两章均机制终端（非代码 bug，不改码）；均标注**待用户拍板**（ch891 评审
+噪声倾向、ch893 具体内容硬伤可复核后采纳/重写），不阻塞推进。已启动 ch917-946
+中纲生成。
+
+---
+
 ## 2026-10-27 run_886 收官（26/28，ch883 高分 unstable 待用户拍板）→ 推进 ch887-916
 
 **SUMMARY（03:16:25）**：26/28 succeeded, 1 failed (ch883), 1 skipped (ch370), 11316.4s
