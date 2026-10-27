@@ -1,0 +1,273 @@
+{
+  "meta": {
+    "vid": "V03",
+    "range": [
+      977,
+      1006
+    ],
+    "node_chapters_in_range": [
+      988
+    ],
+    "generated_at": "2026-10-27T10:40:04+00:00",
+    "batch_size": 6,
+    "status": "draft"
+  },
+  "entries": {
+    "1000": {
+      "chapter": 1000,
+      "core_event": "陆烬利用残卷法诀辅助盟友破解资源分配不公的局中局",
+      "characters": [
+        "C001",
+        "C004"
+      ],
+      "boundary_note": null
+    },
+    "1001": {
+      "chapter": 1001,
+      "core_event": "陆烬复盘筑基成果，发现神魂共鸣异常并警惕外部觊觎",
+      "characters": [
+        "C001"
+      ],
+      "boundary_note": null
+    },
+    "1002": {
+      "chapter": 1002,
+      "core_event": "陆烬在太虚仙门考核中展现惊人神识，引起外门长老注意",
+      "characters": [
+        "C001"
+      ],
+      "boundary_note": null
+    },
+    "1003": {
+      "chapter": 1003,
+      "core_event": "测试后陆烬被分配至资源匮乏的杂役峰，目睹同脉修士排挤寒门弟子",
+      "characters": [
+        "C001",
+        "C004"
+      ],
+      "boundary_note": null
+    },
+    "1004": {
+      "chapter": 1004,
+      "core_event": "陆烬在杂役峰结识老仆，获得《太上养魂经》残卷的初步提示",
+      "characters": [
+        "C001",
+        "C005"
+      ],
+      "boundary_note": null
+    },
+    "1005": {
+      "chapter": 1005,
+      "core_event": "摄魂阁暗探潜入仙门外围，试图接近神魂异动的陆烬，被门规压制",
+      "characters": [
+        "C001",
+        "C006"
+      ],
+      "boundary_note": null
+    },
+    "1006": {
+      "chapter": 1006,
+      "core_event": "考核结果公布，陆烬名列末席却因特殊资质被内门一位长老强行保下",
+      "characters": [
+        "C001",
+        "C007"
+      ],
+      "boundary_note": null
+    },
+    "977": {
+      "chapter": 977,
+      "core_event": "太虚仙门内门弟子展示《太上养魂经》初级功法，陆烬观摩却因神魂异样引来长老侧目",
+      "characters": [
+        "C001",
+        "C003"
+      ],
+      "boundary_note": null
+    },
+    "978": {
+      "chapter": 978,
+      "core_event": "陆烬被分派至杂务堂清理陈年魂灰，在灰堆中发现刻有摄魂阁徽记的残符",
+      "characters": [
+        "C001",
+        "C004"
+      ],
+      "boundary_note": null
+    },
+    "979": {
+      "chapter": 979,
+      "core_event": "陆烬试图用残符对照自身神魂变化，导致杂务堂出现异常魂光波动，惊动巡值执事",
+      "characters": [
+        "C001",
+        "C005"
+      ],
+      "boundary_note": null
+    },
+    "980": {
+      "chapter": 980,
+      "core_event": "执事带走残符并质问陆烬，陆烬隐瞒两界神魂特性，仅称误触古物反应",
+      "characters": [
+        "C001",
+        "C005"
+      ],
+      "boundary_note": null
+    },
+    "981": {
+      "chapter": 981,
+      "core_event": "执事上报结果，陆烬被临时禁足内堂静思，期间陈老根远程传讯告知外界局势紧张",
+      "characters": [
+        "C001",
+        "C002",
+        "C005"
+      ],
+      "boundary_note": null
+    },
+    "982": {
+      "chapter": 982,
+      "core_event": "陆烬在静思中察觉自身神魂波动与门内阵法共鸣异常，暗中记录数据为筑基做准备",
+      "characters": [
+        "C001"
+      ],
+      "boundary_note": null
+    },
+    "983": {
+      "chapter": 983,
+      "core_event": "陆烬在仙门大比预选中遭遇同门排挤，被指派清理废弃丹房以测试心性",
+      "characters": [
+        "C001",
+        "C005"
+      ],
+      "boundary_note": null
+    },
+    "984": {
+      "chapter": 984,
+      "core_event": "陆烬在丹房发现上古炼魂残阵，试图运转呼吸法却被反噬，引发神魂异动",
+      "characters": [
+        "C001",
+        "C007"
+      ],
+      "boundary_note": null
+    },
+    "985": {
+      "chapter": 985,
+      "core_event": "摄魂阁探子察觉丹房异动，暗中调查陆烬神魂特殊性，陆烬被误认为异类",
+      "characters": [
+        "C001",
+        "C006"
+      ],
+      "boundary_note": null
+    },
+    "986": {
+      "chapter": 986,
+      "core_event": "陆烬为证明清白参与夜间巡守，见证各脉弟子勾结偷窃资源，目睹虚伪表象",
+      "characters": [
+        "C001",
+        "C005",
+        "C008"
+      ],
+      "boundary_note": null
+    },
+    "987": {
+      "chapter": 987,
+      "core_event": "陆烬在巡守中护住被欺压的外门弟子，展现领导力，引起内门长老关注",
+      "characters": [
+        "C001",
+        "C008",
+        "C006"
+      ],
+      "boundary_note": null
+    },
+    "989": {
+      "chapter": 989,
+      "core_event": "陆烬整理心境准备筑基，在静室中回顾修炼历程，神魂逐渐稳固待发",
+      "characters": [
+        "C001"
+      ],
+      "boundary_note": null
+    },
+    "990": {
+      "chapter": 990,
+      "core_event": "陆烬于太虚仙门演武场旁观摩各脉弟子切磋，暗记《太上养魂经》残卷中的引气法门在实战中的应用差异",
+      "characters": [
+        "C001"
+      ],
+      "boundary_note": null
+    },
+    "991": {
+      "chapter": 991,
+      "core_event": "太虚仙门内务堂发布资源分配新规，陆烬因出身被低阶弟子排挤，被迫在杂役峰清理堆积的陈年灵药废渣",
+      "characters": [
+        "C001",
+        "C004"
+      ],
+      "boundary_note": null
+    },
+    "992": {
+      "chapter": 992,
+      "core_event": "陆烬在杂役峰偶然发现一株具有微弱安神效果的灵草，尝试结合残卷入门法诀进行自我调理，神魂波动出现细微异常",
+      "characters": [
+        "C001"
+      ],
+      "boundary_note": null
+    },
+    "993": {
+      "chapter": 993,
+      "core_event": "一名外门执事察觉陆烬夜间气息不稳，以违规修炼为由将其禁闭于思过崖，实为测试其神魂韧性",
+      "characters": [
+        "C001",
+        "C005"
+      ],
+      "boundary_note": null
+    },
+    "994": {
+      "chapter": 994,
+      "core_event": "陆烬在思过崖凭借残卷法诀压制神魂躁动，并在崖壁上刻录修炼心得，一名路过的游方散修驻足凝望",
+      "characters": [
+        "C001"
+      ],
+      "boundary_note": null
+    },
+    "995": {
+      "chapter": 995,
+      "core_event": "游方散修离去后，陆烬感其神识扫过，惊觉自身神魂特殊气息已留痕迹，内心警惕摄魂阁传闻中的收徒迹象",
+      "characters": [
+        "C001",
+        "C006"
+      ],
+      "boundary_note": null
+    },
+    "996": {
+      "chapter": 996,
+      "core_event": "陆烬适应筑基气机，探索《太上养魂经》残卷中的神魂凝练法门",
+      "characters": [
+        "C001"
+      ],
+      "boundary_note": null
+    },
+    "997": {
+      "chapter": 997,
+      "core_event": "陆烬在秘境试炼中应对血脉歧视，暗中测试神魂防御极限",
+      "characters": [
+        "C001",
+        "C005"
+      ],
+      "boundary_note": null
+    },
+    "998": {
+      "chapter": 998,
+      "core_event": "太虚仙门各脉长老会议，陆烬借机观察《太上养魂经》深层禁忌",
+      "characters": [
+        "C001",
+        "C006"
+      ],
+      "boundary_note": null
+    },
+    "999": {
+      "chapter": 999,
+      "core_event": "陆烬遭遇摄魂阁外围探子，对方仅记录其神魂波动未泄露全貌",
+      "characters": [
+        "C001",
+        "C007"
+      ],
+      "boundary_note": null
+    }
+  }
+}
