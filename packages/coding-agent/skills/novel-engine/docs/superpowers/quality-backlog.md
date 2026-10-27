@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-10-28 run_1036 收官（28/31，ch1017/ch1022 因中纲批准遗漏失败）→ 根因修复 + 中纲 ch1037-1066 全批准 → 推进 run_1037
+
+**SUMMARY（06:24:25）**：28/31 succeeded, 2 failed (ch1017, ch1022), 1 skipped (ch370) in
+10294.7s（≈2.9h，平均 ~343s/章）。分数带 50.2-84.5（ch1019=84.5、ch1026=81.45 最高；
+ch1025=50.2 最低）。hard gate 提示（均 COMMITTED）：ch1011/ch1014 称谓裸切。
+**失败归因（根因=中纲批准遗漏，非代码 bug）**：ch1017/ch1022 均 directing_error
+（task card 严格校验 3 次重试失败，失败计数各 1/5）。err 显示 outline coverage 要求
+的关键词来自 `吸氧证道_V2_1_完整大纲.md`（ch1017"上官烈持续威胁"、ch1022"这场争论
+略有耳闻"），与 V03 中纲（ch1017"研读残卷发现二阶法门"、ch1022"皇室秘藏残物线索"）
+完全不符——**director 回退使用了 V2_1 松散参考而非 V03 中纲**。根因：上轮批准只把
+6 条 pending 写了 entry.status=approved，其余 24 条 status=None → `_load_mid_outline_entry`
+逐条门禁回退文件级 meta.status=draft → 判定不可用。**修复**：全 30 条
+entry.status=approved 写回（commit `15ed8fada`）；已 COMMITTED 28 章正文抽查
+（ch1007/1025/1036 draft）确认内容在 V03 线内（玉盒/太虚仙门/摄魂阁/神魂异象），
+V2_1 仅弱提示、正文同卷自洽且已过质量门 → **不重跑**。ch1017/ch1022 失败计数 1/5，
+run_1037 按 V03 中纲自动重试。
+**批准纪律（防再犯）**：audit 通过后必须**全 30 条** entry.status=approved 写回
+（不得只写 pending 条），再 commit。
+**中纲 ch1037-1066 批准（30/30，commit `8b71ad321`）**：audit 首跑 26/4/0；4 条 pending
+（1043/1046/1057/1060）按 V01 判例放行（1043 外围瞥见黑袍修士、1046 呼吸残篇神魂
+微震=筑基期合法修炼且未外泄、1057"险些暴露"=未坐实、1060"惊觉势力临近"未点名身份
+未点全貌）；全 30 条 status=approved 写回，boundary_note 清空。
+**下一步**：启动 run_1037（--chapters 1066 --resume，含 ch1017/ch1022 自动重试）。
+
+---
+
 ## 2026-10-28 run_1006 收官（16/17，0 failed，ch958/ch972 重试成功移出队列）→ 中纲 ch1007-1036 全批准 → 推进 run_1036
 
 **SUMMARY（02:21:59）**：16/17 succeeded, 0 failed, 1 skipped (ch370) in 7057.8s
