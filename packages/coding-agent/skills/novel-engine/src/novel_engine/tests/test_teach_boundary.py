@@ -68,3 +68,27 @@ def test_teach_verb_after_proper_name_still_hard():
     """"教"前为代词/人名（非复合名词尾）仍正常判定。"""
     s = "他教陆烬那套呼吸法门"
     assert _has_teach_violation(s) is True
+
+
+def test_nominalized_teach_verb_compound_allowed():
+    """ch958 归因（2026-10-27）："大乾皇室历代传功谱系"中"传功"作定语修饰
+    体系名词（传承谱系），非传授动作。修复前婴儿篇"传功+全句含陆烬"规则
+    误伤，导致 canon 传授锁硬阻断成年线设定名词。
+    """
+    s = "他直言，陆烬在面对神魂撕裂之痛与外界威逼时的平静，远比大乾皇室历代传功谱系中的任何一位奇才都要沉稳。"
+    assert _has_teach_violation(s) is False
+
+
+def test_nominalized_teach_verb_other_variants():
+    """名词化变体（传法碑/传功谱系作文献名词）均放行。"""
+    for s in (
+        "传法碑上刻着历代宗师的姓名",
+        "传功谱系早已失传，门中无人知晓",
+    ):
+        assert _has_teach_violation(s) is False, s
+
+
+def test_teach_verb_real_still_hard_after_nominal_exempt():
+    """名词化豁免不放松真实传授：无后缀"趁夜传功"、受事"传功给陆烬"仍 hard。"""
+    assert _has_teach_violation("婴儿经脉受损，修士趁夜传功") is True
+    assert _has_teach_violation("陈老根把呼吸法门传功给陆烬") is True

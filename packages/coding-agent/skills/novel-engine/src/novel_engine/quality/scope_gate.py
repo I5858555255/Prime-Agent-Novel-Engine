@@ -235,6 +235,11 @@ _CULTIVATION_OBJECTS = frozenset({
 })
 _EXPLICIT_RECIPIENT = frozenset({"传给", "教给", "授徒"})
 _FALSE_TRANSMIT = frozenset({"传来", "传说", "传递", "祖传", "外传"})
+# CC round-27：功法类动词名词化豁免——"传功谱系/传法碑"中"传功/传法"作定语
+# 修饰体系/文献名词（大乾皇室历代传功谱系=传承谱系），非传授动作。
+# 单字后缀表与 _CULTIVATION_OBJECTS 无重叠；真实传授（"传功给陆烬"的受事结构、
+# "修士趁夜传功"无后缀、法门/口诀/功法近窗）不受影响。
+_TEACH_NOUN_SUFFIXES = frozenset("谱系录典志史籍册卷碑图")
 
 
 def _has_teach_violation(s: str) -> bool:
@@ -303,6 +308,12 @@ def _has_teach_violation(s: str) -> bool:
         if tv not in s:
             continue
         tv_idx = s.find(tv)
+        # CC round-27：名词化豁免——"传功"后接体系/文献名词（谱系/碑/典…）时
+        # 作定语修饰（ch958 实证：大乾皇室历代传功谱系），非传授动词，跳过；
+        # 婴儿篇"修士趁夜传功"（无后缀）与"传功给陆烬"（受事结构）不受影响。
+        _tv_after = s[tv_idx + len(tv):tv_idx + len(tv) + 2]
+        if tv in ("传功", "传法") and any(ch in _tv_after for ch in _TEACH_NOUN_SUFFIXES):
+            continue
         ctx = s[max(0, tv_idx - 6):tv_idx + 18]
         # CC round-26d：否定传授（并未/没有传功）→ soft
         if any(neg in s[max(0, tv_idx - 3):tv_idx] for neg in ("并未", "没有", "不曾", "从未", "未", "不")):
