@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-10-27 run_946 收官（29/33，ch891/919/946 待用户拍板）→ 推进 ch947-976
+
+**SUMMARY（10:15:00）**：29/33 succeeded, 3 failed (ch891, ch919, ch946), 1 skipped (ch370),
+13065.1s（约 3.6h）。新章分数带 54.75-85.1，多数 60-78。
+**ch893 重试 COMMITTED（58.4）**：run_916 的 dim-gate blocked 章重试通过（无 hard gate）。
+**ch891 重试 FAILED（67.6）**：三评极差>15 → unstable，既有机制终端"强制人工复核
+（不自动重采）"，累计失败计数 2（<5 不跳过）；draft 覆盖落盘 chapter_891.txt。
+**ch919 FAILED（67.55）**：三评极差>15 → unstable 机制终端；draft 落 chapter_919.txt。
+**ch946 FAILED（69.05）**：三评极差>15 → unstable 机制终端；draft 落 chapter_946.txt。
+（ch919/ch946 计数各 1，均 <5 不跳过。）
+**处置**：三章均为 unstable 机制终端（非代码 bug，不改码）；全部标注**待用户拍板**
+（采纳 draft / 人工重采），不阻塞推进。已启动 ch947-976 中纲生成。
+
+---
+
 ## 2026-10-27 run_916 收官（28/31，ch891/893 待用户拍板）→ 推进 ch917-946
 
 **SUMMARY（06:19:11）**：28/31 succeeded, 2 failed (ch891, ch893), 1 skipped (ch370),
