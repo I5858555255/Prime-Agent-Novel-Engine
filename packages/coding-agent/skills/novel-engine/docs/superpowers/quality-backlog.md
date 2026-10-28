@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-10-28 run_1037 收官（31/33，ch1041 因卷细纲/中纲双权威冲突失败）→ 根因修复 + 中纲 ch1067-1096 全批准 → 推进 run_1096
+
+**SUMMARY（10:31:06）**：31/33 succeeded, 1 failed (ch1041), 1 skipped (ch370) in
+14015.4s（≈3.9h，平均 ~455s/章）。分数带 43.25-87.6（ch1056=87.6、ch1051=43.25
+最低）；过硬门但 COMMITTED 不为失败（ch1052 称谓裸切陆烬↔李淳）。ch1017/ch1022
+自动重试成功（63.5/78.2），ch867/ch883 仍待用户拍板（不阻塞）。
+**ch1041 失败归因（机制根因=卷细纲/中纲双权威冲突）**：directing_error 3 次
+（outline coverage 要求"内门峰/具体/正式"在 task_card，报错文本"第1041章大纲核心
+任务：内门峰脉资源分配的具体规则正式向陆烬展开"来自**卷级细纲**
+`parse_chapter_tasks(volume_outline)`），而 approved 中纲 ch1041 core_event 为
+"夜间巡视中陆烬发现仙门禁地外有神秘人窥探，疑似摄魂阁外围探子"——execution 侧
+（中纲 hint）与校验侧（卷细纲任务）双权威不一致，task_card 必缺卷细纲关键词 →
+3 次重试 directing_error → 低分整章重写无增益（56.4<60）→ 终门 canon 硬词
+"功法"拦截（正文"核心功法传授，仅限主脉直系"系卷细纲任务次生，制度条款朗读被
+teach 检测误拦）→ FAILED（fail 前 best=49.1）。
+**修复（commit `2299a76ab`）**：`_build_shared_context` 中 approved 中纲存在时
+`chapter_outline_task` 以中纲 core_event 为权威覆盖卷细纲任务——mandate、outline
+校验与执行侧三者同源自洽（该修复同时根治 ch1017/ch1022 的 director 回退类同源
+问题）。补 2 个 hermetic 回归测试（中纲覆盖卷细纲/无中纲保留卷细纲）。门禁：
+pyflakes 0 undefined name；全量 pytest **1287 passed + 1 xfailed**。
+**未修项（记录）**：scope_gate teach 检测对"制度条款朗读"（引语/禁令标记下的
+功法传授字样）存在语境盲区，本次为卷细纲任务次生、修复 A 后不再触发；检测器
+精确度优化列为后续机制项，不阻塞推进。atm repolish scene3 `'str' object has no
+attribute 'get'` 为既有防护路径（坏场回滚，已有回归测试），非新 bug。
+**中纲 ch1067-1096 批准（30/30，commit `ff798fd1e`）**：audit 首跑 18/12/0；12 条
+pending 按 V01 判例全部放行（1072/1075/1078/1080/1083/1088/1089/1090/1091/1092
+均 f003 摄魂飞升/f009 两界神魂埋设边界——弱暗示未坐实/间接察觉/外围瞥见/未点
+全貌可放行，无 V02 forbidden 命中；1074 外部察觉风险未坐实；**ch1081 新角色
+血冥教使者/太虚长老未登记——角色出现合法放行，登记表待补充（书库维护项）**）。
+全 30 条 status=approved 写回，boundary_note 清空。
+**下一步**：启动 run_1096（--chapters 1096 --resume）。ch1041 归入 run_1096 自动
+重试（中纲已 approved，修复后按中纲出卡）。
+
+---
+
 ## 2026-10-28 run_1036 收官（28/31，ch1017/ch1022 因中纲批准遗漏失败）→ 根因修复 + 中纲 ch1037-1066 全批准 → 推进 run_1037
 
 **SUMMARY（06:24:25）**：28/31 succeeded, 2 failed (ch1017, ch1022), 1 skipped (ch370) in
