@@ -162,3 +162,49 @@ def test_legacy_approved_file_without_entry_status_usable(tmp_path):
                                "characters": ["C001", "C002"], "boundary_note": None}})
     director, _ = _build_director(tmp_path)
     assert director._load_mid_outline_entry(25) is not None
+
+
+VOLUME_TASK_25 = "内门峰脉资源分配的具体规则正式向主角展开"
+_V01_MARKER = "## 四、第一卷《昆仑遗子》"
+
+
+def _write_outline_with_task(tmp_path, task: str = VOLUME_TASK_25) -> None:
+    """写入带 V01 卷标记与逐章任务表格的卷级大纲文件（T1 候选路径 planning/）。"""
+    d = tmp_path / "planning"
+    d.mkdir(parents=True, exist_ok=True)
+    content = (
+        _V01_MARKER + "\n\n"
+        "| 章 | 核心任务 |\n"
+        "| --- | --- |\n"
+        f"| 25 | {task} |\n"
+    )
+    (d / "吸氧证道_V2_1_完整大纲.md").write_text(content, encoding="utf-8")
+
+
+def test_mid_outline_core_event_overrides_volume_task(tmp_path):
+    """ch1041 根因回归：approved 中纲存在时，chapter_outline_task 以中纲
+    core_event 为权威，覆盖卷细纲逐章任务。
+
+    此前 chapter_outline_task 取卷细纲（"内门峰…"）而执行侧 hint 取中纲
+    （"夜间巡视…"），outline coverage 按卷细纲校验 task_card 必缺关键词 →
+    3 次 directing_error。统一后 mandate、outline 校验与执行侧三者同源。
+    """
+    _write_outline_with_task(tmp_path)
+    _write_mid_outline(tmp_path, "approved",
+                       {"25": {"chapter": 25, "core_event": SAMPLE_EVENT_25,
+                               "characters": ["C001", "C002"], "boundary_note": None}})
+    director, _ = _build_director(tmp_path)
+    ctx, _ = director._build_shared_context(25)
+    assert director._outline_loaded, "volume outline must be loaded for this regression"
+    assert ctx["chapter_outline_task"] == SAMPLE_EVENT_25, \
+        "approved mid-outline core_event must override volume outline task"
+
+
+def test_volume_task_kept_without_mid_outline(tmp_path):
+    """无 approved 中纲时，chapter_outline_task 保留卷细纲任务（防覆盖逻辑错乱）。"""
+    _write_outline_with_task(tmp_path)
+    director, _ = _build_director(tmp_path)
+    ctx, _ = director._build_shared_context(25)
+    assert director._outline_loaded, "volume outline must be loaded"
+    assert ctx["chapter_outline_task"] == VOLUME_TASK_25, \
+        "volume outline task must be kept when no approved mid-outline entry exists"

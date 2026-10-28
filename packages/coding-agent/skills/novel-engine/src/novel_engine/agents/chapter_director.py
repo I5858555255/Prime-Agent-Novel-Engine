@@ -1045,6 +1045,15 @@ class ChapterDirector:
         # 中纲（章级意图）层：无节点章优先用 approved 中纲作强约束
         mid_entry = self._load_mid_outline_entry(chapter_num)
         mid_outline_hint = self._build_mid_outline_hint(mid_entry)
+        # ch1041 根因修复（2026-10-28）：approved 中纲存在时，章级任务以中纲
+        # core_event 为权威，覆盖卷细纲逐章任务。此前 chapter_outline_task 取卷
+        # 细纲（ch1041"内门峰…"）而执行侧 hint 取中纲（"夜间巡视…"），outline
+        # coverage 按卷细纲校验 task_card 必缺关键词 → 3 次 directing_error。
+        # 统一后 mandate、outline 校验与执行侧三者同源，任务自洽。
+        if mid_entry:
+            _mid_core = str(mid_entry.get('core_event') or '').strip()
+            if _mid_core:
+                _chapter_outline_task = _mid_core
         _outline_override_hint = ''
         if _milestone_node and _chapter_outline_task:
             _mg = _milestone_node.get('description', '')
