@@ -208,6 +208,36 @@ def test_red_line_actual_teach_tuna():
     assert "吐纳" in [h["term"] for h in r["hard"]]
 
 
+def test_red_line_ch1088_teach_follow_breath():
+    """ch1088 实证：『教陆烬跟随他的呼吸』式教学跟练 → hard（A 路线红线）。
+
+    原句来自 run_1096 ch1088 hard gate 拦截
+    （scope_hard_leak:scope硬词 ['呼吸']）；陆烬跟练/模仿呼吸节奏=教学式
+    跟练，A 路线禁止。
+    """
+    reset_config_cache()
+    r = detect_scope_violations(
+        "陈老根的呼吸节奏开始变得沉稳而悠长，他在教陆烬跟随他的呼吸。"
+        + "x" * 500,
+        1088, {"chapter_start_marker": "当夜", "max_time_progression": "数时辰"}, _ROOT,
+    )
+    assert "呼吸" in [h["term"] for h in r["hard"]]
+
+
+def test_exempt_observer_breath_teaching():
+    """陆烬旁观陈老根演示呼吸节奏（无跟练动词）→ 豁免（旁观合法）。
+
+    A 路线判例：呼吸法仅陈老根练/提及，陆烬最多旁观或被告知结果。
+    """
+    reset_config_cache()
+    r = detect_scope_violations(
+        "陈老根缓缓调整自己的呼吸节奏，陆烬坐在一旁静静看着，不敢打扰。"
+        + "x" * 500,
+        1088, {"chapter_start_marker": "当夜", "max_time_progression": "数时辰"}, _ROOT,
+    )
+    assert "呼吸" not in [h["term"] for h in r["hard"]]
+
+
 def test_red_line_lu_jin_positive_qi_gan():
     """陆烬肯定具备气感（非反问语境）→ hard。"""
     reset_config_cache()
