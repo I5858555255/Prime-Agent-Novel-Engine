@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-10-30 run_1246 收官（30/34，ch1224/1228/1244）→ 归因（均非确定性 bug，不改码）→ 中纲 ch1247-1276 生成批准 → 推进 run_1276
+
+**SUMMARY（06:41:33）**：30/34 succeeded, 3 failed, 1 skipped (ch370) in 11486.7s（≈3.2h）。上批三条 unstable（ch1203/1206/1207）全部自动重试 COMMITTED（70.4/71.3/80.6）——待拍板队列清零。分数带 32.85-88.8（ch1235=32.85 最低、COMMITTED；ch1244=88.8 最高但 FAILED；ch1233=88.2 force publish，hard gate blocked but force publish 88.2 det=[] high=True）。
+**失败归因（三条均非确定性机制 bug，不阻塞、不改码）**：
+- **ch1224 FAILED（67.3）**：note「三评极差>15，评审极不稳定，强制人工复核（不自动重采）」——unstable 评审发散，下批自动重试。
+- **ch1228 FAILED（65.1）**：同上 unstable 评审发散，下批自动重试。
+- **ch1244 FAILED（88.8）**：note「score=88.8>=88 dim-gate blocked（high=[] det_hard=[] det_soft=[长度：实际 4415 < 目标 8600*0.85=7310]），saved draft pending human review」——新失败类型：高分触发 dim-gate 后 det_soft 长度不足被拦，draft 已保存待人工复核。属内容质量（篇幅不达标），非机制 bug，下批自动重试。**若重试再次长度不足，标"待用户拍板"评估是否调低该章目标字数**。
+
+---
+
 ## 2026-10-30 run_1216 收官（29/33，ch1203/1206/1207 unstable）→ 归因（均非确定性 bug，不改码）→ 中纲 ch1217-1246 生成批准 → 推进 run_1246
 
 **SUMMARY（02:24:09）**：29/33 succeeded, 3 failed, 1 skipped (ch370) in 11969.8s（≈3.3h）。上批待拍板章全部自动重试 COMMITTED：**ch1158（86.2 未达 88 阈值）→ COMMITTED 65.5；ch1172（unstable 待拍板）→ COMMITTED 78.8——待拍板队列清零**。分数带 33.0-79.7（ch1199=33.0 最低、COMMITTED 且 note 含 hard gate 跨场危机 off-card 未承接×2 但不算失败；ch1211=79.7 最高）。
