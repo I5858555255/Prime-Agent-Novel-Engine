@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-31 run_1426 收官（30/32，ch1421 长度硬项待拍板）→ ch1394 重试上岸（待拍板解除）→ 中纲 ch1427-1456 生成批准 → 推进 run_1456
+
+- SUMMARY 12:32:10（10846.7s≈3.0h）：30/32 succeeded，**1 failed（ch1421）**，1 skipped（ch370 累计 15 次跳过）。
+- **ch1394 重试上岸**：COMMITTED 67.9（best<88 低分提交，hard gate 无阻塞）——上批"三评发散待人工裁决终稿"条件未触发，**待拍板事项解除**，无需人工裁决。
+- 新章 1397-1426（含节点章 1422）除 ch1421 外全部 COMMITTED；分数带 50.3（ch1420）–93.0（ch1426，hard gate blocked but force publish high=True）。硬项命中均最终 COMMITTED 不算失败：ch1397 [跨场危机]、ch1422/ch1426 [称谓] 陆烬/李淳无锚点裸切（低分提交 / force publish）。
+- **ch1421 FAILED（89.2）**：单次生成即失败。note=score=89.2≥88 dim-gate blocked（high=[] det_hard=[] det_soft=['[长度] 字数不足：实际 5613 < 目标 8600*0.85=7310']），saved draft pending human review；errors=[]（无确定性错误），累计失败 1<5，下批自动重跑。**判定：确定性内容硬项（长度不足）非代码 bug**——_det_fulltext_fix 修复通道仅覆盖 [称谓]/[canon]/[泄漏] 定点项，长度不足无自动扩写路径（A 类整章重写针对 best<88 低分章，89.2 高分不适用）。**待用户拍板**：① 是否需为"长度不足"类 det_soft 增设扩写修复通道（同 #4 判例）；② 若下批重跑仍字数不足，需人工复核 saved draft 终稿（chapters/draft/ 下 ch1421 草稿）。
+- 中纲 ch1427-1456 已生成并批准，run_1456 已启动（checkpoint 1426，ch1421 自动重试）。
+
+---
+
 ## 2026-10-31 run_1396 收官（31/33，ch1394 三评发散待人工复核）→ ch1338/ch1352 重试上岸 → 中纲 ch1397-1426 生成批准 → 推进 run_1426
 
 - SUMMARY 09:17:34（9791.0s≈2.7h）：31/33 succeeded，**1 failed（ch1394）**，1 skipped（ch370 累计 14 次跳过）。
