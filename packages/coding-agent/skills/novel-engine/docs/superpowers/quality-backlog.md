@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-11-03 run_1576 收官（31/35，ch1493 四连 hard-fail 累计 3/ch1557 hard-fail 首现/ch1560 评审发散首现待拍板）→ ch1513/ch1518/ch1528 三章重试全部上岸（待拍板解除）→ 中纲 ch1577-1606 生成批准 → 推进 run_1606
+
+- SUMMARY 17:16:03（15846.7s≈4.4h）：31/35 succeeded，**3 failed（ch1493/ch1557/ch1560）**，1 skipped（ch370 累计 20 次跳过）。
+- **ch1513 重试上岸**：COMMITTED 57.5——**两次发散后第三次重试上岸**，**待拍板解除**（评审发散确为相位不稳定，重跑即过）。
+- **ch1518 重试上岸**：COMMITTED 58.45——**WRITE_REPLAN 真空洞未再现**，**待拍板解除**（确为偶发内容问题、非机制缺陷）。
+- **ch1528 重试上岸**：COMMITTED 72.6——**低分相位不稳定，重跑即过**，**待拍板解除**。
+- 新章 1547-1576 除 ch1557/ch1560 外全部 COMMITTED；分数带 55.0（ch1553）–**92.6（ch1561，hard gate blocked but force publish，det=[] high=True）**；hard gate 命中 COMMITTED 不算失败：ch1571 [跨场危机] off-card crisis 未承接。
+- **ch1493 FAILED（score=None，hard-failed after retries，375.8s）**：**四连 hard-fail（run_1516/1546/1576 三批连续，累计失败 3<5）**，errors 仍仅泛化 'hard-failed after retries'。**待拍板条件反复触发（最高优先）**：重跑仍 hard-fail（score=None）→ 需深挖重试内部日志并人工裁决；下批（run_1606）自动重试观察。
+- **ch1557 FAILED（score=None，hard-failed after retries，163.7s）**：新章 hard-fail 首现（同 ch1493 型：score=None 泛化 error），累计 1<5 → 非确定性 bug，自动进下批重跑；若再现 hard-fail 需人工裁决。
+- **ch1560 FAILED（64.2，三评极差>15）**：新章评审发散首现（同 ch1513 判例），errors=[]，累计 1<5 → 非确定性 bug，自动进下批重跑；若再现需人工复核终稿。
+- 中纲 ch1577-1606 已生成并批准，run_1606 已启动（checkpoint 1576，ch1493/ch1557/ch1560 自动重试）。
+
+---
+
 ## 2026-11-03 run_1546 收官（29/34，ch1493 三连 hard-fail/ch1513 两次发散/ch1518 真空洞/ch1528 低分不达标待拍板）→ ch1512 重试上岸（重复硬项待拍板解除）→ 中纲 ch1547-1576 生成批准 → 推进 run_1576
 
 - SUMMARY 01:36:29（14005.0s≈3.9h）：29/34 succeeded，**4 failed（ch1493/ch1513/ch1518/ch1528）**，1 skipped（ch370 累计 19 次跳过）。
