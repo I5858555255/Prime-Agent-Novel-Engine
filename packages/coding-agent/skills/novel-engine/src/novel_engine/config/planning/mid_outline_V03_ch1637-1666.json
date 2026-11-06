@@ -112,12 +112,13 @@
     },
     "1647": {
       "chapter": 1647,
-      "core_event": "陆烬在后山静修时，感应到远处深渊中传来细微的神魂波动异响",
+      "core_event": "陆烬在后山休憩时（非修炼姿态），偶然感应到远处深渊中传来细微的神魂波动异响",
       "characters": [
         "C001"
       ],
       "boundary_note": null,
-      "status": "approved"
+      "status": "approved",
+      "purpose": "修订：原文'后山静修'诱导 writer 写盘膝闭目调息（A路线#8边缘），改为休憩旁观姿态"
     },
     "1648": {
       "chapter": 1648,
