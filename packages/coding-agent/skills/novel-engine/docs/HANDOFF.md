@@ -2,13 +2,13 @@
 
 > 给"下一个接手 agent"的唯一现状入口。历史操作细节在 `docs/superpowers/quality-backlog.md`（条目置顶、按日期倒序），本文件只写**现在是什么状态、接下来做什么、别踩什么坑**。
 >
-> 最后更新：2026-11-07 23:59 +0800（本轮 agent）。此前项目没有交接文档，这是第一份。第 3 节是**快照**，批次在跑，数字会漂；动手前先按第 5 节第 1 步核对最新日志。
+> 最后更新：2026-11-08 00:40 +0800。第 3 节是**快照**，批次在跑，数字会漂；动手前先按第 5 节第 1 步核对最新日志。
 
 ---
 
 ## 0. 一句话现状
 
-3800 章规划，中纲已铺到 ch1726，实际跑到 ch1712（ch1711 已完成，79.5）。当前批次 `run_1726`（PID 24492）正在写 ch1712，已出 17 章：16 章上岸、1 章失败，**均分只有 69.8（发布线是 88）**。下一片中纲（ch1727-1756）还没生成。代码侧最近一次修复是 `f38029fc7`（跨场危机门误判），工作区干净、与远端同步。
+3800 章规划，中纲已铺到 **ch1756 且 30/30 approved**（V05 两条 forbidden 已条款化为 R18/R19），实际跑到 **ch1716**。当前批次 `run_1726`（PID 24492）已出 21 章（ch1682-1715）：20 上岸、1 失败，**均分 69.1（发布线 88）**。代码侧有本轮未提交改动（V05 判例、否定语境修复、`status_snapshot.py`），门禁已过（1302 passed / 1 xfailed、pyflakes 0 undefined）。
 
 ---
 
@@ -18,7 +18,7 @@
 |---|---|
 | 仓库 | `D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine` |
 | 分支 | `feat/stability-quality`（远端 `origin` 同名分支，已 push，ahead=0） |
-| 最近提交 | `f38029fc7 fix(novel-engine): 跨场危机门否定式/单字谓词误判（ch1682）` |
+| 最近提交 | 见 `git log -1 --oneline`；本轮之前是 `57b0e4ace docs`（父 `f38029fc7` 危机门修复）。**本轮 V05 判例 + 否定语境修复 + status_snapshot 已过门禁、待提交** |
 | 技能包根 | `packages\coding-agent\skills\novel-engine\` |
 | 数据根 = 包根 | `...\skills\novel-engine\src\novel_engine\` |
 | **运行/测试工作目录** | `...\skills\novel-engine\src`（不是仓库根，也不是包根） |
@@ -72,28 +72,41 @@
 
 ### 3.2 中纲（章级意图）覆盖
 
-`config/planning/mid_outline_*.json` 共 **57 个分片**（每片 30 章，个别早期片 26 章）：
+`config/planning/mid_outline_*.json` 共 **58 个分片**（每片 30 章，个别早期片 26 章）：
 
 - V01：ch21-316，10 片（**ch1-20 没有中纲**，早期章靠 plot_graph，属正常）
 - V02 标签：ch317-706，13 片
 - V03 标签：ch707-1726，34 片
+- **V05：ch1727-1756，1 片**（`mid_outline_V05_ch1727-1756.json`，真实卷号命名，30/30 approved）
 
-**文件名里的 `V0x` 前缀不能当卷依据**：例如 `mid_outline_V03_ch1697-1726.json` 实际落在 V05 的章号段。加载逻辑（`chapter_director._load_mid_outline_entry`）是**扫全目录、按章号匹配 entry**，不看文件名前缀，所以功能上无影响；但写新片时请用真实卷号，别再延续错标签。
+**文件名里的 `V0x` 前缀不能当卷依据**：例如 `mid_outline_V03_ch1697-1726.json` 实际落在 V05 的章号段。加载逻辑（`chapter_director._load_mid_outline_entry`）是**扫全目录、按章号匹配 entry**，不看文件名前缀，所以功能上无影响；写新片时请用真实卷号，别再延续错标签。
 
-最新一片 `mid_outline_V03_ch1697-1726.json`：`meta.status=approved`，30 条 entry 全部 `approved`。
-**`mid_outline_V05_ch1727-1756.json` 不存在**——这是接手后的第一件产出。
+最新一片 `mid_outline_V05_ch1727-1756.json`：`meta.status=approved`，30 条 entry 全部 `approved`（详见 backlog 2026-11-08 条目）。
 
 门禁规则：`entry.status` 存在时以其为准，只有 `approved` 会被注入 director；`pending_human` / `needs_regenerate` 的章退回"松散参考"（不阻塞批次，但失去强约束）。`entry.status` 缺失的旧文件才看 `meta.status`，`draft` 一律不可用。
 
+**写中纲时的两个真实坑**（本轮踩过）：
+
+- `boundary_note` 里出现"需人工确认"字样 → `audit_mid_outline` 第 439 行直接判 `pending_human`，形成**永久 pending**。要确认的内容请直接写成陈述式结论（如"铺垫：摄魂阁暗探线推进，不揭露组织目的"）。
+- `boundary_note` 引用 `f00X` / fid 时，core_event 必须命中该实体的 `anchors`（`config/foreshadow/registry.json`），否则报"锚点未命中，疑似编号标错"。引用前先核对锚点词表。
+
 ### 3.3 已完成章与产物
 
-| 指标 | 实测值（2026-11-07 23:59 快照） |
+| 指标 | 实测值（2026-11-08 00:30 快照，`status_snapshot.py` 输出） |
 |---|---|
-| `runtime/checkpoint.json` | `{checkpoints: 1735, last_complete: 1711, failure_counts: {"370":13,"867":1,"883":1,"1709":1}, skipped_chapters: [370]}`；去重后 **1709 个唯一章** |
-| `chapters/draft/*.txt` | **1677 个**（编号 6..1711） |
+| `runtime/checkpoint.json` | `{checkpoints: 1739, last_complete: 1715, failure_counts: {"370":13,"867":1,"883":1,"1709":1}, skipped_chapters: [370]}`；去重后 **1713 个唯一章** |
+| `chapters/draft/*.txt` | **1681 个**（编号 6..1715） |
 | `chapters/novel/*.txt` | **234 个**（编号 1..1649，很稀疏） |
 | `chapters/draft/failed/` | **49 个**章目录 |
-| `runtime/state_machine.json` | `current_chapter=1712`、`total_target=3800`、`phase=POLISH`、`next_state=REVIEW`、`states` 记录 1710 章 |
+| `runtime/state_machine.json` | `current_chapter=1716`、`total_target=3800`、`phase=POLISH`、`next_state=REVIEW` |
+
+**查最新状态不用手工盘点**：工作目录 `...\src` 下
+
+```powershell
+& "D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.status_snapshot --out "$env:TEMP\_snap.md"
+```
+
+只读，不改任何状态；输出 checkpoint/产物/中纲/最近批次均分与最低 5 章/StateDB 行数/下一步命令。
 
 **draft 与 novel 不是一回事，这是最容易误读的地方**：
 
@@ -118,12 +131,12 @@
 | 运行日志 | `src\novel_engine\runtime\run_volume_20261107T140835Z.log`（每章 START/END 一行） |
 | 包装日志 | `C:\Users\ZHANG\AppData\Local\Temp\run_1726_batch.log`（含 +0800 时间戳，看进度更快） |
 | 启动时 checkpoint | 1693 章已 COMMITTED，跨批失败计数 `[(370,13),(867,1),(883,1),(1682,1),(1688,1)]` |
-| 已出结果（ch1682..1711，17 章） | COMMITTED 16 / FAILED 1；均分 **69.8**；最高 ch1700 83.7 |
-| 最低 8 章 | 1699 **42.4**、1698 **53.2**、1682 62.3、1702 66.7、1710 66.7、1703 67.8、1705 68.6、1697 70.2 |
+| 已出结果（ch1682..1715，21 章，00:30 快照） | COMMITTED 20 / FAILED 1；均分 **69.1**；最高 ch1700 83.7 |
+| 最低 5 章 | 1699 **42.4**、1713 **52.4**、1698 **53.2**、1682 62.3、1702 66.7 |
 | 失败章 | ch1709，69.0，note=「三评极差>15，评审极不稳定，强制人工复核（不自动重采）」 |
-| 当前 | 23:57 完成 ch1711（79.5），已启动 ch1712，进程仍在跑 |
+| 当前 | 00:26 完成 ch1715（70.0），已启动 ch1716，进程仍在跑 |
 
-这批的**质量信号很差**：均分 69.8，且 42.4/53.2 这种分数也直接 COMMITTED 了。原因见第 4 节：force-best 会无条件兜底到 draft。
+这批的**质量信号很差**：均分 69.1，且 42.4/52.4/53.2 这种分数也直接 COMMITTED 了。原因见第 4 节：force-best 会无条件兜底到 draft。
 
 `--chapters 1726` 表示"跑到第 1726 章为止"，`--resume` 表示跳过 checkpoint 里已 COMMITTED 的章。若进程中途死掉，直接重跑同一命令即可（不要 `--chapters 1727` 起新窗口，`--resume` 会自己从第一个缺口开始）。
 
@@ -155,12 +168,12 @@
 - 收敛后核对：`checkpoint.last_complete` 应到 1726；新增 FAILED 章要记进 backlog。
 - **不要**在它还在跑时启动第二个批次：两个进程共用 `runtime/checkpoint.json`、`state.db`、`chapters/`，会互相覆盖。
 
-### 第 2 步：生成 ch1727-1756 中纲并审
+### 第 2 步：生成 ch1727-1756 中纲并审 —— **已完成（2026-11-08 00:35）**
 
-工作目录 `...\skills\novel-engine\src`：
+文件 `config/planning/mid_outline_V05_ch1727-1756.json`，30/30 approved，`meta.status=approved`。复现/重审命令（工作目录 `...\skills\novel-engine\src`）：
 
 ```powershell
-# 生成（--vid 用真实卷号：1727 属 V05）
+# 生成（--vid 用真实卷号：1727 属 V05）；仅在需要重做时执行
 & "D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.generate_mid_outline `
   --vid V05 --start 1727 --end 1756 --batch-size 6
 
@@ -172,10 +185,10 @@
 - 默认输出 `config/planning/mid_outline_<vid>_ch<start>-<end>.json`，可用 `--out` 覆盖。
 - `audit_mid_outline` 参数是**位置参数**：给文件路径，或给 `auto`（会取 `config/planning/` 下排序第一的文件，**不是**"全部"，别误用）。
 - 有 `needs_regenerate` 的章：`generate_mid_outline --vid V05 --start ... --end ... --only 1731,1735 --out <同一个文件>`（`--only` 会合并进已有文件），再跑一次 audit。
-- **坑**：`generate_mid_outline.py` 只认 `AGNES_API_KEY` 或 `LLM_API_KEY` 环境变量，**不认** `AGNES_TOKEN_API_KEY`。当前 profile 用的是后者，直接跑会以 "No API key" 退出（return 2）。跑之前先把 `AGNES_API_KEY` 指到同一把 key（`$env:AGNES_API_KEY = $env:AGNES_TOKEN_API_KEY`），或临时在 `.env` 里补一行别名。密钥只走环境变量，不写进任何 json。
-- 通过标准：30 条 entry 全 `approved`，`meta.status=approved`（最新一片就是这个状态）。
+- **API key**：`generate_mid_outline.py` 只认 `AGNES_API_KEY` / `LLM_API_KEY`。当前 `.env` 第 5 行 `AGNES_API_KEY` 与第 8 行 `AGNES_TOKEN_API_KEY` 并存，实测直接跑**不会**退 2（此前"必须设别名"的说法不成立；但换 profile 时仍建议先 `$env:AGNES_API_KEY = $env:AGNES_TOKEN_API_KEY`）。密钥只走环境变量，不写进任何 json。
+- 通过标准：30 条 entry 全 `approved`，`meta.status=approved`。**注意**：`[概念规划] V05 不在 concept_unlocks.unlock_schedule` 是提示级，不阻塞；见 8.10。
 
-### 第 3 步：启动下一批
+### 第 3 步：启动下一批（**当前批次收敛后**才可执行）
 
 ```powershell
 Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src"
@@ -235,7 +248,7 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 
 | 缺口 | 影响 | 建议 |
 |---|---|---|
-| 没有"当前状态快照"文件（章数、均分、活跃批次、待办） | 每任 agent 都要重新盘点一遍 | 每批收敛后由本文件第 3 节滚动更新，或单开 `docs/STATUS.md` 自动生成 |
+| ~~没有"当前状态快照"文件~~ | 已补：`scripts/status_snapshot.py`（只读，输出 Markdown；00:30 那版见第 3.3 节） | 每批收敛后跑一次，必要时贴进第 3 节 |
 | 没有"质量趋势"记录（各批均分、低于 60 章走势） | 看不到"越跑越差"还是"偶发" | 从 `run_volume_*.log` 的 END 行做一个小脚本，产出 `audit/batch_quality.csv` |
 | `needs_human_review.json` 队列没人消费 | 低分 draft 越积越多（本批已 +8 章 <70） | 先定"谁审、按什么顺序审、审完怎么回写" |
 | `docs/runbook.md` 正文 | 会把人带到 SiliconFlow/Qwen、16 passed、200 章出口的旧世界 | 需要一次整体重写（下一项独立任务） |
@@ -255,6 +268,8 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 7. **ch1352 "吐纳"硬词误栏**是否应豁免非修炼语境。
 8. **ch1634（38.4 低分上岸）**是否需要人工复核终稿。
 9. **`[canon硬词] 口诀`**：ch1682 里"没有再教那些复杂的口诀"暗示曾教，与"仅陈老根练"矛盾，判定口径待定。
+10. **V05/V06 的卷级概念规划缺失**：`config/leak_terms/concept_unlocks.json` 的 `unlock_schedule` 只有 V01（covered）/V02（planned）/V03（planned）。V05 已补 forbidden 判例、可跑批，但概念解锁时间表仍空；V06 段（1844-2200）将来更会重演"整批挂起"。是否本轮补 V05，或与 V06 判例一起做？
+11. **V06 两条 forbidden 未条款化**（守夜人完整身世、门芯脱落细节）：进 V06 前必须先补 R20/R21，否则 `audit_mid_outline` 会像 ch1727 首轮那样把整批挂起。
 
 ---
 
@@ -298,9 +313,9 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 
 ## 11. 接手自检清单
 
-- [ ] `git log -1 --oneline` 是 `f38029fc7`（或更新的提交），`git status` 干净，`git rev-list --count origin/feat/stability-quality..HEAD` = 0
-- [ ] `run_1726` 是否还在跑（PID 24492 / 日志尾部）
-- [ ] `checkpoint.last_complete` 当前值（本文件写的是 1710，跑完应为 1726）
-- [ ] `config/planning/mid_outline_V05_ch1727-1756.json` 是否存在且 30 条 approved
+- [ ] `git log -1 --oneline` 是最新提交，`git status` 干净（本轮 V05 判例改动若未提交，先看第 6 节门禁口径）
+- [ ] `run_1726` 是否还在跑（PID 24492 / 日志尾部；00:30 在 ch1716）
+- [ ] `checkpoint.last_complete` 当前值（00:30 是 1715，跑完应为 1726）
+- [ ] `config/planning/mid_outline_V05_ch1727-1756.json` 存在且 30 条 approved、`meta.status=approved`
 - [ ] 下一批命令的工作目录是 `...\src`、`-X utf8`、`--resume`、目标章号 1756
 - [ ] 记住 A 路线 #8、git 纪律、cron 不改动、密钥只走环境变量

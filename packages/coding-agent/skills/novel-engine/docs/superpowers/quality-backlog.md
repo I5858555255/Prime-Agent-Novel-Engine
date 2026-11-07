@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-11-08 V05 forbidden 条款化（R18/R19）+ 中纲 ch1727-1756 从"整批挂起"到 30/30 approved
+
+- **卡关现场**：`_audit1727.log` —— `[覆盖审计] V05: forbidden 2 条，已判定化 0 条，未覆盖 2 条` → `[卡关] …批次全部挂起待 bible 完善`，30 章全部 `pending_human`（mtime 00:22:28）。机制在 `audit_mid_outline._coverage_audit`（203-216），未条款化即 `uncovered=True`，主流程（368-373）据此把整批判挂起。
+- **补判例**（`config/planning/decision_rules.json`，16→18 条，结构不变）：
+  - R18「三件残物真正功用被一次性全部揭晓」，`rule_applies.vols=["V05"]`，`covers_clauses=["V05#1"]`，3 条正则（一次性/一并/尽数 × 揭晓/揭示/说破/道破/交代；"三件残物…功用…尽数道出"）。
+  - R19「太初议会分离方案完整历史被和盘托出」，`vols=["V05"]`，`covers_clauses=["V05#2"]`，3 条正则（"分离方案…完整历史/来龙去脉/始末"、"和盘托出…太初议会"）。
+  - 两条 `scale=forbidden / action=needs_regenerate`。V05 原条款见 `bible/author_intent.md` 73-75 行；resolve 点与 F003 `resolve@1843` 对齐。
+- **修否定语境（真实缺陷）**：`"他并未一次性揭晓三件残物的功用"` 仍被判 `needs_regenerate`。原因：命中片段从"一次性"起，否定词"并未"在片段之外，`_is_negated_disclosure(m.group(0))` 看不到。
+  1. `decide_entry` 改为取命中前 12 字上下文 `ctx = joined[max(0, m.start()-12):m.end()]` 再判；
+  2. `_NEGATED_DISCLOSURE_RE` 补否定词（并未/没有/从未/不再/无须/无需/不必）与披露词（揭晓/揭示/说破/道破/道出/和盘托出/交代），窗口 0-6，保留原 `是钥匙/是密码/为阵法` 分支。
+  - **明确未采用**：把单字「不/未/无」纳入否定过滤（会漏报真危机，此前已回退过）。
+- **测试**：`test_audit_bible_guards.py` 20→27 条全绿。新增 V05 覆盖断言（"已判定化 2 条"）、V06 未覆盖断言（V04 已不适合当样本）、R18/R19 各 3 条判例（一次性全揭晓→拦；只拼出第一件→放行；否定式→不判；分离史全盘→拦；只露半页→放行）、V03 不误伤。
+- **中纲从 24/5/1 到 30/30**（`config/planning/mid_outline_V05_ch1727-1756.json`）：
+  - 补判例后首轮：24 approved / 5 pending_human / 1 needs_regenerate（ch1729）。
+  - **ch1729** 撞 concept 硬锁「呼吸」：原文"陈老根教导陆烬呼吸法残篇的新层次，陆烬…发现其原理与七窍碑残页…窍穴开合高度契合" → 同时越 A 路线 #8（陆烬参悟修炼原理）。改写为"陈老根独自闭门数日，气色反倒比往日更盛；陆烬在门外递饭，只觉异样却说不出关窍，也未将其与七窍碑残页联系起来"。
+  - **5 章 pending 的真实原因不是伏笔冲突，是生成端模板尾巴**：`boundary_note` 里写了"需人工确认：…"，而 `audit_mid_outline` 第 439 行只要 note 含"需人工确认"就判 pending——形成永久 pending。处置：把判定写成陈述式（"铺垫：摄魂阁暗探线推进，只接近不揭露组织目的"等），不留"需人工确认"字样。
+  - **伏笔锚点约束**：note 引用 fid 时，`_check_f_anchor` 要求 core_event 命中该 fid 的 `anchors`。ch1743 引用 `f005_fog_core`（anchors=迷雾/禁区/异变/太初原核/门芯）但正文只有"七窍碑残页/独立大道"→ 必判锚点未命中；改为不带 fid 的陈述式说明。
+  - **ch1744** 的"告知其呼吸法中隐藏的身强身心真意"违反 F002 既定 plant（"只言强身健体不提修炼"）与 A 路线边界，改为"只道呼吸法不过是强身健体，不许他多想"。
+  - 复跑结果：**30 approved / 0 pending / 0 needs_regenerate**，`meta.status=approved`（附 audit 结论与覆盖说明）。
+- **仍未解决**：V05/V06 在 `config/leak_terms/concept_unlocks.json` 的 `unlock_schedule` 里没有卷级概念规划（只有 V01-V03），每轮 audit 都会提示 `[概念规划] V05 不在 …`。不阻塞批次（提示级），但 V06 的两条 forbidden（守夜人身世、门芯脱落细节）尚未条款化，进 V06 时会重演同样的整批挂起。
+
+---
+
 ## 2026-11-07 修复：跨场危机门召唤识别误判（ch1682 归因订正 + 代码修复 + 回归测试）
 
 - **推翻旧归因**：run_1696 记的"机制缺口：中纲生成未注入 crisis beat 上下文"不成立。`cross_scene_crisis_gate.py` 是**章内跨场**门（场 N 引入召唤危机 → 后续场无实质承接且出现时间+状态复位才报），不读前章 crisis beat。
