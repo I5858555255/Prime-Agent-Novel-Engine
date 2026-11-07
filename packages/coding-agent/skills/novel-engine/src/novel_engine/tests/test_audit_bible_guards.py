@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """bible 无人值守加固（修复1-5）的 hermetic 测试。
 
-- 覆盖审计：V01/V02 条款全判定化（K=0），V03 未条款化（K>0 → 卡关）；
+- 覆盖审计：V01/V02/V03/V05 条款全判定化（K=0），V04/V06 未条款化（K>0 → 卡关）；
 - F 编号锚点校验：boundary_note 的 F00X 与中纲文本锚点不匹配 → pending_human；
 - 新角色检测：未登记专名 → pending_human；C 编号已登记豁免；
 - rule_applies 卷范围过滤：R13-R15 仅 V02 生效，V01 章节不误伤；
@@ -57,10 +57,59 @@ def test_coverage_audit_v03_fully_covered():
     assert any("已判定化 2 条" in m for m in msgs)
 
 
-def test_coverage_audit_v04_uncovered_blocks():
-    """V04 尚未条款化 → K>0（进入该卷批次时卡关，防无人值守漏判）。"""
-    _, uncovered = _coverage_audit(_AUTHOR_INTENT, _RULES, "V04")
+def test_coverage_audit_v05_fully_covered():
+    """V05 补判例（R18/R19）：2 条 forbidden 全覆盖 → K=0，ch1727 批次不再整批挂起。"""
+    msgs, uncovered = _coverage_audit(_AUTHOR_INTENT, _RULES, "V05")
+    assert not uncovered, f"V05 应全判定化（R18/R19），未覆盖: {msgs}"
+    assert any("已判定化 2 条" in m for m in msgs)
+
+
+def test_coverage_audit_v06_uncovered_blocks():
+    """V06 尚未条款化 → K>0（进入该卷批次时卡关，防无人值守漏判）。"""
+    _, uncovered = _coverage_audit(_AUTHOR_INTENT, _RULES, "V06")
     assert uncovered
+
+
+# ── V05 补判例（R18 三件残物 / R19 太初议会分离史）─────────────────
+
+def test_r18_three_relics_one_shot_forbidden():
+    st, _, rid = decide_entry("三件残物的真正功用被一次性全部揭晓",
+                              ["C001"], "", 1730, _RULES, vol_id="V05")
+    assert st == "needs_regenerate" and rid == "R18"
+
+
+def test_r18_staged_reveal_allowed():
+    """分阶段拼凑是 V05 的既定节奏：只揭开一件/一角 → 放行。"""
+    st, _, rid = decide_entry("三件残物只拼出第一件的功用，余下两件仍是残页",
+                              ["C001"], "", 1730, _RULES, vol_id="V05")
+    assert st == "" and rid is None
+
+
+def test_r18_negation_not_flagged():
+    """否定式"并未一次性揭晓"不判 needs_regenerate（与 ch1682 同类误判防护）。"""
+    st, _, rid = decide_entry("他并未一次性揭晓三件残物的功用，只说了其一",
+                              ["C001"], "", 1730, _RULES, vol_id="V05")
+    assert st != "needs_regenerate"
+
+
+def test_r19_assembly_history_forbidden():
+    st, _, rid = decide_entry("太初议会分离方案的完整历史被和盘托出",
+                              ["C001"], "", 1780, _RULES, vol_id="V05")
+    assert st == "needs_regenerate" and rid == "R19"
+
+
+def test_r19_fragment_allowed():
+    """只摸到分离史的半页残卷 → 放行。"""
+    st, _, rid = decide_entry("太初议会分离方案只露出半页残卷，前后仍缺",
+                              ["C001"], "", 1780, _RULES, vol_id="V05")
+    assert st == "" and rid is None
+
+
+def test_r18_not_applied_outside_v05():
+    """R18/R19 仅 V05 生效，不得误伤其他卷。"""
+    st, _, rid = decide_entry("三件残物的真正功用被一次性全部揭晓",
+                              ["C001"], "", 700, _RULES, vol_id="V03")
+    assert st == "" and rid is None
 
 
 def test_forbidden_scan_strips_positive_examples():
