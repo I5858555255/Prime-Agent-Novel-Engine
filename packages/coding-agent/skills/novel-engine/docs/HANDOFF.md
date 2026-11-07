@@ -192,10 +192,10 @@
 
 **2026-11-08 00:47 已部署无人值守接力**，本轮不需要手工执行这一步，除非看到看护进程已退出：
 
-- 看护进程：`pythonw.exe` 跑 `%TEMP%\_relay_novel.py`（PID 33420，日志 `%TEMP%\relay_novel.log`）。
+- 看护进程：`pythonw.exe` 跑 `%TEMP%\_relay_novel.py`，日志 `%TEMP%\relay_novel.log`（每条 `watchdog start … pid=` 就是当前 PID；00:50 是 26976）。每约 20 分钟写一条 `waiting for run_volume` 心跳。
 - 逻辑：每 120s 检查是否有 `novel_engine.scripts.run_volume` 进程；没有且 `checkpoint.last_complete < 1756` 时，自动启动 `--chapters 1756 --resume`（输出重定向到 `%TEMP%\run_relay_1756.log`）；到达 1756 或连续 3 次无进展则退出。
 - **手工启动前先看日志/进程**：只要已有 `run_volume` 进程，看护不会再启第二个；但若你手工起进程后又杀掉，看护会自动补位。
-- 关掉看护：`Stop-Process -Id 33420`（或按日志里的 pid）。
+- 关掉看护：`Get-Process pythonw` 找到跑 `_relay_novel.py` 的 PID，`Stop-Process -Id <pid>`。
 
 手工执行（等价命令）：
 
@@ -324,7 +324,7 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 
 - [ ] `git log -1 --oneline` 是最新提交，`git status` 干净（本轮 V05 判例改动若未提交，先看第 6 节门禁口径）
 - [ ] `run_1726` 是否还在跑（PID 24492 / 日志尾部；00:39 完成 ch1717）
-- [ ] 看护进程 PID 33420 是否存活（`Get-Process -Id 33420`；日志 `%TEMP%\relay_novel.log`）
+- [ ] 看护进程是否存活（`Get-Process pythonw`；PID 以 `%TEMP%\relay_novel.log` 最新 `watchdog start` 为准）
 - [ ] `checkpoint.last_complete` 当前值（00:30 是 1715，跑完应为 1726）
 - [ ] `config/planning/mid_outline_V05_ch1727-1756.json` 存在且 30 条 approved、`meta.status=approved`
 - [ ] 下一批命令的工作目录是 `...\src`、`-X utf8`、`--resume`、目标章号 1756
