@@ -134,7 +134,7 @@
 | 已出结果（ch1682..1715，21 章，00:30 快照） | COMMITTED 20 / FAILED 1；均分 **69.1**；最高 ch1700 83.7 |
 | 最低 5 章 | 1699 **42.4**、1713 **52.4**、1698 **53.2**、1682 62.3、1702 66.7 |
 | 失败章 | ch1709，69.0，note=「三评极差>15，评审极不稳定，强制人工复核（不自动重采）」 |
-| 当前 | 00:26 完成 ch1715（70.0），已启动 ch1716，进程仍在跑 |
+| 当前 | 00:33 完成 ch1716（**48.9**）、00:39 完成 ch1717（77.85）；00:47 已在 ch1718。看护进程就位（见 5.3） |
 
 这批的**质量信号很差**：均分 69.1，且 42.4/52.4/53.2 这种分数也直接 COMMITTED 了。原因见第 4 节：force-best 会无条件兜底到 draft。
 
@@ -189,6 +189,15 @@
 - 通过标准：30 条 entry 全 `approved`，`meta.status=approved`。**注意**：`[概念规划] V05 不在 concept_unlocks.unlock_schedule` 是提示级，不阻塞；见 8.10。
 
 ### 第 3 步：启动下一批（**当前批次收敛后**才可执行）
+
+**2026-11-08 00:47 已部署无人值守接力**，本轮不需要手工执行这一步，除非看到看护进程已退出：
+
+- 看护进程：`pythonw.exe` 跑 `%TEMP%\_relay_novel.py`（PID 33420，日志 `%TEMP%\relay_novel.log`）。
+- 逻辑：每 120s 检查是否有 `novel_engine.scripts.run_volume` 进程；没有且 `checkpoint.last_complete < 1756` 时，自动启动 `--chapters 1756 --resume`（输出重定向到 `%TEMP%\run_relay_1756.log`）；到达 1756 或连续 3 次无进展则退出。
+- **手工启动前先看日志/进程**：只要已有 `run_volume` 进程，看护不会再启第二个；但若你手工起进程后又杀掉，看护会自动补位。
+- 关掉看护：`Stop-Process -Id 33420`（或按日志里的 pid）。
+
+手工执行（等价命令）：
 
 ```powershell
 Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src"
@@ -314,7 +323,8 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 ## 11. 接手自检清单
 
 - [ ] `git log -1 --oneline` 是最新提交，`git status` 干净（本轮 V05 判例改动若未提交，先看第 6 节门禁口径）
-- [ ] `run_1726` 是否还在跑（PID 24492 / 日志尾部；00:30 在 ch1716）
+- [ ] `run_1726` 是否还在跑（PID 24492 / 日志尾部；00:39 完成 ch1717）
+- [ ] 看护进程 PID 33420 是否存活（`Get-Process -Id 33420`；日志 `%TEMP%\relay_novel.log`）
 - [ ] `checkpoint.last_complete` 当前值（00:30 是 1715，跑完应为 1726）
 - [ ] `config/planning/mid_outline_V05_ch1727-1756.json` 存在且 30 条 approved、`meta.status=approved`
 - [ ] 下一批命令的工作目录是 `...\src`、`-X utf8`、`--resume`、目标章号 1756
