@@ -1,5 +1,15 @@
 # 运行手册（Runbook）：小说生成引擎稳定性与质量双 SLO
 
+> **本文已过时（截至 2026-11-07，仅作历史存档，不要照着执行）。**
+>
+> 与当前实际的差异至少包括：
+> - 模型不是 SiliconFlow `Qwen/Qwen3.5-4B`，当前是 `llm_providers.json` 的 `active_profile`（`agnes-3.0-flash`）；
+> - 入口不是 `mini_test_runner`，主线是 `python -X utf8 -m novel_engine.scripts.run_volume --chapters N --resume`（工作目录 `src/`）；
+> - 回归门不是"16 passed"，`tests/domain_gate_wiring` 一个目录就有 378 passed + 1 xfailed；
+> - 不存在"200 章 / 连续 10 轮 r21..r30"的阶段出口判定，实际是按批次推进到 3800 章。
+>
+> **现行的启动、续跑、验收、硬约束见 [`HANDOFF.md`](HANDOFF.md)。**
+
 本手册用于指导在 `feat/stability-quality` 分支上运行、监控与收尾小说生成引擎，确保系统满足 **稳定性 SLO** 与 **质量 SLO（双 SLO）**。
 
 ---

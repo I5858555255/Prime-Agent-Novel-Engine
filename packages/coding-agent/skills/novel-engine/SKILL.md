@@ -25,6 +25,8 @@ Novel-Engine is an AI-powered pipeline and state machine designed for writing, r
 
 ## Directory Structure
 
+> 目录树于 2026-11-07 按实际结构订正。运行态（跑到哪、怎么续跑、有哪些待决项）以 `docs/HANDOFF.md` 为准。
+
 ```
 packages/coding-agent/skills/novel-engine/
 ├── SKILL.md
@@ -32,15 +34,16 @@ packages/coding-agent/skills/novel-engine/
 ├── pyproject.toml
 ├── .gitignore
 ├── docs/                      # 说明文档
+│   ├── HANDOFF.md             # 交接入口：当前进度 / 下一步 / 硬约束（先读这个）
+│   ├── runbook.md             # 旧运行手册（已过时，仅存档）
+│   ├── superpowers/           # quality-backlog.md（决策与验收正本）等
 │   ├── 使用说明指南.md
 │   ├── 编写指南.md
 │   ├── 效率优化方案.md
 │   └── DEVELOPMENT_PLAN.md
-├── scripts/                   # 启动脚本（Windows .bat / Unix start.sh）
-│   ├── generate.bat
-│   ├── start_dashboard.bat
-│   ├── status.bat
-│   ├── stop.bat
+├── scripts/                   # 控制脚本（Windows .bat / Unix start.sh）
+│   ├── control/               # control.py + *.bat（封装 production_runner）
+│   ├── check_static.py        # pyflakes 未定义名门禁
 │   └── start.sh
 └── src/
     └── novel_engine/          # 包根 = 数据根
@@ -64,20 +67,23 @@ packages/coding-agent/skills/novel-engine/
         │   ├── pipeline_orchestrator.py  # Main workflow compiler & assembler
         │   ├── production_runner.py     # 全量生产运行器
         │   ├── web_dashboard.py        # Web 可视化控制台
-        │   ├── gui_console.py          # 控制台 UI
         │   └── init_state.py           # 世界状态初始化脚本
-        ├── tests/             # 单元测试与测试运行器
-        │   ├── test_novel_engine.py    # 核心库单元测试
+        ├── tests/             # 单测（test_*.py）+ domain_* 专项目录 + fixtures
         │   ├── mini_test_runner.py     # 10-chapter mock compiler test suite
         │   └── medium_test_runner.py   # 70-chapter sliding-window test suite
+        ├── quality/           # 质量门与检测器（cross_scene_crisis_gate 等）
+        ├── scripts/           # run_volume / generate_mid_outline / audit_mid_outline
+        ├── tools/             # ab_evaluate / probe_ratelimit
         ├── bible/             # Style, world, and character bible documents
         ├── config/            # Quality thresholds & runtime cost config
-        ├── foreshadow/        # Foreshadowing trackers & registries
-        ├── planning/          # Volume/Plot graphs & full outline
-        ├── simulation/        # Simulation constraints & laws
+        │   ├── planning/      # volumes.json / mid_outline_*.json / plot_graph
+        │   ├── foreshadow/    # Foreshadowing trackers & registries
+        │   ├── simulation/    # Simulation constraints & laws
+        │   └── leak_terms/ naming_consistency/ synonym_map/
         ├── memory/            # Generated memory & dynamic world state
         ├── audit/             # Generated audit reports
-        ├── chapters/          # Generated chapter outputs
+        ├── chapters/          # novel / draft / draft/failed / outline / state
+        ├── timeline/          # 时间线锚点
         └── runtime/           # State machine persistence & logs
 ```
 
