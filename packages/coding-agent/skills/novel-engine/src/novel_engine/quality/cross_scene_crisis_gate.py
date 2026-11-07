@@ -28,13 +28,30 @@ _CALL_VERBS = frozenset({
 _CALL_VERBS_SINGLE = frozenset({"叫", "喊"})
 
 # P7-1：扩充紧急谓词
+# ch1682 修订：单字「走」移除（"走向床尾/走进/走过/走了"均属日常位移，非紧急谓词），
+# 改为祈使短语；「快」保留但下列复合词（很快/加快/尽快…）不计。
 _CRISIS_PREDICATES = frozenset({
-    "出事", "出事了", "快去", "快去看", "快", "赶紧", "赶快", "走", "闯祸",
+    "出事", "出事了", "快去", "快去看", "快", "赶紧", "赶快", "闯祸",
+    "快走", "赶紧走", "走啊", "快走开", "快回去", "赶紧回去",
     "闯大祸", "出人命", "死了", "出殡", "棺材", "衙门", "官差", "抓人",
     "要命", "不得了", "出大祸", "塌了", "塌方", "决口", "淹了", "起火",
     "大火", "走水", "惊闻", "忽听",
     "开门", "快开门", "救命", "来人", "不好了", "惊慌", "急切求救", "求你",
 })
+
+# ch1682 修订：否定/否认语境不计为危机召唤。
+# 样例（ch1682 误判触发句）："起身走向床尾的矮凳坐下并未催促也不强求继续"
+# 曾被判为 CALL=催 + PRED=走，实为否定式日常叙述。
+# 只收明确否定组合；单字「不/未/无」过泛（"不知道谁在拍门"/"无声"）不收，避免漏报真危机。
+_NEG_SUFFIX = re.compile(
+    r"(并未|并没有|没有|不曾|未曾|从未|不再|不是|毫无|无须|无需|不用|不必|别|勿|莫)"
+    r"(?:要|会|再|曾|能|敢|得|想|愿)?[^，。；！？]{0,4}$"
+)
+
+# 「快」的复合词：下列语境中的「快」不构成紧急谓词
+_KUAI_COMPOUND = re.compile(
+    r"(很快|加快|尽快|痛快|轻快|愉快|欢快|飞快|凉快|爽快|明快|勤快)"
+)
 
 # P7-1c：回忆/心理标记——命中这些词的句不算实质承接
 _RECALL_MARKERS = frozenset({
@@ -109,11 +126,32 @@ def _split_sentences(text: str) -> list[str]:
     return out
 
 
+def _kw_hit(text: str, kws) -> bool:
+    """关键词是否以非否定、非复合词形态出现（ch1682 误判修订）。
+
+    同一关键词只要有一处有效出现即算命中；全部出现都处于否定/复合语境才不计。
+    """
+    for kw in kws:
+        start = 0
+        while True:
+            i = text.find(kw, start)
+            if i < 0:
+                break
+            start = i + 1
+            prefix = text[max(0, i - 8):i]
+            if _NEG_SUFFIX.search(prefix):
+                continue
+            if kw == "快" and _KUAI_COMPOUND.search(prefix + kw):
+                continue
+            return True
+    return False
+
+
 def _has_call_crisis(sentence: str) -> bool:
-    has_call = any(v in sentence for v in _CALL_VERBS)
-    has_predicate = any(p in sentence for p in _CRISIS_PREDICATES)
+    has_call = _kw_hit(sentence, _CALL_VERBS)
+    has_predicate = _kw_hit(sentence, _CRISIS_PREDICATES)
     # P7-1a：单字「叫」「喊」须搭配门上下文或紧急谓词，否则视为噪声（狗叫/鸡鸣/寻常喊话）
-    has_single_call = any(v in sentence for v in _CALL_VERBS_SINGLE)
+    has_single_call = _kw_hit(sentence, _CALL_VERBS_SINGLE)
     if has_single_call and not has_call:
         has_door_ctx = any(kw in sentence for kw in {"门", "门外", "院外", "门口", "院内"})
         if not has_door_ctx and not has_predicate:
@@ -128,11 +166,11 @@ def _has_call_crisis_window(sents: list[str], idx: int) -> tuple[bool, str]:
     hi = min(len(sents), idx + _WINDOW_SIZE + 1)
     window = sents[lo:hi]
     window_text = " ".join(window)
-    has_call = any(v in window_text for v in _CALL_VERBS)
-    has_predicate = any(p in window_text for p in _CRISIS_PREDICATES)
+    has_call = _kw_hit(window_text, _CALL_VERBS)
+    has_predicate = _kw_hit(window_text, _CRISIS_PREDICATES)
     if has_call and has_predicate:
         for s in window:
-            if any(v in s for v in _CALL_VERBS) or any(p in s for p in _CRISIS_PREDICATES):
+            if _kw_hit(s, _CALL_VERBS) or _kw_hit(s, _CRISIS_PREDICATES):
                 return True, s[:80]
     return False, ""
 
