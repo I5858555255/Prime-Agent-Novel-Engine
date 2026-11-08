@@ -2,13 +2,15 @@
 
 > 给"下一个接手 agent"的唯一现状入口。历史操作细节在 `docs/superpowers/quality-backlog.md`（条目置顶、按日期倒序），本文件只写**现在是什么状态、接下来做什么、别踩什么坑**。
 >
-> 最后更新：2026-11-08 00:40 +0800。第 3 节是**快照**，批次在跑，数字会漂；动手前先按第 5 节第 1 步核对最新日志。
+> 最后更新：2026-11-08 22:26 +0800（**按用户指令已停止全部生成进程**）。第 3 节是**停止时的现场快照**；恢复运行前先按第 5 节第 1 步核对。
 
 ---
 
 ## 0. 一句话现状
 
-3800 章规划，中纲已铺到 **ch1756 且 30/30 approved**（V05 两条 forbidden 已条款化为 R18/R19），实际跑到 **ch1716**。当前批次 `run_1726`（PID 24492）已出 21 章（ch1682-1715）：20 上岸、1 失败，**均分 69.1（发布线 88）**。代码侧有本轮未提交改动（V05 判例、否定语境修复、`status_snapshot.py`），门禁已过（1302 passed / 1 xfailed、pyflakes 0 undefined）。
+3800 章规划，中纲已铺到 **ch1786**（V05 两片：ch1727-1756、ch1757-1786，均 30/30 `approved`）。实际成稿做到 **ch1756 全部收口**，正在推进 ch1757 起的下一批时被用户指令停止：**ch1757 判 FAILED（60.4，三评极差>15），ch1758 生成到一半被终止，ch1759-1786 未开始**。停止后**没有任何生成进程或看护进程在跑**（2026-11-08 22:24 核实）。工作区干净，HEAD `6323508c1`，远端同步。
+
+两批实测：ch1682-1726 共 32 章 → 30 COMMITTED / 2 FAILED（ch1709、ch1724），**均分 67.2**；ch1727-1756 共 31 章（含 1709/1724 重试）→ **全 COMMITTED，均分 70.7**。发布线 88，绝大多数是 force-best 落 draft。
 
 ---
 
@@ -18,7 +20,7 @@
 |---|---|
 | 仓库 | `D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine` |
 | 分支 | `feat/stability-quality`（远端 `origin` 同名分支，已 push，ahead=0） |
-| 最近提交 | 见 `git log -1 --oneline`；本轮之前是 `57b0e4ace docs`（父 `f38029fc7` 危机门修复）。**本轮 V05 判例 + 否定语境修复 + status_snapshot 已过门禁、待提交** |
+| 最近提交 | `6323508c1 feat: 新增 V05 中纲 ch1757-1786（30/30 approved）`；其前是 `779c937a7`、`597e56eb8`、`92ae0273f`（文档）、`0dfa88278`（status_snapshot）、`6091d834c`（R18/R19 判例 + 否定语境窗口） |
 | 技能包根 | `packages\coding-agent\skills\novel-engine\` |
 | 数据根 = 包根 | `...\skills\novel-engine\src\novel_engine\` |
 | **运行/测试工作目录** | `...\skills\novel-engine\src`（不是仓库根，也不是包根） |
@@ -45,11 +47,11 @@
 
 - 文件：`src/novel_engine/quality/cross_scene_crisis_gate.py`；新测试 `tests/domain_gate_wiring/test_crisis_gate_negation.py`（6 例）。
 - 改动：新增否定语境 `_NEG_SUFFIX`（只收"并未/没有/不曾/从未/不再/不是/毫无/无须/不用/不必/别/勿/莫"等明确否定组合，**单字"不/未/无"刻意不收**，否则会漏报真危机）；新增 `_kw_hit()` 统一做"前 8 字否定前缀"检查；`_CRISIS_PREDICATES` 删掉单字"走"，改收"快走/赶紧走/走啊/快走开/快回去"；"快"排除"很快/尽快/痛快"等复合词。
-- **重要**：`run_1726` 进程是 22:08 启动的，Python 已 import 旧模块，本次修复**对这一批不生效**。只有新起的进程才用新逻辑。ch1682 在这一批以 62.3 上岸，是重生成正文本身不再含那条触发句，不是修复生效。
+- **重要（历史事实）**：`run_1726` 那一批是 22:08 启动的，Python 已 import 旧模块，该修复**对那一批不生效**，只有新起的进程才用新逻辑。ch1682 在那批以 62.3 上岸，是重生成正文本身不再含触发句，不是修复生效。
 
 ---
 
-## 3. 当前进度（实测数字，2026-11-07 23:50）
+## 3. 当前进度（实测数字，2026-11-08 22:02 快照 / 22:24 停止复核）
 
 ### 3.1 总量与卷划分
 
@@ -72,16 +74,16 @@
 
 ### 3.2 中纲（章级意图）覆盖
 
-`config/planning/mid_outline_*.json` 共 **58 个分片**（每片 30 章，个别早期片 26 章）：
+`config/planning/mid_outline_*.json` 共 **59 个分片**（每片 30 章，个别早期片 26 章）：
 
 - V01：ch21-316，10 片（**ch1-20 没有中纲**，早期章靠 plot_graph，属正常）
 - V02 标签：ch317-706，13 片
 - V03 标签：ch707-1726，34 片
-- **V05：ch1727-1756，1 片**（`mid_outline_V05_ch1727-1756.json`，真实卷号命名，30/30 approved）
+- **V05：ch1727-1756、ch1757-1786，2 片**（`mid_outline_V05_ch1727-1756.json`、`mid_outline_V05_ch1757-1786.json`，均 30/30 approved）
 
 **文件名里的 `V0x` 前缀不能当卷依据**：例如 `mid_outline_V03_ch1697-1726.json` 实际落在 V05 的章号段。加载逻辑（`chapter_director._load_mid_outline_entry`）是**扫全目录、按章号匹配 entry**，不看文件名前缀，所以功能上无影响；写新片时请用真实卷号，别再延续错标签。
 
-最新一片 `mid_outline_V05_ch1727-1756.json`：`meta.status=approved`，30 条 entry 全部 `approved`（详见 backlog 2026-11-08 条目）。
+最新一片 `mid_outline_V05_ch1757-1786.json`：`meta.status=approved`，30 条 entry 全部 `approved`。这一片是 22:04 生成、经两轮修订后过审的（详见 backlog 2026-11-08 第三条）。
 
 门禁规则：`entry.status` 存在时以其为准，只有 `approved` 会被注入 director；`pending_human` / `needs_regenerate` 的章退回"松散参考"（不阻塞批次，但失去强约束）。`entry.status` 缺失的旧文件才看 `meta.status`，`draft` 一律不可用。
 
@@ -92,13 +94,16 @@
 
 ### 3.3 已完成章与产物
 
-| 指标 | 实测值（2026-11-08 00:30 快照，`status_snapshot.py` 输出） |
+| 指标 | 实测值（2026-11-08 22:02 `status_snapshot.py`，22:24 停止前复核） |
 |---|---|
-| `runtime/checkpoint.json` | `{checkpoints: 1739, last_complete: 1715, failure_counts: {"370":13,"867":1,"883":1,"1709":1}, skipped_chapters: [370]}`；去重后 **1713 个唯一章** |
-| `chapters/draft/*.txt` | **1681 个**（编号 6..1715） |
+| `runtime/checkpoint.json` | 1780 条 checkpoint（26 条重复章号）、去重后 **1754 个唯一章**、最大 ch1756；22:02 时 `last_complete=1756` |
+| `last_complete` 的真实语义 | 它是**最近一次写回的章号**，不是"最大已完成章"。22:15 重试 ch1742 收口后写回 `last_complete=1742`，但 1743-1756 早已 COMMITTED。**判断进度看最大章 + 日志，不要只看这个字段** |
+| `failure_counts` | `{"370":13,"867":1,"883":1,"1757":1}`（1757 是 22:21 新增；1709/1724 重试成功后已清零） |
+| `skipped_chapters` | `[370]`（永久跳过） |
+| `chapters/draft/*.txt` | **1721 个**（编号 6..1756） |
 | `chapters/novel/*.txt` | **234 个**（编号 1..1649，很稀疏） |
 | `chapters/draft/failed/` | **49 个**章目录 |
-| `runtime/state_machine.json` | `current_chapter=1716`、`total_target=3800`、`phase=POLISH`、`next_state=REVIEW` |
+| `runtime/state_machine.json` | `current_chapter=1756`、`total_target=3800`、`phase=REVIEW`、`next_state=PASS` |
 
 **查最新状态不用手工盘点**：工作目录 `...\src` 下
 
@@ -113,32 +118,48 @@
 - `chapters/novel/` 只放**达到发布线（88）**或 gray-band 授权发布的章。
 - 88 以下但 hard gate 为空的章，走 `_force_publish_best`：正文落 **`chapters/draft/`**，写一条 `mode=force_best_draft` 的 checkpoint（`core/checkpoint.py:create_draft_checkpoint`，只校验 draft/），`run_volume` 日志里照样打 **COMMITTED**。
 - 所以"COMMITTED"= 已提交 checkpoint，**不等于**已进 novel/。
-- 本批 16 个 COMMITTED 里，多数是 draft（日志 note 形如 `best 79.5 < 88`）。novel/ 只有 234 章，而 checkpoint 有 1709 章，差距就来自这里。
+- 本批 32 个 COMMITTED 里，绝大多数是 draft（日志 note 形如 `best 79.5 < 88`）。novel/ 只有 234 章，而 checkpoint 已覆盖 1754 个章号，差距就来自这里。
 
-`runtime/checkpoint.json` 里另有 33 条 checkpoint 找不到对应 draft（多为 ch1-100 老章，正文在 novel/ 或已被清理）；1 条 draft 无 checkpoint（ch1709，见 3.4）。属历史产物不一致，不是新故障，暂时不影响续跑（resume 以 checkpoint 为准）。
+`runtime/checkpoint.json` 里仍有 26 条重复章号与若干"checkpoint 有、draft 无"的历史章（多为 ch1-100，正文在 novel/ 或已清理）。属历史产物不一致，不是新故障，不影响续跑（resume 以 checkpoint 为准）。
 
 `ch370` 累计 13 次失败后被写入 `skipped_chapters`，**永久跳过**。除非用户明确要求，不要重跑它。
 
 `runtime/state.db`（StateDB，53 KB + 4 MB WAL）：`characters` 8、`factions` 0、`foreshadows` 9、`clue_plans` 20、`relationships` 6、`concept_unlocks` 4。查实时库前先复制一份再查，别在跑批时直连。
 
-### 3.4 当前批次 run_1726（接手时的"现场"）
+### 3.4 两批实测成绩（逐章解析日志 END 行）
+
+| 批次日志 | 窗口 | 落地章数 | 结果 | 均分 | 最低 5 章 |
+|---|---|---|---|---|---|
+| `runtime/run_volume_20261107T140835Z.log` | ch1682-1726 | 32 | 30 COMMITTED / **2 FAILED**（ch1709、ch1724） | **67.2** | 1720 **34.8**、1699 **42.4**、1716 48.9、1713 52.4、1698 53.2 |
+| `runtime/run_volume_20261107T173821Z.log` | ch1727-1756 + 重试 1709/1724 | 31 | **31 全 COMMITTED**（0 FAILED） | **70.7** | 1738 **52.8**、1740 56.3、1750 57.9、1746 59.6、1748 61.9 |
+
+- 第一批 SUMMARY：`30/33 chapters succeeded, 2 failed, 1 skipped in 12487.5s`；第二批：`31/33 succeeded, 1 failed, 1 skipped in 11304.5s`（多出的 failed/skipped 是窗口内非目标章与 ch370）。
+- 重试上岸：ch1709 74.3、ch1724 72.5。
+- 质量信号与上批持平：42.4/34.8/52.8 这类分数同样以 force-best 落 draft 并被记为 COMMITTED。原因见第 4 节。
+- 时间线：第一批 22:08 起跑 → 01:36:58 收在 ch1726；第二批 01:38:20 起 → 04:47:14 抵达 1756，看护按设计退出（`target 1756 reached, watchdog exit`），04:47-22:03 的 17 小时空档**没有进程在跑，不是故障**。
+
+### 3.5 停止瞬间的现场（2026-11-08 22:24，用户指令「停止一切」）
 
 | 项 | 值 |
 |---|---|
-| 进程 | PID **24492**（`python.exe`，2026-11-07 22:08:34 启动） |
-| 命令 | `"D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.run_volume --chapters 1726 --resume` |
-| 工作目录 | `...\skills\novel-engine\src` |
-| 运行日志 | `src\novel_engine\runtime\run_volume_20261107T140835Z.log`（每章 START/END 一行） |
-| 包装日志 | `C:\Users\ZHANG\AppData\Local\Temp\run_1726_batch.log`（含 +0800 时间戳，看进度更快） |
-| 启动时 checkpoint | 1693 章已 COMMITTED，跨批失败计数 `[(370,13),(867,1),(883,1),(1682,1),(1688,1)]` |
-| 已出结果（ch1682..1715，21 章，00:30 快照） | COMMITTED 20 / FAILED 1；均分 **69.1**；最高 ch1700 83.7 |
-| 最低 5 章 | 1699 **42.4**、1713 **52.4**、1698 **53.2**、1682 62.3、1702 66.7 |
-| 失败章 | ch1709，69.0，note=「三评极差>15，评审极不稳定，强制人工复核（不自动重采）」 |
-| 当前 | 00:33 完成 ch1716（**48.9**）、00:39 完成 ch1717（77.85）；00:47 已在 ch1718。看护进程就位（见 5.3） |
+| 生成进程 | PID **17532**，`python.exe` `-X utf8 -m novel_engine.scripts.run_volume --chapters 1786 --resume`，**已 terminate** |
+| 看护进程 | PID **31144**，`pythonw.exe %TEMP%\_relay_novel.py`（TARGET=1786），**已 terminate** |
+| 残留 | 复核 `remaining_count 0`：没有任何 `run_volume` / `relay_novel` 进程 |
+| 停在哪一章 | 22:21:31 ch1757 **FAILED**（score 60.4，`三评极差>15，强制人工复核（不自动重采）`）；同一秒进 ch1758，场景 1/2/3 长度不足重生成，22:24 被终止 |
+| 本轮新增 checkpoint | ch1742 重试收口：`COMMITTED`，force-best **55.0**、488.6s，note 记 `plot_consistency/high:关键道具矛盾`、`foreshadow_execution/medium:F001 密使袖口纹样未落正文`；日志另有 `CHAPTER 1742 NEEDS HUMAN: directing_error`（任务卡场景 3/4 写成「次日午后/次日黄昏」越过章级「跨夜」跨度） |
+| failure_counts | `{"370":13,"867":1,"883":1,"1757":1}`（1742 本次已成功，不再计数） |
+| 包装日志 | `%TEMP%\run_1786_batch.log`（+0800 时间戳）；运行时日志 `runtime/run_volume_<时间戳>.log` |
+| 停止前取证 | `%TEMP%\_pre_stop.txt`（日志尾 + checkpoint + 进程表）、`%TEMP%\_stop_all.txt`（terminate 结果） |
 
-这批的**质量信号很差**：均分 69.1，且 42.4/52.4/53.2 这种分数也直接 COMMITTED 了。原因见第 4 节：force-best 会无条件兜底到 draft。
+**恢复运行的唯一命令**（工作目录 `...\skills\novel-engine\src`，目标先设 1786，不要改小）：
 
-`--chapters 1726` 表示"跑到第 1726 章为止"，`--resume` 表示跳过 checkpoint 里已 COMMITTED 的章。若进程中途死掉，直接重跑同一命令即可（不要 `--chapters 1727` 起新窗口，`--resume` 会自己从第一个缺口开始）。
+```powershell
+& "D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.run_volume --chapters 1786 --resume
+```
+
+- `--resume` 会跳过已 COMMITTED 章。**ch1758 的残稿会在重启后被当作未完成而重做**，不会半截入档；ch1757 会在 failure_counts=1 的情况下重试，第 5 次才触发跳过阈值。
+- 不要再起第二个批次：`checkpoint.json`、`state.db`、`chapters/` 是共用状态。
+- 看护脚本 `%TEMP%\_relay_novel.py` 仍在（未入库），常量已改成 `TARGET=1786`、`OUT=run_relay_1786.log`；要用就重新 `pythonw` 起，它会先检测是否已有 `run_volume` 进程。
 
 ---
 
@@ -152,23 +173,22 @@
 2. **best ≥ 发布线，但 hard gate 仍阻断** → `force publish`：`success=True`，附 note，标人工复核，发布路径受 `_force_publish_best` 控制。
 3. **best < 发布线，且不在 gray-band** → **force-best 到 draft**：`success=True`、`published=True`、`apply_world_state=False`，note 形如 `best 42.4 < 88 (hard gate [])`，同时 `_flag_for_human`。**这是 88 以下也能"上岸"的机制来源，不是 bug，是现行设计（给人工审阅用）**。
 4. **gray-band**：`soft_publication_line = min_ch - 3`，落在 [soft, 88) 且无 high issue、det 通过 → 授权发布 novel/ 并标"抽读复核"（ch62 那类问题的产物）。
-5. **评审极不稳定**：两次评审极差 >15 → 直接 FAILED，强制人工复核，不自动重采（ch1709 就是）。
+5. **评审极不稳定**：两次评审极差 >15 → 直接 FAILED，强制人工复核，不自动重采（ch1709 那次是，重试后 74.3 上岸；ch1757 本次也是，60.4）。
 6. 82-87 分另有一条"人工复核队列"路径（落 draft + `pending_human_review`），与 force-best 并列。
 
-推论：**看 `run_volume` 日志的 COMMITTED 数量不能判断质量，必须看分数和 note**。均分 69 而 checkpoint 一路涨，是这套兜底的正常表现，也是当前最大隐患。
+推论：**看 `run_volume` 日志的 COMMITTED 数量不能判断质量，必须看分数和 note**。均分 67.2 / 70.7 而 checkpoint 一路涨，是这套兜底的正常表现，也是当前最大隐患。
 
 ---
 
 ## 5. 接手后的执行顺序
 
-### 第 1 步：等 `run_1726` 收敛
+### 第 1 步：确认当前无进程（**已满足**，2026-11-08 22:24 核实）
 
-- 看 `C:\Users\ZHANG\AppData\Local\Temp\run_1726_batch.log` 尾部，或 `runtime\run_volume_20261107T140835Z.log` 里的 `=== START/END chapter N ===`。
-- 完成标志：日志出现收尾 `SUMMARY`（或进程退出、`Get-CimInstance Win32_Process` 里 PID 24492 消失），且最后一章是 ch1726。
-- 收敛后核对：`checkpoint.last_complete` 应到 1726；新增 FAILED 章要记进 backlog。
-- **不要**在它还在跑时启动第二个批次：两个进程共用 `runtime/checkpoint.json`、`state.db`、`chapters/`，会互相覆盖。
+- 现在是"全停"状态：生成 PID 17532、看护 PID 31144 均已 terminate，`remaining_count 0`。重新开跑前先确认这一点，别和残留进程抢状态。
+- 核对方式：`Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='pythonw.exe'"`，筛命令行含 `run_volume` / `relay_novel` 的项，应为空。
+- **不要**同时跑两个批次：`runtime/checkpoint.json`、`state.db`、`chapters/` 是共用状态，会互相覆盖。
 
-### 第 2 步：生成 ch1727-1756 中纲并审 —— **已完成（2026-11-08 00:35）**
+### 第 2 步：中纲 ch1727-1756 / ch1757-1786 —— **两片均已完成并入库**
 
 文件 `config/planning/mid_outline_V05_ch1727-1756.json`，30/30 approved，`meta.status=approved`。复现/重审命令（工作目录 `...\skills\novel-engine\src`）：
 
@@ -188,23 +208,30 @@
 - **API key**：`generate_mid_outline.py` 只认 `AGNES_API_KEY` / `LLM_API_KEY`。当前 `.env` 第 5 行 `AGNES_API_KEY` 与第 8 行 `AGNES_TOKEN_API_KEY` 并存，实测直接跑**不会**退 2（此前"必须设别名"的说法不成立；但换 profile 时仍建议先 `$env:AGNES_API_KEY = $env:AGNES_TOKEN_API_KEY`）。密钥只走环境变量，不写进任何 json。
 - 通过标准：30 条 entry 全 `approved`，`meta.status=approved`。**注意**：`[概念规划] V05 不在 concept_unlocks.unlock_schedule` 是提示级，不阻塞；见 8.10。
 
-### 第 3 步：启动下一批（**当前批次收敛后**才可执行）
+**ch1757-1786 这一片的实际处置**（2026-11-08 22:04-22:14，最容易踩坑的一片）：
 
-**2026-11-08 00:47 已部署无人值守接力**，本轮不需要手工执行这一步，除非看到看护进程已退出：
+1. 首轮生成只得 **29 条，缺 ch1777**（日志 `batch missing chapters: [1777]`）→ 用 `--only 1777 --out <同一文件>` 合并补齐到 30。
+2. 首轮 audit：20 approved / **8 pending_human** / **2 needs_regenerate**。pending 全部因为 `boundary_note` 写成"需人工确认：…"（`audit_mid_outline.py` 第 439 行永久判 pending）。`needs_regenerate` 两章：**ch1757** 撞 A 路线（"陆烬体内气机运转"）、**ch1784** 撞"呼吸"概念锁。
+3. 改 10 条措辞：ch1757 → "陈老根在村后古树下练习改良版呼吸法，陆烬在旁只是安静看着，记下他起手收势的次序"；ch1784 → "陈老根独自习练基础呼吸法残篇，陆烬在旁看着，没有跟着动手"；8 条 pending 的 boundary_note 全部改成陈述式"铺垫：…"。
+4. 第二轮：27 approved / 3 pending，全是**伏笔锚点未命中**——ch1761 引 `f001_royal_heirlooms`（core_event 无"残物/残片/残卷"）、ch1775 引 `f002_hunyuan_scripture`（无"养魂经/呼吸法"）、ch1779 引 `f004_mitochondria_earth`（实为迷雾场景，正确 fid 是 **f005_fog_core**）。补丁：ch1761 追加"与几张残卷"、ch1775 把"基础呼吸练习"改"呼吸法残篇"、ch1779 换 f005。
+5. 第三轮：**30 approved / 0 pending / 0 needs_regenerate**，`[覆盖审计] V05 forbidden 2/2 已判定化`。随后写 `meta.status=approved` + 逐条 `meta.audit`。
 
-- 看护进程：`pythonw.exe` 跑 `%TEMP%\_relay_novel.py`，日志 `%TEMP%\relay_novel.log`（每条 `watchdog start … pid=` 就是当前 PID；00:50 是 26976）。每约 20 分钟写一条 `waiting for run_volume` 心跳。
-- 逻辑：每 120s 检查是否有 `novel_engine.scripts.run_volume` 进程；没有且 `checkpoint.last_complete < 1756` 时，自动启动 `--chapters 1756 --resume`（输出重定向到 `%TEMP%\run_relay_1756.log`）；到达 1756 或连续 3 次无进展则退出。
-- **手工启动前先看日志/进程**：只要已有 `run_volume` 进程，看护不会再启第二个；但若你手工起进程后又杀掉，看护会自动补位。
-- 关掉看护：`Get-Process pythonw` 找到跑 `_relay_novel.py` 的 PID，`Stop-Process -Id <pid>`。
+教训：**同一片里"生成缺章 + pending_human + 概念锁 + 锚点错配"会叠加**，一轮很难收敛，按"生成→审计→按类别批量改措辞→重审"迭代，别一次只改一章。
 
-手工执行（等价命令）：
+### 第 3 步：启动下一批（**当前处于停止状态，等用户指令**）
+
+停止是用户明确指令（2026-11-08 22:23「停止一切」），不是异常退出。要恢复时手动起一次：
 
 ```powershell
 Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src"
-& "D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.run_volume --chapters 1756 --resume
+& "D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.run_volume --chapters 1786 --resume
 ```
 
-- 新进程会 import 最新代码（含 `f38029fc7` 的危机门修复），这是修复真正生效的时点。
+- **目标固定 1786**：中纲只铺到 1786，1787 起会退回"松散参考"。到 1786 之前必须先补 ch1787-1816 的中纲（同第 2 步流程），否则等于无约束自由发挥。
+- 新进程会 import 最新代码（含 `f38029fc7` 危机门修复、`6091d834c` R18/R19 与否定语境窗口）。批次运行中改代码不生效。
+- 看护（可选，`%TEMP%\_relay_novel.py`，常量已改为 `TARGET=1786`、`OUT=run_relay_1786.log`）：每 120s 扫 `novel_engine.scripts.run_volume` 进程，没有且 `last_complete < TARGET` 时自动起 `--chapters TARGET --resume`，到目标或连续 3 次无进展退出。日志 `%TEMP%\relay_novel.log`，每条 `watchdog start target=… pid=…` 就是当前 PID。
+- **顺序**：先关看护再关生成，否则看护会立刻补位。关看护 = `Get-Process pythonw` 找到跑 `_relay_novel.py` 的 PID 后 `Stop-Process -Id <pid>`。
+- 本次停止用的方式：psutil 先 terminate 子进程再 terminate 自身，15s 不退再 kill；脚本 `%TEMP%\_stop_all.py`，输出 `%TEMP%\_stop_all.txt`，复核 `remaining_count 0`。
 - `--skip-after N`（默认 5）控制"跨批累计失败多少次后放弃该章"；ch370 已达 13 次，属历史遗留。
 - 日志自动落 `runtime/run_volume_<UTC时间戳>.log`；建议同时用 `Tee-Object` 或重定向到 `%TEMP%` 便于 tail。
 - 长跑建议放后台/独立窗口，避免与本会话工具超时绑定。
@@ -222,8 +249,8 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 
 1. **A 路线 #8（创作硬边界）**：第一阶段陆烬**禁止任何修炼样式动作**（静坐吐纳、引气、气流流转、暖意、气感、呼吸法调心神、夜间独坐静神、模仿引导动作）。合法形态只有"陈老根习练 + 陆烬旁观/被波及/阅读记录"。已实锤越界章：ch1634、1647、1676、1690、1695、1710、1713、1717、1719、1720。写新中纲/新章前先对照这一条。
 2. **git 纪律**：禁 `git add -A` / `git add .` / `git reset --hard` / `git checkout .` / `git clean -fd` / `git stash` / `git commit --no-verify`。只 add 自己改的具体文件。CRLF→LF 警告无害。
-3. **门禁**：改动质量门/门禁代码后，在 `src` 下跑
-   `python -X utf8 -m pytest novel_engine/tests/domain_gate_wiring -q`（历史基线 378 passed, 1 xfailed, ~112s），以及受影响的专项目录（`domain_low_score`、`domain_rescue_remediation`、`domain_punctuation`、`domain_review_hybrid` 等）。本次修复另跑 `tests/domain_gate_wiring/test_crisis_gate_negation.py`（6 passed）。
+3. **门禁**：在 `...\skills\novel-engine\src` 下跑
+   `python -X utf8 -m pytest novel_engine/tests -q` —— 当前基线 **1302 passed / 1 xfailed / 3 warnings，约 193s**；再跑 `python -X utf8 -m pyflakes novel_engine` —— 约 247 行告警但**必须 0 处 undefined name**，且**禁止截断输出**（`Select-Object -First` 会漏检，历史上漏过真实 bug）。只跑局部门禁不足以放行。
 4. **cron**：批次接力由既有定时任务负责（`13959628902658`，`23 */3 * * *`，Asia/Shanghai，enabled）。**本链不新建、不删除、不修改任何定时任务**。另曾出现 `13628799289858`、`13657835483138`、`14072832100610` 三个定时触发注入，同样不要动。
 5. **API key**：只通过 `$env:` 注入或 `.env`，不写进 json、不写进文档、不写进 commit。
 6. **提交前先看 `git status`**，确认只暂存自己的文件；批次进程与 git 共用同一工作区，切换代码后**必须新进程**才生效。
@@ -257,20 +284,23 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 
 | 缺口 | 影响 | 建议 |
 |---|---|---|
-| ~~没有"当前状态快照"文件~~ | 已补：`scripts/status_snapshot.py`（只读，输出 Markdown；00:30 那版见第 3.3 节） | 每批收敛后跑一次，必要时贴进第 3 节 |
+| ~~没有"当前状态快照"文件~~ | 已补：`scripts/status_snapshot.py`（只读，输出 Markdown；22:02 那版见第 3.3 节） | 每批收敛后跑一次，必要时贴进第 3 节 |
 | 没有"质量趋势"记录（各批均分、低于 60 章走势） | 看不到"越跑越差"还是"偶发" | 从 `run_volume_*.log` 的 END 行做一个小脚本，产出 `audit/batch_quality.csv` |
-| `needs_human_review.json` 队列没人消费 | 低分 draft 越积越多（本批已 +8 章 <70） | 先定"谁审、按什么顺序审、审完怎么回写" |
+| `needs_human_review.json` 队列没人消费 | 低分 draft 越积越多（本轮新增 ch1742 55.0、ch1757 60.4） | 先定"谁审、按什么顺序审、审完怎么回写" |
 | `docs/runbook.md` 正文 | 会把人带到 SiliconFlow/Qwen、16 passed、200 章出口的旧世界 | 需要一次整体重写（下一项独立任务） |
 | 中纲 `V0x` 标签与真实卷号错位 | 人类阅读时容易误判进度 | 新片用真实卷号；历史片不批量改名（改名会动 git 历史且无功能收益） |
 | `chapters/outline/` 只有 39 个 task_card 快照 | 无法复盘"当时按什么卡写的" | 如需复盘再补，非阻塞 |
+| 批次成绩统计脚本未入库（本轮用 `%TEMP%\_stat_batches.py` 解析 END 行） | 换机/换人无法复现"均分、最低 5 章"的口径 | 收编进 `scripts/`，或并入 `status_snapshot` 输出 |
 
 ---
 
 ## 8. 待决事项（需要用户拍板，别自行决定）
 
-1. **本批均分 69.8 怎么处理**：是继续按 cron 接力往下推（接受大量 draft），还是先停下来做质量治理？这是当前最重要的决策点。
-2. **低于 60 分的章是否补写**：ch1699(42.4)、ch1698(53.2)、ch1682(62.3) 等都在 draft，未进 novel。
-3. **ch1709 人工复核**：三评极差>15，需要人或模型复评一次。
+1. **要不要重启批次**（当前第一决策点）：现在全停，成稿收在 ch1756（1757 FAILED、1758 半截），中纲到 1786。重启命令见 3.5；不重启就一直停着。
+2. **均分 67.2 / 70.7 怎么处理**：继续按这个口径往下推（接受绝大多数章以 draft 形态存在），还是先停下来做质量治理？
+3. **低于 60 分的章是否补写**：ch1720(34.8)、ch1699(42.4)、ch1716(48.9)、ch1713(52.4)、ch1738(52.8)、ch1742(55.0)、ch1740(56.3)、ch1750(57.9) 都在 draft，未进 novel。ch1709 已重试上岸 74.3，不需再议。
+   - **ch1757 人工复核**：60.4，`三评极差>15，评审极不稳定，强制人工复核（不自动重采）`，已 FAILED 且 failure_counts=1（第 5 次才进跳过）。重启批次会自动重试，但同一根因大概率复现。
+   - **ch1742 人工复核**：本次 force-best **55.0** 放行，但正文明细有两处硬伤——`plot_consistency/high` 关键道具信息矛盾、`foreshadow_execution/medium` F001 密使袖口纹样未落入正文；任务卡还把场景写成「次日午后/次日黄昏」越出章级「跨夜」跨度（`NEEDS HUMAN: directing_error`）。
 4. **writer 输出退化**（短篇、分词碎裂成单字行、复读"尸位素餐"十余次）：ch1682 原始稿的 15.5 分主因，尚无归因与修复方案。是否作为下一项机制任务？
 5. **dim-gate 长度严重不足**（`[长度] 5078 < 7310`）：ch1688、ch1698 都出现过，属系统性问题，是否改 dim-gate 策略或人工补写？
 6. **`稳固神魂` 类防御性调息**是否算 A 路线 #8 禁项（当前从严处理）。
@@ -279,6 +309,7 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 9. **`[canon硬词] 口诀`**：ch1682 里"没有再教那些复杂的口诀"暗示曾教，与"仅陈老根练"矛盾，判定口径待定。
 10. **V05/V06 的卷级概念规划缺失**：`config/leak_terms/concept_unlocks.json` 的 `unlock_schedule` 只有 V01（covered）/V02（planned）/V03（planned）。V05 已补 forbidden 判例、可跑批，但概念解锁时间表仍空；V06 段（1844-2200）将来更会重演"整批挂起"。是否本轮补 V05，或与 V06 判例一起做？
 11. **V06 两条 forbidden 未条款化**（守夜人完整身世、门芯脱落细节）：进 V06 前必须先补 R20/R21，否则 `audit_mid_outline` 会像 ch1727 首轮那样把整批挂起。
+12. **ch1787-1816 中纲未生成**：现有中纲止于 1786，续跑必须先在跑到 1786 之前补这一片，否则 1787 起退回松散参考。
 
 ---
 
@@ -310,22 +341,25 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 3. **`start.bat` 会重置运行时**（等同 clean），长跑续跑只能用 `run_volume --resume` 或 `resume.bat` 系。
 4. **`production_runner` 与 `run_volume` 两套 resume 语义不同**，混用会重复生成或跳过章。
 5. **共用工作区**：批次运行中切代码不生效（已 import 旧模块）；改完必须新进程。
-6. **`generate_mid_outline` 的环境变量名与主流程不一致**（见 5.2）。
+6. **`generate_mid_outline` 的环境变量名与主流程不一致**（见第 2 步）。
 7. **`audit_mid_outline auto` 只审排序第一的文件**，不是全量。
-8. **checkpoint 与 draft 有历史不一致**（33 章无 draft、1 章无 checkpoint），resume 以 checkpoint 为准，不用手动"修数据"。
+8. **checkpoint 与 draft 有历史不一致**（26 条重复章号、若干老章无 draft），resume 以 checkpoint 为准，不用手动"修数据"。
 9. **`ch370` 永久跳过**，别当失败重试。
 10. **`config/planning` 文件名前缀 V0x 不可信**，按章号判断。
 11. **PowerShell 单行裸字符串会被当命令执行**：`Set-Location x; "文字"` 会报错，用 `Write-Output`。
 12. **写文件编码**：人看的 md 用 UTF-8；`.bat/.cmd` 必须 CRLF。
+13. **`checkpoint.last_complete` 不是最大已完成章**：重试老章后会被写回那个小章号（22:15 重试 ch1742 后变成 1742，而 1743-1756 早已完成）。判断进度看 checkpoint 里的最大章、`chapters/draft` 最大编号和日志 END 行。
+14. **看护必须先于生成关停**：直接杀掉 `run_volume` 而不关 `_relay_novel.py`，看护会在 120s 内自动补起一个新批次。
 
 ---
 
 ## 11. 接手自检清单
 
-- [ ] `git log -1 --oneline` 是最新提交，`git status` 干净（本轮 V05 判例改动若未提交，先看第 6 节门禁口径）
-- [ ] `run_1726` 是否还在跑（PID 24492 / 日志尾部；00:39 完成 ch1717）
-- [ ] 看护进程是否存活（`Get-Process pythonw`；PID 以 `%TEMP%\relay_novel.log` 最新 `watchdog start` 为准）
-- [ ] `checkpoint.last_complete` 当前值（00:30 是 1715，跑完应为 1726）
-- [ ] `config/planning/mid_outline_V05_ch1727-1756.json` 存在且 30 条 approved、`meta.status=approved`
-- [ ] 下一批命令的工作目录是 `...\src`、`-X utf8`、`--resume`、目标章号 1756
+- [ ] `git log -1 --oneline` 是 `6323508c1`（或之后的提交），`git status` 干净
+- [ ] **确认没有任何进程在跑**：`Get-CimInstance Win32_Process` 筛 `run_volume` / `relay_novel` 应为空；本次停止后 `remaining_count 0`
+- [ ] `checkpoint.json`：最大章 1756、`failure_counts` 含 `1757:1`、`skipped=[370]`；`last_complete` 若显示 1742，那是重试写回，不是进度（见 10.13）
+- [ ] `chapters/draft` 最大编号 1756、共约 1721 个；`chapters/novel` 234 个（到 1649）
+- [ ] `config/planning/mid_outline_V05_ch1727-1756.json` 与 `mid_outline_V05_ch1757-1786.json` 均 30 条 approved、`meta.status=approved`
+- [ ] 要重启：工作目录 `...\src`、`-X utf8`、`--resume`、**目标 1786**；先起生成还是先起看护要想清楚（见第 3 步与 10.14）
+- [ ] 跑过 1786 之前先补 ch1787-1816 中纲，否则退回松散参考
 - [ ] 记住 A 路线 #8、git 纪律、cron 不改动、密钥只走环境变量

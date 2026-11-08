@@ -29,6 +29,7 @@
   - 复跑结果：**30 approved / 0 pending / 0 needs_regenerate**，`meta.status=approved`（附 audit 结论与覆盖说明）。
 - **仍未解决**：V05/V06 在 `config/leak_terms/concept_unlocks.json` 的 `unlock_schedule` 里没有卷级概念规划（只有 V01-V03），每轮 audit 都会提示 `[概念规划] V05 不在 …`。不阻塞批次（提示级），但 V06 的两条 forbidden（守夜人身世、门芯脱落细节）尚未条款化，进 V06 时会重演同样的整批挂起。
 - **运行态（00:47）**：本轮改动 3 个提交 `6091d834c`（判例+中纲）→ `0dfa88278`（status_snapshot）→ `92ae0273f`（文档），已 push，远端单分支。`run_1726` 到 ch1718；另起无人值守看护 `pythonw _relay_novel.py`（日志 `%TEMP%\relay_novel.log`，PID 以最新 `watchdog start` 为准），`run_1726` 结束后自动接 `--chapters 1756 --resume`。
+- **运行态（22:24，覆盖上一条）**：ch1727-1756 于 04:47:14 抵达 1756（`target 1756 reached, watchdog exit`），第二批 31 章全 COMMITTED、均分 70.7；第一批 32 章 30 COMMITTED / 2 FAILED、均分 67.2。ch1757-1786 中纲 30/30 approved 已提交 `6323508c1`；新批 `run_volume --chapters 1786 --resume`（PID 17532）跑到 ch1757 判 FAILED（60.4，三评极差>15）、ch1758 半截。**22:23 用户指令「停止一切」，生成与看护（PID 31144）均已 terminate，`remaining_count 0`**。现场详见 `docs/HANDOFF.md` 第 3 节。
 
 ---
 
