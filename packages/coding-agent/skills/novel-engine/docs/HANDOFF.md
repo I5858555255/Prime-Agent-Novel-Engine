@@ -2,7 +2,7 @@
 
 > 给"下一个接手 agent"的唯一现状入口。历史操作细节在 `docs/superpowers/quality-backlog.md`（条目置顶、按日期倒序），本文件只写**现在是什么状态、接下来做什么、别踩什么坑**。
 >
-> 最后更新：2026-11-08 22:26 +0800（**按用户指令已停止全部生成进程**）。第 3 节是**停止时的现场快照**；恢复运行前先按第 5 节第 1 步核对。
+> 最后更新：2026-11-08 22:40 +0800（**按用户指令已停止全部生成进程**；第 3 节是停止瞬间的现场快照，本文改写已提交并推送 `b1256174a`）。恢复运行前先按第 5 节第 1 步核对进程。
 
 ---
 
@@ -20,7 +20,7 @@
 |---|---|
 | 仓库 | `D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine` |
 | 分支 | `feat/stability-quality`（远端 `origin` 同名分支，已 push，ahead=0） |
-| 最近提交 | `6323508c1 feat: 新增 V05 中纲 ch1757-1786（30/30 approved）`；其前是 `779c937a7`、`597e56eb8`、`92ae0273f`（文档）、`0dfa88278`（status_snapshot）、`6091d834c`（R18/R19 判例 + 否定语境窗口） |
+| 最近提交 | `b1256174a docs: 交接文件按停止现场重写`（本文件 + backlog 运行态）；其前 `6323508c1 feat: 新增 V05 中纲 ch1757-1786（30/30 approved）`、`779c937a7`、`597e56eb8`、`92ae0273f`（文档）、`0dfa88278`（status_snapshot）、`6091d834c`（R18/R19 判例 + 否定语境窗口） |
 | 技能包根 | `packages\coding-agent\skills\novel-engine\` |
 | 数据根 = 包根 | `...\skills\novel-engine\src\novel_engine\` |
 | **运行/测试工作目录** | `...\skills\novel-engine\src`（不是仓库根，也不是包根） |
@@ -355,7 +355,7 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 
 ## 11. 接手自检清单
 
-- [ ] `git log -1 --oneline` 是 `6323508c1`（或之后的提交），`git status` 干净
+- [ ] `git log -1 --oneline` 是 `b1256174a`（或之后的提交），`git status` 干净
 - [ ] **确认没有任何进程在跑**：`Get-CimInstance Win32_Process` 筛 `run_volume` / `relay_novel` 应为空；本次停止后 `remaining_count 0`
 - [ ] `checkpoint.json`：最大章 1756、`failure_counts` 含 `1757:1`、`skipped=[370]`；`last_complete` 若显示 1742，那是重试写回，不是进度（见 10.13）
 - [ ] `chapters/draft` 最大编号 1756、共约 1721 个；`chapters/novel` 234 个（到 1649）
