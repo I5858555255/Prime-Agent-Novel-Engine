@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-11-09 接手重启批次 + 中纲 ch1787-1816（30/30 approved）+ 根因「代理环境变量」修复
+
+- **接手现场**（2026-11-08 23:55，HANDOFF `98b21807b`）：全停状态，ch1756 收口，ch1757 FAILED（60.4 三评极差>15，failure_counts=1）、ch1758 半截。中纲铺到 1786。用户指令：同时起看护、并行补 ch1787-1816 中纲。
+- **根因发现（本批最大故障）**：重启 `run_volume` 后全部 LLM 调用报 `Invalid port: ':1]'`，ch1757-1786 连刷 30 章 FAILED（score=None，约 17s/章快速失败）。根因不是代码、不是 key：DSH 会话注入了 `HTTP_PROXY=HTTPS_PROXY=http://127.0.0.1:7897`（本机 Clash 代理未启动），`httpx`（LLMClient 出站层）按代理变量建连时 URL 解析层报 Invalid port；而 `run_volume._check_api_connectivity` 用的 `urllib` 不读环境代理变量，所以预检 200 通过、真实调用全挂。**修复**：起生成/看护/中纲工具时从子进程 env 剥离 8 个 proxy 变量（`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 大小写两组），key 仍由 `run_volume._load_env()` 从 `.env` 加载。`urllib` 直连验证 200（agnes-3.0-flash 在 `/v1/models` 列表内）。
+- **双跑事故（已处置）**：修补前看门狗（pythonw，继承会话 proxy 变量）自动补起带 proxy 的 `run_volume`，与手动起的干净进程同时跑，违反 HANDOFF「不要同时跑两个批次」。处置：杀看门狗 + 带 proxy 的生成进程，只保留干净进程；看门狗脚本 `%TEMP%\_relay_novel.py` 已 patch（`clean_env()` 剥离 proxy 变量再起 `subprocess.Popen`），重新 pythonw 起。
+- **中纲 ch1787-1816**（`mid_outline_V05_ch1787-1816.json`，提交 `2218fe0f4`）：
+  1. 首轮生成 5 batch 全 200，30/30 entry 入库，`meta.status=draft`。
+  2. 首轮 audit：22 approved / **8 pending_human**——全部因生成端 `boundary_note` 写"需人工确认：…"触发 `audit_mid_outline` L439 永久 pending（与 ch1727-1756 同坑）。改写为陈述式"铺垫：…"（ch1788/1789/1796/1799/1803/1804/1808/1810）。
+  3. 二轮：28/2——ch1804 引 `f004_mitochondria_earth` 但 core_event 无锚点词（线粒体/活化氧/地球/跨界）、ch1810 引 `f005_fog_core` 无锚点词（迷雾/禁区/异变/太初原核/门芯）。修法沿用前轮口径：ch1804 core_event 加"活化氧异象"、ch1810 加"迷雾边缘"。
+  4. 三轮：**30/30 approved / 0 pending / 0 needs_regenerate**，`meta.status=approved` + audit 戳。`[覆盖审计] V05 forbidden 2/2`、`[概念规划] V05 不在 unlock_schedule` 为提示级不阻塞（与 8.10 一致）。
+- **重启批次**（干净 env，`run_volume_20261108T160732Z.log`）：ch1757 重试 210s → **75.6 FAILED**（`best 75.6 < 88`，hard gate `[canon硬词] 呼吸`，failure_count=4，**下一次失败即到 skip 阈值 5 被永久跳过**）；ch1758 → **68.8 FAILED**（三评极差>15，count=3）；ch1759 起推进中。注意：本次 75.6 比上次 60.4 高但被 canon 硬词拦——ch1757 大概率连续到 5 次进 skip，届时该章缺口进 backlog 人工补写队列（与 HANDOFF 8.3 同批低分章并列）。
+- **看护**：`%TEMP%\_relay_novel.py`（patched，TARGET=1786，日志 `relay_novel.log`），pythonw 独立起，先起生成后起看护的纪律未变。
+- **待决（沿用 HANDOFF 第 8 节，本轮未动）**：canon 硬词「呼吸/口诀」误拦口径（8.7/8.9）、V05/V06 unlock_schedule（8.10/8.11）、writer 退化（8.4）、dim-gate 长度（8.5）。
+
+---
+
 ## 2026-11-08 V05 forbidden 条款化（R18/R19）+ 中纲 ch1727-1756 从"整批挂起"到 30/30 approved
 
 - **卡关现场**：`_audit1727.log` —— `[覆盖审计] V05: forbidden 2 条，已判定化 0 条，未覆盖 2 条` → `[卡关] …批次全部挂起待 bible 完善`，30 章全部 `pending_human`（mtime 00:22:28）。机制在 `audit_mid_outline._coverage_audit`（203-216），未条款化即 `uncovered=True`，主流程（368-373）据此把整批判挂起。

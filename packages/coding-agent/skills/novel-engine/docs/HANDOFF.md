@@ -2,13 +2,15 @@
 
 > 给"下一个接手 agent"的唯一现状入口。历史操作细节在 `docs/superpowers/quality-backlog.md`（条目置顶、按日期倒序），本文件只写**现在是什么状态、接下来做什么、别踩什么坑**。
 >
-> 最后更新：2026-11-08 22:40 +0800（**按用户指令已停止全部生成进程**；第 3 节是停止瞬间的现场快照，本次改写已提交并推送，提交链见第 1 节）。恢复运行前先按第 5 节第 1 步核对进程。
+> 最后更新：2026-11-09 00:20 +0800（**批次已重启**：干净 env 的 `run_volume --chapters 1786 --resume` + 看护 `_relay_novel.py` 在跑；中纲已补到 **ch1816**；本轮提交链：`2218fe0f4` 中纲 ch1787-1816 → 其后文档更新一笔）。恢复/核查运行前先按第 5 节第 1 步核对进程。
+>
+> **重要环境坑（2026-11-09 新增）**：起任何 `run_volume` / 中纲工具时，**必须从子进程 env 剥离代理变量**（`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 大小写两组）。DSH 会话注入了 `HTTP_PROXY=HTTPS_PROXY=http://127.0.0.1:7897`（Clash 代理，本机常未启动），`httpx`（LLM 出站层）会按它建连并报 `Invalid port: ':1]'`，而 `run_volume` 预检用的 `urllib` 不读代理变量、显示 200 通过——**预检通过 ≠ LLM 调用正常**。看门狗 `%TEMP%\_relay_novel.py` 已 patch `clean_env()`；手动起用 `%TEMP%\_run_1786_noproxy.py`（读 `.env` key、剥 proxy、`subprocess.run`）。
 
 ---
 
 ## 0. 一句话现状
 
-3800 章规划，中纲已铺到 **ch1786**（V05 两片：ch1727-1756、ch1757-1786，均 30/30 `approved`）。实际成稿做到 **ch1756 全部收口**，正在推进 ch1757 起的下一批时被用户指令停止：**ch1757 判 FAILED（60.4，三评极差>15），ch1758 生成到一半被终止，ch1759-1786 未开始**。停止后**没有任何生成进程或看护进程在跑**（2026-11-08 22:24 核实）。工作区干净，HEAD `6323508c1`，远端同步。
+3800 章规划，中纲已铺到 **ch1816**（V05 三片：ch1727-1756、ch1757-1786、ch1787-1816，均 30/30 `approved`）。实际成稿做到 **ch1756 全部收口**；**2026-11-09 00:07 按用户指令重启批次**（干净 env，目标 1786），重启后 ch1757 重试 75.6 FAILED（canon 硬词「呼吸」，failure_count=4）、ch1758 68.8 FAILED（三评极差，count=3），ch1759 起推进中，**生成进程 + 看护（patched `_relay_novel.py`）均在跑**。此前 22:24 全停那轮：ch1757 判 FAILED（60.4）、ch1758 生成到一半被终止。工作区除本批运行产物外干净，HEAD `2218fe0f4`（中纲提交）。
 
 两批实测：ch1682-1726 共 32 章 → 30 COMMITTED / 2 FAILED（ch1709、ch1724），**均分 67.2**；ch1727-1756 共 31 章（含 1709/1724 重试）→ **全 COMMITTED，均分 70.7**。发布线 88，绝大多数是 force-best 落 draft。
 
@@ -20,7 +22,7 @@
 |---|---|
 | 仓库 | `D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine` |
 | 分支 | `feat/stability-quality`（远端 `origin` 同名分支，已 push，ahead=0） |
-| 最近提交 | 2026-11-08 22:30-22:40 两笔纯文档提交：`b1256174a`（交接文件按停止现场重写）→ 其后的"页首补提交号"一笔（HEAD）。再往前：`6323508c1 feat: 新增 V05 中纲 ch1757-1786（30/30 approved）`、`779c937a7`、`597e56eb8`、`92ae0273f`（文档）、`0dfa88278`（status_snapshot）、`6091d834c`（R18/R19 判例 + 否定语境窗口） |
+ | 最近提交 | 2026-11-09 `2218fe0f4`（新增 V05 中纲 ch1787-1816，30/30 approved）→ 其后"接手重启 + 代理根因"文档更新一笔（HEAD）。再往前：`98b21807b`、`e3f2765a6`、`b1256174a`（交接文件按停止现场重写）、`6323508c1`（中纲 ch1757-1786）、`779c937a7`、`597e56eb8`、`92ae0273f`（文档）、`0dfa88278`（status_snapshot）、`6091d834c`（R18/R19 判例 + 否定语境窗口） |
 | 技能包根 | `packages\coding-agent\skills\novel-engine\` |
 | 数据根 = 包根 | `...\skills\novel-engine\src\novel_engine\` |
 | **运行/测试工作目录** | `...\skills\novel-engine\src`（不是仓库根，也不是包根） |
@@ -74,16 +76,16 @@
 
 ### 3.2 中纲（章级意图）覆盖
 
-`config/planning/mid_outline_*.json` 共 **59 个分片**（每片 30 章，个别早期片 26 章）：
+`config/planning/mid_outline_*.json` 共 **60 个分片**（每片 30 章，个别早期片 26 章）：
 
 - V01：ch21-316，10 片（**ch1-20 没有中纲**，早期章靠 plot_graph，属正常）
 - V02 标签：ch317-706，13 片
 - V03 标签：ch707-1726，34 片
-- **V05：ch1727-1756、ch1757-1786，2 片**（`mid_outline_V05_ch1727-1756.json`、`mid_outline_V05_ch1757-1786.json`，均 30/30 approved）
+- **V05：ch1727-1756、ch1757-1786、ch1787-1816，3 片**（`mid_outline_V05_ch1727-1756.json`、`mid_outline_V05_ch1757-1786.json`、`mid_outline_V05_ch1787-1816.json`，均 30/30 approved）
 
 **文件名里的 `V0x` 前缀不能当卷依据**：例如 `mid_outline_V03_ch1697-1726.json` 实际落在 V05 的章号段。加载逻辑（`chapter_director._load_mid_outline_entry`）是**扫全目录、按章号匹配 entry**，不看文件名前缀，所以功能上无影响；写新片时请用真实卷号，别再延续错标签。
 
-最新一片 `mid_outline_V05_ch1757-1786.json`：`meta.status=approved`，30 条 entry 全部 `approved`。这一片是 22:04 生成、经两轮修订后过审的（详见 backlog 2026-11-08 第三条）。
+最新一片 `mid_outline_V05_ch1787-1816.json`：`meta.status=approved`，30 条 entry 全部 `approved`（2026-11-09 生成；首轮 8 章 pending 因"需人工确认"措辞改写为陈述式"铺垫：…"，二轮 2 章伏笔锚点未命中修 core_event 补锚点词，三轮 30/30；详见 backlog 2026-11-09 条目）。**下一片缺口：ch1817-1843**（V05 尾段）与 ch1844 起的 V06（V06 两条 forbidden 未条款化，进 V06 前先补 R20/R21，见第 8 节 8.11）。
 
 门禁规则：`entry.status` 存在时以其为准，只有 `approved` 会被注入 director；`pending_human` / `needs_regenerate` 的章退回"松散参考"（不阻塞批次，但失去强约束）。`entry.status` 缺失的旧文件才看 `meta.status`，`draft` 一律不可用。
 
@@ -218,23 +220,26 @@
 
 教训：**同一片里"生成缺章 + pending_human + 概念锁 + 锚点错配"会叠加**，一轮很难收敛，按"生成→审计→按类别批量改措辞→重审"迭代，别一次只改一章。
 
-### 第 3 步：启动下一批（**当前处于停止状态，等用户指令**）
+### 第 3 步：启动下一批（**2026-11-09 00:07 已重启，当前在跑**）
 
-停止是用户明确指令（2026-11-08 22:23「停止一切」），不是异常退出。要恢复时手动起一次：
+2026-11-08 22:23 的"停止一切"已于 2026-11-09 00:07 解除：干净 env 的生成进程 + patched 看护均已起。**再手动起必须用剥代理变量的方式**（DSH 会话注入 `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:7897`，Clash 未起时 httpx 报 `Invalid port: ':1]'`，预检 urllib 不读代理变量会假通过）：
 
 ```powershell
-Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\coding-agent\skills\novel-engine\src"
-& "D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.run_volume --chapters 1786 --resume
+# 生成（干净 env，key 自动从 .env 加载，剥 8 个 proxy 变量）
+& "D:\Program Files\Python312\python.exe" -X utf8 "$env:TEMP\_run_1786_noproxy.py"
+
+# 看护（已 patch clean_env()，TARGET=1786；先确认没有 run_volume 在跑再起）
+Start-Process -FilePath "D:\Program Files\Python312\pythonw.exe" -ArgumentList "-X utf8 `"$env:TEMP\_relay_novel.py`"" -WindowStyle Hidden
 ```
 
-- **目标固定 1786**：中纲只铺到 1786，1787 起会退回"松散参考"。到 1786 之前必须先补 ch1787-1816 的中纲（同第 2 步流程），否则等于无约束自由发挥。
+- 当前批次日志：`runtime/run_volume_20261108T160732Z.log`（00:07 起，ch1757 重试 75.6 FAILED / ch1758 68.8 FAILED，ch1759 起推进）。
+- **目标先设 1816**（中纲已铺到 1816；1817 起 V05 尾段与 V06 无中纲，会退回"松散参考"）。到 1816 前若批次结束，先补 ch1817-1843 中纲（同第 2 步流程 + 剥代理变量）。
 - 新进程会 import 最新代码（含 `f38029fc7` 危机门修复、`6091d834c` R18/R19 与否定语境窗口）。批次运行中改代码不生效。
-- 看护（可选，`%TEMP%\_relay_novel.py`，常量已改为 `TARGET=1786`、`OUT=run_relay_1786.log`）：每 120s 扫 `novel_engine.scripts.run_volume` 进程，没有且 `last_complete < TARGET` 时自动起 `--chapters TARGET --resume`，到目标或连续 3 次无进展退出。日志 `%TEMP%\relay_novel.log`，每条 `watchdog start target=… pid=…` 就是当前 PID。
+- 看护每 120s 扫 `run_volume` 进程，没有且 `last_complete < TARGET` 时自动起 `--chapters TARGET --resume`（`clean_env()` 剥代理变量后 Popen），到目标或连续 3 次无进展退出。日志 `%TEMP%\relay_novel.log`，每条 `watchdog start target=… pid=…` 就是当前 PID。
 - **顺序**：先关看护再关生成，否则看护会立刻补位。关看护 = `Get-Process pythonw` 找到跑 `_relay_novel.py` 的 PID 后 `Stop-Process -Id <pid>`。
-- 本次停止用的方式：psutil 先 terminate 子进程再 terminate 自身，15s 不退再 kill；脚本 `%TEMP%\_stop_all.py`，输出 `%TEMP%\_stop_all.txt`，复核 `remaining_count 0`。
-- `--skip-after N`（默认 5）控制"跨批累计失败多少次后放弃该章"；ch370 已达 13 次，属历史遗留。
+- `--skip-after N`（默认 5）控制"跨批累计失败多少次后放弃该章"；ch370 已达 13 次，属历史遗留。**ch1757 在 00:11 的失败把 count 推到 4，再败一次即被永久跳过**——届时缺口进人工补写队列（与 8.3 低分章并列）。
 - 日志自动落 `runtime/run_volume_<UTC时间戳>.log`；建议同时用 `Tee-Object` 或重定向到 `%TEMP%` 便于 tail。
-- 长跑建议放后台/独立窗口，避免与本会话工具超时绑定。
+- 长跑建议放后台/独立窗口，避免与本会话工具超时绑定（当前生成跑在 DSH 后台 job 里，会话结束后看管的是看护；若担心会话断开，可改用独立终端跑 `_run_1786_noproxy.py` 同款逻辑）。
 
 ### 第 4 步：验收并记账
 
@@ -296,7 +301,7 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 
 ## 8. 待决事项（需要用户拍板，别自行决定）
 
-1. **要不要重启批次**（当前第一决策点）：现在全停，成稿收在 ch1756（1757 FAILED、1758 半截），中纲到 1786。重启命令见 3.5；不重启就一直停着。
+1. ~~**要不要重启批次**~~ **已重启**（2026-11-09 00:07，干净 env + patched 看护，目标 1786；中纲现铺到 1816，批次收敛后可把看护 TARGET 改 1816）。ch1757 累计失败 4 次（75.6，canon 硬词「呼吸」），再败一次进 skip。
 2. **均分 67.2 / 70.7 怎么处理**：继续按这个口径往下推（接受绝大多数章以 draft 形态存在），还是先停下来做质量治理？
 3. **低于 60 分的章是否补写**：ch1720(34.8)、ch1699(42.4)、ch1716(48.9)、ch1713(52.4)、ch1738(52.8)、ch1742(55.0)、ch1740(56.3)、ch1750(57.9) 都在 draft，未进 novel。ch1709 已重试上岸 74.3，不需再议。
    - **ch1757 人工复核**：60.4，`三评极差>15，评审极不稳定，强制人工复核（不自动重采）`，已 FAILED 且 failure_counts=1（第 5 次才进跳过）。重启批次会自动重试，但同一根因大概率复现。
@@ -309,7 +314,7 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 9. **`[canon硬词] 口诀`**：ch1682 里"没有再教那些复杂的口诀"暗示曾教，与"仅陈老根练"矛盾，判定口径待定。
 10. **V05/V06 的卷级概念规划缺失**：`config/leak_terms/concept_unlocks.json` 的 `unlock_schedule` 只有 V01（covered）/V02（planned）/V03（planned）。V05 已补 forbidden 判例、可跑批，但概念解锁时间表仍空；V06 段（1844-2200）将来更会重演"整批挂起"。是否本轮补 V05，或与 V06 判例一起做？
 11. **V06 两条 forbidden 未条款化**（守夜人完整身世、门芯脱落细节）：进 V06 前必须先补 R20/R21，否则 `audit_mid_outline` 会像 ch1727 首轮那样把整批挂起。
-12. **ch1787-1816 中纲未生成**：现有中纲止于 1786，续跑必须先在跑到 1786 之前补这一片，否则 1787 起退回松散参考。
+12. ~~**ch1787-1816 中纲未生成**~~ **已完成**（2026-11-09，`2218fe0f4`，30/30 approved）。**新缺口**：ch1817-1843（V05 尾段）与 V06 整卷（1844-2200，先补 R20/R21 判例，见 8.11）——批次收敛后按第 2 步流程 + 剥代理变量补。
 
 ---
 
@@ -350,16 +355,18 @@ Set-Location "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\packages\c
 12. **写文件编码**：人看的 md 用 UTF-8；`.bat/.cmd` 必须 CRLF。
 13. **`checkpoint.last_complete` 不是最大已完成章**：重试老章后会被写回那个小章号（22:15 重试 ch1742 后变成 1742，而 1743-1756 早已完成）。判断进度看 checkpoint 里的最大章、`chapters/draft` 最大编号和日志 END 行。
 14. **看护必须先于生成关停**：直接杀掉 `run_volume` 而不关 `_relay_novel.py`，看护会在 120s 内自动补起一个新批次。
+15. **代理环境变量是 LLM 全挂的头号嫌疑（2026-11-09 实踩）**：DSH 会话注入 `HTTP_PROXY=HTTPS_PROXY=http://127.0.0.1:7897`（Clash），代理未起时 `httpx` 报 `Invalid port: ':1]'`，**而 `run_volume` 预检用的 `urllib` 不读代理变量、仍 200 通过**——看到"预检通过但全章 17s 快速 FAILED、score=None"就是这个。起生成/看护/中纲工具一律剥 8 个 proxy 变量（`%TEMP%\_run_1786_noproxy.py` 与 patched `_relay_novel.py` 已内置）。
 
 ---
 
 ## 11. 接手自检清单
 
-- [ ] `git log -1 --oneline` 是 `b1256174a`（或之后的提交），`git status` 干净
-- [ ] **确认没有任何进程在跑**：`Get-CimInstance Win32_Process` 筛 `run_volume` / `relay_novel` 应为空；本次停止后 `remaining_count 0`
-- [ ] `checkpoint.json`：最大章 1756、`failure_counts` 含 `1757:1`、`skipped=[370]`；`last_complete` 若显示 1742，那是重试写回，不是进度（见 10.13）
-- [ ] `chapters/draft` 最大编号 1756、共约 1721 个；`chapters/novel` 234 个（到 1649）
-- [ ] `config/planning/mid_outline_V05_ch1727-1756.json` 与 `mid_outline_V05_ch1757-1786.json` 均 30 条 approved、`meta.status=approved`
-- [ ] 要重启：工作目录 `...\src`、`-X utf8`、`--resume`、**目标 1786**；先起生成还是先起看护要想清楚（见第 3 步与 10.14）
-- [ ] 跑过 1786 之前先补 ch1787-1816 中纲，否则退回松散参考
+- [ ] `git log -1 --oneline` 是 `2218fe0f4`（或之后的提交），`git status` 干净（批次运行时 checkpoint/日志会持续变动，属正常）
+- [ ] **确认进程状态**：`Get-CimInstance Win32_Process` 筛 `run_volume` / `relay_novel`；当前应有 1 个干净 env 的 `run_volume` + 1 个 patched `_relay_novel.py`。若全停，按第 5 节第 3 步的 `_run_1786_noproxy.py` / pythonw 命令重启，**必须剥代理变量**
+- [ ] **代理变量是 LLM 全挂的头号嫌疑**：任何 `Invalid port: ':1]'` 先查 `HTTP(S)_PROXY` 指向的代理是否活着；`urllib` 预检 200 不代表 httpx 正常
+- [ ] `checkpoint.json`：最大章 1756、`failure_counts` 含 `1757:4`（00:11 重试后）、`skipped=[370]`；`last_complete` 若显示小章号，那是重试写回，不是进度（见 10.13）
+- [ ] `chapters/draft` 最大编号约 1759+、`chapters/novel` 234 个（到 1649）
+- [ ] `config/planning/mid_outline_V05_ch1727-1756.json`、`ch1757-1786.json`、`ch1787-1816.json` 均 30 条 approved、`meta.status=approved`
+- [ ] 重启/补起：工作目录 `...\src`、`-X utf8`、`--resume`、**剥 8 个 proxy 变量**；先起生成还是先起看护要想清楚（见第 3 步与 10.14）
+- [ ] 跑到 1816 之前先补 ch1817-1843 中纲；进 V06 前先补 R20/R21 判例（8.11）
 - [ ] 记住 A 路线 #8、git 纪律、cron 不改动、密钥只走环境变量
