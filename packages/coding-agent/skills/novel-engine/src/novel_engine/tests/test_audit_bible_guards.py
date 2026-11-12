@@ -64,10 +64,12 @@ def test_coverage_audit_v05_fully_covered():
     assert any("已判定化 2 条" in m for m in msgs)
 
 
-def test_coverage_audit_v06_uncovered_blocks():
-    """V06 尚未条款化 → K>0（进入该卷批次时卡关，防无人值守漏判）。"""
-    _, uncovered = _coverage_audit(_AUTHOR_INTENT, _RULES, "V06")
-    assert uncovered
+def test_coverage_audit_v06_fully_covered():
+    """V06 补判例（R20 守夜人完整身世 / R21 门芯脱落细节）：2 条 forbidden 全覆盖 → K=0 不卡关。"""
+    msgs, uncovered = _coverage_audit(_AUTHOR_INTENT, _RULES, "V06")
+    assert not uncovered, f"V06 应全判定化（R20/R21），未覆盖: {msgs}"
+    assert any("已判定化 2 条" in m for m in msgs)
+
 
 
 # ── V05 补判例（R18 三件残物 / R19 太初议会分离史）─────────────────
