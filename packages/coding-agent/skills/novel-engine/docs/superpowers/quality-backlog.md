@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-11-17 收官：3800/3800 全量生成完成 + 复盘固化为入库脚本与手册
+
+- **终态**（2026-11-17 16:40 收口，17:46 复核）：连续进度（complete∪skipped）= **ch3800**；checkpoint 3822 条（唯一 3796 章，最大 3800）；`skipped_chapters=[370, 1757, 2683, 3092]`；active failures 0（残留计数 867:1 / 883:1 / 2528:3 属已完成后冻结）。看护日志 `FINAL CAP 3800 reached, autorelay exit`，`run_volume`（pid 15600）与看护（pid 37788）均正常退出。最终批 `run_volume_20261117T071716Z.log`：ch3467-3797 窗口 SUMMARY **23/27 章成功、0 FAILED、4 skipped，5002.3s**（~3.5 min/章）。
+- **产物盘点**：`chapters/novel/` **235 章**（≥88 发布线，编号 1..2336）；`chapters/draft/` **3763 章** force-best（编号 6..3800）；`draft/failed/` 57 目录；中纲 128 片全 approved（ch21-3800，git HEAD `14ff37606` = ch3781-3800 片）。
+- **质量趋势**：早期批均分 67.2/70.7 → 3400+ 段 `foreshadow_closure_overdue` hard-gate 密集（F001-F007 resolve 逾期未触发，高分章 91.3/92.7 亦被 force-best）；88+ green-gate 章占比逐步上升、force-best 占比下降（LLM phase 在长程中改善）。
+- **本次固化入库**（复盘成果转成可复现资产）：
+  1. `scripts/relay_watchdog.py` —— 看护脚本参数化（`--final-cap/--initial-target/--poll/--loose-step`，双路进度探测 + 3 次 stall 退出 + clean_env 剥代理）；
+  2. `scripts/noproxy_launcher.py` —— detached 启动器（剥 8 个 proxy 变量，已存在 run_volume 时安全 no-op）；
+  3. `scripts/batch_stats.py` —— END 行统计（窗口/COMMITTED-FAILED/均分/最低 5 章/失败 note，硬门括号感知）；
+  4. `scripts/status_snapshot.py` 扩展「连续进度」「活跃挂点清单」两节；
+  5. `docs/PROCESS_REPRO_3800.md`（完整复现手册）、`docs/watchdog-runbook.md`（看护操作）、`docs/outline-fixes.md`（中纲四类 flag 决策树 + fid 锚点表 + A 路线重写模板）；
+  6. `docs/HANDOFF.md` 现状章节刷新为收官终态（§0/§3.3/§5 指针化，历史踩坑保留）。
+- **未决（质量治理项，非生成阻塞）**：① <60 分 draft 人工复核队列无人消费（历史清单 ch1720/1699/1716/1713/1738/1742/1740/1750 等）；② `foreshadow_closure_overdue` 密集 hard-gate 的 resolve 点排布或门禁阈值决策；③ writer 退化（短篇/分词碎裂/复读）归因修复；④ dim-gate 长度不足（`5078 < 7310`）系统性问题；⑤ canon 硬词「呼吸/口诀」误拦口径。以上沿用 HANDOFF §8 待决编号。
+
+---
+
 ## 2026-11-09 接手重启批次 + 中纲 ch1787-1816（30/30 approved）+ 根因「代理环境变量」修复
 
 - **接手现场**（2026-11-08 23:55，HANDOFF `98b21807b`）：全停状态，ch1756 收口，ch1757 FAILED（60.4 三评极差>15，failure_counts=1）、ch1758 半截。中纲铺到 1786。用户指令：同时起看护、并行补 ch1787-1816 中纲。

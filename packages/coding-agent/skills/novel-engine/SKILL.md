@@ -72,7 +72,8 @@ packages/coding-agent/skills/novel-engine/
         │   ├── mini_test_runner.py     # 10-chapter mock compiler test suite
         │   └── medium_test_runner.py   # 70-chapter sliding-window test suite
         ├── quality/           # 质量门与检测器（cross_scene_crisis_gate 等）
-        ├── scripts/           # run_volume / generate_mid_outline / audit_mid_outline
+        ├── scripts/           # run_volume / generate_mid_outline / audit_mid_outline /
+                               # relay_watchdog / noproxy_launcher / batch_stats / status_snapshot
         ├── tools/             # ab_evaluate / probe_ratelimit
         ├── bible/             # Style, world, and character bible documents
         ├── config/            # Quality thresholds & runtime cost config

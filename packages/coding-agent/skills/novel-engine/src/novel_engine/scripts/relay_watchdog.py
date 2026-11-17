@@ -1,0 +1,254 @@
+"""Relay watchdog for multi-batch generation (config-driven, no hardcodes).
+
+Watches a live `run_volume` process: when it exits before reaching its
+target, the watchdog relaunches it. The next target follows this rule:
+
+- progress (largest contiguous completed-or-skipped chapter) < target
+  -> relaunch the same target (mid-batch interruption);
+- progress >= target and an approved mid-outline covers further
+  -> advance target to the approved mid-outline end (the outline must
+     lead generation by at least one slice);
+- progress >= approved coverage
+  -> advance one --loose-step slice past progress (loose reference;
+     a log note reminds that the mid-outline should be extended);
+- progress >= --final-cap -> exit 0 (all work done).
+
+Stall policy: three relaunches of the SAME target with no movement in the
+maximum completed chapter -> exit 1 (a livelocked chapter blocks both the
+contiguous frontier and the max-progress test; remedy = mark the chapter
+skipped, then relaunch the watchdog).
+
+Launches use a detached process with all proxy env vars stripped (the
+httpx LLM layer honors HTTP(S)_PROXY; a dead Clash proxy makes every call
+fail with "Invalid port"). Run it itself via `pythonw` (no console window).
+
+Usage (from the package `src/` directory):
+
+    pythonw -X utf8 -m novel_engine.scripts.relay_watchdog \
+        --final-cap 3800 [--initial-target 1846] [--poll 120]
+
+Logs to --relay-log (default %TEMP%\\relay_watchdog.log) and appends launch
+banners to --stdout-log (default %TEMP%\\run_relay_watchdog.log).
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = Path(__file__).resolve().parents[2]
+CHECKPOINT = ROOT / "runtime" / "checkpoint.json"
+PLANNING = ROOT / "config" / "planning"
+
+PROXY_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+)
+_DETACHED = 0x00000008
+_NO_WINDOW = 0x08000000
+
+
+def clean_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in PROXY_VARS}
+
+
+def log(msg: str, path: Path) -> None:
+    stamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(f"{stamp} [relay] {msg}\n")
+
+
+def live_run_volume_pid() -> int:
+    try:
+        import psutil
+    except ImportError:
+        return 0
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = (proc.info["name"] or "").lower()
+            if "python" not in name:
+                continue
+            cmd = " ".join(proc.info["cmdline"] or [])
+            if "novel_engine.scripts.run_volume" in cmd:
+                return proc.pid
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return 0
+
+
+def read_max_progress() -> int:
+    """Largest completed-or-skipped chapter.
+
+    Used for the stall test only: a single stuck-failing chapter must not
+    look like "no progress" while later chapters keep committing.
+    """
+    data = json.loads(CHECKPOINT.read_text(encoding="utf-8"))
+    nums = {e["chapter"] for e in data.get("checkpoints", [])
+            if e.get("complete") and isinstance(e.get("chapter"), int)}
+    nums |= {int(c) for c in data.get("skipped_chapters", [])}
+    return max(nums) if nums else 0
+
+
+def read_progress() -> int:
+    """Largest contiguous completed-or-skipped chapter (first gap above it)."""
+    data = json.loads(CHECKPOINT.read_text(encoding="utf-8"))
+    complete = {e["chapter"] for e in data.get("checkpoints", [])
+                if e.get("complete") and isinstance(e.get("chapter"), int)}
+    complete |= {int(c) for c in data.get("skipped_chapters", [])}
+    n = 1
+    while n in complete:
+        n += 1
+    return n - 1
+
+
+def approved_mid_outline_end() -> int:
+    """Largest ch_end whose mid-outline file has meta.status == approved."""
+    best = 0
+    if not PLANNING.is_dir():
+        return 0
+    for name in os.listdir(PLANNING):
+        if not (name.startswith("mid_outline_") and name.endswith(".json")):
+            continue
+        m = re.search(r"_ch(\d+)-(\d+)\.json$", name)
+        if not m:
+            continue
+        ch_end = int(m.group(2))
+        try:
+            meta = json.loads(
+                (PLANNING / name).read_text(encoding="utf-8")).get("meta", {})
+        except (OSError, json.JSONDecodeError):
+            continue
+        if meta.get("status") == "approved":
+            best = max(best, ch_end)
+    return best
+
+
+def next_target(progress: int, target: int, final_cap: int,
+                loose_step: int, log_path: Path) -> int:
+    if progress >= final_cap:
+        return final_cap
+    if progress < target:
+        return target
+    covered = approved_mid_outline_end()
+    if covered and covered > progress:
+        return covered
+    nxt = min(progress + loose_step, final_cap)
+    log(f"note: next batch target {nxt} exceeds approved mid-outline end "
+        f"{covered}; chapters past that run on loose reference until the "
+        f"mid-outline is extended", log_path)
+    return nxt
+
+
+def launch(target: int, out_log: Path, python: str) -> int:
+    with open(out_log, "a", encoding="utf-8") as fh:
+        fh.write(f"\n=== relay launch target={target} "
+                 f"{datetime.datetime.now().isoformat()} ===\n")
+    fh = open(out_log, "a", encoding="utf-8")
+    proc = subprocess.Popen(
+        [python, "-X", "utf8", "-m", "novel_engine.scripts.run_volume",
+         "--chapters", str(target), "--resume"],
+        cwd=str(SRC),
+        stdout=fh,
+        stderr=subprocess.STDOUT,
+        creationflags=_DETACHED | _NO_WINDOW,
+        env=clean_env(),
+    )
+    return proc.pid
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--final-cap", type=int, required=True,
+                        help="chapter cap; exit 0 when progress reaches it")
+    parser.add_argument("--initial-target", type=int, default=0,
+                        help="first batch target (0 = auto from coverage)")
+    parser.add_argument("--poll", type=int, default=120,
+                        help="seconds between liveness checks")
+    parser.add_argument("--loose-step", type=int, default=30,
+                        help="batch size beyond approved mid-outline coverage")
+    parser.add_argument("--relay-log", default=None,
+                        help="watchdog log; default relay_watchdog.log in "
+                             "the system temp dir")
+    parser.add_argument("--stdout-log", default=None,
+                        help="launch wrapper log; default "
+                             "run_relay_watchdog.log in the system temp dir")
+    parser.add_argument("--python", default=sys.executable,
+                        help="interpreter used to launch run_volume")
+    args = parser.parse_args(argv)
+
+    relay_log = Path(args.relay_log) if args.relay_log else \
+        Path(os.environ.get("TEMP", ".")) / "relay_watchdog.log"
+    out_log = Path(args.stdout_log) if args.stdout_log else \
+        Path(os.environ.get("TEMP", ".")) / "run_relay_watchdog.log"
+
+    target = args.initial_target or approved_mid_outline_end()
+    if target == 0:
+        target = args.final_cap
+    log(f"autorelay start initial_target={target} final_cap={args.final_cap} "
+        f"pid={os.getpid()}", relay_log)
+
+    stall = 0
+    seen_target = 0
+    seen_max = -1
+    beat = 0
+    while target <= args.final_cap:
+        pid = live_run_volume_pid()
+        if pid:
+            beat += 1
+            if beat % 10 == 1:
+                log(f"waiting for run_volume pid={pid} target={target} "
+                    f"(beat {beat})", relay_log)
+            time.sleep(args.poll)
+            continue
+        try:
+            progress = read_progress()
+        except Exception as exc:
+            log(f"checkpoint read failed: {exc!r}", relay_log)
+            time.sleep(args.poll)
+            continue
+        log(f"no run_volume alive; progress={progress} target={target}",
+            relay_log)
+        if progress >= args.final_cap:
+            log(f"FINAL CAP {args.final_cap} reached, autorelay exit",
+                relay_log)
+            return 0
+        new_target = next_target(progress, target, args.final_cap,
+                                 args.loose_step, relay_log)
+        if new_target != target:
+            log(f"batch advance: target {target} -> {new_target} "
+                f"(progress={progress})", relay_log)
+            target = new_target
+        # Stall only counts when the SAME target is relaunched three times
+        # in a row without any max-progress movement (advancing target
+        # resets the counter).
+        max_done = read_max_progress()
+        if target == seen_target and max_done == seen_max:
+            stall += 1
+        else:
+            stall = 0
+        seen_target = target
+        seen_max = max_done
+        if stall >= 3:
+            log(f"no progress across 3 relaunches of target={target}; "
+                f"autorelay exit", relay_log)
+            return 1
+        try:
+            new_pid = launch(target, out_log, args.python)
+            log(f"launched pid={new_pid} target={target}", relay_log)
+        except Exception as exc:
+            log(f"launch failed: {exc!r}", relay_log)
+            stall += 1
+        time.sleep(args.poll)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

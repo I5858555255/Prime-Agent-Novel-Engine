@@ -2,17 +2,26 @@
 
 > 给"下一个接手 agent"的唯一现状入口。历史操作细节在 `docs/superpowers/quality-backlog.md`（条目置顶、按日期倒序），本文件只写**现在是什么状态、接下来做什么、别踩什么坑**。
 >
-> 最后更新：2026-11-09 00:20 +0800（**批次已重启**：干净 env 的 `run_volume --chapters 1786 --resume` + 看护 `_relay_novel.py` 在跑；中纲已补到 **ch1816**；本轮提交链：`2218fe0f4` 中纲 ch1787-1816 → 其后文档更新一笔）。恢复/核查运行前先按第 5 节第 1 步核对进程。
->
-> **重要环境坑（2026-11-09 新增）**：起任何 `run_volume` / 中纲工具时，**必须从子进程 env 剥离代理变量**（`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 大小写两组）。DSH 会话注入了 `HTTP_PROXY=HTTPS_PROXY=http://127.0.0.1:7897`（Clash 代理，本机常未启动），`httpx`（LLM 出站层）会按它建连并报 `Invalid port: ':1]'`，而 `run_volume` 预检用的 `urllib` 不读代理变量、显示 200 通过——**预检通过 ≠ LLM 调用正常**。看门狗 `%TEMP%\_relay_novel.py` 已 patch `clean_env()`；手动起用 `%TEMP%\_run_1786_noproxy.py`（读 `.env` key、剥 proxy、`subprocess.run`）。
-
----
+> 最后更新：2026-11-17 21:55 +0800（**3800 章全量生成已完成**：连续进度 ch3800，3796 COMMITTED + 4 永久 skip（370/1757/2683/3092），active failures 0；看护日志 `FINAL CAP 3800 reached, autorelay exit`。本文件第 3/5/11 节的"进行中"描述已过时，以第 0 节与 `docs/PROCESS_REPRO_3800.md`（完整复现手册）为准；第 6/7/8 节的历史踩坑记录仍有效。）
 
 ## 0. 一句话现状
 
-3800 章规划，中纲已铺到 **ch1816**（V05 三片：ch1727-1756、ch1757-1786、ch1787-1816，均 30/30 `approved`）。实际成稿做到 **ch1756 全部收口**；**2026-11-09 00:07 按用户指令重启批次**（干净 env，目标 1786），重启后 ch1757 重试 75.6 FAILED（canon 硬词「呼吸」，failure_count=4）、ch1758 68.8 FAILED（三评极差，count=3），ch1759 起推进中，**生成进程 + 看护（patched `_relay_novel.py`）均在跑**。此前 22:24 全停那轮：ch1757 判 FAILED（60.4）、ch1758 生成到一半被终止。工作区除本批运行产物外干净，HEAD `2218fe0f4`（中纲提交）。
+**2026-11-17 16:40 起：全书 3800 章生成完毕，无进行中的批次。** 看护与 `run_volume` 均已正常退出，`runtime/checkpoint.json` 连续进度 = 3800（complete 3796 + skipped 4：370/1757/2683/3092）。产物：`chapters/novel/` 235 章（≥88 发布线）、`chapters/draft/` 3763 章（force-best）、`draft/failed/` 57 目录（隔离区）。中纲 128 片全部 approved，git HEAD `14ff37606`（ch3781-3800 中纲）。
 
-两批实测：ch1682-1726 共 32 章 → 30 COMMITTED / 2 FAILED（ch1709、ch1724），**均分 67.2**；ch1727-1756 共 31 章（含 1709/1724 重试）→ **全 COMMITTED，均分 70.7**。发布线 88，绝大多数是 force-best 落 draft。
+后续工作只剩质量治理，不是生成：
+
+1. 低分章人工复核队列（`runtime/needs_human_review` + `<60` 分 draft，历史清单见第 8 节）；
+2. 3400+ 段 `foreshadow_closure_overdue` hard-gate 密集（F001-F007 resolve 逾期未触发导致高分章被 force-best）——决定是否补 resolve 点排布或调门禁；
+3. writer 退化（短篇/分词碎裂/复读）归因与修复（第 8 节 #4）。
+
+若要**复现/重启**整套生成流程（换书、重跑、审计），按序读：
+
+- `docs/PROCESS_REPRO_3800.md` —— 完整复现手册（规划层 → 中纲 → 批次 → 收官）；
+- `docs/watchdog-runbook.md` —— 看护/启动器操作（`scripts/relay_watchdog.py`、`scripts/noproxy_launcher.py`）；
+- `docs/outline-fixes.md` —— 中纲四类 flag 修复决策树；
+- 状态快照：`python -X utf8 -m novel_engine.scripts.status_snapshot`；批次统计：`python -X utf8 -m novel_engine.scripts.batch_stats`。
+
+**重要环境坑（历次实踩，复跑仍适用）**：起任何 `run_volume` / 中纲工具时，**必须从子进程 env 剥离代理变量**（`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 大小写两组）。DSH 会话注入了 `HTTP_PROXY=HTTPS_PROXY=http://127.0.0.1:7897`（Clash 代理，本机常未启动），`httpx`（LLM 出站层）会按它建连并报 `Invalid port: ':1]'`，而 `run_volume` 预检用的 `urllib` 不读代理变量、显示 200 通过——**预检通过 ≠ LLM 调用正常**。入库脚本 `noproxy_launcher` / `relay_watchdog` 已内置 `clean_env()`，直接用即可。
 
 ---
 
@@ -94,18 +103,20 @@
 - `boundary_note` 里出现"需人工确认"字样 → `audit_mid_outline` 第 439 行直接判 `pending_human`，形成**永久 pending**。要确认的内容请直接写成陈述式结论（如"铺垫：摄魂阁暗探线推进，不揭露组织目的"）。
 - `boundary_note` 引用 `f00X` / fid 时，core_event 必须命中该实体的 `anchors`（`config/foreshadow/registry.json`），否则报"锚点未命中，疑似编号标错"。引用前先核对锚点词表。
 
-### 3.3 已完成章与产物
+### 3.3 已完成章与产物（2026-11-17 收官终态）
 
-| 指标 | 实测值（2026-11-08 22:02 `status_snapshot.py`，22:24 停止前复核） |
+| 指标 | 值 |
 |---|---|
-| `runtime/checkpoint.json` | 1780 条 checkpoint（26 条重复章号）、去重后 **1754 个唯一章**、最大 ch1756；22:02 时 `last_complete=1756` |
-| `last_complete` 的真实语义 | 它是**最近一次写回的章号**，不是"最大已完成章"。22:15 重试 ch1742 收口后写回 `last_complete=1742`，但 1743-1756 早已 COMMITTED。**判断进度看最大章 + 日志，不要只看这个字段** |
-| `failure_counts` | `{"370":13,"867":1,"883":1,"1757":1}`（1757 是 22:21 新增；1709/1724 重试成功后已清零） |
-| `skipped_chapters` | `[370]`（永久跳过） |
-| `chapters/draft/*.txt` | **1721 个**（编号 6..1756） |
-| `chapters/novel/*.txt` | **234 个**（编号 1..1649，很稀疏） |
-| `chapters/draft/failed/` | **49 个**章目录 |
-| `runtime/state_machine.json` | `current_chapter=1756`、`total_target=3800`、`phase=REVIEW`、`next_state=PASS` |
+| 连续进度（complete∪skipped） | **ch3800**（= 全书上限） |
+| checkpoint 唯一章 | 3796（3822 条，含 26 条历史重复） |
+| `skipped_chapters` | `[370, 1757, 2683, 3092]`（永久跳过，勿重跑） |
+| `failure_counts` | `{370:13, 867:1, 883:1, 1757:6, 2528:3, 2683:4, 3092:4}`（867/883/2528 为已完成后残留计数，非活跃挂点） |
+| `chapters/novel/*.txt` | **235 个**（≥88 发布线，稀疏分布） |
+| `chapters/draft/*.txt` | **3763 个**（force-best，编号 6..3800） |
+| `chapters/draft/failed/` | **57 个**章目录（FINAL GATE 隔离区） |
+| `last_complete` | 3797（最近写回章号，非最大已完成，见 §10.13） |
+
+历史快照（2026-11-08 22:02，仅存档）：1780 条 checkpoint / 1754 唯一章 / 最大 ch1756；draft 1721、novel 234、failed 49。
 
 **查最新状态不用手工盘点**：工作目录 `...\src` 下
 
@@ -183,6 +194,11 @@
 ---
 
 ## 5. 接手后的执行顺序
+
+> **2026-11-17 起本节为历史存档**（当时进度 ch1786→全书未完）。全书已生成完毕；
+> 若需重启/复现流程，按 §0 的指针走：`docs/PROCESS_REPRO_3800.md`（复现手册）+
+> `docs/watchdog-runbook.md`（看护操作，含入库脚本 `relay_watchdog` / `noproxy_launcher`）+
+> `docs/outline-fixes.md`（中纲 flag 决策树）。以下保留原始执行顺序供审计。
 
 ### 第 1 步：确认当前无进程（**已满足**，2026-11-08 22:24 核实）
 
@@ -329,6 +345,8 @@ Start-Process -FilePath "D:\Program Files\Python312\pythonw.exe" -ArgumentList "
 | 运行时状态 | `src/novel_engine/runtime/checkpoint.json`、`state_machine.json`、`state.db`、`fact_changes.jsonl`、`timeline_anchors.json` |
 | 成稿 | `src/novel_engine/chapters/novel/`、`draft/`、`draft/failed/` |
 | 批次入口 | `src/novel_engine/scripts/run_volume.py` |
+| **看护/启动器（2026-11-17 入库）** | `src/novel_engine/scripts/relay_watchdog.py`、`noproxy_launcher.py`（操作手册 `docs/watchdog-runbook.md`） |
+| **批次统计（2026-11-17 入库）** | `src/novel_engine/scripts/batch_stats.py` |
 | 中纲工具 | `src/novel_engine/scripts/generate_mid_outline.py`、`audit_mid_outline.py`、`concept_audit.py`、`gen_task_cards.py` |
 | 质量门 | `src/novel_engine/quality/`（`cross_scene_crisis_gate.py` 等） |
 | 编排/提交 | `src/novel_engine/pipeline/pipeline_orchestrator.py`、`core/checkpoint.py` |
@@ -336,6 +354,7 @@ Start-Process -FilePath "D:\Program Files\Python312\pythonw.exe" -ArgumentList "
 | 控制脚本 | `scripts/control/*.bat`（封装 production_runner；`start.bat` 会**重置运行时**，接手时最易踩的坑） |
 | 模型配置 | `src/novel_engine/config/llm_providers.json`、`config/runtime_config.json` |
 | 权威日志 | `docs/superpowers/quality-backlog.md` |
+| **复现手册（2026-11-17）** | `docs/PROCESS_REPRO_3800.md`、`docs/outline-fixes.md` |
 
 ---
 

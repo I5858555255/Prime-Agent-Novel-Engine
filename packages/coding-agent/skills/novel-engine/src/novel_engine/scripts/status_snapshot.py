@@ -136,6 +136,26 @@ def state_db_counts() -> dict:
     return counts
 
 
+def active_failures(cp: dict, ignore: tuple[str, ...] = ()) -> list[tuple[int, int]]:
+    """Chapters with failure_counts > 0, excluding known permanent skips."""
+    out = []
+    for key, count in (cp.get("failure_counts") or {}).items():
+        if count > 0 and key not in ignore:
+            out.append((int(key), count))
+    return sorted(out)
+
+
+def contiguous_frontier(cp: dict) -> int:
+    """Largest N such that every chapter 1..N is complete or skipped."""
+    complete = {e["chapter"] for e in cp.get("checkpoints", [])
+                if e.get("complete") and isinstance(e.get("chapter"), int)}
+    complete |= {int(c) for c in cp.get("skipped_chapters", [])}
+    n = 1
+    while n in complete:
+        n += 1
+    return n - 1
+
+
 def build() -> str:
     cp = read_json(RUNTIME / "checkpoint.json")
     sm = read_json(RUNTIME / "state_machine.json")
@@ -144,6 +164,9 @@ def build() -> str:
     for item in checkpoints:
         if isinstance(item, dict) and item.get("chapter") is not None:
             unique.add(int(item["chapter"]))
+    skipped = sorted(int(c) for c in cp.get("skipped_chapters", []))
+    hangs = active_failures(cp, tuple(str(c) for c in skipped))
+    frontier = contiguous_frontier(cp)
     novel = chapter_numbers(CHAPTERS / "novel")
     draft = chapter_numbers(CHAPTERS / "draft")
     failed_dirs = [p for p in (CHAPTERS / "draft" / "failed").glob("chapter_*")
@@ -163,9 +186,11 @@ def build() -> str:
         "|---|---|",
         f"| checkpoint 条目 | {len(checkpoints)}（重复 {len(checkpoints) - len(unique)} 条） |",
         f"| checkpoint 唯一章 | {len(unique)}（最大 ch{max(unique) if unique else '-'}） |",
-        f"| last_complete | {cp.get('last_complete')} |",
+        f"| 连续进度（complete∪skipped） | ch{frontier} |",
+        f"| last_complete | {cp.get('last_complete')}（最近写回章号，非最大已完成，见 HANDOFF §10.13） |",
         f"| failure_counts | {cp.get('failure_counts')} |",
-        f"| skipped_chapters | {cp.get('skipped_chapters')} |",
+        f"| 活跃挂点（count>0，不含 skipped） | {len(hangs)} 个 |",
+        f"| skipped_chapters | {skipped or cp.get('skipped_chapters')} |",
         f"| state_machine current_chapter | {sm.get('current_chapter')} |",
         f"| state_machine phase | {sm.get('phase')} / next={sm.get('next_state')} |",
         f"| total_target | {sm.get('total_target')} |",
@@ -178,8 +203,15 @@ def build() -> str:
         f"| chapters/draft | {len(draft)} | {min(draft) if draft else '-'}..{max(draft) if draft else '-'} |",
         f"| draft/failed | {len(failed_dirs)} | - |",
         "",
-        "## 中纲",
+        "## 挂点清单（failure_counts > 0，不含 skipped）",
         "",
+    ]
+    if hangs:
+        for chap, count in hangs:
+            lines.append(f"- ch{chap}（count={count}，达 skip 阈值 5 将被自动跳过）")
+    else:
+        lines.append("- 无")
+    lines += ["", "## 中纲", "",
         f"- 分片数：{mid.get('files')}",
         f"- 覆盖到：ch{mid.get('latest_max_chapter')}（{mid.get('latest_name')}，meta.status={mid.get('latest_meta_status')}）",
         f"- 最新片 entry：{mid.get('approved')} approved / {mid.get('entries')}",
