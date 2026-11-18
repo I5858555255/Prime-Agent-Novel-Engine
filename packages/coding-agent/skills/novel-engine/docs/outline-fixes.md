@@ -67,3 +67,21 @@ python -X utf8 -m novel_engine.scripts.audit_mid_outline config/planning/mid_out
 - 伏笔 `resolve@` 点逾期未触发会产生 hard-gate `foreshadow_closure_overdue`（3400+ 段密集），
   属内容排布问题，暂以 force-best 落 draft 消化，未改门禁阈值；
 - `audit_mid_outline auto` 只审排序第一文件，全量巡检需按目录逐个跑（未来可加 `--all`）。
+
+## 7. 一键修复脚本（2026-11-18 入库）
+
+`scripts/outline_repair.py` 已把 §2 决策树脚本化（幂等，跑前先备份原文件）：
+
+```powershell
+# 修复 + 审计一轮
+& "D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.outline_repair `
+    config/planning/mid_outline_V05_ch1757-1786.json
+& "D:\Program Files\Python312\python.exe" -X utf8 -m novel_engine.scripts.audit_mid_outline `
+    config/planning/mid_outline_V05_ch1757-1786.json
+```
+
+覆盖：① `需人工确认` → 陈述式 boundary_note；② 未登记角色（F008/后续角色/摄魂阁高层）
+→ C007；③ 空/生成失败 core_event → 报告待 `--only`（不代笔）；④ fid 锚点缺失 →
+force-append 锚点短语（f009 同时加 A 路线合规尾注）。**不替代 audit**：
+`meta.status=approved` 仍由 audit 收敛后写入；概念词越界类 needs_regenerate
+（卷级 forbidden）不在脚本范围，仍需按 §2 人工改写 core_event。
