@@ -44,6 +44,8 @@ _DENSITY_MAX = 3
 # A 路线硬红线模式（第一阶段 ch1-316：陆烬禁修炼样式动作；
 # 呼吸法仅陈老根练/提及，陆烬最多旁观或被告知结果）。
 # 主语判定用"紧邻"而非宽间隔，避免把"陆烬旁观陈老根练习"误判为陆烬修炼。
+# 内置默认值；运行审计时优先读项目约束包 a_route_patterns（换书只换 yaml，
+# 见 config/constraints/project_constraints.yaml 与 scripts/constraint_pack.py）。
 _A_ROUTE_PATTERNS = [
     (r"陆烬(亲自|独自|也跟着|也|在山林间|在屋里|晚间|夜晚|白天|偷偷|默默)?(练习|修炼|运转|引气|吐纳|打坐|调息|催动)",
      "陆烬亲自出现修炼样式动作"),
@@ -52,6 +54,13 @@ _A_ROUTE_PATTERNS = [
     (r"陆烬.{0,12}体内.{0,20}(运转|流转|共鸣|气感|气流|暖意|灵气|气机)", "陆烬体内出现气机运转/共鸣"),
     (r"(练|修炼|运转|引气|吐纳|打坐|调息)的.{0,8}(是|主角|他)", "动作主语指回陆烬"),
 ]
+
+
+def _a_route_patterns() -> list[tuple[str, str]]:
+    """Pack-first a-route patterns; fall back to the built-in defaults."""
+    from novel_engine.scripts.constraint_pack import load_pack
+    patterns = load_pack().a_route_patterns()
+    return patterns or list(_A_ROUTE_PATTERNS)
 
 _STATUS_ORDER = {"needs_regenerate": 0, "pending_human": 1, "approved": 2}
 
@@ -248,6 +257,16 @@ def _load_foreshadow_anchors() -> dict:
     return out
 
 
+def _foreshadow_anchors_with_pack() -> dict:
+    """registry anchors + 约束包 anchor_phrases（换书时按新伏笔体系填 yaml）。"""
+    from novel_engine.scripts.constraint_pack import load_pack
+    anchors = _load_foreshadow_anchors()
+    for fid, phrase in load_pack().anchor_phrases().items():
+        if phrase:
+            anchors[fid] = [phrase]
+    return anchors
+
+
 def _check_f_anchor(note: str, joined: str, anchors: dict) -> str | None:
     """boundary_note 含伏笔引用（F00X 或 fid）→ 校验该实体锚点词是否命中
     中纲文本；不匹配返回原因。F00X 与 fid 双向解析到同一实体（权威注册表）。"""
@@ -366,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
         author_intent = p.read_text(encoding="utf-8")
 
     vid = str(meta.get("vid") or "")
-    anchors = _load_foreshadow_anchors()
+    anchors = _foreshadow_anchors_with_pack()
     registry, registry_ids = _load_character_registry()
     schedule = _load_unlock_schedule()
 
@@ -424,9 +443,9 @@ def main(argv: list[str] | None = None) -> int:
                 hard_blocked.append((chapter, why))
             continue
 
-        # 3) A 路线硬红线
+        # 3) A 路线硬红线（优先读约束包 a_route_patterns）
         a_route_hit = None
-        for pat, why in _A_ROUTE_PATTERNS:
+        for pat, why in _a_route_patterns():
             if re.search(pat, joined):
                 a_route_hit = why
                 break

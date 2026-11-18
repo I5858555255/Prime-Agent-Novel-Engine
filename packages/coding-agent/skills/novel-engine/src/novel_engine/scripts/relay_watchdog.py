@@ -18,6 +18,13 @@ maximum completed chapter -> exit 1 (a livelocked chapter blocks both the
 contiguous frontier and the max-progress test; remedy = mark the chapter
 skipped, then relaunch the watchdog).
 
+Concurrency guard: the watchdog takes a heartbeat lock file
+(default `runtime/relay_watchdog.lock.json`, holding pid + start ts). A
+second instance that finds a *live* owner refuses to start, so two
+watchdogs can never relay the same checkpoint (the 2026-11-09 double-run
+incident, which violated the single-batch rule, happened before this lock
+existed). A stale lock (owner pid dead) is taken over automatically.
+
 Launches use a detached process with all proxy env vars stripped (the
 httpx LLM layer honors HTTP(S)_PROXY; a dead Clash proxy makes every call
 fail with "Invalid port"). Run it itself via `pythonw` (no console window).
@@ -46,6 +53,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = Path(__file__).resolve().parents[2]
 CHECKPOINT = ROOT / "runtime" / "checkpoint.json"
 PLANNING = ROOT / "config" / "planning"
+LOCK = ROOT / "runtime" / "relay_watchdog.lock.json"
 
 PROXY_VARS = (
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
@@ -63,6 +71,60 @@ def log(msg: str, path: Path) -> None:
     stamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(f"{stamp} [relay] {msg}\n")
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        # alive but owned by another user
+        return True
+    except OSError:
+        return False
+
+
+def acquire_lock() -> None:
+    """Single-instance lock; stale locks (dead owner pid) are taken over.
+
+    Cross-process safety note: the create-then-read window is small but
+    non-atomic on Windows; two watchdogs started within milliseconds can
+    both acquire. The operational discipline (start one watchdog, verify
+    with `Get-CimInstance` before starting another) covers that residual
+    race; the lock blocks the common case of a stale double-start.
+    """
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    if LOCK.exists():
+        try:
+            owner = json.loads(LOCK.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            owner = {}
+        owner_pid = int(owner.get("pid", 0))
+        if owner_pid and _pid_alive(owner_pid):
+            raise SystemExit(
+                f"relay_watchdog already running (pid {owner_pid}, "
+                f"lock {LOCK}); kill it first if a restart is intended")
+        log(f"taking over stale lock (owner pid {owner_pid} not alive)",
+            _RELAY_LOG)
+    LOCK.write_text(json.dumps({
+        "pid": os.getpid(),
+        "started": datetime.datetime.now().isoformat(timespec="seconds"),
+    }), encoding="utf-8")
+
+
+def release_lock() -> None:
+    try:
+        if LOCK.exists():
+            owner = json.loads(LOCK.read_text(encoding="utf-8"))
+            if int(owner.get("pid", -1)) == os.getpid():
+                LOCK.unlink()
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+
+
+_RELAY_LOG: Path = Path(os.environ.get("TEMP", ".")) / "relay_watchdog.log"
 
 
 def live_run_volume_pid() -> int:
@@ -181,12 +243,21 @@ def main(argv: list[str] | None = None) -> int:
                              "run_relay_watchdog.log in the system temp dir")
     parser.add_argument("--python", default=sys.executable,
                         help="interpreter used to launch run_volume")
+    parser.add_argument("--no-lock", action="store_true",
+                        help="skip the single-instance lock (testing)")
     args = parser.parse_args(argv)
 
     relay_log = Path(args.relay_log) if args.relay_log else \
         Path(os.environ.get("TEMP", ".")) / "relay_watchdog.log"
     out_log = Path(args.stdout_log) if args.stdout_log else \
         Path(os.environ.get("TEMP", ".")) / "run_relay_watchdog.log"
+
+    # Single-instance guard (heartbeat lock): refuse to start if another
+    # live watchdog owns the checkpoint; take over stale locks.
+    global _RELAY_LOG
+    _RELAY_LOG = relay_log
+    if not args.no_lock:
+        acquire_lock()
 
     target = args.initial_target or approved_mid_outline_end()
     if target == 0:
@@ -198,55 +269,64 @@ def main(argv: list[str] | None = None) -> int:
     seen_target = 0
     seen_max = -1
     beat = 0
-    while target <= args.final_cap:
-        pid = live_run_volume_pid()
-        if pid:
-            beat += 1
-            if beat % 10 == 1:
-                log(f"waiting for run_volume pid={pid} target={target} "
-                    f"(beat {beat})", relay_log)
-            time.sleep(args.poll)
-            continue
-        try:
-            progress = read_progress()
-        except Exception as exc:
-            log(f"checkpoint read failed: {exc!r}", relay_log)
-            time.sleep(args.poll)
-            continue
-        log(f"no run_volume alive; progress={progress} target={target}",
-            relay_log)
-        if progress >= args.final_cap:
-            log(f"FINAL CAP {args.final_cap} reached, autorelay exit",
+    heartbeat = 0
+    try:
+        while target <= args.final_cap:
+            pid = live_run_volume_pid()
+            if pid:
+                beat += 1
+                if beat % 10 == 1:
+                    log(f"waiting for run_volume pid={pid} target={target} "
+                        f"(beat {beat})", relay_log)
+                time.sleep(args.poll)
+                continue
+            try:
+                progress = read_progress()
+            except Exception as exc:
+                log(f"checkpoint read failed: {exc!r}", relay_log)
+                time.sleep(args.poll)
+                continue
+            log(f"no run_volume alive; progress={progress} target={target}",
                 relay_log)
-            return 0
-        new_target = next_target(progress, target, args.final_cap,
-                                 args.loose_step, relay_log)
-        if new_target != target:
-            log(f"batch advance: target {target} -> {new_target} "
-                f"(progress={progress})", relay_log)
-            target = new_target
-        # Stall only counts when the SAME target is relaunched three times
-        # in a row without any max-progress movement (advancing target
-        # resets the counter).
-        max_done = read_max_progress()
-        if target == seen_target and max_done == seen_max:
-            stall += 1
-        else:
-            stall = 0
-        seen_target = target
-        seen_max = max_done
-        if stall >= 3:
-            log(f"no progress across 3 relaunches of target={target}; "
-                f"autorelay exit", relay_log)
-            return 1
-        try:
-            new_pid = launch(target, out_log, args.python)
-            log(f"launched pid={new_pid} target={target}", relay_log)
-        except Exception as exc:
-            log(f"launch failed: {exc!r}", relay_log)
-            stall += 1
-        time.sleep(args.poll)
-
+            if progress >= args.final_cap:
+                log(f"FINAL CAP {args.final_cap} reached, autorelay exit",
+                    relay_log)
+                return 0
+            new_target = next_target(progress, target, args.final_cap,
+                                     args.loose_step, relay_log)
+            if new_target != target:
+                log(f"batch advance: target {target} -> {new_target} "
+                    f"(progress={progress})", relay_log)
+                target = new_target
+            # Stall only counts when the SAME target is relaunched three
+            # times in a row without any max-progress movement (advancing
+            # target resets the counter).
+            max_done = read_max_progress()
+            if target == seen_target and max_done == seen_max:
+                stall += 1
+            else:
+                stall = 0
+            seen_target = target
+            seen_max = max_done
+            if stall >= 3:
+                log(f"no progress across 3 relaunches of target={target}; "
+                    f"autorelay exit", relay_log)
+                return 1
+            try:
+                new_pid = launch(target, out_log, args.python)
+                log(f"launched pid={new_pid} target={target}", relay_log)
+            except Exception as exc:
+                log(f"launch failed: {exc!r}", relay_log)
+                stall += 1
+            # heartbeat: refresh the lock's mtime so an external monitor
+            # can tell a live watchdog from a crashed one.
+            heartbeat += 1
+            if heartbeat % 10 == 1:
+                LOCK.touch()
+            time.sleep(args.poll)
+    finally:
+        if not args.no_lock:
+            release_lock()
     return 0
 
 

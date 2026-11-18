@@ -41,24 +41,52 @@
 
 ## 5. 跨项目复用前必须补的短板（按优先级）
 
-1. **项目绑定层参数化**（最大复用障碍）：A 路线 #8、fid 锚点体系、R 条款、canon 硬词表
-   全部写死在本项目 bible/registry/`_A_ROUTE_PATTERNS` 里。换书 = 换整套内容约束，
-   流程脚本可复用，约束层需按新书重建（这正是 `outline_repair` 把替换表做成模块级常量的原因）。
-2. **缺章自动补齐**：`generate_mid_outline` 对 LLM 越界章号直接丢弃（实战 29/30、19/20），
-   应在生成器内加自动 `--only` 重试循环，目标 30/30 一次收敛。
-3. **低分章治理闭环**：`needs_human_review` 队列（3560 章 force-best）无消费者；
-   至少补"谁审、顺序、回写"的最小 SOP，否则 draft 积压无出口。
-4. **writer 退化检测**：短篇/分词碎裂/复读（ch1682 根因）无探针，建议
-   `quality/writer_degradation_probe.py`（单字行占比、n-gram 重复率、长度分布）。
-5. **`foreshadow_closure_overdue` 排布**：3400+ 段 7 条伏笔 resolve 点集中逾期，
-   高分章被 hard-gate 拦成 force-best——需决定"补 resolve 点"还是"调门禁为软警告"。
-6. **看护去单机化**：当前 `relay_watchdog` 依赖 Windows + psutil + 单进程轮询；
-   多机/长跑场景建议加心跳文件 + 锁（防双跑）+ 可选常驻 systemd/任务计划。
+> **2026-11-18 更新：①②③④⑤⑥ 全部完成**，见 §7 落地清单。
+
+1. ~~**项目绑定层参数化**~~ **已完成**：`config/constraints/project_constraints.yaml`
+   约束包（A 路线正则 / 锚点短语 / 合规尾注 / 角色替换表）+ `scripts/constraint_pack.py`
+   加载器；`audit_mid_outline` 与 `outline_repair` 均已改为 pack-first（yaml 缺省时
+   退回内置默认值，向后兼容）。换书 = 换 yaml，引擎与流程脚本不动。
+2. ~~**缺章自动补齐**~~ **已完成**：`generate_mid_outline` 批次内 2 轮自动
+   `--only` 式重试（越界章号丢弃后自动重发该批缺章），29/30 不再需要人工触发；
+   两轮仍缺才报告"manual --only required"。
+3. ~~**低分章治理闭环**~~ **已完成**：`scripts/review_worklist.py` 消费
+   `audit/needs_human_review.json`（17572 条 → 3787 章去重），按 P0(<60)/P1(60-81)/
+   P2(82-87)/P3(≥88) 分级产出 `audit/review_worklist.json` + Markdown 摘要，
+   附最小 SOP（P0 先审 → 补写重生成 → 不碰 checkpoint）。
+4. ~~**writer 退化检测**~~ **已完成**：`scripts/writer_degradation_probe.py`
+   三类探针（单字行占比 / CJK 4-gram 重复 / 长度低于中位 60%），
+   `--dir` + `--limit` + `--json` 参数化，实测对 3763 章 draft 目录可跑。
+5. ~~**`foreshadow_closure_overdue` 排布**~~ **机制已就位，决策留给人**：
+   门禁行为不变（逾期仍 hard-gate → force-best），但 `review_worklist` 的
+   P1 清单现在能直接回答"哪些章被哪条伏笔拦"（reason 字段含 gate 名），
+   人工补 resolve 点排布或调门禁有了消费入口。
+6. ~~**看护去单机化**~~ **已完成**：`relay_watchdog` 加单实例锁
+   （`runtime/relay_watchdog.lock.json`，pid 存活检测，stale 自动接管）
+   + 心跳（每 10 次轮询 touch 锁文件，外部监控可区分活/死看护）。
+   残余限制已文档化：锁的 create-read 窗口非原子（毫秒级双起仍需人工纪律），
+   多机部署需再加网络锁（超出单机范围）。
 
 ## 6. 复用清单（其它全书任务的最小起步集）
 
-- 直接搬：`relay_watchdog` / `noproxy_launcher` / `batch_stats` / `status_snapshot` / `assemble_full`（改 `--final-cap`）；
-- 直接搬 + 改常量：`outline_repair`（`_CHAR_REPLACEMENTS`、`_A_ROUTE_NOTE` 换新书角色/硬边界）；
-- 必须重建：`volumes.json` / `decision_rules.json` / 伏笔 registry / character_registry / bible 五件套 / A 路线类硬边界；
+- 直接搬：`relay_watchdog`（含锁+心跳）/ `noproxy_launcher` / `batch_stats` /
+  `status_snapshot` / `assemble_full` / `outline_repair` / `review_worklist` /
+  `writer_degradation_probe`（共 8 个流程脚本，改 `--final-cap` / `--dir`）；
+- 直接搬 + 改 yaml：`config/constraints/project_constraints.yaml`
+  （A 路线正则、锚点短语、合规尾注、角色替换表——**换书唯一必改文件**）；
+- 必须重建：`volumes.json` / `decision_rules.json` / 伏笔 registry /
+  character_registry / bible 五件套；
 - 纪律照搬：中纲领先 ≥1 片、剥 8 个 proxy 变量、单批次、先关看护再关生成、
   进度看最大章不看 `last_complete`、`git add` 只加自己改的文件。
+
+## 7. 落地清单（2026-11-18 提交）
+
+| 必做项 | 落地物 | 验证 |
+|---|---|---|
+| 约束包参数化 | `constraint_pack.py` + `project_constraints.yaml` + audit/repair 改 pack-first | pack 加载 4 条 A 路线模式 + 6 个锚点短语，fallback 链完整 |
+| 缺章自动补齐 | `generate_mid_outline.py` 批内 2 轮自动重试 | 越界章号丢弃 → 自动 `--only` 重发，仍缺才报人工 |
+| 复核 SOP | `review_worklist.py` + `audit/review_worklist.json/.md` | 17572 条 → 3787 章，P0=643 P1=2800 P2=302 P3=42 |
+| writer 探针 | `writer_degradation_probe.py` | 30 章最小样本实测：10/30 触发长度 flag（短篇积压可见） |
+| 看护锁+心跳 | `relay_watchdog.py` `--no-lock` 可选，默认启用 | 二次启动检测到活 owner 即拒；stale 锁自动接管 |
+
+门禁：pytest **1302 passed / 1 xfailed**（基线不变）+ pyflakes 0 undefined name。

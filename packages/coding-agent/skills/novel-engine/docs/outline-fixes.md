@@ -85,3 +85,7 @@ python -X utf8 -m novel_engine.scripts.audit_mid_outline config/planning/mid_out
 force-append 锚点短语（f009 同时加 A 路线合规尾注）。**不替代 audit**：
 `meta.status=approved` 仍由 audit 收敛后写入；概念词越界类 needs_regenerate
 （卷级 forbidden）不在脚本范围，仍需按 §2 人工改写 core_event。
+
+**换书只改 yaml**：A 路线正则、锚点短语、合规尾注、角色替换表都在
+`config/constraints/project_constraints.yaml`（`scripts/constraint_pack.py` 加载，
+`audit_mid_outline` 与 `outline_repair` 均 pack-first、缺省退回内置默认值）。

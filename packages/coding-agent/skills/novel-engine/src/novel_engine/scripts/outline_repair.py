@@ -34,11 +34,16 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = Path(__file__).resolve().parents[2]
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-# Unregistered "character" tokens seen in practice; map to the registered
-# doorkeeper role C007 (registry stores the bare id; names are resolved by
-# the director). Extend per project as new stand-ins appear.
-_CHAR_REPLACEMENTS = {
+from novel_engine.scripts.constraint_pack import load_pack  # noqa: E402
+
+# Built-in defaults = the values of the current project pack
+# (config/constraints/project_constraints.yaml). Used when the pack is
+# missing or a section is empty, so the repairer keeps working.
+_DEFAULT_CHAR_REPLACEMENTS = {
     "f008": "C007",
     "f008_doorkeeper": "C007",
     "f008守夜人": "C007",
@@ -49,8 +54,18 @@ _CHAR_REPLACEMENTS = {
 }
 
 # A-route #8 compliance tail appended when the f009 anchor is forced in.
-_A_ROUTE_NOTE = ("（A路线#8合规：陆烬此阶段仅旁观/被告知，"
-                  "修炼样式动作限陈老根；plant@本章, resolve@3800 前）")
+_DEFAULT_A_ROUTE_NOTE = ("（A路线#8合规：陆烬此阶段仅旁观/被告知，"
+                          "修炼样式动作限陈老根；plant@本章, resolve@3800 前）")
+
+
+def _char_replacements() -> dict[str, str]:
+    pack = load_pack()
+    return pack.character_replacements() or _DEFAULT_CHAR_REPLACEMENTS
+
+
+def _a_route_note() -> str:
+    pack = load_pack()
+    return pack.compliance_note() or _DEFAULT_A_ROUTE_NOTE
 
 
 def _load_registry_anchors() -> dict[str, list[str]]:
@@ -87,9 +102,18 @@ def _load_registered_chars() -> set[str]:
 
 
 def repair_entry(entry: dict, fid_anchors: dict[str, list[str]],
-                 registry: set[str]) -> list[str]:
-    """Mutate one entry in place; return the applied fix descriptions."""
+                 registry: set[str],
+                 char_repl: dict[str, str] | None = None,
+                 a_route_note: str | None = None,
+                 anchor_phrases: dict[str, str] | None = None) -> list[str]:
+    """Mutate one entry in place; return the applied fix descriptions.
+
+    `anchor_phrases`（约束包 anchor_phrases）优先于 registry 全锚点词表
+    作为追加短语来源；缺省时退回 registry。"""
     fixes: list[str] = []
+    char_repl = _char_replacements() if char_repl is None else char_repl
+    a_route_note = _a_route_note() if a_route_note is None else a_route_note
+    phrases = anchor_phrases if anchor_phrases is not None else {}
     note = entry.get("boundary_note")
 
     # 1) permanent-pending wording -> declarative boundary note
@@ -107,9 +131,9 @@ def repair_entry(entry: dict, fid_anchors: dict[str, list[str]],
         for c in chars:
             s = str(c).strip()
             low = s.lower()
-            if low in _CHAR_REPLACEMENTS:
-                new_chars.append(_CHAR_REPLACEMENTS[low])
-                fixes.append(f"characters 替换 {s!r} -> {_CHAR_REPLACEMENTS[low]}")
+            if low in char_repl:
+                new_chars.append(char_repl[low])
+                fixes.append(f"characters 替换 {s!r} -> {char_repl[low]}")
             elif s in registry or re.fullmatch(r"[Cc]\d{2,3}", s):
                 new_chars.append(c)
             else:
@@ -131,7 +155,7 @@ def repair_entry(entry: dict, fid_anchors: dict[str, list[str]],
             fid = key
             break
     if fid and fid in fid_anchors:
-        anchors = fid_anchors[fid]
+        anchors = [phrases[fid]] if fid in phrases else fid_anchors[fid]
         joined = " ".join([event,
                            " ".join(str(c) for c in entry.get("characters") or []),
                            note])
@@ -140,8 +164,8 @@ def repair_entry(entry: dict, fid_anchors: dict[str, list[str]],
             fixes.append(f"core_event 追加 {fid} 锚点短语")
             if fid == "f009":
                 cur = str(entry.get("boundary_note") or "")
-                if "A路线" not in cur:
-                    entry["boundary_note"] = cur.rstrip() + _A_ROUTE_NOTE
+                if "A路线" not in cur and a_route_note:
+                    entry["boundary_note"] = cur.rstrip() + a_route_note
                     fixes.append("boundary_note 追加 A路线#8 合规尾注")
     return fixes
 def main(argv: list[str] | None = None) -> int:
@@ -158,13 +182,17 @@ def main(argv: list[str] | None = None) -> int:
     entries = data.get("entries") or {}
     fid_anchors = _load_registry_anchors()
     registry = _load_registered_chars()
+    from novel_engine.scripts.constraint_pack import load_pack
+    pack = load_pack()
+    phrases = pack.anchor_phrases()
 
     total_fixes = 0
     for ch in sorted(entries, key=lambda k: int(k) if k.isdigit() else 0):
         entry = entries[ch]
         if not isinstance(entry, dict):
             continue
-        fixes = repair_entry(entry, fid_anchors, registry)
+        fixes = repair_entry(entry, fid_anchors, registry,
+                             anchor_phrases=phrases or None)
         if fixes:
             total_fixes += 1
             print(f"ch{ch}: " + "；".join(fixes))

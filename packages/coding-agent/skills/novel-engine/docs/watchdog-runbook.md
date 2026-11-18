@@ -29,7 +29,10 @@ Start-Process -WindowStyle Hidden "D:\Program Files\Python312\pythonw.exe" `
 
 - 看护日志：`%TEMP%\relay_watchdog.log`（每条 `watchdog start / launched / FINAL CAP` 即当前状态）；
 - 生成 wrapper 日志：`%TEMP%\run_relay_watchdog.log`（每个批次的 stdout）；
-- 运行日志：`runtime/run_volume_<UTC时间戳>.log`。
+- 运行日志：`runtime/run_volume_<UTC时间戳>.log`；
+- **单实例锁**：`runtime/relay_watchdog.lock.json`（pid + 启动时间；二次启动遇活 owner
+  直接拒起并提示，stale 锁自动接管；每 10 次轮询 touch 一次作心跳，外部监控可按
+  mtime 判断看护存活）。`--no-lock` 仅供测试。
 
 ### target 推进规则（代码行为，勿手改）
 
@@ -74,6 +77,8 @@ Stop-Process -Id <生成PID>
 | 全章 ~17s FAILED，score=None，`Invalid port: ':1]'` | 代理变量污染（httpx 走死掉的 Clash） | 杀掉 run_volume 与看护，用 noproxy 路径重启 |
 | 预检 200 但生成全挂 | 同上（urllib 预检不读代理变量） | 同上；别被预检假象骗 |
 | 看护 3 次重启退出 1 | 单章 livelock 卡死双路探测 | `mark_skipped` 该章 → 重启看护 |
+| 二次起看护报 "already running (pid N)" | 单实例锁检测到活 owner | 确认 N 是否真在跑（`Get-Process -Id N`）；确是残留则先杀再重起 |
+| 锁文件存在但 owner pid 已死 | 看护崩溃后锁未清 | 直接重起，stale 锁自动接管（日志打 "taking over stale lock"） |
 | 看护日志 `progress < target` 反复重启 | 批中异常退出（OOM/手工误杀） | 看 wrapper 日志尾；`--resume` 语义安全，直接放行 |
 | 中纲覆盖落后于进度 | 批次按松散参考推进 | 收敛间隙补 30 章中纲片（见 `docs/outline-fixes.md`） |
 

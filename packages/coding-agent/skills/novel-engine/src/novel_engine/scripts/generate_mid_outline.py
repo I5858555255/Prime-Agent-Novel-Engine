@@ -353,6 +353,37 @@ async def _run(
         missing = [c for c in batch if str(c) not in entries]
         if missing:
             logger.warning("batch missing chapters: %s", missing)
+            # 自动补齐（最多 2 轮 --only 式重生成）：越界章号/丢失章号
+            # 实战中 29/30 是常态，不再需要人工触发。
+            for round_no in range(2, 0, -1):
+                if not missing:
+                    break
+                retry_batch = list(missing)
+                logger.info("retry round %d (auto --only) chapters %s",
+                            3 - round_no, retry_batch)
+                retry_prompt = _build_batch_prompt(
+                    vid, retry_batch, volume, forbidden, bible,
+                    nearby_nodes, relevant_foreshadows, world_state_summary)
+                retry_data = await _generate_batch(retry_prompt, logger)
+                if not retry_data:
+                    continue
+                for item in retry_data:
+                    if not isinstance(item, dict):
+                        continue
+                    ch = int(item.get("chapter", 0))
+                    if ch not in retry_batch:
+                        logger.warning("LLM returned out-of-range chapter %s; dropped", ch)
+                        continue
+                    entries[str(ch)] = {
+                        "chapter": ch,
+                        "core_event": str(item.get("core_event", "")).strip(),
+                        "characters": item.get("characters") or [],
+                        "boundary_note": item.get("boundary_note") or None,
+                    }
+                missing = [c for c in missing if str(c) not in entries]
+            if missing:
+                logger.warning("chapters still missing after auto-retries: %s "
+                               "(manual --only required)", missing)
 
     # 输出
     meta = {
