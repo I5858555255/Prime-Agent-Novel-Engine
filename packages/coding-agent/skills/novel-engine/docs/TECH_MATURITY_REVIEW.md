@@ -79,6 +79,9 @@
 - 纪律照搬：中纲领先 ≥1 片、剥 8 个 proxy 变量、单批次、先关看护再关生成、
   进度看最大章不看 `last_complete`、`git add` 只加自己改的文件。
 
+> **效率优化与演进复盘**（代码变化时间线 P0-P9、实测吞吐、Mermaid 流程图、
+> 7 项优化路线）见 [`TECH_EVOLUTION_REVIEW.md`](TECH_EVOLUTION_REVIEW.md)。
+
 ## 7. 落地清单（11-18 提交 + 11-19 收尾）
 
 | 必做项 | 落地物 | 验证 |
