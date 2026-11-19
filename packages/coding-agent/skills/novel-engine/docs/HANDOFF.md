@@ -10,15 +10,22 @@
 
 后续工作只剩质量治理，不是生成：
 
-1. 低分章人工复核队列（`runtime/needs_human_review` + `<60` 分 draft，历史清单见第 8 节）；
-2. 3400+ 段 `foreshadow_closure_overdue` hard-gate 密集（F001-F007 resolve 逾期未触发导致高分章被 force-best）——决定是否补 resolve 点排布或调门禁；
-3. writer 退化（短篇/分词碎裂/复读）归因与修复（第 8 节 #4）。
+1. 低分章人工复核队列（`audit/needs_human_review.json` 17572 条 → `review_worklist.py`
+   已去重 3787 章 P0-P3 分级；消费 SOP 见 `docs/review-sop.md`，审结回写
+   `--mark-reviewed` → `audit/review_accepted.json`）；
+2. 3400+ 段 `foreshadow_closure_overdue` hard-gate 密集（F001-F007 resolve 逾期未触发
+   导致高分章被 force-best）——P1 清单 reason 字段已带 gate 名，决定是否补 resolve
+   点排布或调门禁；
+3. writer 退化（短篇/分词碎裂/复读）探针已入库（`writer_degradation_probe.py`，
+   实测 30 章最小样本 10/30 触发长度 flag），归因与修复待做。
 
 若要**复现/重启**整套生成流程（换书、重跑、审计），按序读：
 
+- [`使用说明.md`](使用说明.md) —— 快速上手（命令 + 纪律）+ 跨项目复用清单 + 文档地图（**先读**）；
 - `docs/PROCESS_REPRO_3800.md` —— 完整复现手册（规划层 → 中纲 → 批次 → 收官）；
-- `docs/watchdog-runbook.md` —— 看护/启动器操作（`scripts/relay_watchdog.py`、`scripts/noproxy_launcher.py`）；
-- `docs/outline-fixes.md` —— 中纲四类 flag 修复决策树；
+- `docs/watchdog-runbook.md` —— 看护/启动器操作（`scripts/relay_watchdog.py`、`scripts/noproxy_launcher.py`，含单实例锁/心跳排障）；
+- `docs/outline-fixes.md` —— 中纲四类 flag 修复决策树 + `outline_repair` 一键修复；
+- `docs/review-sop.md` —— 低分章 P0-P3 治理（`review_worklist.py` 消费 + 审结回写）；
 - 状态快照：`python -X utf8 -m novel_engine.scripts.status_snapshot`；批次统计：`python -X utf8 -m novel_engine.scripts.batch_stats`。
 
 **重要环境坑（历次实踩，复跑仍适用）**：起任何 `run_volume` / 中纲工具时，**必须从子进程 env 剥离代理变量**（`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 大小写两组）。DSH 会话注入了 `HTTP_PROXY=HTTPS_PROXY=http://127.0.0.1:7897`（Clash 代理，本机常未启动），`httpx`（LLM 出站层）会按它建连并报 `Invalid port: ':1]'`，而 `run_volume` 预检用的 `urllib` 不读代理变量、显示 200 通过——**预检通过 ≠ LLM 调用正常**。入库脚本 `noproxy_launcher` / `relay_watchdog` 已内置 `clean_env()`，直接用即可。
