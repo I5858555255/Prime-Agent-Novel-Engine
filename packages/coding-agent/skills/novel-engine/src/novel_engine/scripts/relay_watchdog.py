@@ -53,14 +53,20 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = Path(__file__).resolve().parents[2]
 CHECKPOINT = ROOT / "runtime" / "checkpoint.json"
 PLANNING = ROOT / "config" / "planning"
-LOCK = ROOT / "runtime" / "relay_watchdog.lock.json"
+_LOCK = ROOT / "runtime" / "relay_watchdog.lock.json"
 
 PROXY_VARS = (
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
 )
-_DETACHED = 0x00000008
-_NO_WINDOW = 0x08000000
+if os.name == "nt":
+    _DETACHED = 0x00000008
+    _NO_WINDOW = 0x08000000
+    _LAUNCH_FLAGS = _DETACHED | _NO_WINDOW
+else:
+    # POSIX: spawn detached via setsid so a killed shell can't take the
+    # generator down; stdout still goes to the wrapper log file.
+    _LAUNCH_FLAGS = 0
 
 
 def clean_env() -> dict[str, str]:
@@ -86,15 +92,28 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _psutil_pid_alive(pid: int) -> bool | None:
+    """psutil-based liveness (None = psutil unavailable)."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    return psutil.pid_exists(pid)
+
+
 def acquire_lock() -> None:
     """Single-instance lock; stale locks (dead owner pid) are taken over.
 
-    Cross-process safety note: the create-then-read window is small but
-    non-atomic on Windows; two watchdogs started within milliseconds can
-    both acquire. The operational discipline (start one watchdog, verify
-    with `Get-CimInstance` before starting another) covers that residual
+    Liveness is checked with os.kill(0) + psutil.pid_exists when
+    available (a pid can be reused by an unrelated process; the lock
+    file's started-timestamp narrows that window). Cross-process safety
+    note: the create-then-read window is small but non-atomic on
+    Windows; two watchdogs started within milliseconds can both acquire.
+    The operational discipline (start one watchdog, verify with
+    `Get-CimInstance` before starting another) covers that residual
     race; the lock blocks the common case of a stale double-start.
     """
+    LOCK = _LOCK
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     if LOCK.exists():
         try:
@@ -102,10 +121,13 @@ def acquire_lock() -> None:
         except (OSError, json.JSONDecodeError):
             owner = {}
         owner_pid = int(owner.get("pid", 0))
-        if owner_pid and _pid_alive(owner_pid):
-            raise SystemExit(
-                f"relay_watchdog already running (pid {owner_pid}, "
-                f"lock {LOCK}); kill it first if a restart is intended")
+        if owner_pid:
+            alive = _pid_alive(owner_pid)
+            ps_alive = _psutil_pid_alive(owner_pid)
+            if alive and (ps_alive is None or ps_alive):
+                raise SystemExit(
+                    f"relay_watchdog already running (pid {owner_pid}, "
+                    f"lock {LOCK}); kill it first if a restart is intended")
         log(f"taking over stale lock (owner pid {owner_pid} not alive)",
             _RELAY_LOG)
     LOCK.write_text(json.dumps({
@@ -116,10 +138,10 @@ def acquire_lock() -> None:
 
 def release_lock() -> None:
     try:
-        if LOCK.exists():
-            owner = json.loads(LOCK.read_text(encoding="utf-8"))
+        if _LOCK.exists():
+            owner = json.loads(_LOCK.read_text(encoding="utf-8"))
             if int(owner.get("pid", -1)) == os.getpid():
-                LOCK.unlink()
+                _LOCK.unlink()
     except (OSError, json.JSONDecodeError, ValueError):
         pass
 
@@ -213,15 +235,27 @@ def launch(target: int, out_log: Path, python: str) -> int:
         fh.write(f"\n=== relay launch target={target} "
                  f"{datetime.datetime.now().isoformat()} ===\n")
     fh = open(out_log, "a", encoding="utf-8")
-    proc = subprocess.Popen(
-        [python, "-X", "utf8", "-m", "novel_engine.scripts.run_volume",
-         "--chapters", str(target), "--resume"],
-        cwd=str(SRC),
-        stdout=fh,
-        stderr=subprocess.STDOUT,
-        creationflags=_DETACHED | _NO_WINDOW,
-        env=clean_env(),
-    )
+    cmd = [python, "-X", "utf8", "-m", "novel_engine.scripts.run_volume",
+           "--chapters", str(target), "--resume"]
+    if os.name == "nt":
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(SRC),
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            creationflags=_LAUNCH_FLAGS,
+            env=clean_env(),
+        )
+    else:
+        # POSIX: setsid-style detach via start_new_session; no window flags.
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(SRC),
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=clean_env(),
+        )
     return proc.pid
 
 
@@ -322,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
             # can tell a live watchdog from a crashed one.
             heartbeat += 1
             if heartbeat % 10 == 1:
-                LOCK.touch()
+                _LOCK.touch()
             time.sleep(args.poll)
     finally:
         if not args.no_lock:

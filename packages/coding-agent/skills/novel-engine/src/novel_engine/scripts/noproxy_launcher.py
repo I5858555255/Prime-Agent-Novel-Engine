@@ -33,8 +33,11 @@ PROXY_VARS = (
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
 )
 
-_DETACHED = 0x00000008
-_NO_WINDOW = 0x08000000
+if os.name == "nt":
+    _LAUNCH_FLAGS = 0x00000008 | 0x08000000  # DETACHED | NO_WINDOW
+else:
+    # POSIX: detach via start_new_session (setsid); no window flags.
+    _LAUNCH_FLAGS = 0
 
 
 def find_existing_run_volume() -> int | None:
@@ -99,14 +102,24 @@ def main(argv: list[str] | None = None) -> int:
         fh.write(f"\n=== noproxy launch target={args.chapters} "
                  f"{datetime.datetime.now().isoformat()} ===\n")
     fh = open(out_log, "a", encoding="utf-8")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(src_root),
-        stdout=fh,
-        stderr=subprocess.STDOUT,
-        creationflags=_DETACHED | _NO_WINDOW,
-        env=clean_env(),
-    )
+    if os.name == "nt":
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(src_root),
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            creationflags=_LAUNCH_FLAGS,
+            env=clean_env(),
+        )
+    else:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(src_root),
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=clean_env(),
+        )
     print(f"launched run_volume pid={proc.pid} target={args.chapters} "
           f"stdout={out_log} (proxy vars stripped)")
     return 0

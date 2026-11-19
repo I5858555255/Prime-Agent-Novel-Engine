@@ -14,6 +14,9 @@ worklist that a human reviewer (or a backfill agent) can work through:
     P3  >=88 dim-gate/spot    (spot-read releases)
 - output `audit/review_worklist.json` (the single source a reviewer
   consumes) + a Markdown digest `audit/review_worklist.md`.
+- reviewer closure: `--mark-reviewed N,M,...` appends chapter numbers to
+  `audit/review_accepted.json`; re-runs skip them, so the worklist is a
+  monotone progress counter for the review campaign.
 
 Read-only on the queue itself; re-run any time after new queue entries
 land. Usage (from the package `src/` directory):
@@ -26,9 +29,13 @@ import argparse
 import json
 import sys
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = Path(__file__).resolve().parents[2]
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 QUEUE = ROOT / "audit" / "needs_human_review.json"
 OUT_JSON = ROOT / "audit" / "review_worklist.json"
 OUT_MD = ROOT / "audit" / "review_worklist.md"
@@ -44,8 +51,23 @@ def tier_of(score: float | None) -> str:
     return "P3"
 
 
+# 审结标记文件（reviewer 回写；重跑时跳过已审章）
+ACCEPTED = ROOT / "audit" / "review_accepted.json"
+
+
+def load_accepted() -> set[int]:
+    if not ACCEPTED.exists():
+        return set()
+    try:
+        data = json.loads(ACCEPTED.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    return {int(c) for c in data.get("chapters", [])}
+
+
 def build(top: int | None = None) -> dict:
     raw = json.loads(QUEUE.read_text(encoding="utf-8")) if QUEUE.exists() else {}
+    accepted = load_accepted()
     records: dict[int, dict] = {}
     for item in raw.get("queue", []):
         ch = int(item.get("chapter", 0))
@@ -62,6 +84,11 @@ def build(top: int | None = None) -> dict:
                 cur["reason"] = cur["reason"] + "|" + item["reason"]
             cur["tier"] = tier_of(score)
 
+    # 审结的章移出工作清单（保留计数）
+    done = [ch for ch in accepted if ch in records]
+    for ch in done:
+        records.pop(ch)
+
     chapters = sorted(records.values(),
                       key=lambda r: (r["tier"], r["score"] if r["score"] is not None else -1,
                                      r["chapter"]))
@@ -74,6 +101,7 @@ def build(top: int | None = None) -> dict:
     payload = {
         "source": "audit/needs_human_review.json",
         "unique_chapters": len(records),
+        "reviewed": len(done),
         "queue_records": len(raw.get("queue", [])),
         "tiers": {t: {"count": len(by_tier.get(t, [])),
                       "chapters": by_tier.get(t, [])}
@@ -93,7 +121,8 @@ def build(top: int | None = None) -> dict:
 def render_markdown(payload: dict) -> str:
     lines = ["# 人工复核工作清单（review_worklist）", ""]
     lines.append(f"来源队列 {payload['queue_records']} 条 → 去重后 "
-                 f"**{payload['unique_chapters']} 章**；分级：")
+                 f"{payload['unique_chapters']} 章；已审 "
+                 f"{payload.get('reviewed', 0)} 章（review_accepted.json）；分级：")
     lines.append("")
     lines.append("| 级 | 章数 | 口径 |")
     lines.append("|---|---|---|")
@@ -115,7 +144,31 @@ def render_markdown(payload: dict) -> str:
         lines.append(f"| … | | | 余 {len(payload['chapters']) - 500} 章见 JSON |")
     lines += ["", "## SOP", ""]
     lines += [f"- {s}" for s in payload["sop"]]
+    lines += [
+        "",
+        "审结回写：python -X utf8 -m novel_engine.scripts.review_worklist "
+        "--mark-reviewed 370,2683,3092（写入 audit/review_accepted.json，"
+        "重跑自动跳过已审章）",
+    ]
     return "\n".join(lines) + "\n"
+
+
+def mark_reviewed(chapters: list[int]) -> int:
+    """Append reviewed chapter numbers to audit/review_accepted.json."""
+    data = {"chapters": []}
+    if ACCEPTED.exists():
+        try:
+            data = json.loads(ACCEPTED.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    known = {int(c) for c in data.get("chapters", [])}
+    fresh = [c for c in chapters if c not in known]
+    data["chapters"] = sorted(known | set(fresh))
+    data["updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ACCEPTED.parent.mkdir(parents=True, exist_ok=True)
+    ACCEPTED.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    return len(fresh)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,7 +177,21 @@ def main(argv: list[str] | None = None) -> int:
                         help="limit the worklist to N chapters")
     parser.add_argument("--no-md", action="store_true",
                         help="skip the Markdown digest")
+    parser.add_argument("--mark-reviewed", default=None,
+                        help="comma-separated chapter numbers to mark as "
+                             "reviewed (audit/review_accepted.json); "
+                             "excluded from the worklist on re-runs")
     args = parser.parse_args(argv)
+
+    if args.mark_reviewed:
+        nums = [int(x) for x in args.mark_reviewed.split(",") if x.strip()]
+        if not nums:
+            print("no chapter numbers in --mark-reviewed")
+            return 1
+        added = mark_reviewed(nums)
+        print(f"marked {added} chapters reviewed "
+              f"({len(nums)} given; rest already in {ACCEPTED.name})")
+        # 标记后顺带刷新工作清单，摘要反映最新进度
 
     if not QUEUE.exists():
         print(f"queue not found: {QUEUE}")
