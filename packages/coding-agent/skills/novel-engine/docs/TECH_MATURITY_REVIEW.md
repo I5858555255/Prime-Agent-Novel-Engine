@@ -79,14 +79,25 @@
 - 纪律照搬：中纲领先 ≥1 片、剥 8 个 proxy 变量、单批次、先关看护再关生成、
   进度看最大章不看 `last_complete`、`git add` 只加自己改的文件。
 
-## 7. 落地清单（2026-11-18 提交）
+## 7. 落地清单（11-18 提交 + 11-19 收尾）
 
 | 必做项 | 落地物 | 验证 |
 |---|---|---|
 | 约束包参数化 | `constraint_pack.py` + `project_constraints.yaml` + audit/repair 改 pack-first | pack 加载 4 条 A 路线模式 + 6 个锚点短语，fallback 链完整 |
 | 缺章自动补齐 | `generate_mid_outline.py` 批内 2 轮自动重试 | 越界章号丢弃 → 自动 `--only` 重发，仍缺才报人工 |
-| 复核 SOP | `review_worklist.py` + `audit/review_worklist.json/.md` | 17572 条 → 3787 章，P0=643 P1=2800 P2=302 P3=42 |
+| 复核 SOP | `review_worklist.py` + `audit/review_worklist.json/.md` + `docs/review-sop.md` | 17572 条 → 3787 章，P0=643 P1=2800 P2=302 P3=42 |
 | writer 探针 | `writer_degradation_probe.py` | 30 章最小样本实测：10/30 触发长度 flag（短篇积压可见） |
 | 看护锁+心跳 | `relay_watchdog.py` `--no-lock` 可选，默认启用 | 二次启动检测到活 owner 即拒；stale 锁自动接管 |
+
+**11-19 收尾（commit 339865f1e）**：
+- **POSIX 端口**：`relay_watchdog` / `noproxy_launcher` 的 detached 启动改
+  `os.name` 分支（Windows `creationflags`，POSIX `start_new_session=True`），
+  跨机部署不再依赖 Windows API；
+- **依赖显式化**：`pyproject.toml` 加 `psutil >= 5.9`（看护/启动器进程探测）；
+- **审结闭环**：`review_worklist.py` 加 `--mark-reviewed` 回写
+  `audit/review_accepted.json`，重跑自动跳过已审章（3786 章待审 + 2 章已审）；
+- **SOP 修正**：`docs/review-sop.md` 脚本名/分级口径与实现对齐（原稿引用不存在的
+  `review_queue.py`）；
+- **SKILL.md** 脚本清单补齐 5 个新脚本 + 约束包加载器。
 
 门禁：pytest **1302 passed / 1 xfailed**（基线不变）+ pyflakes 0 undefined name。
