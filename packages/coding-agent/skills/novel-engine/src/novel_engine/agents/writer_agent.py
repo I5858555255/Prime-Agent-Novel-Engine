@@ -1052,6 +1052,22 @@ class WriterAgent:
         client = client or self.llm
         # 取并发度：ModelRouter 有 concurrency 属性，否则默认 4
         concurrency = getattr(client, "concurrency", 4) if hasattr(client, "concurrency") else 4
+        # token plan 提速 Opt3：merge_threshold>0 且场景数 < merge_threshold 时
+        # 单次全章合并润色（省 N-1 次 LLM 调用），退化/截断保留原文。
+        # 默认 0=分场景（保持测试历史行为）；生产 ModelRouter 下发 4 启用合并。
+        merge_threshold = int(getattr(client, "polish_merge_threshold", 0) or 0)
+        if (only_ids is None and merge_threshold > 0
+                and len(scenes) < merge_threshold):
+            full_text = "\n\n".join((s.scene_text or "") for s in scenes)
+            resp = self._polish_full_chapter(full_text, task_card, client)
+            if resp:
+                new_scenes = self._split_polished_full_chapter(resp, scenes)
+                flags = [True] * len(new_scenes)
+                logger.info(f"Polish merged single-shot for {len(scenes)} scenes "
+                            f"(full {len(full_text)} chars -> {len(resp)} chars)")
+                return (new_scenes, flags)
+            # 单次失败回退到分场景
+            logger.info("Polish single-shot failed, falling back to per-scene")
 
         def _do_one(idx: int, scene: "SceneOutput") -> tuple[int, "SceneOutput", bool]:
             """Polish 单个场景，返回 (index, polished_scene, success)。"""
@@ -1105,6 +1121,17 @@ class WriterAgent:
                 if resp_len < orig_len * 0.5 or resp_len > orig_len * 1.5:
                     logger.warning(f"Scene {scene.scene_id} polish length out of range ({resp_len} vs {orig_len}), keep original")
                     return (idx, scene, False)
+                # 确定性断句前置（token plan 提速 Opt4）：写盘前对润色文本做零 LLM
+                # 断句修复，FINAL GATE punct 只校验不再触发 LLM 修复轮。
+                try:
+                    from novel_engine.quality.punctuation_health import repair_text_punctuation
+                    resp, _pstats = repair_text_punctuation(resp)
+                    if _pstats.get("inserts") or _pstats.get("changed_paragraphs"):
+                        logger.info(f"Scene {scene.scene_id} pre-commit punct repair: "
+                                    f"{_pstats.get('inserts')} inserts, "
+                                    f"{_pstats.get('changed_paragraphs')} paragraphs")
+                except Exception as _pge:
+                    logger.warning(f"Scene {scene.scene_id} punct pre-commit repair failed ({_pge})")
                 # 创建新 SceneOutput，保留原 hook 和 beats
                 new_scene = SceneOutput(scene.scene_id, resp.strip(), scene.hook, list(scene.beats))
                 return (idx, new_scene, True)
@@ -1134,3 +1161,65 @@ class WriterAgent:
             logger.warning(f"Seam warnings after polish_scenes: {seam_warnings[:3]}")
 
         return (polished_scenes, polished_flags)
+
+    def _polish_full_chapter(self, full_text: str, task_card: dict, client) -> str | None:
+        """单次全章合并润色。返回润色后全文；失败/退化/截断返回 None（调用方回退分场景）。"""
+        from novel_engine.quality.chinese_gate import is_chinese_clean
+        prompt = (
+            "请润色并修正以下整章正文，保持人设、伏笔与节奏一致，"
+            "正常使用中文标点（每个完整句不超过约40字、每2-4个分句用逗号分隔、对话用引号，"
+            "严禁整段无标点的流水句），仅返回润色后的全文，不要解释、不要分场景编号。\n\n"
+            f"【任务卡】{task_card.get('title', '')}\n\n"
+            f"【正文】\n{full_text}"
+        )
+        max_tokens = self._polish_max_tokens(len(full_text))
+        try:
+            raw = client.chat_completion(
+                [{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=max_tokens,
+            )
+            resp = self._coerce_polish_text(raw, full_text)
+            if resp is None:
+                return None
+            if not resp.strip():
+                return None
+            if not is_chinese_clean(resp):
+                logger.warning("Full-chapter polish not Chinese-clean, fallback to per-scene")
+                return None
+            if "【" in resp or "】" in resp or "※" in resp:
+                logger.warning("Full-chapter polish has scaffolding, fallback to per-scene")
+                return None
+            if len(resp) < len(full_text) * 0.5 or len(resp) > len(full_text) * 1.5:
+                logger.warning(f"Full-chapter polish length out of range ({len(resp)} vs {len(full_text)})")
+                return None
+            return resp.strip()
+        except Exception as exc:
+            logger.warning(f"Full-chapter polish failed ({exc}), fallback to per-scene")
+            return None
+
+    def _split_polished_full_chapter(self, full_text: str, scenes: list) -> list:
+        """把单次全章润色结果按比例切回原场景数。场景边界以原文长度比例定位；
+        切分后各场景保留原 hook/beats。若原文无明确分场景标记则按字数比例均分。"""
+        # 优先按场景编号/标题切分（若润色文本保留了 "场景 N" 标记）
+        markers = list(re.finditer(r"^\s*(?:场景\s*(\d+)|第[一二三四五六七八九十0-9]+场)\s*$", full_text, re.M))
+        if len(markers) >= len(scenes):
+            parts = []
+            for i, m in enumerate(markers[:len(scenes)]):
+                end = markers[i + 1].start() if i + 1 < len(markers) else len(full_text)
+                parts.append(full_text[m.start():end].strip())
+            while len(parts) < len(scenes):
+                parts.append("")
+            return [SceneOutput(s.scene_id, parts[i], s.hook, list(s.beats)) for i, s in enumerate(scenes)]
+        # 无标记：按原文长度比例均分
+        total = sum(len(s.scene_text or "") for s in scenes) or 1
+        out, pos = [], 0
+        for s in scenes:
+            ratio = len(s.scene_text or "") / total
+            chunk_len = int(len(full_text) * ratio)
+            out.append(SceneOutput(s.scene_id, full_text[pos:pos + chunk_len].strip(), s.hook, list(s.beats)))
+            pos += chunk_len
+        if scenes:
+            out[-1] = SceneOutput(scenes[-1].scene_id, full_text[pos:].strip(),
+                                  scenes[-1].hook, list(scenes[-1].beats))
+        return out

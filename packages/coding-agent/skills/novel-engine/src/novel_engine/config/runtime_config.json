@@ -95,6 +95,8 @@
   "recovery": {
     "default_policy": "pause_and_log"
   },
+  "review_fast_path": false,
+  "scene_concurrency": 8,
   "model_router": {
     "phases": {
       "scenes": [
@@ -117,41 +119,13 @@
       ]
     },
     "limits": {
-      "deepseek-ai/DeepSeek-V3.2": {
-        "rpm": 1000,
-        "tpm": 100000
-      },
-      "deepseek-ai/DeepSeek-V3.1-Terminus": {
-        "rpm": 1000,
-        "tpm": 100000
-      },
-      "deepseek-ai/DeepSeek-V3": {
-        "rpm": 1000,
-        "tpm": 100000
-      },
-      "Qwen/Qwen3.5-9B": {
-        "rpm": 1000,
-        "tpm": 50000
-      },
-      "Qwen/Qwen3.5-27B": {
-        "rpm": 1000,
-        "tpm": 100000
-      },
-      "inclusionAI/Ling-mini-2.0": {
-        "rpm": 1000,
-        "tpm": 50000
-      },
-      "agnes-2.5-flash": {
-        "rpm": 20,
-        "tpm": 200000
-      },
       "agnes-3.0-flash": {
-        "rpm": 20,
-        "tpm": 200000
+        "rpm": 1000,
+        "tpm": 9000
       }
     },
     "probe_on_startup": false,
-    "max_parallel_chapters": 1
+    "max_parallel_chapters": 2
   },
   "quality_policy": {
     "chapter_target_chars": 8000,

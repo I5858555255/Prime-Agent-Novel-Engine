@@ -154,6 +154,7 @@ class ModelRouter:
             self.models = list(phase_cfg.get("models") or ["agnes-2.5-flash"])
             self.response_format = phase_cfg.get("response_format")
             self.concurrency = phase_cfg.get("concurrency", 1)
+            self.polish_merge_threshold = int(phase_cfg.get("polish_merge_threshold", 0) or 0)
             self.extra_body = {}
             self.timeout = TimeoutSpec.from_phase_cfg(phase_cfg, phase)
             self.max_retries = int(phase_cfg.get("max_retries", 2))
@@ -205,6 +206,8 @@ class ModelRouter:
             )
         self.response_format = phase_cfg.get("response_format")
         self.concurrency = phase_cfg.get("concurrency", 1)
+        # token plan 提速 Opt3：polish 相位合并润色阈值（<N 场景时单次全章调用）
+        self.polish_merge_threshold = int(phase_cfg.get("polish_merge_threshold", 0) or 0)
         # 合并 extra_body：profile 级 default ← phase 级覆盖
         self.extra_body = dict(profile.get("default_extra_body") or {})
         phase_extra = phase_cfg.get("extra_body") or {}

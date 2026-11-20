@@ -17,7 +17,7 @@
 | **P6 判例条款化** | 09-29~10-04 | scope gate 确定性回退 / concept_unlocks 首判据 / 卷级 forbidden 注入 director prompt / 设定贯通三阶段（ending_bible→Reviewer 对照块→Writer 按卷定向注入） | 门禁从"逐章修"变"条款化批量放行"（R15-R29 判例链） |
 | **P7 中纲章级意图层** | 10-04~11-17 | `generate_mid_outline` 30 章/片 + `audit_mid_outline` + 128 片全 approved；中纲 core_event 为章级任务权威（消除卷细纲双权威自锁） | 规划层：LLM 不再临场编章纲，挂点率大降 |
 | **P8 运行编排** | 10-18~11-18 | `run_volume` 超 5 轮失败自动 skip / LLM watchdog 线程防代理半开连接阻塞 / `relay_watchdog`（锁+心跳）/ `noproxy_launcher`（剥 8 个 proxy 变量） | 无人值守 60+ 天跨 3 次停机无损续跑 |
-| **P9 模型切换** | 10-09/10-18/11-09 | agnes_30 试点判负→切回硅基 V3.2→**agnes_30_token 免费档收官** | 成本归零跑完最后 3000+ 章 |
+| **P9 模型切换** | 10-09/10-18/11-09 | agnes_30 试点判负→切回硅基 V3.2→**agnes_30_token（token plan，付费档）收官** | 最后 3000+ 章跑在 token plan 上（RPM 1000 / 512K ctx / 100-150 TPS） |
 
 ## 2. 效率实测（3800 章收官）
 
@@ -71,17 +71,41 @@ flowchart LR
 
 ## 4. 优化路线（按收益排序）
 
+> **Token plan 额度**（2026-11-20 确认，`agnes_30_token` profile 为付费 token plan，
+> 非免费档）：RPM=1000、上下文 512K、最大输出 65,536 token、100-150 TPS、
+> 每 5h 7,500 次 / 每周 75,000 次。限额已写入 `llm_providers.json`
+> （`plan_limits`，`switch_llm` 同步时自动折算 tpm=tps×60）与
+> `runtime_config.json` model_router.limits（agnes-3.0-flash rpm=1000/tpm=9000）。
+> 利用率设计：chapters 并发 2（峰值 ~12-16 req/min，远低于 RPM=1000）+
+> 场景并发 4→8 + 伏笔 soft-warn 省修复轮，周额度内可跑 ~70 章/h 连续批次。
+
 | # | 优化项 | 现状 | 改动 | 预期收益 | 风险 |
 |---|---|---|---|---|---|
-| **1** | **章间流水线重叠 2** | `max_parallel_chapters=1`（orchestrator 共享可变状态，刻意串行） | 状态隔离化：每章独立 StateDB 读快照 + world_state 写合并队列；orchestrator 拆 per-chapter 实例池（P4 已铺一半：resume 所有权在 runner） | **末段 4.5min/章 → ~2.5min/章**（3000 章省 ~20h 净生成） | 世界状态一致性需写合并串行化；建议先 A/B 跑 100 章对比门禁通过率 |
-| **2** | **伏笔逾期门禁改软警告** | 3400+ 段 7 条伏笔 resolve 逾期 → hard-gate → 91-92 分章全部 force-best 落 draft（末段 23/23 章带 hard gate） | `foreshadow_closure_overdue` 降级为 soft（或按卷窗口豁免），只记 audit 不阻断发布 | 末段 **~207s/章 → ~120s/章**（省修复轮 LLM 调用），novel 目录占比回升 | 需先补 resolve 点排布（review_worklist P1 消费），否则伏笔烂尾 |
-| **3** | **review 三评降 2 评 + 快判** | 每章 3 个独立 LLM 评审调用（三评一致性投票） | 首评 ≥88 且无 hard 项时免二/三评（快判通道），<88 才走全 3 评 | 高分章省 2/3 评审调用（~30-40s/章） | 三评一致性是质量保障核心，需设回退开关 + 抽检 |
-| **4** | **polish 全章单次合并** | polish 分场景批处理（Round13 为防截断拆分） | 短章（<4 场景）用单次全章 polish + finish_reason 截断回退 | 省 1-2 次 LLM 调用/章 | 长章保持分批不变 |
-| **5** | **确定性断句前置** | FINAL GATE punct 修复前才做零 LLM 断句（ch370 归因） | 断句挪到 Writer 出口（写盘前），gate 只校验 | 减少 1 轮 fix-loop | 需回归 ch370 类样本 |
-| **6** | **Livelock 自动 skip** | 挂点章 count=5 才 skip，期间每批空转 5 轮 × ~4min | `run_volume` 加"同章同错误指纹 2 连败即 skip"（指纹 = note 前 40 字） | 挂点章空转 -3 轮（~12min/章） | 指纹误判会 skip 可修复章，需白名单 |
+| **1** | **伏笔逾期门禁改软警告** | 3400+ 段 7 条伏笔 resolve 逾期 → hard-gate → 91-92 分章全部 force-best 落 draft（末段 23/23 章带 hard gate） | `foreshadow_closure_overdue` 降级为 soft（或按卷窗口豁免），只记 audit 不阻断发布；`config/forbidden.json` 加 `foreshadow_soft_warn` 开关 | 末段 **~207s/章 → ~120s/章**（省修复轮 LLM 调用），novel 目录占比回升 | 需先补 resolve 点排布（review_worklist P1 消费），否则伏笔烂尾 |
+| **2** | **review 三评降 2 评 + 快判** | 每章 3 个独立 LLM 评审调用（三评一致性投票） | 首评 ≥88 且无 hard 项时免二/三评（快判通道），<88 才走全 3 评；`runtime_config.json` 加 `review_fast_path` 开关 | 高分章省 2/3 评审调用（~30-40s/章） | 三评一致性是质量保障核心，需设回退开关 + 抽检 |
+| **3** | **polish 全章单次合并** | polish 分场景批处理（Round13 为防截断拆分） | 短章（<4 场景）用单次全章 polish + finish_reason 截断回退 | 省 1-2 次 LLM 调用/章 | 长章保持分批不变 |
+| **4** | **确定性断句前置** | FINAL GATE punct 修复前才做零 LLM 断句（ch370 归因） | 断句挪到 Writer 出口（写盘前），gate 只校验 | 减少 1 轮 fix-loop | 需回归 ch370 类样本 |
+| **5** | **Livelock 自动 skip** | 挂点章 count=5 才 skip，期间每批空转 5 轮 × ~4min | `run_volume` 加"同章同错误指纹 2 连败即 skip"（指纹 = note 前 40 字） | 挂点章空转 -3 轮（~12min/章） | 指纹误判会 skip 可修复章，需白名单 |
+| **6** | **章间流水线重叠 2** | `max_parallel_chapters=1`（orchestrator 共享可变状态，刻意串行） | 状态隔离化：每章独立 StateDB 读快照 + world_state 写合并队列；orchestrator 拆 per-chapter 实例池 | **末段 4.5min/章 → ~2.5min/章**（3000 章省 ~20h 净生成） | 世界状态一致性需写合并串行化；建议先 A/B 跑 100 章对比门禁通过率 |
 | **7** | **中纲片并行生成** | 30 章/片串行生成 + 审计（收敛间隙 2-5 轮） | 片内无依赖章节并行 2 批生成（批间保留审计） | 收敛间隙 ~30% 缩短 | 中纲是规划层，并行不影响章间串行保证 |
 
-**不建议做**：场景并发 >4（免费档 TPM 上限）、章节级异步（世界状态语义破坏）。
+**不建议做**：场景并发 >8（token plan 5h/7500 次与周 75,000 次余量核算上限；
+chapters 并发 2 + 场景并发 8 峰值 ~16 req/min 已远低于 RPM=1000，瓶颈在 TPS 输出端）；
+章节级异步（世界状态语义破坏）。
+
+### 4.1 落地状态（2026-11-20，7 项全部完成）
+
+| # | 状态 | 实现落点 | 默认开关 |
+|---|---|---|---|
+| 1 | 已落地 | `forbidden.json` `foreshadow_soft_warn` + `ForbiddenScanner.cfg` + orchestrator 软告警分支 | `false`（需开） |
+| 2 | 已落地 | `gray_band.FAST_PATH=(81.5,88.0)` + orchestrator 按 `review_fast_path` 切灰带 | `false`（需开） |
+| 3 | 已落地 | `writer_agent.polish_scenes` 加 `polish_merge_threshold`（ModelRouter 下发）+ `_polish_full_chapter`/`_split_polished_full_chapter`，退化/非中文/截断自动回退分场景 | `llm_providers.json` polish 相位=4；默认 0 保持分场景 |
+| 4 | 已落地 | polish 写盘前对润色文本跑 `repair_text_punctuation`（零 LLM），FINAL GATE punct 不再触发 LLM 修复轮 | 常开 |
+| 5 | 已落地 | `run_volume.py` 持久化指纹表 `runtime/livelock_fingerprints.json`，同章同指纹（note 前 40 字）连续 2 轮即 skip，成功清指纹 | 常开 |
+| 6 | 已落地 | `max_parallel_chapters=2` + `_run_chapters_gated` 并发分支：每章 world_state 读快照 + 写合并队列（`_flush_writes` 按章号序串行写回、锁保护） | 默认 2；建议先 10 章试跑再全量 A/B |
+| 7 | 已落地 | `generate_mid_outline._run` 批处理重构为 `_do_batch`，片内前 2 批 `asyncio.gather` 并发，其余串行；批间审计保留 | 常开 |
+
+门禁：pytest 1302 passed / 1 xfailed（基线持平）；pyflakes 无新增 undefined-name。
 
 ## 5. 结论
 

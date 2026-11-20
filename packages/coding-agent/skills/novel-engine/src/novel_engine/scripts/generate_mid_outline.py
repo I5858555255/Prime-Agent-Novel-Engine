@@ -315,33 +315,34 @@ async def _run(
                     entries[str(k)] = v
         except Exception:
             entries = {}
-    for i in range(0, len(no_node_chapters), batch_size):
-        batch = no_node_chapters[i:i + batch_size]
+
+    # token plan 提速 Opt7：片内无依赖章节并行 2 批生成（批间保留审计）。
+    # 中纲是规划层，各批 LLM 调用彼此独立（只读 volume/plot/registry/bible），
+    # 并行不破坏章间串行保证；失败批回退串行补齐。
+    _PARALLEL = 2
+    _batches = [no_node_chapters[i:i + batch_size]
+                for i in range(0, len(no_node_chapters), batch_size)]
+
+    async def _do_batch(batch: list[int]) -> tuple[list[int], list[dict], list[int]]:
+        """生成一批，返回 (batch, data, missing)。"""
         prompt = _build_batch_prompt(
             vid, batch, volume, forbidden, bible, nearby_nodes,
             relevant_foreshadows, world_state_summary)
-        logger.info("batch %d/%d START chapters %s",
-                    i // batch_size + 1,
-                    (len(no_node_chapters) + batch_size - 1) // batch_size,
-                    batch)
         data = await _generate_batch(prompt, logger)
-        logger.info("batch %d DONE got %d entries",
-                    i // batch_size + 1, len(data) if data else 0)
         if not data:
-            logger.error("batch %d returned empty after retries; "
-                         "chapters %s left missing (will be reported).",
-                         i // batch_size + 1, batch)
+            logger.error("batch returned empty after retries; "
+                         "chapters %s left missing (will be reported).", batch)
             for c in batch:
                 entries[str(c)] = {
                     "chapter": c, "core_event": "",
                     "characters": [], "boundary_note": "需人工确认：本批生成失败，待重跑",
                 }
-            continue
+            return batch, [], [c for c in batch]
         for item in data:
             if not isinstance(item, dict):
                 continue
             ch = int(item.get("chapter", 0))
-            if ch not in no_node_chapters:
+            if ch not in batch:
                 logger.warning("LLM returned out-of-range chapter %s; dropped", ch)
                 continue
             entries[str(ch)] = {
@@ -354,15 +355,11 @@ async def _run(
         if missing:
             logger.warning("batch missing chapters: %s", missing)
             # 自动补齐（最多 2 轮 --only 式重生成）：越界章号/丢失章号
-            # 实战中 29/30 是常态，不再需要人工触发。
             for round_no in range(2, 0, -1):
                 if not missing:
                     break
-                retry_batch = list(missing)
-                logger.info("retry round %d (auto --only) chapters %s",
-                            3 - round_no, retry_batch)
                 retry_prompt = _build_batch_prompt(
-                    vid, retry_batch, volume, forbidden, bible,
+                    vid, missing, volume, forbidden, bible,
                     nearby_nodes, relevant_foreshadows, world_state_summary)
                 retry_data = await _generate_batch(retry_prompt, logger)
                 if not retry_data:
@@ -371,8 +368,7 @@ async def _run(
                     if not isinstance(item, dict):
                         continue
                     ch = int(item.get("chapter", 0))
-                    if ch not in retry_batch:
-                        logger.warning("LLM returned out-of-range chapter %s; dropped", ch)
+                    if ch not in missing:
                         continue
                     entries[str(ch)] = {
                         "chapter": ch,
@@ -384,6 +380,28 @@ async def _run(
             if missing:
                 logger.warning("chapters still missing after auto-retries: %s "
                                "(manual --only required)", missing)
+        return batch, data, missing
+
+    if _PARALLEL > 1 and len(_batches) >= _PARALLEL:
+        # 前 _PARALLEL 批并发发出，完成后串行补齐其余批（保持失败批可单独重跑）
+        import asyncio as _aio
+        logger.info("parallel mid-outline: %d batches, first %d concurrent",
+                    len(_batches), _PARALLEL)
+        for i in range(0, len(_batches), _PARALLEL):
+            chunk = _batches[i:i + _PARALLEL]
+            for j, b in enumerate(chunk):
+                logger.info("batch %d/%d START chapters %s",
+                            i + j + 1, len(_batches), b)
+            _res = await _aio.gather(*[_do_batch(b) for b in chunk],
+                                     return_exceptions=False)
+            for _b, _data, _miss in _res:
+                logger.info("batch %s DONE got %d entries", _b, len(_data))
+    else:
+        for i, batch in enumerate(_batches):
+            logger.info("batch %d/%d START chapters %s",
+                        i + 1, len(_batches), batch)
+            _b, _data, _miss = await _do_batch(batch)
+            logger.info("batch %d DONE got %d entries", i + 1, len(_data))
 
     # 输出
     meta = {

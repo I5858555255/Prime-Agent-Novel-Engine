@@ -143,13 +143,45 @@ def _get_failure_counts(logger: logging.Logger, root: Path | None = None) -> dic
 # 记入 backlog 待用户拍板是否人工补写。
 DEFAULT_SKIP_AFTER = 5
 
+# Livelock 检测（token plan 提速 Opt5）：同一章同错误指纹连续 N 轮即 skip，
+# 不再空转到 DEFAULT_SKIP_AFTER。指纹 = END 行 note 前 40 字（去空白）。
+LIVELOCK_STRIKES = 2
+_LIVELOCK_FILE = ROOT / "runtime" / "livelock_fingerprints.json"
+
+
+def _load_fingerprints() -> dict:
+    """{chapter_str: {"fp": str, "strikes": int}}"""
+    try:
+        if _LIVELOCK_FILE.exists():
+            import json as _json
+            return _json.loads(_LIVELOCK_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_fingerprints(data: dict) -> None:
+    try:
+        import json as _json
+        _LIVELOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _LIVELOCK_FILE.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as _fe:
+        logging.getLogger("run_volume").warning("livelock fingerprint save failed: %s", _fe)
+
+
+def _fingerprint(note: str) -> str:
+    import re as _re
+    s = _re.sub(r"\s+", "", note or "")[:40]
+    return s
+
 
 def _should_skip(chapter: int, failure_counts: dict, skip_after: int) -> bool:
     """累计失败轮数 > skip_after 时跳过该章。"""
     return failure_counts.get(str(chapter), 0) > skip_after
 
 
-async def _run_one(chapter_num: int, logger: logging.Logger, root: Path) -> dict:
+async def _run_one(chapter_num: int, logger: logging.Logger, root: Path,
+                   fingerprints: dict | None = None) -> dict:
     from novel_engine.agent_api import generate_chapter  # noqa: E402
     t0 = time.monotonic()
     logger.info("=== START chapter %d ===", chapter_num)
@@ -162,11 +194,28 @@ async def _run_one(chapter_num: int, logger: logging.Logger, root: Path) -> dict
     elapsed = time.monotonic() - t0
     ok = result.get("success", False)
     status = "COMMITTED" if ok else "FAILED"
+    _note = result.get("note") or result.get("human_review_note") or result.get("final_gate_violations") or ""
     logger.info(
         "=== END chapter %d [%s] in %.1fs (score=%s) note=%s ===",
         chapter_num, status, elapsed, result.get("score"),
-        result.get("note") or result.get("human_review_note") or result.get("final_gate_violations") or "",
+        _note,
     )
+    # Livelock 指纹更新：失败章记 note 前 40 字指纹；同指纹连续 LIVELOCK_STRIKES 轮 → skip
+    if not ok and fingerprints is not None and _note:
+        ch_key = str(chapter_num)
+        fp = _fingerprint(_note)
+        prev = fingerprints.get(ch_key)
+        if prev and prev.get("fp") == fp:
+            prev["strikes"] = int(prev.get("strikes", 0)) + 1
+            prev["note"] = fp
+            if prev["strikes"] >= LIVELOCK_STRIKES:
+                logger.info("=== LIVELOCK chapter %d: same fingerprint %r x%d -> skip ===",
+                            chapter_num, fp[:30], prev["strikes"])
+                result["livelock_skip"] = True
+                result["skipped"] = True
+        else:
+            fingerprints[ch_key] = {"fp": fp, "strikes": 1, "note": fp}
+        _save_fingerprints(fingerprints)
     if not ok:
         logger.error("chapter %d errors: %s", chapter_num, result.get("errors"))
     return result
@@ -230,6 +279,9 @@ async def main_async(argv: list[str] | None = None) -> int:
     except Exception as exc:  # pragma: no cover
         logger.warning("World state init warning: %s", exc)
 
+    # Livelock 指纹表（跨批次持久化）
+    _fps = _load_fingerprints()
+
     t_all = time.monotonic()
     results: list[dict] = []
     for ch in chapters_to_run:
@@ -243,9 +295,18 @@ async def main_async(argv: list[str] | None = None) -> int:
             cp_mgr.mark_skipped(ch)
             results.append({"chapter": ch, "success": False, "skipped": True, "elapsed_s": 0.0})
             continue
-        res = await _run_one(ch, logger, ROOT)
+        res = await _run_one(ch, logger, ROOT, fingerprints=_fps)
         if res.get("success"):
             cp_mgr.reset_failure(ch)
+            _fps.pop(str(ch), None)
+            _save_fingerprints(_fps)
+        elif res.get("livelock_skip"):
+            cp_mgr.mark_skipped(ch)
+            cp_mgr.record_failure(ch)
+            res = {"chapter": ch, "success": False, "skipped": True,
+                   "elapsed_s": res.get("elapsed_s", 0.0)}
+            logger.info("=== SKIP chapter %d (livelock: same fingerprint x%d) ===",
+                        ch, LIVELOCK_STRIKES)
         else:
             new_count = cp_mgr.record_failure(ch)
             if new_count > args.skip_after:

@@ -145,9 +145,15 @@ def sync_runtime_config(name: str, profile: dict) -> str:
             if _v:
                 mrp[_dst] = _v
         mr["phases"] = mrp
+        # 模型限额：token plan profile 用 plan_limits.rpm + TPS 折算的 tpm；
+        # 其它 profile 维持历史默认 20/200000（避免默认值低估付费 plan 额度）。
         lim = dict(mr.get("limits") or {})
         if model and model not in lim:
-            lim[model] = {"rpm": 20, "tpm": 200000}
+            plan = profile.get("plan_limits") or {}
+            rpm = int(plan.get("rpm") or 20)
+            tps = int(plan.get("tps") or 0)
+            tpm = int(tps * 60) if tps else 200000
+            lim[model] = {"rpm": rpm, "tpm": tpm}
         mr["limits"] = lim
         rc["model_router"] = mr
 

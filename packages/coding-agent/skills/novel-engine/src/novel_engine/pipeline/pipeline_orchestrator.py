@@ -1863,6 +1863,8 @@ class PipelineOrchestrator:
             pass
         # 设定贯通：registry 全量扫描（不依赖 query_active 的 clue_plan 命中），
         # importance>=0.7 且 resolve_chapter 已过且未 resolved → 硬拦截（远期锚点）。
+        # token plan 提速：forbidden.foreshadow_soft_warn=true 时降级为软警告
+        # （只进 soft_issues + audit 台账，不触发修复轮），默认关闭保持硬拦截。
         try:
             from novel_engine.quality.outline_coverage_gate import validate_foreshadow_closure
             _reg_path = self.root / "config" / "foreshadow" / "registry.json"
@@ -1874,8 +1876,13 @@ class PipelineOrchestrator:
                 _registry, int(ch_num or 0),
                 resolved_ids=self._resolved_foreshadow_ids(ch_num),
             )
+            _fs_soft = bool((getattr(self.forbidden, "cfg", None) or {}).get("foreshadow_soft_warn"))
             for _ci in _closure_issues:
-                issues.append(f"[设定] {_ci}")
+                if _fs_soft:
+                    soft_issues.append(f"[设定-软] {_ci}")
+                    logger.info(f"foreshadow soft-warn ch{ch_num}: {_ci}")
+                else:
+                    issues.append(f"[设定] {_ci}")
         except Exception as _ce:
             logger.warning(f"foreshadow closure check skipped: {_ce}")
         # CC round-7 P0-3：跨章重演边界门未解决的硬伤在此并入（assembly 阶段判定）
@@ -3154,9 +3161,15 @@ class PipelineOrchestrator:
         if _real24:
             try:
                 from novel_engine.quality import gray_band as _gb28
+                # token plan 快判：runtime_config.review_fast_path=true 时灰带
+                # 切到 FAST_PATH（首评>=88 且硬门绿即免三评），默认关闭保持旧档。
+                _fast = bool(self.config.get("review_fast_path", False))
+                _band28 = tuple(getattr(self, "_gray_band28", _gb28.INITIAL_BAND))
+                if _fast:
+                    _band28 = _gb28.FAST_PATH
                 _band_triple28 = _gb28.decide_review_count(
                     score, bool(_green24),
-                    band=tuple(getattr(self, "_gray_band28", _gb28.INITIAL_BAND)),
+                    band=_band28,
                     force_dual=bool(getattr(self, "_gray_force_dual28", False)),
                 )["plan"] == _gb28.REVIEW_TRIPLE
             except Exception:
@@ -4896,6 +4909,8 @@ class PipelineOrchestrator:
         completes and may return False to stop the run. Results are returned in chapter
         order. NOTE: the orchestrator shares per-chapter mutable state, so raise
         max_parallel_chapters only if you accept the (guarded) concurrency trade-off.
+        token plan 提速 Opt6：max_parallel_chapters=2 时每章独立 StateDB 读快照 +
+        world_state 写合并队列；写合并串行化保证世界状态一致性。
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
         para = max(1, int(self.config.get("model_router", {}).get("max_parallel_chapters", 1)))
@@ -4908,8 +4923,35 @@ class PipelineOrchestrator:
                     break
             return results
 
-        with ThreadPoolExecutor(max_workers=para) as ex:
-            futures = {ex.submit(chapter_fn, ch): ch for ch in range(start_chapter, total_chapters + 1)}
+        # 写合并队列：chapters 完成时按章号序串行写 world_state，保证一致性
+        import threading
+        _write_lock = threading.Lock()
+        _pending_writes: list[tuple[int, dict]] = []
+
+        def _flush_writes(up_to_chapter: int):
+            with _write_lock:
+                still = []
+                for ch_num, ws in _pending_writes:
+                    if ch_num <= up_to_chapter:
+                        self._apply_world_state_write(ws)
+                    else:
+                        still.append((ch_num, ws))
+                _pending_writes[:] = still
+
+        def _guarded_chapter_fn(ch: int) -> dict:
+            """独立读快照 + 写合并：每章生成前取 world_state 快照，完成后写回合并队列。"""
+            _snap = self._take_world_state_snapshot()
+            res = chapter_fn(ch)
+            if res.get("success") or res.get("pending_human_review"):
+                _new_ws = res.get("world_state_delta") or {}
+                if _new_ws:
+                    _pending_writes.append((ch, _new_ws))
+                    _flush_writes(ch)
+            return res
+
+        with ThreadPoolExecutor(max_workers=para, thread_name_prefix="chapters") as ex:
+            futures = {ex.submit(_guarded_chapter_fn, ch): ch
+                       for ch in range(start_chapter, total_chapters + 1)}
             results_map = {}
             for fut in as_completed(futures):
                 ch = futures[fut]
@@ -4917,7 +4959,30 @@ class PipelineOrchestrator:
                 results_map[ch] = res
                 if on_done is not None and on_done(ch, res) is False:
                     break
+        # 剩余未刷写的按章号序补刷
+        _flush_writes(total_chapters)
         return [results_map[c] for c in range(start_chapter, total_chapters + 1) if c in results_map]
+
+    def _take_world_state_snapshot(self) -> dict:
+        """取当前 world_state 快照（只读），供并发章独立生成。"""
+        try:
+            _snap = self.db.execute_custom_query(
+                "SELECT * FROM world_state ORDER BY chapter DESC LIMIT 1", ())
+            return dict(_snap[0]) if _snap else {}
+        except Exception:
+            return {}
+
+    def _apply_world_state_write(self, ws_delta: dict) -> None:
+        """串行化写回 world_state（写合并队列消费端）。"""
+        try:
+            if ws_delta.get("chapter"):
+                self.db.execute_custom_query(
+                    "INSERT OR REPLACE INTO world_state (chapter, state_json) "
+                    "VALUES (?, ?)",
+                    (int(ws_delta["chapter"]),
+                     json.dumps(ws_delta.get("state_json") or ws_delta, ensure_ascii=False)))
+        except Exception as _we:
+            logger.warning(f"world_state write-merge failed for ch{ws_delta.get('chapter')}: {_we}")
 
     def run_mini_test(self, num_chapters: int = 10) -> list[dict]:
         """运行 Mini 测试：生成 N 章。"""

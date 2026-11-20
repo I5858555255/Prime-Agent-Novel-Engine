@@ -17,6 +17,9 @@ from __future__ import annotations
 INITIAL_BAND = (81.5, 85.5)
 NARROW_BAND = (82.5, 84.5)
 WIDE_BAND = (80.0, 86.0)
+# token plan 快判档：首评 >=88 且硬门绿 → 单评免三（比 INITIAL 的 85.5 更宽，
+# 省 ~30-40s/章；灰带仍用 INITIAL/NARROW/WIDE，只提高快判下限）。
+FAST_PATH = (81.5, 88.0)
 
 NARROW_MAE_MAX = 1.2
 NARROW_P95_MAX = 2.0

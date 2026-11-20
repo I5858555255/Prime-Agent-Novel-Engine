@@ -4,8 +4,12 @@ from pathlib import Path
 
 
 class ForbiddenScanner:
-    def __init__(self, rules_path: str):
-        self.rules = json.loads(Path(rules_path).read_text(encoding="utf-8")).get("rules", [])
+    def __init__(self, rules_path: str, default_cfg: dict | None = None):
+        p = Path(rules_path)
+        raw = json.loads(p.read_text(encoding="utf-8")) if p.exists() else (default_cfg or {})
+        self.rules = raw.get("rules", [])
+        # 顶层开关（非规则）：如 foreshadow_soft_warn
+        self.cfg = raw
 
     def scan(self, text: str) -> list[dict]:
         hits = []

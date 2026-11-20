@@ -249,6 +249,15 @@
       "api_key_env": "AGNES_TOKEN_API_KEY",
       "timeout_s": 120,
       "max_retries": 2,
+      "_plan": "Agnes 3.0 Flash token plan（付费档，非免费）：RPM=1000；上下文 512K；最大输出 65536 token；100-150 TPS；每 5 小时 7500 次；每周 75000 次。利用率目标：chapters 并发 2 + 场景并发 8 + 伏笔 soft-warn 省修复轮；周额度 75000 次 ÷ 每章 ~20 次调用 ≈ 3500 章/周。",
+      "plan_limits": {
+        "rpm": 1000,
+        "context_window": 512000,
+        "max_output_tokens": 65536,
+        "tps": 150,
+        "calls_per_5h": 7500,
+        "calls_per_week": 75000
+      },
       "default_extra_body": {},
       "phases": {
         "outline": {
@@ -283,7 +292,7 @@
             "agnes-3.0-flash"
           ],
           "response_format": "json_object",
-          "concurrency": 4,
+          "concurrency": 8,
           "stream": true,
           "idle_timeout_s": 100,
           "total_timeout_s": 650
@@ -293,7 +302,8 @@
             "agnes-3.0-flash"
           ],
           "response_format": null,
-          "concurrency": 4,
+          "concurrency": 8,
+          "polish_merge_threshold": 4,
           "stream": true,
           "idle_timeout_s": 100,
           "total_timeout_s": 650
@@ -313,7 +323,7 @@
             "agnes-3.0-flash"
           ],
           "response_format": null,
-          "concurrency": 4,
+          "concurrency": 8,
           "stream": true,
           "idle_timeout_s": 100,
           "total_timeout_s": 650
