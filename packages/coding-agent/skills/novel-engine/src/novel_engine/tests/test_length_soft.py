@@ -74,7 +74,9 @@ def test_overlong_90plus_lands_in_novel(tmp_path, monkeypatch):
     (root_path / "memory/world_state/factions.json").write_text('{"factions": {}}', encoding="utf-8")
     (root_path / "memory/world_state/power_system.json").write_text('{"current_power_balance": {}}', encoding="utf-8")
     (root_path / "config" / "foreshadow" / "registry.json").write_text('{"foreshadows": []}', encoding="utf-8")
-    (root_path / "config" / "planning" / "volumes.json").write_text('{"volumes": [{"id": "V01", "chapter_range": [1, 100]}]}', encoding="utf-8")
+    (root_path / "config" / "planning" / "volumes.json").write_text(
+        '{"volumes": [{"id": "V01", "chapter_range": [1, 100]}], "outline_file": "outline.md"}',
+        encoding="utf-8")
     (root_path / "config" / "planning" / "plot_graph.json").write_text('{"nodes": []}', encoding="utf-8")
     (root_path / "bible" / "world_bible.md").write_text('', encoding="utf-8")
     (root_path / "bible" / "character_bible.md").write_text('', encoding="utf-8")

@@ -1,4 +1,4 @@
-﻿# ── 场景正文生成：四套实义词不相交句池（来自 sandbox_gen2）──────────────────
+# ── 场景正文生成：四套实义词不相交句池（来自 sandbox_gen2）──────────────────
 OPEN = ["夜色如墨，朔风卷过旷原，陆烬独自赶路。",
         "晨雾未散，渡头小镇的茶寮刚挑起青帘。",
         "密林深处忽有异响，三道黑影自树后扑出。",
@@ -620,7 +620,9 @@ class TestNovelEngine(unittest.TestCase):
             (root_path / "memory/world_state/factions.json").write_text('{"factions": {}}', encoding="utf-8")
             (root_path / "memory/world_state/power_system.json").write_text('{"current_power_balance": {}}', encoding="utf-8")
             (root_path / "config" / "foreshadow" / "registry.json").write_text('{"foreshadows": []}', encoding="utf-8")
-            (root_path / "config" / "planning" / "volumes.json").write_text('{"volumes": [{"id": "V01", "chapter_range": [1, 100]}]}', encoding="utf-8")
+            (root_path / "config" / "planning" / "volumes.json").write_text(
+                '{"volumes": [{"id": "V01", "chapter_range": [1, 100]}], "outline_file": "吸氧证道_V2_1_完整大纲.md"}',
+                encoding="utf-8")
             (root_path / "config" / "planning" / "plot_graph.json").write_text('{"nodes": []}', encoding="utf-8")
             (root_path / "bible" / "world_bible.md").write_text('', encoding="utf-8")
             (root_path / "bible" / "character_bible.md").write_text('', encoding="utf-8")

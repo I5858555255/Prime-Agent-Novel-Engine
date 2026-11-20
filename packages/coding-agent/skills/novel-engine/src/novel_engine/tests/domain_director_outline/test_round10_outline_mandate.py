@@ -268,7 +268,8 @@ def _build_director(tmp_path: Path) -> tuple[ChapterDirector, _CapturingLLMClien
     (tmp_path / "docs" / OUTLINE_FILENAME).write_text(_SAMPLE_OUTLINE, encoding="utf-8")
     # 最小 volumes/plot_graph 避免 keyerror
     (tmp_path / "config" / "planning" / "volumes.json").write_text(
-        json.dumps({"volumes": [{"id": "V01", "chapter_range": [1, 51]}]}, ensure_ascii=False),
+        json.dumps({"volumes": [{"id": "V01", "chapter_range": [1, 51]}],
+                    "outline_file": OUTLINE_FILENAME}, ensure_ascii=False),
         encoding="utf-8")
     (tmp_path / "config" / "planning" / "plot_graph.json").write_text(
         json.dumps({"nodes": [

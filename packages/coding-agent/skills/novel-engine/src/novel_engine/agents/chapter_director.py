@@ -501,20 +501,33 @@ class ChapterDirector:
     def _parse_outline(self) -> dict:
         """解析完整大纲，按卷拆分。T1：多候选路径定位，缺失时显式报错。
 
-        换书去绑定：大纲文件名优先读 volumes.json 顶层 outline_file，缺省回退
-        OUTLINE_FILENAME；卷标题 marker 由 _build_volume_markers 从 volumes.json 生成。
+        换书去绑定：大纲文件名优先读 volumes.json 顶层 outline_file。
+        volumes.json 存在但未写 outline_file 时显式报错（不静默回退陆烬默认文件名）；
+        volumes.json 整个缺失时才回退 OUTLINE_FILENAME（兼容旧数据/最小测试夹具）。
         """
-        # T1: 按候选路径查找大纲文件
-        _outline_file = self._volumes.get("outline_file") or OUTLINE_FILENAME
-        outline_path: Path | None = None
         _tried: list[str] = []
+        outline_path: Path | None = None
+        _vol_present = bool(self._volumes)
+        _outline_file = self._volumes.get("outline_file")
+
+        if _vol_present and not _outline_file:
+            # volumes.json 已提供卷数据但没声明大纲文件名 → 换书必须显式填，不静默回退
+            logger.error(
+                'volumes.json present but outline_file not set; '
+                'set the top-level "outline_file" to the new outline md name '
+                f'(candidates: {", ".join(str(self.root / _r / OUTLINE_FILENAME) for _r in _OUTLINE_CANDIDATE_REL)})'
+            )
+            self._outline_loaded = False
+            return {}
+
+        _name = _outline_file or OUTLINE_FILENAME
         for _rel in _OUTLINE_CANDIDATE_REL:
-            _candidate = self.root / _rel / _outline_file
+            _candidate = self.root / _rel / _name
             _tried.append(str(_candidate))
             if _candidate.exists():
                 outline_path = _candidate
                 break
-        # T1: 找不到时显式报错，不再静默返回 {}
+        # 文件找不到 → 显式报错
         if outline_path is None:
             logger.error(
                 f'outline file not found (tried: {" | ".join(_tried)})'

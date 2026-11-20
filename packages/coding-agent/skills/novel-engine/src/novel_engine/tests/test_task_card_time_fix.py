@@ -76,7 +76,8 @@ class _FakeLLM:
 def _build_director(tmp_path):
     (tmp_path / "config" / "planning").mkdir(parents=True, exist_ok=True)
     (tmp_path / "config" / "planning" / "volumes.json").write_text(
-        json.dumps({"volumes": [{"id": "V01", "chapter_range": [1, 316]}]},
+        json.dumps({"volumes": [{"id": "V01", "chapter_range": [1, 316]}],
+                    "outline_file": "吸氧证道_V2_1_完整大纲.md"},
                    ensure_ascii=False), encoding="utf-8")
     (tmp_path / "config" / "planning" / "plot_graph.json").write_text(
         json.dumps({"nodes": []}), encoding="utf-8")
