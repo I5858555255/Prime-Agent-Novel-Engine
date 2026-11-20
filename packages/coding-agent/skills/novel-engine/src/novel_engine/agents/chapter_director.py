@@ -482,6 +482,9 @@ class ChapterDirector:
         db_dir.mkdir(parents=True, exist_ok=True)
         self.db = StateDB(db_path=str(db_dir / "state.db"), project_root=self.root)
 
+        # 换书去绑定：volumes.json 为卷标记/大纲文件名的单一权威源
+        self._volumes = self._load_volumes_config()
+
         # Parse outlines and author intents by volume
         self._outline_sections = self._parse_outline()
         # T1: 记录大纲是否成功加载
@@ -496,12 +499,17 @@ class ChapterDirector:
         self._phase_start_ts: float = 0.0
 
     def _parse_outline(self) -> dict:
-        """解析完整大纲，按卷拆分。T1：多候选路径定位，缺失时显式报错。"""
+        """解析完整大纲，按卷拆分。T1：多候选路径定位，缺失时显式报错。
+
+        换书去绑定：大纲文件名优先读 volumes.json 顶层 outline_file，缺省回退
+        OUTLINE_FILENAME；卷标题 marker 由 _build_volume_markers 从 volumes.json 生成。
+        """
         # T1: 按候选路径查找大纲文件
+        _outline_file = self._volumes.get("outline_file") or OUTLINE_FILENAME
         outline_path: Path | None = None
         _tried: list[str] = []
         for _rel in _OUTLINE_CANDIDATE_REL:
-            _candidate = self.root / _rel / OUTLINE_FILENAME
+            _candidate = self.root / _rel / _outline_file
             _tried.append(str(_candidate))
             if _candidate.exists():
                 outline_path = _candidate
@@ -517,19 +525,8 @@ class ChapterDirector:
 
         content = outline_path.read_text(encoding="utf-8")
 
-        volume_markers = [
-            ("V01", "## 四、第一卷《昆仑遗子》"),
-            ("V02", "## 五、第二卷《大乾人间》"),
-            ("V03", "## 六、第三卷《仙门初渡》"),
-            ("V04", "## 七、第四卷《万山寻仙》"),
-            ("V05", "## 八、第五卷《人间藏仙》"),
-            ("V06", "## 九、第六卷《阴阳双界》"),
-            ("V07", "## 十、第七卷《天门之后》"),
-            ("V08", "## 十一、第八卷《仙庭旧墟》"),
-            ("V09", "## 十二、第九卷《伐天人皇》"),
-            ("V10", "## 十三、第十卷《人道定仙天》"),
-            ("END", "## 十四、修炼境界与道具对照表")
-        ]
+        # 换书去绑定：卷标记从 volumes.json 生成，不再硬编码卷名/章号。
+        volume_markers = self._build_volume_markers()
 
         sections = {}
         for i in range(len(volume_markers) - 1):
@@ -563,19 +560,9 @@ class ChapterDirector:
 
         content = intent_path.read_text(encoding="utf-8")
 
-        markers = [
-            ("V01", "## 第一阶段：昆仑遗子"),
-            ("V02", "## 第二阶段：大乾人间"),
-            ("V03", "## 第三阶段：仙门初渡"),
-            ("V04", "## 第四阶段：万山寻仙"),
-            ("V05", "## 第五阶段：人间藏仙"),
-            ("V06", "## 第六阶段：阴阳双界"),
-            ("V07", "## 第七阶段：天门之后"),
-            ("V08", "## 第八阶段：仙庭旧墟"),
-            ("V09", "## 第九阶段：伐天人皇"),
-            ("V10", "## 第十阶段：人道定仙天"),
-            ("END", "------")
-        ]
+        # 换书去绑定：intent 阶段标题同样从 volumes.json 读（intent_marker 字段），
+        # 缺省时按 "## 第{序}阶段：{title}" 默认生成，与当前陆烬书写法一致。
+        markers = self._build_intent_markers()
 
         sections = {}
         for i in range(len(markers) - 1):
@@ -599,6 +586,93 @@ class ChapterDirector:
                 sections[vid] = content[start_idx:end_idx]
 
         return sections
+
+    def _load_volumes_config(self) -> dict:
+        """读 config/planning/volumes.json（换书单一权威源），缺失返回 {}。"""
+        try:
+            p = self.root / "config" / "planning" / "volumes.json"
+            if p.exists():
+                return json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"volumes.json load failed: {exc}")
+        return {}
+
+    def _build_volume_markers(self) -> list:
+        """从 volumes.json 构建 (vid, outline_marker) 列表（大纲卷标题），使换书只改配置。
+
+        volumes.json 每卷可选字段：
+        - outline_marker: 大纲 md 里的卷标题原文（如 "## 四、第一卷《昆仑遗子》"）
+        - 缺省时按卷号+卷名生成默认 marker（"## {序}、第{卷号}卷《{title}》"），
+          与当前陆烬书的现有写法一致。
+        volumes.json 缺失/无卷时回退 _DEFAULT_OUTLINE_MARKERS（当前陆烬书，保持现行为）。
+        末尾追加 ("END", "------") 作为收尾标记（当前行为）。
+        """
+        vols = self._volumes.get("volumes", [])
+        if not vols:
+            return list(self._DEFAULT_OUTLINE_MARKERS)
+        markers: list[tuple[str, str]] = []
+        for idx, vol in enumerate(vols):
+            vid = vol.get("id", f"V{idx+1:02d}")
+            om = vol.get("outline_marker")
+            if not om:
+                # 默认：与当前陆烬书 "## 四、第一卷《昆仑遗子》" 同构
+                # （章节标题 = "第{N}卷《{title}》"；无 title 时退化为裸 "第{N}卷"，
+                # 兼容测试里只写 {"id","chapter_range"} 的最小 volumes.json）
+                if vol.get("title"):
+                    om = f"## {self._cn_num(idx+4)}、第{self._cn_num(idx+1)}卷《{vol['title']}》"
+                else:
+                    om = f"## {self._cn_num(idx+4)}、第{self._cn_num(idx+1)}卷"
+            markers.append((vid, om))
+        markers.append(("END", "------"))
+        return markers
+
+    def _build_intent_markers(self) -> list:
+        """从 volumes.json 构建 (vid, intent_marker) 列表（author_intent 阶段标题）。"""
+        vols = self._volumes.get("volumes", [])
+        if not vols:
+            return list(self._DEFAULT_INTENT_MARKERS)
+        markers: list[tuple[str, str]] = []
+        for idx, vol in enumerate(vols):
+            vid = vol.get("id", f"V{idx+1:02d}")
+            im = vol.get("intent_marker") or f"## 第{self._cn_num(idx+1)}阶段：{vol.get('title','')}"
+            markers.append((vid, im))
+        markers.append(("END", "------"))
+        return markers
+
+    # 换书去绑定兜底：volumes.json 缺失/为空时，回退到当前陆烬书的卷标记，
+    # 保证测试（只写最小 volumes.json）与旧数据仍可解析。
+    _DEFAULT_OUTLINE_MARKERS = [
+        ("V01", "## 四、第一卷《昆仑遗子》"),
+        ("V02", "## 五、第二卷《大乾人间》"),
+        ("V03", "## 六、第三卷《仙门初渡》"),
+        ("V04", "## 七、第四卷《万山寻仙》"),
+        ("V05", "## 八、第五卷《人间藏仙》"),
+        ("V06", "## 九、第六卷《阴阳双界》"),
+        ("V07", "## 十、第七卷《天门之后》"),
+        ("V08", "## 十一、第八卷《仙庭旧墟》"),
+        ("V09", "## 十二、第九卷《伐天人皇》"),
+        ("V10", "## 十三、第十卷《人道定仙天》"),
+        ("END", "## 十四、修炼境界与道具对照表"),
+    ]
+    _DEFAULT_INTENT_MARKERS = [
+        ("V01", "## 第一阶段：昆仑遗子"),
+        ("V02", "## 第二阶段：大乾人间"),
+        ("V03", "## 第三阶段：仙门初渡"),
+        ("V04", "## 第四阶段：万山寻仙"),
+        ("V05", "## 第五阶段：人间藏仙"),
+        ("V06", "## 第六阶段：阴阳双界"),
+        ("V07", "## 第七阶段：天门之后"),
+        ("V08", "## 第八阶段：仙庭旧墟"),
+        ("V09", "## 第九阶段：伐天人皇"),
+        ("V10", "## 第十阶段：人道定仙天"),
+        ("END", "------"),
+    ]
+
+    @staticmethod
+    def _cn_num(n: int) -> str:
+        """1->一 … 10->十，超 10 回退阿拉伯数字。"""
+        _cn = "一二三四五六七八九十"
+        return _cn[n - 1] if 1 <= n <= 10 else str(n)
 
     def _get_volume_id(self, chapter_num: int, volumes: dict) -> str:
         """根据章节号获取卷 ID。"""

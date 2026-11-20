@@ -162,9 +162,39 @@ def _normalize_review(review: dict) -> dict:
     return review
 
 
+# 换书去绑定：缺省硬约束（当前陆烬书 ch1-9 婴儿卷），project_constraints.yaml
+# 无 review_hard_constraints 段时回退到此，保证现行为不变。
+_DEFAULT_REVIEW_HARD_CONSTRAINTS = """CC round-18 额外硬约束（婴儿卷 ch1-9，违反直接扣 5 分并记录）：
+- 配角陈老根的背景/回忆/往事中严禁具体化体制身份：不得出现「军中/从军/军营/军医/军中医/医官/教头/将军/千总/百户/朝廷命官/当差官府」等词；白名单「习武/江湖/走南闯北/佩刀」允许保留。
+- ch1-5 陈老根严禁主动施展修为：不得出现「气感/内视/行气探查/气机探查/吐纳/调息」；ch6 起仅放开「陈老根夜间独自吐纳、陆烬旁观窥见」一种受控形态；「内视他人脏腑」整个婴儿卷（ch1-9）始终禁止。
+- 不得建议任何超出当前章大纲阶段的人物背景具体化或后续章才解锁的能力（上述词条一律禁止出现在 suggested_fix 中）。"""
+
+
 class ReviewerAgent:
     """章节审查 Agent。"""
 
+    # 换书去绑定：缺省硬约束（当前陆烬书 ch1-9 婴儿卷），project_constraints.yaml
+    # 无 review_hard_constraints 段时回退到此，保证现行为不变。
+    _DEFAULT_REVIEW_HARD_CONSTRAINTS = _DEFAULT_REVIEW_HARD_CONSTRAINTS
+
+    def _review_system_prompt(self, project_root=None) -> str:
+        """SYSTEM_PROMPT 实例化：{hard_constraints} 占位从 project_constraints.yaml
+        的 review_hard_constraints 段注入；缺省回退 _DEFAULT（当前陆烬书 ch1-9）。
+        换书改 yaml 的 review_hard_constraints 段即可，无需改代码。"""
+        hc = self._DEFAULT_REVIEW_HARD_CONSTRAINTS
+        try:
+            from novel_engine.scripts.constraint_pack import load_pack
+            _pack = load_pack(project_root) if project_root is not None else load_pack()
+            _rl = _pack.review_hard_constraints()
+            if _rl:
+                hc = "换书硬约束（违反直接扣 5 分并记录）：\n" + "\n".join(_rl)
+        except Exception:
+            pass
+        return self.SYSTEM_PROMPT.replace("{hard_constraints}", hc)
+
+    # 换书去绑定：婴儿卷硬约束从 project_constraints.yaml 的 "review_hard_constraints"
+    # 段动态注入（{hard_constraints} 占位）；换书改 yaml 即可，无需改代码。
+    # 缺省（yaml 无该段）回退到当前陆烬书 ch1-9 的内置约束（保持现行为）。
     SYSTEM_PROMPT = """你是一位严格的网络小说审查编辑。你的任务是对生成的章节进行评分和反馈。
 
 评分维度（各维度独立满分，合计120分）：
@@ -186,10 +216,7 @@ class ReviewerAgent:
 - 禁止人物台词风格与设定不符
 - 禁止整段无标点的流水句（成百字中间没有逗号/句号）或明显超过约40字的超长句：每出现一处计入 style_match 扣分（每次扣2-5分），并在 scene_ids 标注问题场景、suggested_fix 指明断句重写
 
-CC round-18 额外硬约束（婴儿卷 ch1-9，违反直接扣 5 分并记录）：
-- 配角陈老根的背景/回忆/往事中严禁具体化体制身份：不得出现「军中/从军/军营/军医/军中医/医官/教头/将军/千总/百户/朝廷命官/当差官府」等词；白名单「习武/江湖/走南闯北/佩刀」允许保留。
-- ch1-5 陈老根严禁主动施展修为：不得出现「气感/内视/行气探查/气机探查/吐纳/调息」；ch6 起仅放开「陈老根夜间独自吐纳、陆烬旁观窥见」一种受控形态；「内视他人脏腑」整个婴儿卷（ch1-9）始终禁止。
-- 不得建议任何超出当前章大纲阶段的人物背景具体化或后续章才解锁的能力（上述词条一律禁止出现在 suggested_fix 中）。
+{hard_constraints}
 
 分级标准（基于归一化百分位）：
 - normalized_score >= 88：PASS
@@ -367,7 +394,7 @@ CC round-18 额外硬约束（婴儿卷 ch1-9，违反直接扣 5 分并记录�
         try:
             review = _coerce_review_object(call_llm(
                 prompt=prompt,
-                system_prompt=self.SYSTEM_PROMPT,
+                system_prompt=self._review_system_prompt(getattr(self, "root", None)),
                 client=self.llm,
                 output_json=True,
                 provider_config=self.provider_config,

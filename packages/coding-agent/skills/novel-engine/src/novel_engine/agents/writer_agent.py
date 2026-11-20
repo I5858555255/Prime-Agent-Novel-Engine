@@ -137,10 +137,12 @@ def validate_scene_order(full_text: str, task_card: dict) -> bool:
 class WriterAgent:
     """正文生成 Agent：按场景拆分生成正文。"""
 
+    # 换书去绑定：视角行由 _viewpoint_line() 从 style_bible 动态注入（含"视角"的行），
+    # 缺省回退内置默认（当前陆烬书 = 第三人称陆烬视角）。换书改 style_bible 即可，无需改代码。
     SCENE_SYSTEM_PROMPT = """你是一位专业的网络小说作家（凡人流写实，参考《凡人修仙传》《仙逆》笔法）。你的任务是根据场景蓝图生成高质量的正文段落。
 
 写作要求：
-1. 第三人称有限视角（以**陆烬**为主视角），视角深度随年龄动态变化（婴儿期仅感官，无推理）
+1. {viewpoint}
 2. 半文半白，通俗易懂但有古风韵味；每段最多一个比喻，比喻必须服务信息
 3. 对话符合角色身份
 4. 战斗描写简洁有力，重意境轻招式罗列
@@ -192,6 +194,26 @@ class WriterAgent:
         self._fb_pause_lock = threading.Lock()
         self._fb_pause_until = 0.0
         self._load_bible_cache()
+
+    def _scene_system_prompt(self) -> str:
+        """SCENE_SYSTEM_PROMPT 实例化：视角行从 style_bible 动态注入（换书去绑定）。
+
+        取 style_bible 第一条含"视角"的非空行；缺省回退内置默认
+        （当前陆烬书 = 第三人称有限视角、以陆烬为主视角）。换书时改
+        bible/style_bible.md 的视角行即可，无需改代码。
+        """
+        _default = "第三人称有限视角（以**陆烬**为主视角），视角深度随年龄动态变化（婴儿期仅感官，无推理）"
+        _view = _default
+        try:
+            _sb = self._bible_cache.get("style") or ""
+            for _ln in _sb.splitlines():
+                _s = _ln.strip()
+                if "视角" in _s and len(_s) >= 8:
+                    _view = _s.lstrip("0123456789").lstrip(".、-").strip()
+                    break
+        except Exception:
+            pass
+        return self.SCENE_SYSTEM_PROMPT.replace("{viewpoint}", _view)
 
     def _load_bible_cache(self):
         for key, rel in {
@@ -541,7 +563,7 @@ class WriterAgent:
             _client30 = self._fb_pick_client(scene_num)
             try:
                 result = _client30.chat_completion(
-                    [{"role": "system", "content": self.SCENE_SYSTEM_PROMPT},
+                    [{"role": "system", "content": self._scene_system_prompt()},
                      {"role": "user", "content": full_prompt}],
                     temperature=temperature_override,
                     max_tokens=_scene_max_tokens,

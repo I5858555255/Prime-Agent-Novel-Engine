@@ -21,15 +21,17 @@ ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / "config" / "constraints" / "project_constraints.yaml"
 
 
-def _read_pack() -> dict:
+def _read_pack(pack_path: Path | None = None) -> dict:
     """Parse the pack. No PyYAML dependency: restricted subset --
     `key:` opens a list, `- "K: V"` items become dict entries,
-    `- "A = B"` items stay pairs, `key: value` scalars direct."""
-    if not PACK.exists():
+    `- "A = B"` items stay pairs, `key: value` scalars direct.
+    pack_path 可覆盖默认 PACK（测试/多项目场景）。"""
+    _p = pack_path or PACK
+    if not _p.exists():
         return {}
     data: dict = {}
     current: str | None = None
-    for raw in PACK.read_text(encoding="utf-8").splitlines():
+    for raw in _p.read_text(encoding="utf-8").splitlines():
         line = raw.rstrip()
         if not line or line.lstrip().startswith("#"):
             continue
@@ -97,8 +99,19 @@ class ConstraintPack:
         items = self._data.get("character_replacements", [])
         return _kv(items) if isinstance(items, list) else {}
 
+    def review_hard_constraints(self) -> list[str]:
+        """reviewer_agent 的换书硬约束行（project_constraints.yaml 的
+        review_hard_constraints 段）；缺省返回 []（调用方回退内置默认）。"""
+        items = self._data.get("review_hard_constraints", [])
+        return [s for s in items if isinstance(s, str) and s.strip()] if isinstance(items, list) else []
 
-def load_pack() -> ConstraintPack:
+
+def load_pack(project_root: Path | str | None = None) -> ConstraintPack:
+    """读约束包。project_root 给出时定位 <root>/config/constraints/project_constraints.yaml，
+    否则用默认 PACK（当前包根）。换书迁移时传新项目的 root。"""
+    if project_root is not None:
+        _p = Path(project_root) / "config" / "constraints" / "project_constraints.yaml"
+        return ConstraintPack(_read_pack(_p))
     return ConstraintPack()
 
 
