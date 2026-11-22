@@ -13,6 +13,7 @@
 | R1 | 人审 P0 致命 | 成品残留 `【场景】/※/（章末钩子）`、质量门形同虚设（60 分即发布）、无重复/截断检测 | 成品净化 `purify_novel_for_publish`、提交加闸 `≥88+无high/block+确定性门控`、确定性检测器 | `repetition_detector.py` |
 | R2 | 10 章 0 落盘死循环 | 移动字数目标（5000→3500→3000）致永远追不上 | 冻结单章 `task_card`（`_frozen_*`）、统一区间 `0.65-1.35`、强制后重跑门控 | `pipeline_orchestrator: _frozen` |
 | R3 | 进程被 opencode 重启杀死 | `bash` 子进程挂在侧车进程树 | WMI `Win32_Process.Create` 脱离至 `WmiPrvSE→services.exe` | `launch_10.bat` + WMI |
+> [已失效 2026-11-22] launch_10.bat 已删除（本地文件）；脱离启动等价物 = src/novel_engine/scripts/noproxy_launcher.py（见根 README）
 | R4-5 | POLISH 20min 空转 + 修复振荡 | 90s 一刀切误杀整章 polish、patch 找不到 marker、长度门 1 字符误杀 | 超时分级 `POLISH 300s / Scene 90s`、`ReadTimeout` 快速切 `Qwen27B`、分场景批处理→单次全文、长度容差 `+2%` | `llm_client`/`model_router`/`writer` |
 | R6 | `violations` 未初始化崩溃 + 场景缺失 | `if apply_world_state` 内赋值块外引用 `UnboundLocalError`、writer 漏写 1 场景 | 前置 `violations=[]`、WRITE 后场景数校验补写 | `pipeline_orchestrator` |
 | R7 | 成品污染换形态（节拍点/场景小结/字数） | 清洗为固定黑名单、发布前无终检 | 段落级判伪（逐段分类剥离指令段）、发布前 `verify_no_scaffolding` 硬阻断、4 例回归 `test_purify_regression.py` | `repetition_detector` |
@@ -91,6 +92,7 @@ PLANNING → WORLD_SIM → DIRECTING → SYNOPSIS → WRITE_SCENE (3-4 场景并
 ```bash
 # WMI 真正脱离（不受 opencode 重启影响）
 Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList 'cmd.exe /c "D:\AI\Prime-Agent-Novel-Engine\Prime-Agent-Novel-Engine\launch_10.bat"'
+> [已失效 2026-11-22] launch_10.bat 已删除；WMI 脱离启动配方不再可用，等价物 = noproxy_launcher.py
 # 或按引擎规范：先 reset 再重跑
 python -m novel_engine.pipeline.production_runner 10 --real  # 在 src/novel_engine 下，需 PYTHONPATH=src 且 ZLEAP/AGNES 已设
 ```
@@ -142,4 +144,5 @@ python -m novel_engine.pipeline.production_runner 10 --real  # 在 src/novel_eng
 
 - 批次启动前 `reset_runtime_state` 全量清空（含 `state.db`、`resume_state.json`、`last_success_chapter.txt`、`chapters/draft` 旧残留）。
 - 启动：`Invoke-WmiMethod Win32_Process.Create 'cmd.exe /c launch_10.bat'` → 父链 `WmiPrvSE→services.exe`，与 opencode 进程树脱离。
+> [已失效 2026-11-22] launch_10.bat 已删除；启动方式已改（见根 README 与 HANDOFF.md）
 - 判定：`score≥88` 且无 hard 否决进 `novel/`；耗尽 best 进 `draft/`（附 note）；落盘打印耗时＋attempt 数。

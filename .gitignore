@@ -51,12 +51,6 @@ packages/coding-agent/skills/novel-engine/src/novel_engine/audit/
 packages/coding-agent/skills/novel-engine/src/novel_engine/runtime/
 packages/coding-agent/skills/novel-engine/src/novel_engine/test_out.txt
 
-# Local launch scripts with secrets (contains API keys) — never commit
-launch_prod.bat
-launch_10.bat
-launch_10_wmi.ps1
-launch_p0p1_3.bat
-
 # Local superpowers tooling data
 .superpowers/
 

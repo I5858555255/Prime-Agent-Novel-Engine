@@ -37,7 +37,8 @@ packages/coding-agent/skills/novel-engine/
 │   ├── HANDOFF.md             # 交接入口：当前进度 / 下一步 / 硬约束（先读这个）
 │   ├── runbook.md             # 旧运行手册（已过时，仅存档）
 │   ├── superpowers/           # quality-backlog.md（决策与验收正本）等
-│   ├── 使用说明指南.md
+│   ├── 使用说明.md            # 现役使用说明
+│   ├── 使用方法指南.md        # 历史存档
 │   ├── 编写指南.md
 │   ├── 效率优化方案.md
 │   └── DEVELOPMENT_PLAN.md
